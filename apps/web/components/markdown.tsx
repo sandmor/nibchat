@@ -1,9 +1,11 @@
 "use client"
 
+import type { Components } from "streamdown"
 import { Streamdown } from "streamdown"
 import { code } from "@streamdown/code"
 import { math } from "@streamdown/math"
 import "katex/dist/katex.min.css"
+import "streamdown/styles.css"
 
 const plugins = { code, math }
 

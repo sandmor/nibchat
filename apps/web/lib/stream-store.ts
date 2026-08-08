@@ -1,26 +1,35 @@
 "use client"
 import { create } from "zustand"
 
+export type ActiveStream = {
+  nodeId: string
+  chatId: string
+  /** Structural parent of the streaming assistant (tree placement). */
+  parentNodeId: string | null
+  startedAt: number
+  text: string
+  reasoning: string
+}
+
 type StreamState = {
-  active: Record<
-    string,
-    {
+  active: Record<string, ActiveStream>
+  controllers: Record<string, AbortController>
+  start: (
+    streamId: string,
+    value: {
       nodeId: string
       chatId: string
-      startedAt: number
-      text: string
-      reasoning: string
+      parentNodeId: string | null
     }
-  >
-  controllers: Record<string, AbortController>
-  start: (streamId: string, value: { nodeId: string; chatId: string }) => void
+  ) => void
   appendText: (streamId: string, delta: string) => void
   appendReasoning: (streamId: string, delta: string) => void
   attachController: (streamId: string, controller: AbortController) => void
+  /** Abort a single in-tab stream (Stop button). Structural cancel is server-side. */
   stop: (streamId: string) => void
   finish: (streamId: string) => void
 }
-export const useStreamStore = create<StreamState>((set) => ({
+export const useStreamStore = create<StreamState>((set, get) => ({
   active: {},
   controllers: {},
   start: (streamId, value) =>
@@ -62,7 +71,7 @@ export const useStreamStore = create<StreamState>((set) => ({
       controllers: { ...state.controllers, [streamId]: controller },
     })),
   stop: (streamId) => {
-    useStreamStore.getState().controllers[streamId]?.abort()
+    get().controllers[streamId]?.abort()
   },
   finish: (streamId) =>
     set((state) => {

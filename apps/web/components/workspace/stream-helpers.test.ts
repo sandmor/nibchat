@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   isViewingChat,
   shouldSoftFollow,
+  streamPlacement,
   type StreamRequestBody,
 } from "./stream-helpers"
 import type { NodeRow } from "@/lib/types"
@@ -76,5 +77,31 @@ describe("shouldSoftFollow", () => {
     expect(shouldSoftFollow(body, [node("other")], "c1", "/chat/c1")).toBe(
       false
     )
+  })
+})
+
+describe("streamPlacement", () => {
+  it("places streams inline when the node is on the active path", () => {
+    const path = [node("u1"), node("a1")]
+    expect(
+      streamPlacement({ nodeId: "a1", parentNodeId: "u1" }, path, path)
+    ).toBe("inline")
+  })
+
+  it("hides streams that belong to another branch", () => {
+    const u = node("u1")
+    const a1 = { ...node("a1"), parent_id: "u1", selected_child_id: null }
+    const a2 = { ...node("a2"), parent_id: "u1", selected_child_id: null }
+    const path = [{ ...u, selected_child_id: "a1" }, a1]
+    expect(
+      streamPlacement({ nodeId: "a2", parentNodeId: "u1" }, path, [u, a1, a2])
+    ).toBe("hidden")
+  })
+
+  it("shows under the tip when parent is tip and nothing else is selected", () => {
+    const tip = { ...node("u1"), selected_child_id: null }
+    expect(
+      streamPlacement({ nodeId: "a1", parentNodeId: "u1" }, [tip], [tip])
+    ).toBe("after-tip")
   })
 })

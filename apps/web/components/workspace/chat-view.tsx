@@ -37,9 +37,12 @@ import { Message } from "./message"
 import { Empty } from "./empty"
 import { useWorkspaceChrome } from "./shell"
 import { DocumentTitle } from "@/components/document-title"
+import type { NodeRow } from "@/lib/types"
+import type { ActiveStream } from "@/lib/stream-store"
 import {
   readStreamEvents,
   shouldSoftFollow,
+  streamPlacement,
   viewPathFromCache,
   type StreamRequestBody,
 } from "./stream-helpers"
@@ -50,6 +53,41 @@ type Props = {
   initial: WorkspaceData
   /** When set, select this node into the active path on mount. */
   selectNodeId?: string | null
+}
+
+function StreamingBubble({
+  streamId,
+  stream,
+  animate,
+  transition,
+}: {
+  streamId: string
+  stream: ActiveStream
+  animate: boolean
+  transition: { duration: number; ease: [number, number, number, number] }
+}) {
+  return (
+    <motion.article
+      key={streamId}
+      className="min-w-0 overflow-hidden rounded-xl border bg-card p-4"
+      initial={animate ? { opacity: 0, y: 6 } : false}
+      animate={{ opacity: 1, y: 0 }}
+      transition={transition}
+    >
+      <div className="mb-2 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+        assistant · streaming
+      </div>
+      {stream.reasoning && (
+        <details className="mb-3 rounded-lg bg-muted p-3 text-xs text-muted-foreground">
+          <summary className="cursor-pointer">Reasoning</summary>
+          <p className="mt-2 whitespace-pre-wrap">{stream.reasoning}</p>
+        </details>
+      )}
+      <div className="prose prose-sm dark:prose-invert max-w-none">
+        <Markdown>{stream.text || "Thinking…"}</Markdown>
+      </div>
+    </motion.article>
+  )
 }
 
 export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
@@ -227,16 +265,6 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     [data]
   )
 
-  const streamingNodeIds = useMemo(
-    () =>
-      new Set(
-        Object.values(activeStreams)
-          .filter((stream) => stream.chatId === data.chat?.id)
-          .map((stream) => stream.nodeId)
-      ),
-    [activeStreams, data.chat?.id]
-  )
-
   function ensureModelReady(config: ModelConfigLocal) {
     if (!config.providerId || !config.model) {
       toast.error("Choose a provider and model before sending a message.")
@@ -275,26 +303,52 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
         throw new Error(payload.error || `Stream failed (${response.status})`)
       }
       const nodeId = response.headers.get("X-Vero-Assistant-Node") ?? "pending"
-      startStream(streamId, { nodeId, chatId: body.chatId })
+      const parentHeader = response.headers.get("X-Vero-Parent-Node")
+      const userNodeId = response.headers.get("X-Vero-User-Node")
+      // Prefer structural parent from the server; fall back to request body.
+      const parentNodeId =
+        parentHeader ??
+        (body.intent === "continue"
+          ? userNodeId
+          : body.intent === "generate"
+            ? body.parentNodeId
+            : null)
+      startStream(streamId, {
+        nodeId,
+        chatId: body.chatId,
+        parentNodeId,
+      })
       options?.onStreamStarted?.()
       if (options?.clearComposer && aliveRef.current) setComposer("")
 
-      const pathNow = viewPathFromCache(
-        queryClient,
-        (input) => trpc.workspace.get.queryKey(input),
-        body.chatId
-      )
-      if (
+      // Soft-follow may fail on a stale workspace cache (e.g. Edit-as-branch
+      // already attached selection on the server, but the client tip is still
+      // the previous branch). Re-check once after a forced refresh.
+      const pathFromCache = () =>
+        viewPathFromCache(
+          queryClient,
+          (input) => trpc.workspace.get.queryKey(input),
+          body.chatId
+        )
+      const trySoftFollow = (path: NodeRow[]) =>
         nodeId !== "pending" &&
-        shouldSoftFollow(body, pathNow, selectedChatIdRef.current)
-      ) {
+        shouldSoftFollow(body, path, selectedChatIdRef.current)
+      let didSoftFollow = trySoftFollow(pathFromCache())
+      if (!didSoftFollow) {
+        // fetchQuery works even when the { chatId } workspace query is not
+        // the active observer (e.g. still mounted on /chat/new draft).
+        const fresh = await queryClient.fetchQuery(
+          trpc.workspace.get.queryOptions({ chatId: body.chatId })
+        )
+        const path = fresh.chat
+          ? resolveActivePath(fresh.nodes, fresh.chat.selected_root_node_id)
+          : []
+        didSoftFollow = trySoftFollow(path)
+      }
+      if (didSoftFollow) {
         await selectPathMutation.mutateAsync({
           chatId: body.chatId,
           nodeId,
-        })
-      } else {
-        await queryClient.invalidateQueries({
-          queryKey: trpc.workspace.get.queryKey({ chatId: body.chatId }),
         })
       }
       await queryClient.invalidateQueries({
@@ -469,9 +523,24 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       )
     }
   )
+
+  const pathVisibleStreams = streamsForActiveChat.filter(([, stream]) => {
+    const place = streamPlacement(stream, activePath, data.nodes)
+    return place === "inline" || place === "after-tip"
+  })
+
+  const streamByNodeId = new Map<string, [string, ActiveStream]>()
+  for (const entry of streamsForActiveChat) {
+    streamByNodeId.set(entry[1].nodeId, entry)
+  }
+
+  const afterTipStreams = streamsForActiveChat.filter(([, stream]) => {
+    return streamPlacement(stream, activePath, data.nodes) === "after-tip"
+  })
+
   const showEmpty =
     activePath.length === 0 &&
-    streamsForActiveChat.length === 0 &&
+    pathVisibleStreams.length === 0 &&
     inFlightCount === 0
 
   return (
@@ -537,11 +606,23 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
               </motion.div>
             )}
           </AnimatePresence>
-          {activePath.map((node, pathIndex) =>
-            streamingNodeIds.has(node.id) &&
-            node.status === "streaming" ? null : (
+          {activePath.map((node) => {
+            const live = streamByNodeId.get(node.id)
+            if (live) {
+              const [streamId, stream] = live
+              return (
+                <StreamingBubble
+                  key={node.id}
+                  streamId={streamId}
+                  stream={stream}
+                  animate={animate}
+                  transition={transition}
+                />
+              )
+            }
+            return (
               <Message
-                key={`path-${pathIndex}`}
+                key={node.id}
                 node={node}
                 nodes={data.nodes}
                 providers={providers}
@@ -560,7 +641,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
                       nodeId: childId,
                     })
                 }}
-                onChanged={() => void invalidateWorkspace()}
+                onChanged={() => invalidateWorkspace()}
                 onRegenerate={
                   node.role === "assistant"
                     ? () => streamRegenerate(node.id)
@@ -569,28 +650,15 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
                 onGenerateUnder={streamGenerate}
               />
             )
-          )}
-          {streamsForActiveChat.map(([streamId, stream]) => (
-            <motion.article
+          })}
+          {afterTipStreams.map(([streamId, stream]) => (
+            <StreamingBubble
               key={streamId}
-              className="min-w-0 overflow-hidden rounded-xl border bg-card p-4"
-              initial={animate ? { opacity: 0, y: 6 } : false}
-              animate={{ opacity: 1, y: 0 }}
+              streamId={streamId}
+              stream={stream}
+              animate={animate}
               transition={transition}
-            >
-              <div className="mb-2 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-                assistant · streaming
-              </div>
-              {stream.reasoning && (
-                <details className="mb-3 rounded-lg bg-muted p-3 text-xs text-muted-foreground">
-                  <summary className="cursor-pointer">Reasoning</summary>
-                  <p className="mt-2 whitespace-pre-wrap">{stream.reasoning}</p>
-                </details>
-              )}
-              <div className="prose prose-sm dark:prose-invert max-w-none">
-                <Markdown>{stream.text || "Thinking…"}</Markdown>
-              </div>
-            </motion.article>
+            />
           ))}
         </div>
       </div>

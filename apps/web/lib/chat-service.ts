@@ -1,7 +1,8 @@
 import "server-only"
 import { sql } from "kysely"
 import { db } from "@/lib/db"
-import { id, now, parseJson, textFromParts } from "@/lib/domain"
+import { id, now, parseJson, subtreeNodeIds, textFromParts } from "@/lib/domain"
+import { abortGenerations } from "@/lib/active-generations"
 import type { MessageRole, NodeRow, Parts } from "@/lib/types"
 import { defaultModelConfig, type ModelConfig } from "@/lib/providers"
 import { orderNodesForInsert, parseBackup } from "@/lib/backup"
@@ -100,6 +101,12 @@ export async function createChat(
 
 export async function deleteChat(userId: string, chatId: string) {
   await assertChatOwner(chatId, userId)
+  const nodeIds = await db
+    .selectFrom("message_nodes")
+    .select("id")
+    .where("chat_id", "=", chatId)
+    .execute()
+  abortGenerations(nodeIds.map((row) => row.id))
   await db
     .deleteFrom("chats")
     .where("id", "=", chatId)
@@ -442,12 +449,241 @@ export async function startGenerate(
   }
 }
 
+export type StreamFinalizeOutcome = "complete" | "aborted" | "error"
+
+export type StreamFinalizeResult =
+  | "complete"
+  | "stopped"
+  | "deleted"
+  | "error"
+  | "missing"
+  | "superseded"
+
+export type StreamFinalizeInput = {
+  nodeId: string
+  outcome: StreamFinalizeOutcome
+  text?: string
+  reasoning?: string
+  usage?: unknown
+  finishReason?: string
+  error?: string
+  config?: ModelConfig
+  previousMetadata?: Record<string, unknown>
+}
+
+/**
+ * Update parts/status only while the node is still `streaming`.
+ * Returns false if the row is missing or already finalized (or cascade-deleted).
+ */
+async function updateStreamingNode(
+  nodeId: string,
+  parts: Parts,
+  status: "complete" | "stopped" | "error"
+): Promise<boolean> {
+  const result = await db
+    .updateTable("message_nodes")
+    .set({
+      parts_json: JSON.stringify(parts),
+      search_text: textFromParts(parts),
+      status,
+      updated_at: now(),
+    })
+    .where("id", "=", nodeId)
+    .where("status", "=", "streaming")
+    .executeTakeFirst()
+  return Number(result.numUpdatedRows ?? 0) > 0
+}
+
+function partsFromPartial(text: string, reasoning: string): Parts {
+  return [
+    ...(reasoning ? [{ type: "reasoning" as const, text: reasoning }] : []),
+    ...(text ? [{ type: "text" as const, text }] : []),
+  ]
+}
+
+/**
+ * Single write path for stream terminal outcomes (complete / aborted / error).
+ * Idempotent: only mutates rows that are still `status = 'streaming'`.
+ * Returns "missing" if cascade-deleted, "superseded" if already finalized.
+ */
+export async function finalizeStreamingAssistant(
+  input: StreamFinalizeInput
+): Promise<StreamFinalizeResult> {
+  const row = await db
+    .selectFrom("message_nodes")
+    .select(["id", "chat_id", "status", "metadata_json"])
+    .where("id", "=", input.nodeId)
+    .executeTakeFirst()
+  if (!row) return "missing"
+  if (row.status !== "streaming") return "superseded"
+
+  const text = input.text?.trim() ?? ""
+  const reasoning = input.reasoning?.trim() ?? ""
+  const previous = {
+    ...parseJson<Record<string, unknown>>(row.metadata_json, {}),
+    ...(input.previousMetadata ?? {}),
+  }
+  const config = input.config
+
+  if (input.outcome === "aborted") {
+    if (!text && !reasoning) {
+      return deleteStreamingShell(input.nodeId)
+    }
+    const updated = await updateStreamingNode(
+      input.nodeId,
+      partsFromPartial(text, reasoning),
+      "stopped"
+    )
+    return updated ? "stopped" : "superseded"
+  }
+
+  if (input.outcome === "error") {
+    const updated = await updateStreamingNode(
+      input.nodeId,
+      partsFromPartial(text, reasoning),
+      "error"
+    )
+    if (!updated) return "superseded"
+    await db
+      .updateTable("message_nodes")
+      .set({
+        metadata_json: JSON.stringify({
+          ...previous,
+          ...(config?.providerId != null
+            ? { provider: config.providerId }
+            : {}),
+          ...(config?.model != null ? { model: config.model } : {}),
+          ...(input.error != null ? { error: input.error } : {}),
+          errorAt: new Date().toISOString(),
+        }),
+        updated_at: now(),
+      })
+      .where("id", "=", input.nodeId)
+      .execute()
+    return "error"
+  }
+
+  // complete — keep full provider text (including empty); trim only reasoning.
+  const completeReasoning = (input.reasoning ?? "").trim()
+  const completeParts: Parts = [
+    ...(completeReasoning
+      ? [{ type: "reasoning" as const, text: completeReasoning }]
+      : []),
+    { type: "text" as const, text: input.text ?? "" },
+  ]
+  const updated = await updateStreamingNode(
+    input.nodeId,
+    completeParts,
+    "complete"
+  )
+  if (!updated) return "superseded"
+  await db
+    .updateTable("message_nodes")
+    .set({
+      metadata_json: JSON.stringify({
+        ...previous,
+        ...(config?.providerId != null ? { provider: config.providerId } : {}),
+        ...(config?.model != null ? { model: config.model } : {}),
+        finishedAt: new Date().toISOString(),
+        ...(input.finishReason != null
+          ? { finishReason: input.finishReason }
+          : {}),
+        ...(input.usage !== undefined ? { usage: input.usage } : {}),
+        ...(config ? { params: config } : {}),
+      }),
+      updated_at: now(),
+    })
+    .where("id", "=", input.nodeId)
+    .execute()
+  return "complete"
+}
+
+/**
+ * Delete an empty streaming assistant shell (leaf only) and repair selection.
+ * Defensive: if children exist, do not cascade — return superseded.
+ */
+async function deleteStreamingShell(
+  nodeId: string
+): Promise<"deleted" | "missing" | "superseded"> {
+  const node = await db
+    .selectFrom("message_nodes")
+    .selectAll()
+    .where("id", "=", nodeId)
+    .executeTakeFirst()
+  if (!node) return "missing"
+  if (node.status !== "streaming") return "superseded"
+
+  const children = await db
+    .selectFrom("message_nodes")
+    .select("id")
+    .where("parent_id", "=", node.id)
+    .execute()
+  if (children.length > 0) {
+    console.warn(
+      "[vero] deleteStreamingShell: assistant has children; skipping",
+      nodeId
+    )
+    return "superseded"
+  }
+
+  await deleteSingleNodeWithSelectionRepair(node)
+  return "deleted"
+}
+
+/** Abort-only convenience wrapper (kept for tests / call sites). */
+export async function finalizeAbortedAssistant(
+  nodeId: string,
+  partial: { text?: string; reasoning?: string }
+): Promise<"stopped" | "deleted" | "missing" | "superseded"> {
+  const result = await finalizeStreamingAssistant({
+    nodeId,
+    outcome: "aborted",
+    text: partial.text,
+    reasoning: partial.reasoning,
+  })
+  if (result === "complete" || result === "error") return "superseded"
+  return result
+}
+
 export async function deleteNode(
   userId: string,
   nodeId: string,
   mode: "subtree" | "reparent"
 ) {
   const node = await assertNodeOwner(nodeId, userId)
+
+  if (mode === "reparent") {
+    abortGenerations([node.id])
+    await deleteNodeInternal(node.id, node.chat_id, "reparent")
+    return
+  }
+
+  // Subtree: abort every live generation under this root, then CASCADE delete.
+  const chatNodes = await db
+    .selectFrom("message_nodes")
+    .select(["id", "parent_id"])
+    .where("chat_id", "=", node.chat_id)
+    .execute()
+  abortGenerations(subtreeNodeIds(chatNodes, node.id))
+  await deleteNodeInternal(node.id, node.chat_id, "subtree")
+}
+
+/**
+ * Structural delete without ownership checks (used after assertNodeOwner).
+ */
+async function deleteNodeInternal(
+  nodeId: string,
+  chatId: string,
+  mode: "subtree" | "reparent"
+) {
+  const node = await db
+    .selectFrom("message_nodes")
+    .selectAll()
+    .where("id", "=", nodeId)
+    .where("chat_id", "=", chatId)
+    .executeTakeFirst()
+  if (!node) return
+
   const children = await db
     .selectFrom("message_nodes")
     .selectAll()
@@ -499,7 +735,15 @@ export async function deleteNode(
     return
   }
 
-  // subtree delete
+  // Subtree delete (CASCADE removes descendants via FK).
+  await deleteSingleNodeWithSelectionRepair(node)
+}
+
+/** Delete one node and rewire parent/root selection when it was the selected child. */
+async function deleteSingleNodeWithSelectionRepair(
+  node: Pick<NodeRow, "id" | "chat_id" | "parent_id">
+) {
+  const timestamp = now()
   await db.transaction().execute(async (trx) => {
     if (node.parent_id) {
       const parent = await trx

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { ancestorPath, resolveActivePath, textFromParts } from "@/lib/domain"
+import { ancestorPath, resolveActivePath, subtreeNodeIds, textFromParts } from "@/lib/domain"
 import type { NodeRow } from "@/lib/types"
 
 const node = (
@@ -56,5 +56,14 @@ describe("tree navigation", () => {
     const path = resolveActivePath(nodes, "0")
     expect(path).toHaveLength(2000)
     expect(performance.now() - started).toBeLessThan(250)
+  })
+  it("collects a subtree including the root", () => {
+    const nodes = [
+      node("root", null, null),
+      node("a", "root", null),
+      node("b", "a", null),
+      node("c", "root", null),
+    ]
+    expect([...subtreeNodeIds(nodes, "a")].sort()).toEqual(["a", "b"])
   })
 })

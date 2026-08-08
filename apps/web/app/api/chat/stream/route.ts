@@ -9,11 +9,15 @@ import { db } from "@/lib/db"
 import { requireOwner } from "@/lib/app-session"
 import { ancestorPath, parseJson } from "@/lib/domain"
 import {
+  registerGeneration,
+  unregisterGeneration,
+} from "@/lib/active-generations"
+import {
   createTurn,
+  finalizeStreamingAssistant,
   nodeParts,
   startGenerate,
   startRegenerate,
-  updateNode,
 } from "@/lib/chat-service"
 import { canReplayReasoning, modelFor, type ModelConfig } from "@/lib/providers"
 import { formatProviderError } from "@/lib/provider-errors"
@@ -33,6 +37,13 @@ function streamMeta(config: ModelConfig) {
 }
 
 export async function POST(request: Request) {
+  let registeredNodeId: string | null = null
+  const dropRegistration = () => {
+    if (registeredNodeId) {
+      unregisterGeneration(registeredNodeId)
+      registeredNodeId = null
+    }
+  }
   try {
     const user = await requireOwner(request.headers)
     let body: ReturnType<typeof streamBodySchema.parse>
@@ -102,6 +113,10 @@ export async function POST(request: Request) {
       contextLeafId = result.contextLeafId
     }
 
+    const generation = new AbortController()
+    registerGeneration(assistant.id, generation)
+    registeredNodeId = assistant.id
+
     const allNodes = await db
       .selectFrom("message_nodes")
       .selectAll()
@@ -149,19 +164,47 @@ export async function POST(request: Request) {
           })),
         }
       })
-    let finalText = ""
     let partialText = ""
     let partialReasoning = ""
+    let settled = false
+    const finalizeOnce = async (
+      outcome: "complete" | "aborted" | "error",
+      payload: {
+        text?: string
+        reasoning?: string
+        usage?: unknown
+        finishReason?: string
+        error?: string
+      }
+    ) => {
+      if (settled) return
+      settled = true
+      await finalizeStreamingAssistant({
+        nodeId: assistant.id,
+        outcome,
+        text: payload.text,
+        reasoning: payload.reasoning,
+        usage: payload.usage,
+        finishReason: payload.finishReason,
+        error: payload.error,
+        config,
+        previousMetadata: parseJson<Record<string, unknown>>(
+          assistant.metadata_json,
+          {}
+        ),
+      })
+    }
     const instance = await db
       .selectFrom("instance")
       .select("system_prompt")
       .where("id", "=", 1)
       .executeTakeFirstOrThrow()
+    const abortSignal = AbortSignal.any([request.signal, generation.signal])
     const result = streamText({
       model: languageModel,
       system: instance.system_prompt,
       messages,
-      abortSignal: request.signal,
+      abortSignal,
       temperature: config.temperature,
       maxOutputTokens: config.maxOutputTokens,
       topP: config.topP,
@@ -174,86 +217,40 @@ export async function POST(request: Request) {
         if (chunk.type === "reasoning-delta") partialReasoning += chunk.text
       },
       onFinish: async ({ text, reasoningText, usage, finishReason }) => {
-        finalText = text
-        await updateNode(
-          assistant.id,
-          [
-            ...(reasoningText || partialReasoning
-              ? [
-                  {
-                    type: "reasoning" as const,
-                    text: reasoningText || partialReasoning,
-                  },
-                ]
-              : []),
-            { type: "text", text },
-          ],
-          "complete"
-        )
-        await db
-          .updateTable("message_nodes")
-          .set({
-            metadata_json: JSON.stringify({
-              provider: config.providerId,
-              model: config.model,
-              finishedAt: new Date().toISOString(),
-              finishReason,
-              usage,
-              params: config,
-            }),
-            updated_at: new Date().toISOString(),
+        try {
+          // Late finish after abort must not overwrite stopped/deleted state.
+          if (abortSignal.aborted) return
+          await finalizeOnce("complete", {
+            text,
+            reasoning: reasoningText || partialReasoning,
+            usage,
+            finishReason,
           })
-          .where("id", "=", assistant.id)
-          .execute()
+        } finally {
+          dropRegistration()
+        }
       },
       onAbort: async () => {
-        await updateNode(
-          assistant.id,
-          [
-            ...(partialReasoning
-              ? [{ type: "reasoning" as const, text: partialReasoning }]
-              : []),
-            ...(partialText
-              ? [{ type: "text" as const, text: partialText }]
-              : []),
-          ],
-          "stopped"
-        )
+        try {
+          await finalizeOnce("aborted", {
+            text: partialText,
+            reasoning: partialReasoning,
+          })
+        } finally {
+          dropRegistration()
+        }
       },
       onError: async ({ error }) => {
-        console.error("[vero/stream]", error)
-        if (finalText) return
-        const errorText = formatProviderError(error)
-        await updateNode(
-          assistant.id,
-          [
-            ...(partialReasoning
-              ? [{ type: "reasoning" as const, text: partialReasoning }]
-              : []),
-            ...(partialText
-              ? [{ type: "text" as const, text: partialText }]
-              : []),
-          ],
-          "error"
-        )
-        const previous = parseJson<Record<string, unknown>>(
-          assistant.metadata_json,
-          {}
-        )
-        await db
-          .updateTable("message_nodes")
-          .set({
-            metadata_json: JSON.stringify({
-              ...previous,
-              provider: config.providerId,
-              model: config.model,
-              error: errorText,
-              errorAt: new Date().toISOString(),
-            }),
-            updated_at: new Date().toISOString(),
+        try {
+          console.error("[vero/stream]", error)
+          await finalizeOnce("error", {
+            text: partialText,
+            reasoning: partialReasoning,
+            error: formatProviderError(error),
           })
-          .where("id", "=", assistant.id)
-          .execute()
+        } finally {
+          dropRegistration()
+        }
       },
     })
     return createUIMessageStreamResponse({
@@ -264,6 +261,9 @@ export async function POST(request: Request) {
       }),
       headers: {
         "X-Vero-Assistant-Node": assistant.id,
+        ...(assistant.parent_id
+          ? { "X-Vero-Parent-Node": assistant.parent_id }
+          : {}),
         ...(body.intent === "continue" && contextLeafId
           ? { "X-Vero-User-Node": contextLeafId }
           : {}),
@@ -271,6 +271,7 @@ export async function POST(request: Request) {
       },
     })
   } catch (error) {
+    dropRegistration()
     console.error("[vero/stream] setup", error)
     if (statusFromError(error) !== 400) return jsonError(error)
     return Response.json({ error: formatProviderError(error) }, { status: 400 })

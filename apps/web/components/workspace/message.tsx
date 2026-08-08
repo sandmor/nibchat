@@ -101,7 +101,7 @@ export function Message({
   transition?: { duration: number; ease: [number, number, number, number] }
   messageActionCaptions: boolean
   onSelect: (parentId: string, childId: string) => void
-  onChanged?: () => void
+  onChanged?: () => void | Promise<void>
   onRegenerate?: () => void
   onGenerateUnder?: (parentNodeId: string) => void | Promise<void>
 }) {
@@ -128,10 +128,11 @@ export function Message({
       onSuccess: async (result) => {
         setEditOpen(false)
         const forked = result.node
+        // Wait for workspace refresh so soft-follow sees the forked tip
+        // (server already attached selection to the new branch).
+        await Promise.resolve(onChanged?.())
         if (forked.role === "user" && onGenerateUnder) {
           await onGenerateUnder(forked.id)
-        } else {
-          onChanged?.()
         }
       },
       onError: (error) => toast.error(error.message || "Edit failed"),

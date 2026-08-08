@@ -42,3 +42,25 @@ export function ancestorPath(nodes: NodeRow[], nodeId: string) {
   }
   return path
 }
+
+/** Collect a node and all descendants by parent_id (for subtree abort/delete). */
+export function subtreeNodeIds(
+  nodes: Array<{ id: string; parent_id: string | null }>,
+  rootId: string
+): Set<string> {
+  const children = new Map<string | null, string[]>()
+  for (const node of nodes) {
+    const list = children.get(node.parent_id) ?? []
+    list.push(node.id)
+    children.set(node.parent_id, list)
+  }
+  const ids = new Set<string>()
+  const stack = [rootId]
+  while (stack.length > 0) {
+    const current = stack.pop()!
+    if (ids.has(current)) continue
+    ids.add(current)
+    for (const child of children.get(current) ?? []) stack.push(child)
+  }
+  return ids
+}

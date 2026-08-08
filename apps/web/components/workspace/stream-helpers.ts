@@ -84,6 +84,34 @@ export function shouldSoftFollow(
   return path.some((node) => node.id === body.assistantNodeId)
 }
 
+/**
+ * Where a live stream should appear relative to the active selection path.
+ */
+export function streamPlacement(
+  stream: { nodeId: string; parentNodeId: string | null },
+  path: NodeRow[],
+  nodes: NodeRow[]
+): "inline" | "after-tip" | "hidden" {
+  if (path.some((node) => node.id === stream.nodeId)) return "inline"
+
+  const byId = new Map(nodes.map((node) => [node.id, node]))
+  const row = byId.get(stream.nodeId)
+  const parentId = row?.parent_id ?? stream.parentNodeId
+  const tip = path.at(-1)
+
+  if (!tip) {
+    // Empty view: only a root-level generation can show.
+    return parentId == null ? "after-tip" : "hidden"
+  }
+
+  if (parentId !== tip.id) return "hidden"
+  // Tip has another selected child → path should already include that child,
+  // not this sibling stream.
+  if (tip.selected_child_id != null && tip.selected_child_id !== stream.nodeId)
+    return "hidden"
+  return "after-tip"
+}
+
 export async function readStreamEvents(
   body: ReadableStream<Uint8Array>,
   handlers: {

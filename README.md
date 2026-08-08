@@ -10,6 +10,11 @@ Vero is a highly customizable AI chat platform where you are in control of each 
 - No additional services required. SQLite by default; PostgreSQL is optional.
 - Backup / restore (API keys excluded)
 
+## Current Limitations
+
+- AI responses are kept alive by user clients; therefore, each tab is responsible for the request made within it, and if the tab closes or becomes unresponsive, the response is canceled.
+- There is no replay of in-flight responses on new clients.
+
 ## Setup
 
 ```bash

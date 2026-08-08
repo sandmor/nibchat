@@ -4,12 +4,18 @@ import {
   createProvider,
   createTurn,
   deleteNode,
+  finalizeStreamingAssistant,
   getWorkspace,
   insertNode,
   nodeParts,
   startGenerate,
   startRegenerate,
 } from "@/lib/chat-service"
+import {
+  isGenerationActive,
+  registerGeneration,
+  clearActiveGenerations,
+} from "@/lib/active-generations"
 import { parseBackup } from "@/lib/backup"
 import { db, migrate } from "@/lib/db"
 import { ancestorPath, parseJson, resolveActivePath } from "@/lib/domain"
@@ -295,6 +301,190 @@ describe("branch stream helpers", () => {
     await expect(startRegenerate(userId, userMsg.id)).rejects.toThrow(
       /assistant/i
     )
+  })
+})
+
+describe("generation abort + finalize", () => {
+  it("deleteNode subtree aborts registered generations under the root", async () => {
+    clearActiveGenerations()
+    const chat = await createChat(userId, "Abort on delete")
+    const userMsg = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "u" }],
+    })
+    const streaming = await insertNode({
+      chatId: chat.id,
+      parentId: userMsg.id,
+      role: "assistant",
+      parts: [],
+      status: "streaming",
+      attachSelection: false,
+    })
+    const controller = new AbortController()
+    registerGeneration(streaming.id, controller)
+    expect(isGenerationActive(streaming.id)).toBe(true)
+
+    await deleteNode(userId, userMsg.id, "subtree")
+
+    expect(controller.signal.aborted).toBe(true)
+    expect(isGenerationActive(streaming.id)).toBe(false)
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    expect(workspace.nodes.some((n) => n.id === streaming.id)).toBe(false)
+  })
+
+  it("finalizeStreamingAssistant keeps non-empty aborted partials as stopped", async () => {
+    const chat = await createChat(userId, "Finalize keep")
+    const assistant = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "assistant",
+      parts: [],
+      status: "streaming",
+    })
+    const result = await finalizeStreamingAssistant({
+      nodeId: assistant.id,
+      outcome: "aborted",
+      text: "  half reply  ",
+      reasoning: "",
+    })
+    expect(result).toBe("stopped")
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    const row = workspace.nodes.find((n) => n.id === assistant.id)
+    expect(row?.status).toBe("stopped")
+    expect(nodeParts(row!)[0]?.text).toBe("half reply")
+  })
+
+  it("finalizeStreamingAssistant deletes empty shells", async () => {
+    const chat = await createChat(userId, "Finalize drop")
+    const userMsg = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "ask" }],
+    })
+    const assistant = await insertNode({
+      chatId: chat.id,
+      parentId: userMsg.id,
+      role: "assistant",
+      parts: [],
+      status: "streaming",
+    })
+    const result = await finalizeStreamingAssistant({
+      nodeId: assistant.id,
+      outcome: "aborted",
+      text: "  ",
+      reasoning: "",
+    })
+    expect(result).toBe("deleted")
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    expect(workspace.nodes.some((n) => n.id === assistant.id)).toBe(false)
+    expect(workspace.nodes.some((n) => n.id === userMsg.id)).toBe(true)
+  })
+
+  it("finalizeStreamingAssistant is a no-op for missing nodes", async () => {
+    const result = await finalizeStreamingAssistant({
+      nodeId: "does-not-exist",
+      outcome: "aborted",
+      text: "x",
+    })
+    expect(result).toBe("missing")
+  })
+
+  it("finalizeStreamingAssistant complete writes complete status", async () => {
+    const chat = await createChat(userId, "Finalize complete")
+    const assistant = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "assistant",
+      parts: [],
+      status: "streaming",
+    })
+    const result = await finalizeStreamingAssistant({
+      nodeId: assistant.id,
+      outcome: "complete",
+      text: "full reply",
+      reasoning: "thinking",
+      finishReason: "stop",
+      usage: { totalTokens: 1 },
+      config: { providerId: "p", model: "m" },
+    })
+    expect(result).toBe("complete")
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    const row = workspace.nodes.find((n) => n.id === assistant.id)
+    expect(row?.status).toBe("complete")
+    expect(nodeParts(row!).map((p) => p.text)).toEqual([
+      "thinking",
+      "full reply",
+    ])
+  })
+
+  it("finalizeStreamingAssistant complete on missing is missing", async () => {
+    const result = await finalizeStreamingAssistant({
+      nodeId: "gone",
+      outcome: "complete",
+      text: "x",
+    })
+    expect(result).toBe("missing")
+  })
+
+  it("finalizeStreamingAssistant complete when already stopped is superseded", async () => {
+    const chat = await createChat(userId, "Finalize superseded")
+    const assistant = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "assistant",
+      parts: [{ type: "text", text: "partial" }],
+      status: "stopped",
+    })
+    const result = await finalizeStreamingAssistant({
+      nodeId: assistant.id,
+      outcome: "complete",
+      text: "should not win",
+    })
+    expect(result).toBe("superseded")
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    const row = workspace.nodes.find((n) => n.id === assistant.id)
+    expect(row?.status).toBe("stopped")
+    expect(nodeParts(row!)[0]?.text).toBe("partial")
+  })
+
+  it("second finalize returns superseded", async () => {
+    const chat = await createChat(userId, "Double finalize")
+    const assistant = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "assistant",
+      parts: [],
+      status: "streaming",
+    })
+    const first = await finalizeStreamingAssistant({
+      nodeId: assistant.id,
+      outcome: "complete",
+      text: "first",
+    })
+    const second = await finalizeStreamingAssistant({
+      nodeId: assistant.id,
+      outcome: "error",
+      text: "second",
+      error: "nope",
+    })
+    expect(first).toBe("complete")
+    expect(second).toBe("superseded")
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    const row = workspace.nodes.find((n) => n.id === assistant.id)
+    expect(row?.status).toBe("complete")
+  })
+
+  it("finalizeStreamingAssistant error on missing is missing", async () => {
+    const result = await finalizeStreamingAssistant({
+      nodeId: "gone",
+      outcome: "error",
+      text: "x",
+      error: "boom",
+    })
+    expect(result).toBe("missing")
   })
 })
 

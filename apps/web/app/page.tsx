@@ -1,19 +1,40 @@
-import { Button } from "@workspace/ui/components/button"
+import { headers } from "next/headers"
+import { AuthCard } from "@/components/auth-card"
+import { Workspace } from "@/components/workspace"
+import { db, migrate } from "@/lib/db"
+import { sessionFromHeaders, requireOwner } from "@/lib/auth"
+import { getWorkspace, getInstanceSettings } from "@/lib/chat-service"
+import { listProviders } from "@/lib/providers"
 
-export default function Page() {
+export const dynamic = "force-dynamic"
+export default async function Page() {
+  await migrate()
+  const instance = await db
+    .selectFrom("instance")
+    .select("owner_user_id")
+    .where("id", "=", 1)
+    .executeTakeFirstOrThrow()
+  const requestHeaders = await headers()
+  const session = await sessionFromHeaders(requestHeaders)
+  if (!session) return <AuthCard setup={!instance.owner_user_id} />
+
+  let user: Awaited<ReturnType<typeof requireOwner>>
+  try {
+    user = await requireOwner(requestHeaders)
+  } catch {
+    return <AuthCard setup={false} wrongAccount />
+  }
+
+  const [settings, workspace, providers] = await Promise.all([
+    getInstanceSettings(),
+    getWorkspace(user.id),
+    listProviders(user.id),
+  ])
   return (
-    <div className="flex min-h-svh p-6">
-      <div className="flex max-w-md min-w-0 flex-col gap-4 text-sm leading-loose">
-        <div>
-          <h1 className="font-medium">Project ready!</h1>
-          <p>You may now add components and start building.</p>
-          <p>We&apos;ve already added the button component for you.</p>
-          <Button className="mt-2">Button</Button>
-        </div>
-        <div className="text-muted-foreground font-mono text-xs">
-          (Press <kbd>d</kbd> to toggle dark mode)
-        </div>
-      </div>
-    </div>
+    <Workspace
+      initial={workspace}
+      providers={providers}
+      appearance={settings.appearance}
+    />
   )
 }

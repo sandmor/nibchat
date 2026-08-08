@@ -1,0 +1,35 @@
+services:
+  vero:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    ports: ["3000:3000"]
+    env_file:
+      - .env
+    environment:
+      SQLITE_PATH: /data/vero.db
+      # Empty → SQLite. For Postgres profile set in .env:
+      # DATABASE_URL=postgres://vero:vero@postgres:5432/vero
+      DATABASE_URL: ${DATABASE_URL:-}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
+    volumes:
+      - ./data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+  postgres:
+    image: postgres:18-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_DB: vero
+      POSTGRES_USER: vero
+      POSTGRES_PASSWORD: vero
+    volumes: ["vero-postgres:/var/lib/postgresql"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vero -d vero"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+volumes:
+  vero-postgres:

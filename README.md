@@ -1,21 +1,52 @@
-# shadcn/ui monorepo template
+# Vero
 
-This is a Next.js monorepo template with shadcn/ui.
+Vero is a highly customizable AI chat platform where you are in control of each aspect.
 
-## Adding components
+## Features
 
-To add components to your app, run the following command at the root of your `web` app:
+- Appearance is handled through themes, defined through JSON (CSS vars, density, motion, optional remote stylesheet)
+- Full user control
+- Chats are trees, made from messages with sibling branches, path selection, and search across all branches. Our goal is maximum flexibility and non-destructive editing, though the alternative is also possible.
+- No additional services required. SQLite by default; PostgreSQL is optional.
+- Backup / restore (API keys excluded)
+
+## Setup
 
 ```bash
-pnpm dlx shadcn@latest add button -c apps/web
+pnpm install
+cp .env.example .env
+# set BETTER_AUTH_SECRET in .env (e.g. openssl rand -base64 32)
+pnpm --filter web dev
 ```
 
-This will place the ui components in the `packages/ui/src/components` directory.
+Open [http://localhost:3000](http://localhost:3000). The first signup becomes the sole owner of the instance.
 
-## Using components
+### Password reset
 
-To use the components in your app, import them from the `ui` package.
+There is no outbound email for now. Generate a recovery link:
 
-```tsx
-import { Button } from "@workspace/ui/components/button";
+```bash
+pnpm --filter web reset-password -- owner@example.com
+```
+
+Open the printed URL (or `/reset-password?token=…`).
+
+## Environment
+
+| Variable             | Purpose                                                          |
+| -------------------- | ---------------------------------------------------------------- |
+| `BETTER_AUTH_SECRET` | Required in production                                           |
+| `BETTER_AUTH_URL`    | Public origin (default `http://localhost:3000`)                  |
+| `SQLITE_PATH`        | SQLite path relative to monorepo root (default `./data/vero.db`) |
+| `DATABASE_URL`       | When set, selects the Postgres adapter instead of SQLite         |
+| `DATABASE_POOL_SIZE` | Postgres pool size (default `8`)                                 |
+
+Copy [`.env.example`](./.env.example) to `.env` and fill secrets. See [DEPLOYMENT.md](./DEPLOYMENT.md).
+
+## Development
+
+```bash
+pnpm --filter web test        # vitest
+pnpm --filter web test:e2e    # playwright
+pnpm --filter web typecheck
 ```

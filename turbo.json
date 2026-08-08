@@ -1,6 +1,17 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "ui": "tui",
+  "globalEnv": [
+    "BETTER_AUTH_SECRET",
+    "BETTER_AUTH_URL",
+    "NODE_ENV",
+    "NEXT_PHASE",
+    "DATABASE_URL",
+    "DATABASE_POOL_SIZE",
+    "SQLITE_PATH",
+    "E2E_BASE_URL",
+    "CI"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

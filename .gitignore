@@ -1,5 +1,3 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
 # dependencies
 node_modules
 .pnp
@@ -12,6 +10,8 @@ node_modules
 
 # testing
 coverage
+playwright-report
+test-results
 
 # next.js
 .next/
@@ -34,8 +34,16 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*
+# secrets at monorepo root (keep .env.example)
+.env
+.env.*
+!.env.example
+
+# local sqlite data (path defaults to ./data under monorepo root)
+/data/
+*.db
+*.db-shm
+*.db-wal
 
 # vercel
 .vercel

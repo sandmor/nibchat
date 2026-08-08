@@ -1,4 +1,4 @@
-/** Matches root layout title template: `%s · Vero` */
+/** Matches root layout title template: `%s · Nibchat` */
 export function browserDocumentTitle(segment: string) {
-  return `${segment} · Vero`
+  return `${segment} · Nibchat`
 }

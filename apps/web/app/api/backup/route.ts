@@ -10,7 +10,7 @@ export async function GET(request: Request) {
     const backup = await createBackup(user.id)
     return Response.json(backup, {
       headers: {
-        "content-disposition": "attachment; filename=vero-backup.json",
+        "content-disposition": "attachment; filename=nibchat-backup.json",
       },
     })
   } catch (error) {

@@ -85,9 +85,9 @@ export async function POST(request: Request) {
       contextLeafId = turn.user.id
       headers = {
         ...(assistant.parent_id
-          ? { "X-Vero-Parent-Node": assistant.parent_id }
+          ? { "X-Nibchat-Parent-Node": assistant.parent_id }
           : {}),
-        "X-Vero-User-Node": turn.user.id,
+        "X-Nibchat-User-Node": turn.user.id,
       }
       if (chat.title === "New conversation")
         await db
@@ -108,7 +108,7 @@ export async function POST(request: Request) {
       contextLeafId = result.contextLeafId
       headers = {
         ...(assistant.parent_id
-          ? { "X-Vero-Parent-Node": assistant.parent_id }
+          ? { "X-Nibchat-Parent-Node": assistant.parent_id }
           : {}),
       }
     } else if (body.intent === "generate") {
@@ -121,7 +121,7 @@ export async function POST(request: Request) {
       contextLeafId = result.contextLeafId
       headers = {
         ...(assistant.parent_id
-          ? { "X-Vero-Parent-Node": assistant.parent_id }
+          ? { "X-Nibchat-Parent-Node": assistant.parent_id }
           : {}),
       }
     } else {
@@ -209,7 +209,7 @@ export async function POST(request: Request) {
       seedParts = nextParts
       headers = {
         ...(assistant.parent_id
-          ? { "X-Vero-Parent-Node": assistant.parent_id }
+          ? { "X-Nibchat-Parent-Node": assistant.parent_id }
           : {}),
       }
 
@@ -281,7 +281,7 @@ export async function POST(request: Request) {
       headers
     )
   } catch (error) {
-    console.error("[vero/stream] setup", error)
+    console.error("[nibchat/stream] setup", error)
     if (statusFromError(error) !== 400) return jsonError(error)
     return Response.json({ error: formatProviderError(error) }, { status: 400 })
   }

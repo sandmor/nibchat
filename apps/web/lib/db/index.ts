@@ -4,7 +4,7 @@ import { createPostgresPort } from "@/lib/db/adapters/postgres"
 import { createSqlitePort } from "@/lib/db/adapters/sqlite"
 
 const globalForDb = globalThis as unknown as {
-  veroDbPort?: DbPort
+  nibchatDbPort?: DbPort
 }
 
 function selectPort(): DbPort {
@@ -12,8 +12,8 @@ function selectPort(): DbPort {
   return createSqlitePort()
 }
 
-export const port: DbPort = globalForDb.veroDbPort ?? selectPort()
-globalForDb.veroDbPort = port
+export const port: DbPort = globalForDb.nibchatDbPort ?? selectPort()
+globalForDb.nibchatDbPort = port
 
 /** Application Kysely client (both adapters expose the same interface). */
 export const db = port.db

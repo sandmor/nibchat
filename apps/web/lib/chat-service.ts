@@ -743,7 +743,7 @@ async function deleteStreamingShell(
     .execute()
   if (children.length > 0) {
     console.warn(
-      "[vero] deleteStreamingShell: assistant has children; skipping",
+      "[nibchat] deleteStreamingShell: assistant has children; skipping",
       nodeId
     )
     return "superseded"

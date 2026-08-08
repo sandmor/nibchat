@@ -29,11 +29,11 @@ function metadataBase(): URL {
 export const metadata: Metadata = {
   metadataBase: metadataBase(),
   title: {
-    default: "Vero",
-    template: "%s · Vero",
+    default: "Nibchat",
+    template: "%s · Nibchat",
   },
   description: siteDescription,
-  applicationName: "Vero",
+  applicationName: "Nibchat",
   keywords: [
     "AI chat",
     "self-hosted",
@@ -41,8 +41,8 @@ export const metadata: Metadata = {
     "open source",
     "LLM",
   ],
-  authors: [{ name: "Vero" }],
-  creator: "Vero",
+  authors: [{ name: "Nibchat" }],
+  creator: "Nibchat",
   formatDetection: {
     email: false,
     address: false,
@@ -56,17 +56,17 @@ export const metadata: Metadata = {
   openGraph: {
     type: "website",
     locale: "en_US",
-    siteName: "Vero",
-    title: "Vero",
+    siteName: "Nibchat",
+    title: "Nibchat",
     description: siteDescription,
   },
   twitter: {
     card: "summary",
-    title: "Vero",
+    title: "Nibchat",
     description: siteDescription,
   },
   appleWebApp: {
-    title: "Vero",
+    title: "Nibchat",
     capable: true,
     statusBarStyle: "default",
   },

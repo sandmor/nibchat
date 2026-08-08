@@ -1,6 +1,10 @@
-# Vero
+# Nibchat
 
-Vero is a highly customizable AI chat platform where you are in control of each aspect.
+Yet another AI Chat Platform.
+
+Nibchat was created to give you two things: Full freedom to interact with LLMs, and a beautiful highly customizable interface for it.
+
+Every AI chat client has features you love and features you hate. Here you choose what works for you.
 
 ## Features
 
@@ -38,13 +42,13 @@ Open the printed URL (or `/reset-password?token=…`).
 
 ## Environment
 
-| Variable             | Purpose                                                          |
-| -------------------- | ---------------------------------------------------------------- |
-| `BETTER_AUTH_SECRET` | Required in production                                           |
-| `BETTER_AUTH_URL`    | Public origin (default `http://localhost:3000`)                  |
-| `SQLITE_PATH`        | SQLite path relative to monorepo root (default `./data/vero.db`) |
-| `DATABASE_URL`       | When set, selects the Postgres adapter instead of SQLite         |
-| `DATABASE_POOL_SIZE` | Postgres pool size (default `8`)                                 |
+| Variable             | Purpose                                                             |
+| -------------------- | ------------------------------------------------------------------- |
+| `BETTER_AUTH_SECRET` | Required in production                                              |
+| `BETTER_AUTH_URL`    | Public origin (default `http://localhost:3000`)                     |
+| `SQLITE_PATH`        | SQLite path relative to monorepo root (default `./data/nibchat.db`) |
+| `DATABASE_URL`       | When set, selects the Postgres adapter instead of SQLite            |
+| `DATABASE_POOL_SIZE` | Postgres pool size (default `8`)                                    |
 
 Copy [`.env.example`](./.env.example) to `.env` and fill secrets. See [DEPLOYMENT.md](./DEPLOYMENT.md).
 

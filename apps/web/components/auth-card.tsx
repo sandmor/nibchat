@@ -56,7 +56,7 @@ export function AuthCard({
       <Card className="w-full max-w-md shadow-[0_25px_80px_-35px_color-mix(in_oklab,var(--foreground),transparent_65%)]">
         <CardHeader>
           <p className="text-xs font-semibold tracking-[.2em] text-primary uppercase">
-            Vero / private AI workspace
+            Nibchat / private AI workspace
           </p>
           <CardTitle className="text-3xl font-semibold tracking-tight">
             {wrongAccount
@@ -67,7 +67,7 @@ export function AuthCard({
           </CardTitle>
           <CardDescription>
             {wrongAccount
-              ? "This instance already has an owner. Sign out and sign in with that account, or contact whoever deployed Vero."
+              ? "This instance already has an owner. Sign out and sign in with that account, or contact whoever deployed Nibchat."
               : setup
                 ? "The first account becomes this instance’s sole owner."
                 : "Sign in to your self-hosted workspace."}

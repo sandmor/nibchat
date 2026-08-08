@@ -120,7 +120,7 @@ export async function openChatByTitle(page: Page, title: string) {
 }
 
 export async function sendMessage(page: Page, content: string) {
-  const composer = page.getByPlaceholder("Message Vero…")
+  const composer = page.getByPlaceholder("Message Nibchat…")
   await composer.fill(content)
   await page.getByRole("button", { name: "Send" }).click()
 }

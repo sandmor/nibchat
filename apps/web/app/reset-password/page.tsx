@@ -52,7 +52,7 @@ function ResetPasswordForm() {
       <Card className="w-full max-w-md shadow-xl">
         <CardHeader>
           <p className="text-xs font-semibold tracking-[.2em] text-primary uppercase">
-            Vero recovery
+            Nibchat recovery
           </p>
           <CardTitle className="text-3xl font-semibold tracking-tight">
             Set a new password

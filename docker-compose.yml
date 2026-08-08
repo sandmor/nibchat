@@ -1,5 +1,5 @@
 services:
-  vero:
+  nibchat:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
@@ -7,9 +7,9 @@ services:
     env_file:
       - .env
     environment:
-      SQLITE_PATH: /data/vero.db
+      SQLITE_PATH: /data/nibchat.db
       # Empty → SQLite. For Postgres profile set in .env:
-      # DATABASE_URL=postgres://vero:vero@postgres:5432/vero
+      # DATABASE_URL=postgres://nibchat:nibchat@postgres:5432/nibchat
       DATABASE_URL: ${DATABASE_URL:-}
       BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
     volumes:
@@ -22,14 +22,14 @@ services:
     image: postgres:18-alpine
     profiles: ["postgres"]
     environment:
-      POSTGRES_DB: vero
-      POSTGRES_USER: vero
-      POSTGRES_PASSWORD: vero
-    volumes: ["vero-postgres:/var/lib/postgresql"]
+      POSTGRES_DB: nibchat
+      POSTGRES_USER: nibchat
+      POSTGRES_PASSWORD: nibchat
+    volumes: ["nibchat-postgres:/var/lib/postgresql"]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vero -d vero"]
+      test: ["CMD-SHELL", "pg_isready -U nibchat -d nibchat"]
       interval: 5s
       timeout: 5s
       retries: 10
 volumes:
-  vero-postgres:
+  nibchat-postgres:

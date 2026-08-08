@@ -286,9 +286,9 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
         }
         throw new Error(payload.error || `Stream failed (${response.status})`)
       }
-      const nodeId = response.headers.get("X-Vero-Assistant-Node") ?? "pending"
-      const parentHeader = response.headers.get("X-Vero-Parent-Node")
-      const userNodeId = response.headers.get("X-Vero-User-Node")
+      const nodeId = response.headers.get("X-Nibchat-Assistant-Node") ?? "pending"
+      const parentHeader = response.headers.get("X-Nibchat-Parent-Node")
+      const userNodeId = response.headers.get("X-Nibchat-User-Node")
       // Prefer structural parent from the server; fall back to request body.
       const parentNodeId =
         parentHeader ??
@@ -654,7 +654,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
                 void streamContinue()
               }
             }}
-            placeholder="Message Vero…"
+            placeholder="Message Nibchat…"
             rows={3}
             className="min-h-[4.5rem] resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
           />

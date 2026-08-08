@@ -12,7 +12,7 @@ import {
   upsertToolInvocation,
   type Parts,
 } from "@/lib/agent/parts"
-import { veroTools } from "@/lib/agent/tools"
+import { nibchatTools } from "@/lib/agent/tools"
 import {
   beginResumeAssistant,
   finalizeStreamingAssistant,
@@ -63,7 +63,7 @@ export type GenerationSetup = {
 }
 
 /**
- * Run streamText with vero tools, stream UI events to the client, and persist
+ * Run streamText with nibchat tools, stream UI events to the client, and persist
  * terminal parts (complete | awaiting_input | stopped | error).
  */
 export async function createGenerationResponse(
@@ -185,7 +185,7 @@ export async function createGenerationResponse(
       model: languageModel,
       system: systemPrompt,
       messages,
-      tools: veroTools,
+      tools: nibchatTools,
       stopWhen: stepCountIs(MAX_STEPS),
       abortSignal,
       temperature: config.temperature,
@@ -260,7 +260,7 @@ export async function createGenerationResponse(
       },
       onError: async ({ error }) => {
         try {
-          console.error("[vero/stream]", error)
+          console.error("[nibchat/stream]", error)
           await finalizeOnce("error", {
             error: formatProviderError(error),
           })
@@ -281,7 +281,7 @@ export async function createGenerationResponse(
     const withHeaders = new Headers(response.headers)
     for (const [k, v] of Object.entries(headers)) withHeaders.set(k, v)
     withHeaders.set("X-Accel-Buffering", "no")
-    withHeaders.set("X-Vero-Assistant-Node", assistant.id)
+    withHeaders.set("X-Nibchat-Assistant-Node", assistant.id)
     return new Response(response.body, {
       status: response.status,
       statusText: response.statusText,
@@ -292,7 +292,7 @@ export async function createGenerationResponse(
       try {
         await restoreAwaitingInput(assistant.id, resumeClaim.originalParts)
       } catch (restoreError) {
-        console.error("[vero/stream] restoreAwaitingInput", restoreError)
+        console.error("[nibchat/stream] restoreAwaitingInput", restoreError)
       }
     }
     dropRegistration()

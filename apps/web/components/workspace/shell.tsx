@@ -90,7 +90,7 @@ export function WorkspaceShell({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window === "undefined") return false
     try {
-      return localStorage.getItem("vero.sidebarCollapsed") === "1"
+      return localStorage.getItem("nibchat.sidebarCollapsed") === "1"
     } catch {
       return false
     }
@@ -111,7 +111,7 @@ export function WorkspaceShell({
   }, [appearance.vars, appearance.density])
 
   useEffect(() => {
-    const id = "vero-remote-appearance"
+    const id = "nibchat-remote-appearance"
     if (!appearance.remoteStylesheet) {
       document.getElementById(id)?.remove()
       return
@@ -128,14 +128,14 @@ export function WorkspaceShell({
 
   useEffect(() => {
     return () => {
-      document.getElementById("vero-remote-appearance")?.remove()
+      document.getElementById("nibchat-remote-appearance")?.remove()
     }
   }, [])
 
   function setSidebarCollapsedPersist(next: boolean) {
     setSidebarCollapsed(next)
     try {
-      localStorage.setItem("vero.sidebarCollapsed", next ? "1" : "0")
+      localStorage.setItem("nibchat.sidebarCollapsed", next ? "1" : "0")
     } catch {
       /* ignore */
     }
@@ -250,7 +250,7 @@ export function WorkspaceShell({
               />
               <span className="ml-1.5">Chats</span>
             </Button>
-            <span className="font-semibold tracking-tight">vero</span>
+            <span className="font-semibold tracking-tight">nibchat</span>
           </div>
           <WithTooltip label={onSettings ? "Back to chat" : "Settings"}>
             <Link
@@ -290,7 +290,7 @@ export function WorkspaceShell({
                   collapsed && "text-sm"
                 )}
               >
-                {collapsed ? "v" : "vero"}
+                {collapsed ? "n" : "nibchat"}
               </span>
               <TooltipProvider delay={400}>
                 <div

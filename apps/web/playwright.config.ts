@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 
-const e2eDataDir = mkdtempSync(path.join(tmpdir(), "vero-e2e-"))
+const e2eDataDir = mkdtempSync(path.join(tmpdir(), "nibchat-e2e-"))
 const sqlitePath = path.join(e2eDataDir, "e2e.db")
 
 const baseURL = process.env.E2E_BASE_URL ?? "http://127.0.0.1:3456"

@@ -14,7 +14,7 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { chatId } = await params
   const gate = await getRequestGate()
-  if (gate.status !== "ok") return { title: { absolute: "Vero" } }
+  if (gate.status !== "ok") return { title: { absolute: "Nibchat" } }
   const chat = await db
     .selectFrom("chats")
     .select("title")

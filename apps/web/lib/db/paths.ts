@@ -13,11 +13,11 @@ export function monorepoRoot(start = process.cwd()): string {
 }
 
 /**
- * Resolve SQLITE_PATH relative to monorepo root (default `./data/vero.db`).
+ * Resolve SQLITE_PATH relative to monorepo root (default `./data/nibchat.db`).
  * Absolute paths and `:memory:` are returned as-is.
  */
 export function resolveSqlitePath(
-  raw = process.env.SQLITE_PATH ?? "./data/vero.db"
+  raw = process.env.SQLITE_PATH ?? "./data/nibchat.db"
 ): string {
   if (raw === ":memory:" || path.isAbsolute(raw)) return raw
   return path.resolve(monorepoRoot(), raw)

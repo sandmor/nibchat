@@ -65,6 +65,12 @@ export function isViewingChat(
 /**
  * Soft-follow only when still viewing this chat and the view tip still
  * matches the generation start anchor (user has not navigated away).
+ *
+ * This is tree-selection soft-follow: keep the generating node on the
+ * active path. It deliberately does not control viewport scroll — that is
+ * MessageScroller's `autoScroll` (follow live edge only while the reader
+ * is already at the bottom). Do not call scrollToEnd/scrollToMessage from
+ * soft-follow paths.
  */
 export function shouldSoftFollow(
   body: StreamRequestBody,

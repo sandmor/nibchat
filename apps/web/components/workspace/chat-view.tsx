@@ -1,9 +1,8 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { AnimatePresence, motion } from "motion/react"
 import { toast } from "sonner"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { SentIcon, StopIcon } from "@hugeicons/core-free-icons"
@@ -28,13 +27,12 @@ import {
   type WorkspaceData,
 } from "@/lib/workspace-cache"
 import { motionTransition, shouldAnimate } from "@/lib/appearance"
-import { Markdown } from "@/components/markdown"
 import type { ModelConfigLocal } from "./types"
 import { seedDraftModelConfig, usePrefersReducedMotion } from "./hooks"
 import { ModelPicker } from "./model-picker"
 import { GenerationParameters } from "./generation-parameters"
-import { Message } from "./message"
-import { Empty } from "./empty"
+import { ChatTranscript } from "./chat-transcript"
+import { chatRouteIdentity } from "./chat-transcript-helpers"
 import { useWorkspaceChrome } from "./shell"
 import { DocumentTitle } from "@/components/document-title"
 import type { NodeRow } from "@/lib/types"
@@ -55,41 +53,6 @@ type Props = {
   selectNodeId?: string | null
 }
 
-function StreamingBubble({
-  streamId,
-  stream,
-  animate,
-  transition,
-}: {
-  streamId: string
-  stream: ActiveStream
-  animate: boolean
-  transition: { duration: number; ease: [number, number, number, number] }
-}) {
-  return (
-    <motion.article
-      key={streamId}
-      className="min-w-0 overflow-hidden rounded-xl border bg-card p-4"
-      initial={animate ? { opacity: 0, y: 6 } : false}
-      animate={{ opacity: 1, y: 0 }}
-      transition={transition}
-    >
-      <div className="mb-2 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-        assistant · streaming
-      </div>
-      {stream.reasoning && (
-        <details className="mb-3 rounded-lg bg-muted p-3 text-xs text-muted-foreground">
-          <summary className="cursor-pointer">Reasoning</summary>
-          <p className="mt-2 whitespace-pre-wrap">{stream.reasoning}</p>
-        </details>
-      )}
-      <div className="prose prose-sm dark:prose-invert max-w-none">
-        <Markdown>{stream.text || "Thinking…"}</Markdown>
-      </div>
-    </motion.article>
-  )
-}
-
 export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const { appearance, providers: chromeProviders } = useWorkspaceChrome()
   const trpc = useTRPC()
@@ -106,10 +69,18 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const [inFlightCount, setInFlightCount] = useState(0)
   /** Set when a draft creates a chat before `router.replace` remounts ChatView. */
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
+  /**
+   * Explicit transcript jump (deep link / branch pick). Never set from stream
+   * soft-follow — that only changes selection; viewport follow is autoScroll.
+   */
+  const [scrollTargetId, setScrollTargetId] = useState<string | null>(null)
   const createChatLock = useRef<Promise<string> | null>(null)
   const selectedChatIdRef = useRef(selectedChatId)
   const nodeDeepLinkDone = useRef(false)
+  /** Last route identity we bound deep-link / scroll lifecycle to. */
+  const boundChatIdentityRef = useRef<string | null>(null)
   const aliveRef = useRef(true)
+  const consumeScrollTarget = useCallback(() => setScrollTargetId(null), [])
   // Sync route selection only when URL has a real chat id. On draft (null) we
   // intentionally keep ensureChatId's assigned id until navigation remounts.
   useEffect(() => {
@@ -121,6 +92,17 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       aliveRef.current = false
     }
   }, [])
+
+  // Soft-nav between /chat/[id] reuses this component instance. Drop scroll
+  // targets and re-enable deep links for the chat now on screen.
+  const chatIdentity = chatRouteIdentity(selectedChatId)
+  useEffect(() => {
+    if (boundChatIdentityRef.current === chatIdentity) return
+    boundChatIdentityRef.current = chatIdentity
+    setScrollTargetId(null)
+    nodeDeepLinkDone.current = false
+  }, [chatIdentity])
+
   const prefersReduced = usePrefersReducedMotion()
   const animate = shouldAnimate(appearance.motion, prefersReduced)
   const transition = motionTransition(appearance.motion)
@@ -245,17 +227,18 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   )
 
   useEffect(() => {
-    if (!selectNodeId || !chatId || nodeDeepLinkDone.current) return
+    if (!selectNodeId || !chatId) return
+    // One deep-link apply per chat route; chat identity reset allows a later chat.
+    if (nodeDeepLinkDone.current) return
     nodeDeepLinkDone.current = true
     selectPathMutation.mutate({ chatId, nodeId: selectNodeId })
+    setScrollTargetId(selectNodeId)
     // Replace URL to drop the query after applying (clean shareable chat URL)
     router.replace(`/chat/${chatId}`, { scroll: false })
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once per mount for deep link
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deep link once per chat identity
   }, [selectNodeId, chatId])
 
   const density = appearance.density
-  const messagePad =
-    density === "compact" ? "p-3 sm:p-4 space-y-3" : "p-5 sm:p-8 space-y-5"
 
   const activePath = useMemo(
     () =>
@@ -543,6 +526,10 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     pathVisibleStreams.length === 0 &&
     inFlightCount === 0
 
+  const chatKey = selectedChatId ?? pendingChatId ?? "draft"
+  const ariaBusy =
+    inFlightCount > 0 || pathVisibleStreams.length > 0
+
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
       <DocumentTitle title={data.chat?.title ?? "New conversation"} />
@@ -586,82 +573,39 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <div
-          className={cn("mx-auto min-w-0", messagePad)}
-          style={{
-            maxWidth: "var(--message-width, 48rem)",
-          }}
-        >
-          <AnimatePresence mode="sync" initial={false}>
-            {showEmpty && (
-              <motion.div
-                key="empty"
-                initial={animate ? { opacity: 0 } : false}
-                animate={{ opacity: 1 }}
-                exit={animate ? { opacity: 0 } : undefined}
-                transition={transition}
-              >
-                <Empty providers={providers} />
-              </motion.div>
-            )}
-          </AnimatePresence>
-          {activePath.map((node) => {
-            const live = streamByNodeId.get(node.id)
-            if (live) {
-              const [streamId, stream] = live
-              return (
-                <StreamingBubble
-                  key={node.id}
-                  streamId={streamId}
-                  stream={stream}
-                  animate={animate}
-                  transition={transition}
-                />
-              )
-            }
-            return (
-              <Message
-                key={node.id}
-                node={node}
-                nodes={data.nodes}
-                providers={providers}
-                animate={animate}
-                transition={transition}
-                messageActionCaptions={appearance.messageActions.captions}
-                onSelect={(parentId, childId) => {
-                  if (parentId)
-                    selectChildMutation.mutate({
-                      nodeId: parentId,
-                      childId,
-                    })
-                  else
-                    selectRootMutation.mutate({
-                      chatId: data.chat!.id,
-                      nodeId: childId,
-                    })
-                }}
-                onChanged={() => invalidateWorkspace()}
-                onRegenerate={
-                  node.role === "assistant"
-                    ? () => streamRegenerate(node.id)
-                    : undefined
-                }
-                onGenerateUnder={streamGenerate}
-              />
-            )
-          })}
-          {afterTipStreams.map(([streamId, stream]) => (
-            <StreamingBubble
-              key={streamId}
-              streamId={streamId}
-              stream={stream}
-              animate={animate}
-              transition={transition}
-            />
-          ))}
-        </div>
-      </div>
+      <ChatTranscript
+        chatKey={chatKey}
+        density={density}
+        activePath={activePath}
+        nodes={data.nodes}
+        providers={providers}
+        streamByNodeId={streamByNodeId}
+        afterTipStreams={afterTipStreams}
+        showEmpty={showEmpty}
+        ariaBusy={ariaBusy}
+        animate={animate}
+        transition={transition}
+        messageActionCaptions={appearance.messageActions.captions}
+        scrollTargetId={scrollTargetId}
+        onScrollTargetConsumed={consumeScrollTarget}
+        onSelect={(parentId, childId) => {
+          if (parentId)
+            selectChildMutation.mutate({
+              nodeId: parentId,
+              childId,
+            })
+          else
+            selectRootMutation.mutate({
+              chatId: data.chat!.id,
+              nodeId: childId,
+            })
+          // User-driven branch navigation — bring the selected tip into view.
+          setScrollTargetId(childId)
+        }}
+        onChanged={() => invalidateWorkspace()}
+        onRegenerate={streamRegenerate}
+        onGenerateUnder={streamGenerate}
+      />
 
       <div className="border-t border-border bg-background p-3 sm:px-6 sm:py-4">
         <div

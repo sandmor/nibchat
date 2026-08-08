@@ -118,6 +118,16 @@ export function Message({
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [editText, setEditText] = useState(text)
   const [deleteOpen, setDeleteOpen] = useState(false)
+  // Path slots reuse this instance across sibling switches. Reset UI when the
+  // bound node identity changes (render-time adjust; keep article shell mounted).
+  const [boundNodeId, setBoundNodeId] = useState(node.id)
+  if (node.id !== boundNodeId) {
+    setBoundNodeId(node.id)
+    setEditOpen(false)
+    setDetailsOpen(false)
+    setDeleteOpen(false)
+    setEditText(text)
+  }
 
   const providerName =
     providers.find((p) => p.id === metadata.provider)?.name ??

@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest"
 import {
   isViewingChat,
+  readStreamEvents,
   shouldSoftFollow,
   streamPlacement,
   type StreamRequestBody,
 } from "./stream-helpers"
-import type { NodeRow } from "@/lib/types"
+import type { NodeRow, ToolInvocationPart } from "@/lib/types"
 
 function node(id: string): NodeRow {
   return {
@@ -21,6 +22,19 @@ function node(id: string): NodeRow {
     created_at: "",
     updated_at: "",
   }
+}
+
+function sseBody(events: unknown[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder()
+  const payload =
+    events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") +
+    "data: [DONE]\n\n"
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(payload))
+      controller.close()
+    },
+  })
 }
 
 describe("isViewingChat", () => {
@@ -78,6 +92,18 @@ describe("shouldSoftFollow", () => {
       false
     )
   })
+
+  it("soft-follows resume when the assistant is still on the path", () => {
+    const body: StreamRequestBody = {
+      chatId: "c1",
+      intent: "resume",
+      assistantNodeId: "a1",
+      toolResults: [{ toolCallId: "t1", output: [] }],
+    }
+    expect(shouldSoftFollow(body, [node("u1"), node("a1")], "c1", "/chat/c1")).toBe(
+      true
+    )
+  })
 })
 
 describe("streamPlacement", () => {
@@ -103,5 +129,55 @@ describe("streamPlacement", () => {
     expect(
       streamPlacement({ nodeId: "a1", parentNodeId: "u1" }, [tip], [tip])
     ).toBe("after-tip")
+  })
+})
+
+describe("readStreamEvents", () => {
+  it("forwards text and reasoning deltas", async () => {
+    const text: string[] = []
+    const reasoning: string[] = []
+    await readStreamEvents(
+      sseBody([
+        { type: "text-delta", delta: "Hel" },
+        { type: "reasoning-delta", delta: "think" },
+        { type: "text-delta", delta: "lo" },
+      ]),
+      {
+        onText: (d) => text.push(d),
+        onReasoning: (d) => reasoning.push(d),
+      }
+    )
+    expect(text.join("")).toBe("Hello")
+    expect(reasoning.join("")).toBe("think")
+  })
+
+  it("forwards tool input lifecycle events", async () => {
+    const tools: ToolInvocationPart[] = []
+    await readStreamEvents(
+      sseBody([
+        {
+          type: "tool-input-start",
+          toolCallId: "c1",
+          toolName: "question",
+        },
+        {
+          type: "tool-input-available",
+          toolCallId: "c1",
+          toolName: "question",
+          input: { questions: [] },
+        },
+      ]),
+      {
+        onText: () => {},
+        onReasoning: () => {},
+        onTool: (t) => tools.push(t),
+      }
+    )
+    expect(tools).toHaveLength(2)
+    expect(tools[0]?.state).toBe("input-streaming")
+    expect(tools[1]).toMatchObject({
+      state: "input-available",
+      toolName: "question",
+    })
   })
 })

@@ -1,4 +1,5 @@
 import type { NodeRow, Parts } from "@/lib/types"
+import { textFromParts as textFromPartsImpl } from "@/lib/agent/parts"
 
 export const id = () => crypto.randomUUID()
 export const now = () => new Date().toISOString()
@@ -9,11 +10,9 @@ export const parseJson = <T>(value: string, fallback: T) => {
     return fallback
   }
 }
-export const textFromParts = (parts: Parts) =>
-  parts
-    .filter((part) => part.type === "text")
-    .map((part) => part.text)
-    .join("\n")
+
+/** Visible prose only (excludes reasoning and tools). */
+export const textFromParts = (parts: Parts) => textFromPartsImpl(parts)
 
 export function resolveActivePath(nodes: NodeRow[], rootId: string | null) {
   const byId = new Map(nodes.map((node) => [node.id, node]))

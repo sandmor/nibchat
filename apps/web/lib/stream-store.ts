@@ -1,5 +1,6 @@
 "use client"
 import { create } from "zustand"
+import type { ToolInvocationPart } from "@/lib/types"
 
 export type ActiveStream = {
   nodeId: string
@@ -9,6 +10,8 @@ export type ActiveStream = {
   startedAt: number
   text: string
   reasoning: string
+  /** In-flight tool invocations for multi-stage turns. */
+  tools: ToolInvocationPart[]
 }
 
 type StreamState = {
@@ -24,6 +27,7 @@ type StreamState = {
   ) => void
   appendText: (streamId: string, delta: string) => void
   appendReasoning: (streamId: string, delta: string) => void
+  upsertTool: (streamId: string, tool: ToolInvocationPart) => void
   attachController: (streamId: string, controller: AbortController) => void
   /** Abort a single in-tab stream (Stop button). Structural cancel is server-side. */
   stop: (streamId: string) => void
@@ -41,6 +45,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
           startedAt: Date.now(),
           text: "",
           reasoning: "",
+          tools: [],
         },
       },
     })),
@@ -63,6 +68,21 @@ export const useStreamStore = create<StreamState>((set, get) => ({
         active: {
           ...state.active,
           [streamId]: { ...stream, reasoning: stream.reasoning + delta },
+        },
+      }
+    }),
+  upsertTool: (streamId, tool) =>
+    set((state) => {
+      const stream = state.active[streamId]
+      if (!stream) return state
+      const tools = stream.tools.slice()
+      const index = tools.findIndex((t) => t.toolCallId === tool.toolCallId)
+      if (index === -1) tools.push(tool)
+      else tools[index] = tool
+      return {
+        active: {
+          ...state.active,
+          [streamId]: { ...stream, tools },
         },
       }
     }),

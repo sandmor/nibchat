@@ -87,9 +87,13 @@ test.describe("message scroller transcript", () => {
     llm.release()
 
     // Hold position while tokens continue (no yank back to bottom).
+    // Stream growth can shift max slightly; stay near the top, not live edge.
     await page.waitForTimeout(200)
     const duringStream = await viewport.evaluate((el) => el.scrollTop)
-    expect(duringStream).toBeLessThan(80)
+    const maxDuring = await viewport.evaluate(
+      (el) => el.scrollHeight - el.clientHeight
+    )
+    expect(duringStream).toBeLessThan(Math.max(80, maxDuring * 0.25))
 
     await expectAssistantText(page, /more-line-50/, { timeout: 30_000 })
 

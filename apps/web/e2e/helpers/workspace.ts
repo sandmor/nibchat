@@ -30,108 +30,63 @@ export async function ensureWorkspace(page: Page) {
 
 /** Register an OpenAI-compatible provider (or refresh its base URL) for the mock LLM. */
 export async function ensureMockProvider(page: Page, baseUrl: string) {
-  const profile = {
-    name: "E2E Mock",
-    kind: "openai-compatible" as const,
-    baseUrl,
-    apiKey: "sk-e2e-test-key",
-    models: ["e2e-model"],
+  // Each suite boots its own mock LLM on a fresh port and closes it in afterAll.
+  // Point (or re-point) the shared "E2E Mock" profile at that live base URL via
+  // the settings UI so we stay on the same mutation path as a real user.
+  await ensureMockProviderViaSettingsUi(page, baseUrl)
+}
+
+async function ensureMockProviderViaSettingsUi(page: Page, baseUrl: string) {
+  await page.goto("/settings")
+  await expect(page.getByText("Model providers")).toBeVisible({
+    timeout: 15_000,
+  })
+
+  const editInMockRow = page
+    .locator("div.flex.flex-wrap")
+    .filter({ hasText: "E2E Mock" })
+    .getByRole("button", { name: "Edit", exact: true })
+
+  if ((await editInMockRow.count()) > 0) {
+    await editInMockRow.first().click()
+  } else {
+    await page
+      .locator("label:text-is('Display name')")
+      .locator("..")
+      .getByRole("textbox")
+      .fill("E2E Mock")
+    await page
+      .locator("label:text-is('Models (comma-separated)')")
+      .locator("..")
+      .getByRole("textbox")
+      .fill("e2e-model")
   }
 
-  const existingId = await findE2eMockProviderId(page)
-  if (existingId) {
-    const updated = await page.request.post(
-      "/api/trpc/workspace.updateProvider?batch=1",
-      {
-        headers: { "content-type": "application/json" },
-        data: JSON.stringify({
-          "0": { json: { id: existingId, ...profile } },
-        }),
-      }
-    )
-    if (updated.ok()) {
-      await page.goto("/chat/new")
-      await expect(page.getByText("Write anything to begin")).toBeVisible({
-        timeout: 15_000,
-      })
-      return
-    }
-  }
+  await page
+    .locator("label:text-is('Base URL')")
+    .locator("..")
+    .getByRole("textbox")
+    .fill(baseUrl)
+  await page
+    .locator("label:text-is('Stored API key')")
+    .locator("..")
+    .getByRole("textbox")
+    .fill("sk-e2e-test-key")
 
-  // tRPC httpBatchLink shape (single op batch).
-  let create = await page.request.post(
-    "/api/trpc/workspace.createProvider?batch=1",
-    {
-      headers: { "content-type": "application/json" },
-      data: JSON.stringify({
-        "0": { json: profile },
-      }),
-    }
-  )
-
-  if (!create.ok()) {
-    create = await page.request.post("/api/trpc/workspace.createProvider", {
-      headers: { "content-type": "application/json" },
-      data: JSON.stringify({ json: profile }),
-    })
-  }
-
-  if (!create.ok()) {
-    await page.goto("/settings")
-    await expect(page.getByText("Model providers")).toBeVisible()
-    if ((await page.getByText("E2E Mock").count()) > 0) {
-      await page.goto("/chat/new")
-      return
-    }
-    await page.locator("label:text-is('Display name')").locator("..").getByRole("textbox").fill("E2E Mock")
-    await page.locator("label:text-is('Models (comma-separated)')").locator("..").getByRole("textbox").fill("e2e-model")
-    await page.locator("label:text-is('Base URL')").locator("..").getByRole("textbox").fill(baseUrl)
-    await page.locator("label:text-is('Stored API key')").locator("..").getByRole("textbox").fill("sk-e2e-test-key")
-    await page.getByRole("button", { name: "Save provider" }).click()
-    await expect(page.getByText("E2E Mock")).toBeVisible({ timeout: 15_000 })
-    await page.goto("/chat/new")
-    await expect(page.getByText("Write anything to begin")).toBeVisible({
-      timeout: 15_000,
-    })
-    return
-  }
+  await page
+    .getByRole("button", { name: /^(Save provider|Update provider)$/ })
+    .click()
+  await expect(page.getByText("Provider saved", { exact: false })).toBeVisible({
+    timeout: 15_000,
+  }).catch(async () => {
+    // Toast may already dismiss; accept a listed profile instead.
+    await expect(page.getByText("E2E Mock", { exact: true })).toBeVisible()
+  })
 
   await page.goto("/chat/new")
   await expect(page.getByText("Write anything to begin")).toBeVisible({
     timeout: 15_000,
   })
-}
-
-async function findE2eMockProviderId(page: Page): Promise<string | null> {
-  const list = await page.request.get("/api/trpc/workspace.listProviders")
-  if (!list.ok()) return null
-  const body: unknown = await list.json()
-  const stack: unknown[] = [body]
-  while (stack.length > 0) {
-    const cur = stack.pop()
-    if (Array.isArray(cur)) {
-      for (const item of cur) {
-        if (
-          item &&
-          typeof item === "object" &&
-          "name" in item &&
-          (item as { name: unknown }).name === "E2E Mock" &&
-          "id" in item &&
-          typeof (item as { id: unknown }).id === "string"
-        ) {
-          return (item as { id: string }).id
-        }
-        stack.push(item)
-      }
-      continue
-    }
-    if (cur && typeof cur === "object") {
-      for (const value of Object.values(cur as Record<string, unknown>)) {
-        stack.push(value)
-      }
-    }
-  }
-  return null
 }
 
 
@@ -176,41 +131,46 @@ export async function expectAssistantText(
   options?: { timeout?: number }
 ) {
   await expect(
-    page.locator("article").filter({ hasText: text }).first()
+    page
+      .locator('[data-slot-layer="present"]')
+      .filter({ hasText: text })
+      .first()
   ).toBeVisible({
     timeout: options?.timeout ?? 30_000,
   })
 }
 
 export async function expectNoAssistantText(page: Page, text: string | RegExp) {
-  await expect(page.locator("article").filter({ hasText: text })).toHaveCount(0)
+  await expect(
+    page.locator('[data-slot-layer="present"]').filter({ hasText: text })
+  ).toHaveCount(0)
 }
 
 export async function expectUserMessage(page: Page, text: string) {
   await expect(
     page
-      .locator("article")
+      .locator('[data-slot-layer="present"]')
       .filter({ has: page.getByText("user", { exact: true }) })
       .filter({ hasText: text })
   ).toBeVisible()
 }
 
 export async function openBranchNext(page: Page) {
-  // Prefer the first enabled control (root of the active path). After regenerate
-  // there can be multiple sibling switchers (user forks + assistant siblings).
-  await page
-    .getByRole("button", { name: "Next branch" })
-    .filter({ hasNot: page.locator("[disabled]") })
-    .first()
-    .click()
+  const button = page
+    .locator('[data-slot-layer="present"]')
+    .getByRole("button", { name: "Next branch", disabled: false })
+  await expect(button).toBeEnabled()
+  await button.scrollIntoViewIfNeeded()
+  await button.click()
 }
 
 export async function openBranchPrev(page: Page) {
-  await page
-    .getByRole("button", { name: "Previous branch" })
-    .filter({ hasNot: page.locator("[disabled]") })
-    .first()
-    .click()
+  const button = page
+    .locator('[data-slot-layer="present"]')
+    .getByRole("button", { name: "Previous branch", disabled: false })
+  await expect(button).toBeEnabled()
+  await button.scrollIntoViewIfNeeded()
+  await button.click()
 }
 
 export async function editUserAsBranch(page: Page, nextText: string) {
@@ -253,7 +213,9 @@ export async function deleteActiveAssistantSubtree(page: Page) {
 }
 
 export function streamingMarkers(page: Page) {
-  return page.getByText("assistant · streaming")
+  return page
+    .locator('[data-slot-layer="present"]')
+    .getByText("assistant · streaming")
 }
 
 export async function expectStreamingCount(page: Page, n: number) {

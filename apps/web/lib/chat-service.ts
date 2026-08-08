@@ -1,9 +1,19 @@
 import "server-only"
 import { sql } from "kysely"
 import { db } from "@/lib/db"
-import { id, now, parseJson, subtreeNodeIds, textFromParts } from "@/lib/domain"
+import {
+  id,
+  now,
+  parseJson,
+  subtreeNodeIds,
+} from "@/lib/domain"
+import {
+  isEmptyParts,
+  partsFromTextReasoning,
+  searchTextFromParts,
+} from "@/lib/agent/parts"
 import { abortGenerations } from "@/lib/active-generations"
-import type { MessageRole, NodeRow, Parts } from "@/lib/types"
+import type { MessageRole, MessageStatus, NodeRow, Parts } from "@/lib/types"
 import { defaultModelConfig, type ModelConfig } from "@/lib/providers"
 import { orderNodesForInsert, parseBackup } from "@/lib/backup"
 import {
@@ -120,7 +130,7 @@ export async function insertNode(input: {
   role: MessageRole
   parts: Parts
   metadata?: Record<string, unknown>
-  status?: "complete" | "streaming" | "stopped" | "error"
+  status?: MessageStatus
   /** When false, only insert the row — do not rewire view selection. Default true. */
   attachSelection?: boolean
 }) {
@@ -133,7 +143,7 @@ export async function insertNode(input: {
     selected_child_id: null,
     role: input.role,
     parts_json: JSON.stringify(input.parts),
-    search_text: textFromParts(input.parts),
+    search_text: searchTextFromParts(input.parts),
     metadata_json: JSON.stringify(input.metadata ?? {}),
     status: input.status ?? ("complete" as const),
     created_at: timestamp,
@@ -190,7 +200,7 @@ function newNode(
     selected_child_id: null,
     role: input.role,
     parts_json: JSON.stringify(input.parts),
-    search_text: textFromParts(input.parts),
+    search_text: searchTextFromParts(input.parts),
     metadata_json: JSON.stringify(input.metadata ?? {}),
     status: input.status ?? "complete",
     created_at: timestamp,
@@ -249,13 +259,13 @@ export async function createTurn(input: {
 export async function updateNode(
   nodeId: string,
   parts: Parts,
-  status?: "complete" | "stopped" | "error"
+  status?: MessageStatus
 ) {
   await db
     .updateTable("message_nodes")
     .set({
       parts_json: JSON.stringify(parts),
-      search_text: textFromParts(parts),
+      search_text: searchTextFromParts(parts),
       ...(status ? { status } : {}),
       updated_at: now(),
     })
@@ -449,10 +459,15 @@ export async function startGenerate(
   }
 }
 
-export type StreamFinalizeOutcome = "complete" | "aborted" | "error"
+export type StreamFinalizeOutcome =
+  | "complete"
+  | "awaiting_input"
+  | "aborted"
+  | "error"
 
 export type StreamFinalizeResult =
   | "complete"
+  | "awaiting_input"
   | "stopped"
   | "deleted"
   | "error"
@@ -462,6 +477,9 @@ export type StreamFinalizeResult =
 export type StreamFinalizeInput = {
   nodeId: string
   outcome: StreamFinalizeOutcome
+  /** Preferred: full ordered parts for multi-stage turns. */
+  parts?: Parts
+  /** Backward-compat partials when `parts` is omitted. */
   text?: string
   reasoning?: string
   usage?: unknown
@@ -469,56 +487,74 @@ export type StreamFinalizeInput = {
   error?: string
   config?: ModelConfig
   previousMetadata?: Record<string, unknown>
+  /**
+   * When true (default for complete), always write a text part even if empty.
+   * Awaiting_input keeps empty text optional.
+   */
+  forceTextPart?: boolean
+  /** Allowed starting statuses (default: streaming only). Resume may use awaiting_input. */
+  fromStatuses?: MessageStatus[]
 }
 
 /**
- * Update parts/status only while the node is still `streaming`.
+ * Update parts/status only while the node is in an allowed in-flight status.
  * Returns false if the row is missing or already finalized (or cascade-deleted).
  */
 async function updateStreamingNode(
   nodeId: string,
   parts: Parts,
-  status: "complete" | "stopped" | "error"
+  status: MessageStatus,
+  fromStatuses: MessageStatus[] = ["streaming"]
 ): Promise<boolean> {
-  const result = await db
+  let query = db
     .updateTable("message_nodes")
     .set({
       parts_json: JSON.stringify(parts),
-      search_text: textFromParts(parts),
+      search_text: searchTextFromParts(parts),
       status,
       updated_at: now(),
     })
     .where("id", "=", nodeId)
-    .where("status", "=", "streaming")
-    .executeTakeFirst()
+  if (fromStatuses.length === 1) {
+    query = query.where("status", "=", fromStatuses[0]!)
+  } else {
+    query = query.where("status", "in", fromStatuses)
+  }
+  const result = await query.executeTakeFirst()
   return Number(result.numUpdatedRows ?? 0) > 0
 }
 
-function partsFromPartial(text: string, reasoning: string): Parts {
-  return [
-    ...(reasoning ? [{ type: "reasoning" as const, text: reasoning }] : []),
-    ...(text ? [{ type: "text" as const, text }] : []),
-  ]
+function resolveFinalizeParts(input: StreamFinalizeInput): Parts {
+  if (input.parts) return input.parts
+  const text = input.text ?? ""
+  const reasoning = (input.reasoning ?? "").trim()
+  if (input.outcome === "complete" && input.forceTextPart !== false) {
+    return [
+      ...(reasoning ? [{ type: "reasoning" as const, text: reasoning }] : []),
+      { type: "text" as const, text },
+    ]
+  }
+  return partsFromTextReasoning(text.trim(), reasoning)
 }
 
 /**
- * Single write path for stream terminal outcomes (complete / aborted / error).
- * Idempotent: only mutates rows that are still `status = 'streaming'`.
+ * Single write path for stream terminal outcomes.
+ * Idempotent: only mutates rows still in `fromStatuses` (default streaming).
  * Returns "missing" if cascade-deleted, "superseded" if already finalized.
  */
 export async function finalizeStreamingAssistant(
   input: StreamFinalizeInput
 ): Promise<StreamFinalizeResult> {
+  const fromStatuses = input.fromStatuses ?? ["streaming"]
   const row = await db
     .selectFrom("message_nodes")
     .select(["id", "chat_id", "status", "metadata_json"])
     .where("id", "=", input.nodeId)
     .executeTakeFirst()
   if (!row) return "missing"
-  if (row.status !== "streaming") return "superseded"
+  if (!(fromStatuses as string[]).includes(row.status)) return "superseded"
 
-  const text = input.text?.trim() ?? ""
-  const reasoning = input.reasoning?.trim() ?? ""
+  const parts = resolveFinalizeParts(input)
   const previous = {
     ...parseJson<Record<string, unknown>>(row.metadata_json, {}),
     ...(input.previousMetadata ?? {}),
@@ -526,13 +562,14 @@ export async function finalizeStreamingAssistant(
   const config = input.config
 
   if (input.outcome === "aborted") {
-    if (!text && !reasoning) {
+    if (isEmptyParts(parts)) {
       return deleteStreamingShell(input.nodeId)
     }
     const updated = await updateStreamingNode(
       input.nodeId,
-      partsFromPartial(text, reasoning),
-      "stopped"
+      parts,
+      "stopped",
+      fromStatuses
     )
     return updated ? "stopped" : "superseded"
   }
@@ -540,8 +577,9 @@ export async function finalizeStreamingAssistant(
   if (input.outcome === "error") {
     const updated = await updateStreamingNode(
       input.nodeId,
-      partsFromPartial(text, reasoning),
-      "error"
+      parts,
+      "error",
+      fromStatuses
     )
     if (!updated) return "superseded"
     await db
@@ -563,18 +601,43 @@ export async function finalizeStreamingAssistant(
     return "error"
   }
 
-  // complete — keep full provider text (including empty); trim only reasoning.
-  const completeReasoning = (input.reasoning ?? "").trim()
-  const completeParts: Parts = [
-    ...(completeReasoning
-      ? [{ type: "reasoning" as const, text: completeReasoning }]
-      : []),
-    { type: "text" as const, text: input.text ?? "" },
-  ]
+  if (input.outcome === "awaiting_input") {
+    const updated = await updateStreamingNode(
+      input.nodeId,
+      parts,
+      "awaiting_input",
+      fromStatuses
+    )
+    if (!updated) return "superseded"
+    await db
+      .updateTable("message_nodes")
+      .set({
+        metadata_json: JSON.stringify({
+          ...previous,
+          ...(config?.providerId != null
+            ? { provider: config.providerId }
+            : {}),
+          ...(config?.model != null ? { model: config.model } : {}),
+          pausedAt: new Date().toISOString(),
+          ...(input.finishReason != null
+            ? { finishReason: input.finishReason }
+            : {}),
+          ...(input.usage !== undefined ? { usage: input.usage } : {}),
+          ...(config ? { params: config } : {}),
+        }),
+        updated_at: now(),
+      })
+      .where("id", "=", input.nodeId)
+      .execute()
+    return "awaiting_input"
+  }
+
+  // complete
   const updated = await updateStreamingNode(
     input.nodeId,
-    completeParts,
-    "complete"
+    parts,
+    "complete",
+    fromStatuses
   )
   if (!updated) return "superseded"
   await db
@@ -596,6 +659,66 @@ export async function finalizeStreamingAssistant(
     .where("id", "=", input.nodeId)
     .execute()
   return "complete"
+}
+
+/**
+ * Apply tool outputs on an awaiting_input assistant and mark as streaming for resume.
+ * CAS: only transitions from awaiting_input → streaming.
+ */
+export async function beginResumeAssistant(
+  nodeId: string,
+  parts: Parts
+): Promise<"streaming" | "missing" | "superseded"> {
+  const row = await db
+    .selectFrom("message_nodes")
+    .select(["id", "status"])
+    .where("id", "=", nodeId)
+    .executeTakeFirst()
+  if (!row) return "missing"
+  if (row.status !== "awaiting_input") return "superseded"
+  const result = await db
+    .updateTable("message_nodes")
+    .set({
+      parts_json: JSON.stringify(parts),
+      search_text: searchTextFromParts(parts),
+      status: "streaming",
+      updated_at: now(),
+    })
+    .where("id", "=", nodeId)
+    .where("status", "=", "awaiting_input")
+    .executeTakeFirst()
+  return Number(result.numUpdatedRows ?? 0) > 0 ? "streaming" : "superseded"
+}
+
+/**
+ * Undo a failed resume claim: restore original parts and awaiting_input only
+ * while the node is still streaming (setup failed before/around stream start).
+ */
+export async function restoreAwaitingInput(
+  nodeId: string,
+  originalParts: Parts
+): Promise<"awaiting_input" | "missing" | "superseded"> {
+  const row = await db
+    .selectFrom("message_nodes")
+    .select(["id", "status"])
+    .where("id", "=", nodeId)
+    .executeTakeFirst()
+  if (!row) return "missing"
+  if (row.status !== "streaming") return "superseded"
+  const result = await db
+    .updateTable("message_nodes")
+    .set({
+      parts_json: JSON.stringify(originalParts),
+      search_text: searchTextFromParts(originalParts),
+      status: "awaiting_input",
+      updated_at: now(),
+    })
+    .where("id", "=", nodeId)
+    .where("status", "=", "streaming")
+    .executeTakeFirst()
+  return Number(result.numUpdatedRows ?? 0) > 0
+    ? "awaiting_input"
+    : "superseded"
 }
 
 /**
@@ -633,15 +756,21 @@ async function deleteStreamingShell(
 /** Abort-only convenience wrapper (kept for tests / call sites). */
 export async function finalizeAbortedAssistant(
   nodeId: string,
-  partial: { text?: string; reasoning?: string }
+  partial: { text?: string; reasoning?: string; parts?: Parts }
 ): Promise<"stopped" | "deleted" | "missing" | "superseded"> {
   const result = await finalizeStreamingAssistant({
     nodeId,
     outcome: "aborted",
+    parts: partial.parts,
     text: partial.text,
     reasoning: partial.reasoning,
   })
-  if (result === "complete" || result === "error") return "superseded"
+  if (
+    result === "complete" ||
+    result === "error" ||
+    result === "awaiting_input"
+  )
+    return "superseded"
   return result
 }
 

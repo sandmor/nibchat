@@ -23,7 +23,13 @@ const nodeRowSchema = z
     parts_json: z.string(),
     search_text: z.string(),
     metadata_json: z.string(),
-    status: z.enum(["complete", "streaming", "stopped", "error"]),
+    status: z.enum([
+      "complete",
+      "streaming",
+      "stopped",
+      "error",
+      "awaiting_input",
+    ]),
     created_at: z.string(),
     updated_at: z.string(),
   })

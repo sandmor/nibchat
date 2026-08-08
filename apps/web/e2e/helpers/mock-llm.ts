@@ -1,6 +1,14 @@
 import http from "node:http"
 import type { AddressInfo } from "node:net"
 
+export type MockToolCallPlan = {
+  /** Function name exposed as a tool (e.g. question). */
+  name: string
+  /** JSON-serializable arguments object. */
+  arguments: unknown
+  id?: string
+}
+
 export type MockCompletionPlan = {
   /** Visible assistant text written into the stream. */
   text: string
@@ -9,6 +17,11 @@ export type MockCompletionPlan = {
    * `release()` before emitting tokens and finishing.
    */
   hold?: boolean
+  /**
+   * When set, the response finishes with `tool_calls` instead of text stop.
+   * Text is still emitted first when non-empty.
+   */
+  toolCalls?: MockToolCallPlan[]
 }
 
 export type MockLlm = {
@@ -58,6 +71,34 @@ export async function startMockLlm(): Promise<MockLlm> {
       }
 
       if (!streamed) {
+        if (plan.toolCalls?.length) {
+          res.writeHead(200, { "content-type": "application/json" })
+          res.end(
+            JSON.stringify({
+              id: `chatcmpl-e2e-${requests}`,
+              object: "chat.completion",
+              choices: [
+                {
+                  index: 0,
+                  message: {
+                    role: "assistant",
+                    content: plan.text || null,
+                    tool_calls: plan.toolCalls.map((call, index) => ({
+                      id: call.id ?? `call_e2e_${requests}_${index}`,
+                      type: "function",
+                      function: {
+                        name: call.name,
+                        arguments: JSON.stringify(call.arguments),
+                      },
+                    })),
+                  },
+                  finish_reason: "tool_calls",
+                },
+              ],
+            })
+          )
+          return
+        }
         res.writeHead(200, { "content-type": "application/json" })
         res.end(
           JSON.stringify({
@@ -92,11 +133,43 @@ export async function startMockLlm(): Promise<MockLlm> {
 
       // Role chunk then content (matches common OpenAI streaming shape).
       writeChunk(res, { role: "assistant", content: "" })
-      for (const part of chunkText(plan.text, 12)) {
-        writeChunk(res, { content: part })
-        await sleep(8)
+      if (plan.text) {
+        for (const part of chunkText(plan.text, 12)) {
+          writeChunk(res, { content: part })
+          await sleep(8)
+        }
       }
-      writeChunk(res, {}, "stop")
+
+      if (plan.toolCalls?.length) {
+        for (const [index, call] of plan.toolCalls.entries()) {
+          const id = call.id ?? `call_e2e_${requests}_${index}`
+          const args = JSON.stringify(call.arguments)
+          writeChunk(res, {
+            tool_calls: [
+              {
+                index,
+                id,
+                type: "function",
+                function: { name: call.name, arguments: "" },
+              },
+            ],
+          })
+          for (const part of chunkText(args, 40)) {
+            writeChunk(res, {
+              tool_calls: [
+                {
+                  index,
+                  function: { arguments: part },
+                },
+              ],
+            })
+            await sleep(4)
+          }
+        }
+        writeChunk(res, {}, "tool_calls")
+      } else {
+        writeChunk(res, {}, "stop")
+      }
       res.write("data: [DONE]\n\n")
       res.end()
       return

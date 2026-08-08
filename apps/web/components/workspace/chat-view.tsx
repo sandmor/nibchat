@@ -110,6 +110,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const startStream = useStreamStore((state) => state.start)
   const appendText = useStreamStore((state) => state.appendText)
   const appendReasoning = useStreamStore((state) => state.appendReasoning)
+  const upsertTool = useStreamStore((state) => state.upsertTool)
   const attachController = useStreamStore((state) => state.attachController)
   const stopStream = useStreamStore((state) => state.stop)
   const finishStream = useStreamStore((state) => state.finish)
@@ -295,7 +296,9 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
           ? userNodeId
           : body.intent === "generate"
             ? body.parentNodeId
-            : null)
+            : body.intent === "resume" || body.intent === "regenerate"
+              ? null
+              : null)
       startStream(streamId, {
         nodeId,
         chatId: body.chatId,
@@ -341,6 +344,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
         await readStreamEvents(response.body, {
           onText: (delta) => appendText(streamId!, delta),
           onReasoning: (delta) => appendReasoning(streamId!, delta),
+          onTool: (tool) => upsertTool(streamId!, tool),
         })
       }
       await queryClient.invalidateQueries({
@@ -405,12 +409,27 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     return { chatId: id, created: ownsCreate }
   }
 
+  /**
+   * Composer attach target.
+   * When the path tip is awaiting tool input (e.g. questionnaire), send as a
+   * sibling under the tip's parent so an unfinished Q&A is not buried under
+   * a new user message child.
+   */
+  const composerParentId = useMemo(() => {
+    const tip = activePath.at(-1)
+    if (!tip) return null
+    if (tip.role === "assistant" && tip.status === "awaiting_input") {
+      return tip.parent_id
+    }
+    return tip.id
+  }, [activePath])
+
   async function streamContinue() {
     const content = composer.trim()
     if (!content) return
     if (!ensureModelReady(activeModelConfig)) return
 
-    const contextLeafId = activePath.at(-1)?.id ?? null
+    const contextLeafId = composerParentId
     const modelConfig = activeModelConfig
     setComposer("")
 
@@ -472,6 +491,19 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       chatId: data.chat.id,
       intent: "generate",
       parentNodeId,
+    })
+  }
+
+  async function streamResume(
+    assistantNodeId: string,
+    toolResults: Array<{ toolCallId: string; output: unknown }>
+  ) {
+    if (!data.chat) return
+    await runStream({
+      chatId: data.chat.id,
+      intent: "resume",
+      assistantNodeId,
+      toolResults,
     })
   }
 
@@ -605,6 +637,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
         onChanged={() => invalidateWorkspace()}
         onRegenerate={streamRegenerate}
         onGenerateUnder={streamGenerate}
+        onAnswerTools={streamResume}
       />
 
       <div className="border-t border-border bg-background p-3 sm:px-6 sm:py-4">

@@ -3,8 +3,8 @@ import type { ActiveStream } from "@/lib/stream-store"
 
 /**
  * Dual identity for path rows (do not collapse these):
- * - reactKey  = path slot (depth). Stable across sibling branch switches so
- *   Message's article shell can AnimatePresence-crossfade node bodies.
+ * - reactKey  = path slot (depth). Stable across sibling branch switches so the
+ *   MessageScroller item shell does not remount; SlotCrossfade owns content motion.
  * - messageId = node (or stream) id for MessageScroller scroll / jump.
  *
  * Never use node id as the React list key for path rows.

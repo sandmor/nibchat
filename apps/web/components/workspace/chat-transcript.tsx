@@ -97,6 +97,10 @@ export type ChatTranscriptProps = {
   onChanged: () => void | Promise<void>
   onRegenerate: (assistantNodeId: string) => void
   onGenerateUnder: (parentNodeId: string) => void | Promise<void>
+  onAnswerTools?: (
+    assistantNodeId: string,
+    toolResults: Array<{ toolCallId: string; output: unknown }>
+  ) => void | Promise<void>
 }
 
 export function ChatTranscript({
@@ -118,6 +122,7 @@ export function ChatTranscript({
   onChanged,
   onRegenerate,
   onGenerateUnder,
+  onAnswerTools,
 }: ChatTranscriptProps) {
   const peek = transcriptPeekPx(density)
   const contentPad =
@@ -193,7 +198,6 @@ export function ChatTranscript({
                     className={LIVE_ROW_CLASS}
                   >
                     <StreamingBubble
-                      streamId={row.streamId}
                       stream={row.stream}
                       animate={animate}
                       transition={transition}
@@ -215,6 +219,7 @@ export function ChatTranscript({
                   onChanged={onChanged}
                   onRegenerate={onRegenerate}
                   onGenerateUnder={onGenerateUnder}
+                  onAnswerTools={onAnswerTools}
                 />
               )
             })}

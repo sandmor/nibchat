@@ -1,8 +1,31 @@
 import type { Selectable } from "kysely"
 
 export type MessageRole = "user" | "assistant" | "system" | "tool"
-export type MessageStatus = "complete" | "streaming" | "stopped" | "error"
-export type Parts = Array<{ type: "text" | "reasoning"; text: string }>
+export type MessageStatus =
+  | "complete"
+  | "streaming"
+  | "stopped"
+  | "error"
+  | "awaiting_input"
+
+export type TextPart = { type: "text"; text: string }
+export type ReasoningPart = { type: "reasoning"; text: string }
+export type ToolInvocationState =
+  | "input-streaming"
+  | "input-available"
+  | "output-available"
+  | "output-error"
+export type ToolInvocationPart = {
+  type: "tool-invocation"
+  toolCallId: string
+  toolName: string
+  state: ToolInvocationState
+  input: unknown
+  output?: unknown
+  errorText?: string
+}
+export type Part = TextPart | ReasoningPart | ToolInvocationPart
+export type Parts = Part[]
 
 export interface ChatsTable {
   id: string

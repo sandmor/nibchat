@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest"
 import {
+  beginResumeAssistant,
   createChat,
   createProvider,
   createTurn,
@@ -8,6 +9,7 @@ import {
   getWorkspace,
   insertNode,
   nodeParts,
+  restoreAwaitingInput,
   startGenerate,
   startRegenerate,
 } from "@/lib/chat-service"
@@ -74,7 +76,7 @@ describe("SQLite chat repository", () => {
         workspace.chat?.selected_root_node_id ?? null
       ).at(-1)?.id
     ).toBe(second.id)
-    expect(nodeParts(first)[0]?.text).toBe("first")
+    const firstText = nodeParts(first)[0]; expect(firstText?.type === 'text' ? firstText.text : undefined).toBe("first")
   })
 
   it("createTurn inserts user + streaming assistant without rewriting view selection", async () => {
@@ -94,7 +96,7 @@ describe("SQLite chat repository", () => {
     expect(user.parent_id).toBe(prior.id)
     expect(assistant.parent_id).toBe(user.id)
     expect(assistant.status).toBe("streaming")
-    expect(nodeParts(user)[0]?.text).toBe("hello turn")
+    const userText = nodeParts(user)[0]; expect(userText?.type === 'text' ? userText.text : undefined).toBe("hello turn")
 
     const workspace = await getWorkspace(userId, { chatId: chat.id })
     // Prior insert attached selection to prior; createTurn must not redirect it.
@@ -353,7 +355,7 @@ describe("generation abort + finalize", () => {
     const workspace = await getWorkspace(userId, { chatId: chat.id })
     const row = workspace.nodes.find((n) => n.id === assistant.id)
     expect(row?.status).toBe("stopped")
-    expect(nodeParts(row!)[0]?.text).toBe("half reply")
+    const half = nodeParts(row!)[0]; expect(half?.type === 'text' ? half.text : undefined).toBe("half reply")
   })
 
   it("finalizeStreamingAssistant deletes empty shells", async () => {
@@ -414,10 +416,50 @@ describe("generation abort + finalize", () => {
     const workspace = await getWorkspace(userId, { chatId: chat.id })
     const row = workspace.nodes.find((n) => n.id === assistant.id)
     expect(row?.status).toBe("complete")
-    expect(nodeParts(row!).map((p) => p.text)).toEqual([
-      "thinking",
-      "full reply",
-    ])
+    expect(
+      nodeParts(row!)
+        .filter((p) => p.type === "text" || p.type === "reasoning")
+        .map((p) => p.text)
+    ).toEqual(["thinking", "full reply"])
+  })
+
+  it("finalizeStreamingAssistant awaiting_input persists tool parts", async () => {
+    const chat = await createChat(userId, "Finalize awaiting")
+    const assistant = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "assistant",
+      parts: [],
+      status: "streaming",
+    })
+    const parts = [
+      { type: "text" as const, text: "Need a decision." },
+      {
+        type: "tool-invocation" as const,
+        toolCallId: "c1",
+        toolName: "question",
+        state: "input-available" as const,
+        input: {
+          questions: [
+            {
+              question: "Pick?",
+              header: "Pick",
+              options: [{ label: "Yes", description: "Yes" }],
+            },
+          ],
+        },
+      },
+    ]
+    const result = await finalizeStreamingAssistant({
+      nodeId: assistant.id,
+      outcome: "awaiting_input",
+      parts,
+    })
+    expect(result).toBe("awaiting_input")
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    const row = workspace.nodes.find((n) => n.id === assistant.id)
+    expect(row?.status).toBe("awaiting_input")
+    expect(nodeParts(row!)).toEqual(parts)
   })
 
   it("finalizeStreamingAssistant complete on missing is missing", async () => {
@@ -447,7 +489,7 @@ describe("generation abort + finalize", () => {
     const workspace = await getWorkspace(userId, { chatId: chat.id })
     const row = workspace.nodes.find((n) => n.id === assistant.id)
     expect(row?.status).toBe("stopped")
-    expect(nodeParts(row!)[0]?.text).toBe("partial")
+    const partial = nodeParts(row!)[0]; expect(partial?.type === 'text' ? partial.text : undefined).toBe("partial")
   })
 
   it("second finalize returns superseded", async () => {
@@ -535,5 +577,136 @@ describe("backup schema", () => {
 
   it("rejects wrong version", () => {
     expect(() => parseBackup({ version: 2, chats: [], nodes: [] })).toThrow()
+  })
+})
+
+describe("resume claim and restore", () => {
+  const pendingParts = [
+    {
+      type: "tool-invocation" as const,
+      toolCallId: "call-1",
+      toolName: "question",
+      state: "input-available" as const,
+      input: {
+        questions: [
+          {
+            question: "Pick one?",
+            header: "Pick",
+            options: [{ label: "A", description: "A" }],
+            multiple: false,
+            custom: true,
+          },
+        ],
+      },
+    },
+  ]
+  const answeredParts = [
+    {
+      ...pendingParts[0]!,
+      state: "output-available" as const,
+      output: { title: "Asked 1 question", output: "ok", metadata: { answers: [["A"]] } },
+    },
+  ]
+
+  it("claims awaiting_input → streaming with applied parts", async () => {
+    const chat = await createChat(userId, "Resume claim")
+    const user = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "hi" }],
+    })
+    const assistant = await insertNode({
+      chatId: chat.id,
+      parentId: user.id,
+      role: "assistant",
+      parts: pendingParts,
+      status: "awaiting_input",
+    })
+
+    const claimed = await beginResumeAssistant(assistant.id, answeredParts)
+    expect(claimed).toBe("streaming")
+
+    const row = await db
+      .selectFrom("message_nodes")
+      .selectAll()
+      .where("id", "=", assistant.id)
+      .executeTakeFirstOrThrow()
+    expect(row.status).toBe("streaming")
+    expect(nodeParts(row)[0]).toMatchObject({ state: "output-available" })
+  })
+
+  it("rejects double claim (superseded)", async () => {
+    const chat = await createChat(userId, "Resume race")
+    const user = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "hi" }],
+    })
+    const assistant = await insertNode({
+      chatId: chat.id,
+      parentId: user.id,
+      role: "assistant",
+      parts: pendingParts,
+      status: "awaiting_input",
+    })
+    expect(await beginResumeAssistant(assistant.id, answeredParts)).toBe(
+      "streaming"
+    )
+    expect(await beginResumeAssistant(assistant.id, answeredParts)).toBe(
+      "superseded"
+    )
+  })
+
+  it("restores awaiting_input with original parts after failed setup", async () => {
+    const chat = await createChat(userId, "Resume restore")
+    const user = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "hi" }],
+    })
+    const assistant = await insertNode({
+      chatId: chat.id,
+      parentId: user.id,
+      role: "assistant",
+      parts: pendingParts,
+      status: "awaiting_input",
+    })
+    expect(await beginResumeAssistant(assistant.id, answeredParts)).toBe(
+      "streaming"
+    )
+    expect(
+      await restoreAwaitingInput(assistant.id, pendingParts)
+    ).toBe("awaiting_input")
+
+    const row = await db
+      .selectFrom("message_nodes")
+      .selectAll()
+      .where("id", "=", assistant.id)
+      .executeTakeFirstOrThrow()
+    expect(row.status).toBe("awaiting_input")
+    expect(nodeParts(row)[0]).toMatchObject({ state: "input-available" })
+  })
+
+  it("does not restore when node is no longer streaming", async () => {
+    const chat = await createChat(userId, "Resume restore guard")
+    const user = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "hi" }],
+    })
+    const assistant = await insertNode({
+      chatId: chat.id,
+      parentId: user.id,
+      role: "assistant",
+      parts: pendingParts,
+      status: "awaiting_input",
+    })
+    expect(await restoreAwaitingInput(assistant.id, pendingParts)).toBe(
+      "superseded"
+    )
   })
 })

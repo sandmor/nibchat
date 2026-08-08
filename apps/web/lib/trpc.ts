@@ -59,9 +59,7 @@ const ownerProcedure = t.procedure.use(({ ctx, next }) => {
   return next({ ctx: { user: ctx.user } })
 })
 
-const partsSchema = z.array(
-  z.object({ type: z.enum(["text", "reasoning"]), text: z.string() })
-)
+import { partsSchema } from "@/lib/agent/parts"
 const modelConfigSchema = z.object({
   providerId: z.string().optional(),
   model: z.string().optional(),

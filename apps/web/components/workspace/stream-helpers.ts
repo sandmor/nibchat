@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query"
-import type { NodeRow } from "@/lib/types"
+import type { NodeRow, ToolInvocationPart } from "@/lib/types"
 import { resolveActivePath } from "@/lib/domain"
 import type { WorkspaceData } from "@/lib/workspace-cache"
 
@@ -19,6 +19,12 @@ export type StreamRequestBody =
       chatId: string
       intent: "generate"
       parentNodeId: string
+    }
+  | {
+      chatId: string
+      intent: "resume"
+      assistantNodeId: string
+      toolResults: Array<{ toolCallId: string; output: unknown }>
     }
 
 export function viewPathFromCache(
@@ -86,7 +92,7 @@ export function shouldSoftFollow(
   if (body.intent === "generate") {
     return tipId === body.parentNodeId
   }
-  // regenerate: original assistant still visible on the active path
+  // regenerate / resume: original assistant still visible on the active path
   return path.some((node) => node.id === body.assistantNodeId)
 }
 
@@ -118,12 +124,18 @@ export function streamPlacement(
   return "after-tip"
 }
 
+export type StreamEventHandlers = {
+  onText: (delta: string) => void
+  onReasoning: (delta: string) => void
+  onTool?: (tool: ToolInvocationPart) => void
+}
+
+/**
+ * Parse AI SDK UI message SSE events into app-level handlers.
+ */
 export async function readStreamEvents(
   body: ReadableStream<Uint8Array>,
-  handlers: {
-    onText: (delta: string) => void
-    onReasoning: (delta: string) => void
-  }
+  handlers: StreamEventHandlers
 ): Promise<void> {
   const reader = body.getReader()
   const decoder = new TextDecoder()
@@ -143,11 +155,57 @@ export async function readStreamEvents(
             type?: string
             delta?: string
             errorText?: string
+            toolCallId?: string
+            toolName?: string
+            input?: unknown
+            output?: unknown
           }
           if (event.type === "text-delta" && event.delta)
             handlers.onText(event.delta)
           if (event.type === "reasoning-delta" && event.delta)
             handlers.onReasoning(event.delta)
+          if (
+            event.type === "tool-input-start" &&
+            event.toolCallId &&
+            event.toolName &&
+            handlers.onTool
+          ) {
+            handlers.onTool({
+              type: "tool-invocation",
+              toolCallId: event.toolCallId,
+              toolName: event.toolName,
+              state: "input-streaming",
+              input: {},
+            })
+          }
+          if (
+            event.type === "tool-input-available" &&
+            event.toolCallId &&
+            event.toolName &&
+            handlers.onTool
+          ) {
+            handlers.onTool({
+              type: "tool-invocation",
+              toolCallId: event.toolCallId,
+              toolName: event.toolName,
+              state: "input-available",
+              input: event.input,
+            })
+          }
+          if (
+            event.type === "tool-output-available" &&
+            event.toolCallId &&
+            handlers.onTool
+          ) {
+            handlers.onTool({
+              type: "tool-invocation",
+              toolCallId: event.toolCallId,
+              toolName: event.toolName ?? "unknown",
+              state: "output-available",
+              input: event.input ?? {},
+              output: event.output,
+            })
+          }
           if (event.type === "error")
             throw new Error(
               event.errorText || "An error occurred while generating."

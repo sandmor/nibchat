@@ -44,6 +44,7 @@ function stream(
     startedAt: 0,
     text: "",
     reasoning: "",
+    tools: [],
     ...overrides,
   }
 }

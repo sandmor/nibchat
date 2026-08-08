@@ -1,29 +1,31 @@
-import {
-  createUIMessageStreamResponse,
-  streamText,
-  toUIMessageStream,
-  type ModelMessage,
-} from "ai"
 import { ZodError } from "zod"
-import { db } from "@/lib/db"
-import { requireOwner } from "@/lib/app-session"
-import { ancestorPath, parseJson } from "@/lib/domain"
 import {
-  registerGeneration,
-  unregisterGeneration,
-} from "@/lib/active-generations"
+  createGenerationResponse,
+  ResumeClaimError,
+} from "@/lib/agent/run-generation"
+import {
+  applyToolOutputs,
+  pendingToolInvocations,
+} from "@/lib/agent/parts"
+import {
+  answersFromResumeOutput,
+  formatQuestionResult,
+  validateQuestionAnswers,
+} from "@/lib/agent/tools"
+import { requireOwner } from "@/lib/app-session"
 import {
   createTurn,
-  finalizeStreamingAssistant,
   nodeParts,
   startGenerate,
   startRegenerate,
 } from "@/lib/chat-service"
-import { canReplayReasoning, modelFor, type ModelConfig } from "@/lib/providers"
-import { formatProviderError } from "@/lib/provider-errors"
+import { db } from "@/lib/db"
+import { parseJson } from "@/lib/domain"
 import { jsonError, statusFromError } from "@/lib/http-error"
+import { formatProviderError } from "@/lib/provider-errors"
+import { modelFor, type ModelConfig } from "@/lib/providers"
 import { streamBodySchema } from "@/lib/stream-body"
-import type { NodeRow } from "@/lib/types"
+import type { NodeRow, Parts } from "@/lib/types"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -37,13 +39,6 @@ function streamMeta(config: ModelConfig) {
 }
 
 export async function POST(request: Request) {
-  let registeredNodeId: string | null = null
-  const dropRegistration = () => {
-    if (registeredNodeId) {
-      unregisterGeneration(registeredNodeId)
-      registeredNodeId = null
-    }
-  }
   try {
     const user = await requireOwner(request.headers)
     let body: ReturnType<typeof streamBodySchema.parse>
@@ -72,6 +67,8 @@ export async function POST(request: Request) {
 
     let assistant: NodeRow
     let contextLeafId: string | null
+    let seedParts: Parts = []
+    let headers: Record<string, string> = {}
 
     if (body.intent === "continue") {
       const message = body.content.trim()
@@ -86,6 +83,12 @@ export async function POST(request: Request) {
       })
       assistant = turn.assistant
       contextLeafId = turn.user.id
+      headers = {
+        ...(assistant.parent_id
+          ? { "X-Vero-Parent-Node": assistant.parent_id }
+          : {}),
+        "X-Vero-User-Node": turn.user.id,
+      }
       if (chat.title === "New conversation")
         await db
           .updateTable("chats")
@@ -103,7 +106,12 @@ export async function POST(request: Request) {
       )
       assistant = result.assistant
       contextLeafId = result.contextLeafId
-    } else {
+      headers = {
+        ...(assistant.parent_id
+          ? { "X-Vero-Parent-Node": assistant.parent_id }
+          : {}),
+      }
+    } else if (body.intent === "generate") {
       const result = await startGenerate(
         user.id,
         body.parentNodeId,
@@ -111,11 +119,144 @@ export async function POST(request: Request) {
       )
       assistant = result.assistant
       contextLeafId = result.contextLeafId
+      headers = {
+        ...(assistant.parent_id
+          ? { "X-Vero-Parent-Node": assistant.parent_id }
+          : {}),
+      }
+    } else {
+      // resume
+      const row = await db
+        .selectFrom("message_nodes")
+        .innerJoin("chats", "chats.id", "message_nodes.chat_id")
+        .selectAll("message_nodes")
+        .where("message_nodes.id", "=", body.assistantNodeId)
+        .where("message_nodes.chat_id", "=", chat.id)
+        .where("chats.user_id", "=", user.id)
+        .executeTakeFirst()
+      if (!row)
+        return Response.json({ error: "Node not found" }, { status: 404 })
+      if (row.status !== "awaiting_input")
+        return Response.json(
+          { error: "Assistant is not awaiting tool input." },
+          { status: 400 }
+        )
+
+      const currentParts = nodeParts(row)
+      const pending = pendingToolInvocations(currentParts)
+      if (pending.length === 0)
+        return Response.json(
+          { error: "No pending tool invocations." },
+          { status: 400 }
+        )
+
+      const resultsById = new Map(
+        body.toolResults.map((r) => [r.toolCallId, r.output])
+      )
+      for (const inv of pending) {
+        if (!resultsById.has(inv.toolCallId))
+          return Response.json(
+            { error: `Missing result for tool call ${inv.toolCallId}` },
+            { status: 400 }
+          )
+      }
+
+      const applied: Array<{ toolCallId: string; output: unknown }> = []
+      for (const inv of pending) {
+        const raw = resultsById.get(inv.toolCallId)
+        if (inv.toolName === "question") {
+          const answers =
+            answersFromResumeOutput(raw) ??
+            (Array.isArray(raw) ? (raw as string[][]) : null)
+          if (!answers)
+            return Response.json(
+              { error: "Question tool expects answers arrays." },
+              { status: 400 }
+            )
+          const validated = validateQuestionAnswers(inv.input, answers)
+          if (!validated.ok)
+            return Response.json({ error: validated.error }, { status: 400 })
+          const questions =
+            inv.input &&
+            typeof inv.input === "object" &&
+            Array.isArray(
+              (inv.input as { questions?: unknown }).questions
+            )
+              ? (
+                  inv.input as {
+                    questions: Parameters<typeof formatQuestionResult>[0]
+                  }
+                ).questions
+              : []
+          applied.push({
+            toolCallId: inv.toolCallId,
+            output: formatQuestionResult(questions, validated.answers),
+          })
+        } else {
+          applied.push({ toolCallId: inv.toolCallId, output: raw })
+        }
+      }
+
+      const nextParts = applyToolOutputs(currentParts, applied)
+      // Claim (awaiting_input → streaming) happens inside createGenerationResponse;
+      // restore originalParts if setup fails before a stream response is returned.
+      assistant = {
+        ...row,
+        parts_json: JSON.stringify(nextParts),
+        status: "streaming",
+      }
+      contextLeafId = assistant.id
+      seedParts = nextParts
+      headers = {
+        ...(assistant.parent_id
+          ? { "X-Vero-Parent-Node": assistant.parent_id }
+          : {}),
+      }
+
+      const instance = await db
+        .selectFrom("instance")
+        .select("system_prompt")
+        .where("id", "=", 1)
+        .executeTakeFirstOrThrow()
+
+      const allNodes = await db
+        .selectFrom("message_nodes")
+        .selectAll()
+        .where("chat_id", "=", chat.id)
+        .orderBy("created_at")
+        .execute()
+
+      try {
+        return await createGenerationResponse(
+          {
+            userId: user.id,
+            assistant,
+            contextLeafId,
+            seedParts,
+            config,
+            languageModel,
+            systemPrompt: instance.system_prompt,
+            requestSignal: request.signal,
+            allNodes,
+            previousMetadata: assistantMeta,
+            resumeClaim: { originalParts: currentParts },
+          },
+          headers
+        )
+      } catch (error) {
+        if (error instanceof ResumeClaimError) {
+          const status = error.kind === "missing" ? 404 : 409
+          return Response.json({ error: error.message }, { status })
+        }
+        throw error
+      }
     }
 
-    const generation = new AbortController()
-    registerGeneration(assistant.id, generation)
-    registeredNodeId = assistant.id
+    const instance = await db
+      .selectFrom("instance")
+      .select("system_prompt")
+      .where("id", "=", 1)
+      .executeTakeFirstOrThrow()
 
     const allNodes = await db
       .selectFrom("message_nodes")
@@ -123,155 +264,23 @@ export async function POST(request: Request) {
       .where("chat_id", "=", chat.id)
       .orderBy("created_at")
       .execute()
-    const contextNodes = contextLeafId
-      ? ancestorPath(allNodes, contextLeafId)
-      : []
-    const replayReasoning = await canReplayReasoning(user.id, config)
-    const messages: ModelMessage[] = contextNodes
-      .filter((node) => node.status !== "error" || node.search_text)
-      .map((node) => {
-        const metadata = parseJson<Record<string, unknown>>(
-          node.metadata_json,
-          {}
-        )
-        const parts = nodeParts(node).filter(
-          (part) =>
-            part.type === "text" ||
-            (replayReasoning &&
-              part.type === "reasoning" &&
-              node.role === "assistant" &&
-              metadata.provenance !== "owner-edited")
-        )
-        if (node.role === "assistant")
-          return {
-            role: "assistant" as const,
-            content: parts.map((part) =>
-              part.type === "reasoning"
-                ? { type: "reasoning" as const, text: part.text }
-                : { type: "text" as const, text: part.text }
-            ),
-          }
-        if (node.role === "system")
-          return {
-            role: "system" as const,
-            content: parts.map((part) => part.text).join("\n"),
-          }
-        return {
-          role: "user" as const,
-          content: parts.map((part) => ({
-            type: "text" as const,
-            text: part.text,
-          })),
-        }
-      })
-    let partialText = ""
-    let partialReasoning = ""
-    let settled = false
-    const finalizeOnce = async (
-      outcome: "complete" | "aborted" | "error",
-      payload: {
-        text?: string
-        reasoning?: string
-        usage?: unknown
-        finishReason?: string
-        error?: string
-      }
-    ) => {
-      if (settled) return
-      settled = true
-      await finalizeStreamingAssistant({
-        nodeId: assistant.id,
-        outcome,
-        text: payload.text,
-        reasoning: payload.reasoning,
-        usage: payload.usage,
-        finishReason: payload.finishReason,
-        error: payload.error,
+
+    return await createGenerationResponse(
+      {
+        userId: user.id,
+        assistant,
+        contextLeafId,
+        seedParts,
         config,
-        previousMetadata: parseJson<Record<string, unknown>>(
-          assistant.metadata_json,
-          {}
-        ),
-      })
-    }
-    const instance = await db
-      .selectFrom("instance")
-      .select("system_prompt")
-      .where("id", "=", 1)
-      .executeTakeFirstOrThrow()
-    const abortSignal = AbortSignal.any([request.signal, generation.signal])
-    const result = streamText({
-      model: languageModel,
-      system: instance.system_prompt,
-      messages,
-      abortSignal,
-      temperature: config.temperature,
-      maxOutputTokens: config.maxOutputTokens,
-      topP: config.topP,
-      frequencyPenalty: config.frequencyPenalty,
-      presencePenalty: config.presencePenalty,
-      stopSequences: config.stopSequences,
-      providerOptions: config.providerOptions as never,
-      onChunk: ({ chunk }) => {
-        if (chunk.type === "text-delta") partialText += chunk.text
-        if (chunk.type === "reasoning-delta") partialReasoning += chunk.text
+        languageModel,
+        systemPrompt: instance.system_prompt,
+        requestSignal: request.signal,
+        allNodes,
+        previousMetadata: assistantMeta,
       },
-      onFinish: async ({ text, reasoningText, usage, finishReason }) => {
-        try {
-          // Late finish after abort must not overwrite stopped/deleted state.
-          if (abortSignal.aborted) return
-          await finalizeOnce("complete", {
-            text,
-            reasoning: reasoningText || partialReasoning,
-            usage,
-            finishReason,
-          })
-        } finally {
-          dropRegistration()
-        }
-      },
-      onAbort: async () => {
-        try {
-          await finalizeOnce("aborted", {
-            text: partialText,
-            reasoning: partialReasoning,
-          })
-        } finally {
-          dropRegistration()
-        }
-      },
-      onError: async ({ error }) => {
-        try {
-          console.error("[vero/stream]", error)
-          await finalizeOnce("error", {
-            text: partialText,
-            reasoning: partialReasoning,
-            error: formatProviderError(error),
-          })
-        } finally {
-          dropRegistration()
-        }
-      },
-    })
-    return createUIMessageStreamResponse({
-      stream: toUIMessageStream({
-        stream: result.stream,
-        sendReasoning: true,
-        onError: formatProviderError,
-      }),
-      headers: {
-        "X-Vero-Assistant-Node": assistant.id,
-        ...(assistant.parent_id
-          ? { "X-Vero-Parent-Node": assistant.parent_id }
-          : {}),
-        ...(body.intent === "continue" && contextLeafId
-          ? { "X-Vero-User-Node": contextLeafId }
-          : {}),
-        "X-Accel-Buffering": "no",
-      },
-    })
+      headers
+    )
   } catch (error) {
-    dropRegistration()
     console.error("[vero/stream] setup", error)
     if (statusFromError(error) !== 400) return jsonError(error)
     return Response.json({ error: formatProviderError(error) }, { status: 400 })

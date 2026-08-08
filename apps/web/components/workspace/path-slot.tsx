@@ -3,15 +3,17 @@
 /**
  * One depth slot on the active path.
  *
- * React key is path slot depth (`row.reactKey` = `slot:N`). MessageScroller
- * `messageId` is the node id. Sibling branch switches rebind the node in the
- * same slot so Message can crossfade by node.id without remounting the shell.
+ * React list key is path depth (`row.reactKey` = `slot:N`). MessageScroller
+ * `messageId` tracks the bound node/stream for scroll. Sibling branch switches
+ * rebind content under a stable shell; {@link SlotCrossfade} owns enter/exit
+ * motion so Message stays a single present body.
  */
 import { MessageScrollerItem } from "@/components/ui/message-scroller"
 import type { NodeRow } from "@/lib/types"
 import type { ProviderSummary } from "./types"
 import { Message } from "./message"
 import { StreamingBubble } from "./streaming-bubble"
+import { SlotCrossfade } from "./slot-crossfade"
 import {
   LIVE_ROW_CLASS,
   type PathTranscriptRow,
@@ -28,6 +30,7 @@ export function PathSlot({
   onChanged,
   onRegenerate,
   onGenerateUnder,
+  onAnswerTools,
 }: {
   row: PathTranscriptRow
   nodes: NodeRow[]
@@ -39,8 +42,13 @@ export function PathSlot({
   onChanged: () => void | Promise<void>
   onRegenerate: (assistantNodeId: string) => void
   onGenerateUnder: (parentNodeId: string) => void | Promise<void>
+  onAnswerTools?: (
+    assistantNodeId: string,
+    toolResults: Array<{ toolCallId: string; output: unknown }>
+  ) => void | Promise<void>
 }) {
   const live = row.live
+  const contentKey = live ? `stream:${live[0]}` : `node:${row.node.id}`
 
   return (
     <MessageScrollerItem
@@ -48,31 +56,31 @@ export function PathSlot({
       scrollAnchor={row.scrollAnchor}
       className={live ? LIVE_ROW_CLASS : undefined}
     >
-      {live ? (
-        <StreamingBubble
-          streamId={live[0]}
-          stream={live[1]}
-          animate={animate}
-          transition={transition}
-        />
-      ) : (
-        <Message
-          node={row.node}
-          nodes={nodes}
-          providers={providers}
-          animate={animate}
-          transition={transition}
-          messageActionCaptions={messageActionCaptions}
-          onSelect={onSelect}
-          onChanged={onChanged}
-          onRegenerate={
-            row.node.role === "assistant"
-              ? () => onRegenerate(row.node.id)
-              : undefined
-          }
-          onGenerateUnder={onGenerateUnder}
-        />
-      )}
+      <SlotCrossfade
+        contentKey={contentKey}
+        animate={animate}
+        transition={transition}
+      >
+        {live ? (
+          <StreamingBubble stream={live[1]} />
+        ) : (
+          <Message
+            node={row.node}
+            nodes={nodes}
+            providers={providers}
+            messageActionCaptions={messageActionCaptions}
+            onSelect={onSelect}
+            onChanged={onChanged}
+            onRegenerate={
+              row.node.role === "assistant"
+                ? () => onRegenerate(row.node.id)
+                : undefined
+            }
+            onGenerateUnder={onGenerateUnder}
+            onAnswerTools={onAnswerTools}
+          />
+        )}
+      </SlotCrossfade>
     </MessageScrollerItem>
   )
 }

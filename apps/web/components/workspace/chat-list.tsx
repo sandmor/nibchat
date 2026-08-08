@@ -1,7 +1,9 @@
 "use client"
 
+import Link from "next/link"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Delete02Icon } from "@hugeicons/core-free-icons"
+import { Button } from "@/components/ui/button"
 import { WithTooltip } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import type { ChatRow } from "@/lib/types"
@@ -10,26 +12,24 @@ export function ChatListItem({
   chat,
   active,
   compact,
-  onSelect,
   onDelete,
 }: {
   chat: ChatRow
   active: boolean
   compact?: boolean
-  onSelect: (chatId: string) => void
   onDelete: (chatId: string) => void
 }) {
-  const selectButton = (
-    <button
-      type="button"
+  const selectLink = (
+    <Link
+      href={`/chat/${chat.id}`}
+      prefetch={false}
       className={cn(
         "min-w-0 flex-1 rounded-lg py-2 text-left outline-none",
         "focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset",
         compact ? "px-2" : "px-3"
       )}
-      onClick={() => onSelect(chat.id)}
       aria-label={compact ? chat.title : undefined}
-      aria-current={active ? "true" : undefined}
+      aria-current={active ? "page" : undefined}
     >
       {compact ? (
         <span className="block w-full truncate text-center text-xs" aria-hidden>
@@ -43,21 +43,22 @@ export function ChatListItem({
           </span>
         </span>
       )}
-    </button>
+    </Link>
   )
 
   const deleteButton = (
-    <button
+    <Button
       type="button"
+      variant="ghost"
+      size="icon-sm"
       className={cn(
-        "me-1.5 flex size-8 shrink-0 items-center justify-center rounded-md",
-        "text-muted-foreground outline-none",
+        "me-1.5 shrink-0 text-muted-foreground",
         "hover:bg-sidebar hover:text-destructive",
-        "focus-visible:ring-2 focus-visible:ring-ring/50",
         "opacity-70 group-hover/row:opacity-100"
       )}
       aria-label={`Delete ${chat.title}`}
       onClick={(event) => {
+        event.preventDefault()
         event.stopPropagation()
         onDelete(chat.id)
       }}
@@ -68,7 +69,7 @@ export function ChatListItem({
         className="size-4"
         aria-hidden
       />
-    </button>
+    </Button>
   )
 
   return (
@@ -81,10 +82,10 @@ export function ChatListItem({
     >
       {compact ? (
         <WithTooltip label={chat.title} side="right">
-          {selectButton}
+          {selectLink}
         </WithTooltip>
       ) : (
-        selectButton
+        selectLink
       )}
       {!compact && (
         <WithTooltip label="Delete conversation">{deleteButton}</WithTooltip>

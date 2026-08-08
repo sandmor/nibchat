@@ -1,5 +1,9 @@
 import { db } from "@/lib/db"
-import { requireOwner } from "@/lib/auth"
+import {
+  OWNER_FORBIDDEN_MESSAGE,
+  UNAUTHORIZED_MESSAGE,
+  requireOwner,
+} from "@/lib/app-session"
 import { parseJson } from "@/lib/domain"
 import { jsonError } from "@/lib/http-error"
 
@@ -114,8 +118,8 @@ export async function GET(request: Request) {
   } catch (error) {
     const authStatus =
       error instanceof Error &&
-      (error.message === "Unauthorized" ||
-        error.message === "This account is not the instance owner")
+      (error.message === UNAUTHORIZED_MESSAGE ||
+        error.message === OWNER_FORBIDDEN_MESSAGE)
     if (authStatus) return jsonError(error)
     return Response.json(
       {

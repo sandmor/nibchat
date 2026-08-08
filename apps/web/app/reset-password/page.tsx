@@ -87,7 +87,7 @@ function ResetPasswordForm() {
               Reset password
             </Button>
             <Link
-              href="/"
+              href="/login"
               className="text-center text-xs text-muted-foreground hover:text-foreground"
             >
               Back to sign in

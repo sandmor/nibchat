@@ -5,8 +5,8 @@ import {
   type ModelMessage,
 } from "ai"
 import { ZodError } from "zod"
-import { db, migrate } from "@/lib/db"
-import { requireOwner } from "@/lib/auth"
+import { db } from "@/lib/db"
+import { requireOwner } from "@/lib/app-session"
 import { ancestorPath, parseJson } from "@/lib/domain"
 import {
   createTurn,
@@ -34,7 +34,6 @@ function streamMeta(config: ModelConfig) {
 
 export async function POST(request: Request) {
   try {
-    await migrate()
     const user = await requireOwner(request.headers)
     let body: ReturnType<typeof streamBodySchema.parse>
     try {

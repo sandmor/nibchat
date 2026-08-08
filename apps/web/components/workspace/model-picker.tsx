@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -26,14 +27,13 @@ export function ModelPicker({
   chatId,
   providers,
   onChange,
-  onManageProviders,
 }: {
   config: ModelConfigLocal
   chatId?: string
   providers: ProviderSummary[]
   onChange: (config: ModelConfigLocal) => void | Promise<void>
-  onManageProviders?: () => void
 }) {
+  const router = useRouter()
   const mdUp = useMediaMdUp()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
@@ -166,7 +166,7 @@ export function ModelPicker({
               className="mt-1"
               onClick={() => {
                 setOpen(false)
-                onManageProviders?.()
+                router.push("/settings")
               }}
             >
               Manage providers
@@ -232,7 +232,7 @@ export function ModelPicker({
           className="text-xs"
           onClick={() => {
             setPickerOpen(false)
-            onManageProviders?.()
+            router.push("/settings")
           }}
         >
           Manage providers

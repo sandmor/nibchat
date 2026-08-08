@@ -1,7 +1,13 @@
 import "server-only"
 import { initTRPC, TRPCError } from "@trpc/server"
 import { z } from "zod"
-import { requireOwner } from "@/lib/auth"
+import {
+  OWNER_FORBIDDEN_MESSAGE,
+  UNAUTHORIZED_MESSAGE,
+  resolveAppUser,
+  type SessionUser,
+} from "@/lib/app-session"
+
 import {
   createChat,
   createProvider,
@@ -24,23 +30,26 @@ import { listProviders } from "@/lib/providers"
 import { appearanceSchema } from "@/lib/appearance"
 
 export async function createContext({ req }: { req: Request }) {
-  try {
+  const gate = await resolveAppUser(req.headers)
+  if (gate.status === "ok") {
     return {
-      user: await requireOwner(req.headers),
+      user: gate.user as SessionUser,
       authError: null as string | null,
     }
-  } catch (error) {
-    return {
-      user: null,
-      authError: error instanceof Error ? error.message : "Unauthorized",
-    }
+  }
+  return {
+    user: null as SessionUser | null,
+    authError:
+      gate.status === "wrong_account"
+        ? OWNER_FORBIDDEN_MESSAGE
+        : UNAUTHORIZED_MESSAGE,
   }
 }
 
 const t = initTRPC.context<typeof createContext>().create()
 const ownerProcedure = t.procedure.use(({ ctx, next }) => {
   if (!ctx.user) {
-    if (ctx.authError === "This account is not the instance owner")
+    if (ctx.authError === OWNER_FORBIDDEN_MESSAGE)
       throw new TRPCError({
         code: "FORBIDDEN",
         message: ctx.authError,

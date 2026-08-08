@@ -34,15 +34,45 @@ export function viewPathFromCache(
 }
 
 /**
+ * Soft-follow only when the user is still viewing the chat being streamed.
+ * Prefer URL (stable across client navigation) over React selection state,
+ * because MPA navigation unmounts ChatView without updating the old instance.
+ *
+ * @param pathname — defaults to `window.location.pathname` in the browser
+ */
+export function isViewingChat(
+  chatId: string,
+  selectedChatId: string | null,
+  pathname: string | null = typeof window !== "undefined"
+    ? window.location.pathname
+    : null
+): boolean {
+  if (pathname != null) {
+    if (pathname === "/chat/new") {
+      // Draft route after ensureChatId: selection ref already points at the new id.
+      return selectedChatId === chatId
+    }
+    if (pathname.startsWith("/chat/")) {
+      const routeId = pathname.slice("/chat/".length).split(/[/?#]/)[0]
+      return routeId === chatId
+    }
+    // Settings, login, or any other path — fail closed (do not use selection alone).
+    return false
+  }
+  return selectedChatId === chatId
+}
+
+/**
  * Soft-follow only when still viewing this chat and the view tip still
  * matches the generation start anchor (user has not navigated away).
  */
 export function shouldSoftFollow(
   body: StreamRequestBody,
   path: NodeRow[],
-  selectedChatId: string | null
+  selectedChatId: string | null,
+  pathname?: string | null
 ): boolean {
-  if (selectedChatId !== body.chatId) return false
+  if (!isViewingChat(body.chatId, selectedChatId, pathname)) return false
   const tipId = path.at(-1)?.id ?? null
   if (body.intent === "continue") {
     return tipId === (body.parentNodeId ?? null)

@@ -41,12 +41,14 @@ export function AuthCard({
     if (!response.ok) {
       const data = await response.json().catch(() => ({}))
       setError(data.message ?? data.error ?? "Could not authenticate")
-    } else location.reload()
+    } else {
+      window.location.assign("/")
+    }
   }
 
   async function signOut() {
     await fetch("/api/auth/sign-out", { method: "POST" })
-    location.reload()
+    window.location.assign("/login")
   }
 
   return (

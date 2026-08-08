@@ -1,11 +1,14 @@
 /** Map thrown domain/auth errors to HTTP status for REST route handlers. */
 
-const OWNER_MESSAGE = "This account is not the instance owner"
+import {
+  OWNER_FORBIDDEN_MESSAGE,
+  UNAUTHORIZED_MESSAGE,
+} from "@/lib/auth-messages"
 
 export function statusFromError(error: unknown): number {
   if (!(error instanceof Error)) return 400
-  if (error.message === "Unauthorized") return 401
-  if (error.message === OWNER_MESSAGE) return 403
+  if (error.message === UNAUTHORIZED_MESSAGE) return 401
+  if (error.message === OWNER_FORBIDDEN_MESSAGE) return 403
   return 400
 }
 

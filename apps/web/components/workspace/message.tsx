@@ -202,6 +202,7 @@ export function Message({
 
   return (
     <article
+      data-theme-target={node.role === "user" ? "muted" : "card"}
       className={cn(
         "group relative min-w-0 overflow-hidden rounded-xl border p-4",
         node.role === "user" ? "ml-auto max-w-[88%] bg-muted/40" : "bg-card"

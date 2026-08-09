@@ -656,6 +656,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
 
       <div className="border-t border-border bg-background p-3 sm:px-6 sm:py-4">
         <div
+          data-theme-target="composer"
           className="mx-auto rounded-xl border border-border bg-card p-2"
           style={{ maxWidth: "var(--composer-width, 48rem)" }}
         >

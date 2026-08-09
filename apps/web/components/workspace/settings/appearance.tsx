@@ -1,12 +1,13 @@
 "use client"
 
-import { useRef, useState } from "react"
+import { useEffect, useState } from "react"
 import CodeMirror from "@uiw/react-codemirror"
 import { json as jsonLang } from "@codemirror/lang-json"
 import { toast } from "sonner"
 import { useMutation } from "@tanstack/react-query"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 import {
   Card,
   CardContent,
@@ -24,6 +25,11 @@ import {
   presetDocument,
   presetTemplates,
 } from "@/lib/appearance"
+import { reconcileEditorText } from "@/lib/appearance-editor-sync"
+import {
+  isAppearanceDirty,
+  useAppearanceStore,
+} from "@/lib/appearance-store"
 
 export function AppearanceSettings({
   appearance,
@@ -33,31 +39,35 @@ export function AppearanceSettings({
   onChange: (next: ResolvedAppearance) => void
 }) {
   const trpc = useTRPC()
-  /** Last document successfully written to the server. */
-  const savedRef = useRef(appearance)
-  const [text, setText] = useState(() => appearanceToJson(appearance))
+  const magicOpen = useAppearanceStore((s) => s.open)
+  const storeDraft = useAppearanceStore((s) => s.draft)
+  const storeSaved = useAppearanceStore((s) => s.saved)
+  const openMagic = useAppearanceStore((s) => s.openMagic)
+  const closeMagic = useAppearanceStore((s) => s.closeMagic)
+  const markSaved = useAppearanceStore((s) => s.markSaved)
+  const discardToSaved = useAppearanceStore((s) => s.discardToSaved)
+
+  const effectiveDraft = storeDraft ?? appearance
+  const effectiveSaved = storeSaved ?? appearance
+  const dirty = isAppearanceDirty(effectiveDraft, effectiveSaved)
+
+  const [text, setText] = useState(() => appearanceToJson(effectiveDraft))
   const [parseError, setParseError] = useState<string | null>(null)
-  const [status, setStatus] = useState<
-    "clean" | "preview" | "invalid" | "saving" | "saved"
-  >("clean")
-  /** Parsed draft currently shown as live preview (may differ from saved). */
-  const previewRef = useRef<Appearance | null>(null)
+  const [saving, setSaving] = useState(false)
 
   const save = useMutation(trpc.workspace.setAppearance.mutationOptions())
 
-  function sameDoc(a: Appearance, b: Appearance) {
-    return appearanceToJson(a, false) === appearanceToJson(b, false)
-  }
+  // Store draft is SOT: rewrite editor when external draft changes (preserve format if equal).
+  useEffect(() => {
+    setText((prev) => {
+      const { text: next, replaced } = reconcileEditorText(prev, effectiveDraft)
+      if (replaced) setParseError(null)
+      return next
+    })
+  }, [effectiveDraft])
 
-  /** Live preview only — never persists. */
-  function previewDoc(doc: Appearance) {
-    previewRef.current = doc
+  function applyDoc(doc: Appearance) {
     onChange(doc)
-    if (sameDoc(doc, savedRef.current)) {
-      setStatus("clean")
-      return
-    }
-    setStatus("preview")
   }
 
   function saveNow() {
@@ -69,49 +79,45 @@ export function AppearanceSettings({
       setParseError(
         error instanceof Error ? error.message : "Invalid appearance document"
       )
-      setStatus("invalid")
       toast.error("Fix JSON before saving")
       return
     }
     setText(appearanceToJson(doc))
-    previewRef.current = doc
-    onChange(doc)
-    if (sameDoc(doc, savedRef.current)) {
-      setStatus("clean")
+    applyDoc(doc)
+    if (!isAppearanceDirty(doc, effectiveSaved)) {
       toast.success("Already saved")
       return
     }
-    setStatus("saving")
+    setSaving(true)
     save.mutate(doc, {
       onSuccess: (next) => {
+        setSaving(false)
         if (!next) return
-        savedRef.current = next
-        previewRef.current = next
+        markSaved(next)
         setText(appearanceToJson(next))
-        setStatus("saved")
-        onChange(next)
+        applyDoc(next)
+        toast.success("Appearance saved")
       },
       onError: (error) => {
-        setStatus(previewRef.current ? "preview" : "clean")
+        setSaving(false)
         toast.error(error.message || "Could not save appearance")
       },
     })
   }
 
-  function discardToSaved() {
-    const saved = savedRef.current
-    previewRef.current = saved
+  function discardPreview() {
+    discardToSaved()
+    const saved = useAppearanceStore.getState().saved ?? effectiveSaved
     setText(appearanceToJson(saved))
     setParseError(null)
-    setStatus("clean")
-    onChange(saved)
+    applyDoc(saved)
   }
 
   function loadPreset(id: (typeof PRESET_IDS)[number]) {
     const doc = presetDocument(id)
     setText(appearanceToJson(doc))
     setParseError(null)
-    previewDoc(doc)
+    applyDoc(doc)
   }
 
   function onEditorChange(next: string) {
@@ -121,7 +127,6 @@ export function AppearanceSettings({
       parsed = JSON.parse(next)
     } catch {
       setParseError("Invalid JSON")
-      setStatus("invalid")
       return
     }
 
@@ -133,25 +138,24 @@ export function AppearanceSettings({
       setParseError(
         error instanceof Error ? error.message : "Invalid appearance document"
       )
-      setStatus("invalid")
       return
     }
 
-    previewDoc(doc)
+    applyDoc(doc)
   }
 
-  const statusLabel =
-    parseError || status === "invalid"
-      ? (parseError ?? "Invalid JSON")
-      : status === "saving"
-        ? "Saving…"
-        : status === "saved"
-          ? "Saved"
-          : status === "preview"
-            ? "Preview · unsaved"
-            : "Saved"
+  const statusLabel = parseError
+    ? parseError
+    : saving
+      ? "Saving…"
+      : dirty
+        ? "Preview · unsaved"
+        : "Saved"
 
-  const dirty = status === "preview" || status === "invalid"
+  const invalid = parseError != null
+  // Save when dirty, or when invalid so user can't save broken JSON, or when fixed-but-need-reentry — dirty only
+  const canSave = !invalid && !saving && dirty
+  const canDiscard = !saving && dirty
 
   return (
     <Card>
@@ -163,6 +167,26 @@ export function AppearanceSettings({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-border px-3 py-3">
+          <div className="min-w-0">
+            <Label htmlFor="magic-editor" className="text-sm font-medium">
+              Magic editor
+            </Label>
+            <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+              Floating pick mode: recolor tagged surfaces. Survives navigation
+              until you close or save.
+            </p>
+          </div>
+          <Switch
+            id="magic-editor"
+            checked={magicOpen}
+            onCheckedChange={(checked) => {
+              if (checked) openMagic()
+              else closeMagic()
+            }}
+          />
+        </div>
+
         <div>
           <Label className="mb-2 block text-xs text-muted-foreground">
             Load starter
@@ -195,9 +219,9 @@ export function AppearanceSettings({
             <span
               className={cn(
                 "text-[11px]",
-                status === "invalid" || parseError
+                invalid
                   ? "text-destructive"
-                  : status === "preview"
+                  : dirty
                     ? "text-amber-700 dark:text-amber-400"
                     : "text-muted-foreground"
               )}
@@ -232,7 +256,7 @@ export function AppearanceSettings({
           <Button
             variant="outline"
             size="sm"
-            disabled={status === "invalid" || status === "saving" || !dirty}
+            disabled={!canSave}
             onClick={saveNow}
           >
             Save
@@ -240,8 +264,8 @@ export function AppearanceSettings({
           <Button
             variant="ghost"
             size="sm"
-            disabled={status === "saving" || !dirty}
-            onClick={discardToSaved}
+            disabled={!canDiscard}
+            onClick={discardPreview}
           >
             Discard preview
           </Button>

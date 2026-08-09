@@ -152,3 +152,11 @@
     --motion-duration: 0ms;
   }
 }
+
+/* Magic pick: portal SVG path aura (paint only; holes carve nested surfaces) */
+.theme-pick-ghost-path {
+  fill: color-mix(in oklch, var(--primary) 12%, transparent);
+  stroke: color-mix(in oklch, var(--primary) 75%, white);
+  stroke-width: 2;
+  pointer-events: none;
+}

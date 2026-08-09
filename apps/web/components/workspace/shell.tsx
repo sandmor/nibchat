@@ -46,10 +46,17 @@ import { cn } from "@/lib/utils"
 import type { ChatRow } from "@/lib/types"
 import type { ResolvedAppearance } from "@/lib/appearance"
 import { motionTransition } from "@/lib/appearance"
+import {
+  applyAppearanceVars,
+  applyRemoteStylesheet,
+  removeRemoteStylesheet,
+} from "@/lib/apply-appearance"
+import { useAppearanceStore } from "@/lib/appearance-store"
 import { useTRPC } from "@/lib/trpc-react"
 import { omitChat, type WorkspaceData } from "@/lib/workspace-cache"
 import type { ProviderSummary } from "./types"
 import { ChatListItem } from "./chat-list"
+import { AppearanceMagicChrome } from "./appearance-magic"
 
 type ChromeContextValue = {
   appearance: ResolvedAppearance
@@ -86,7 +93,10 @@ export function WorkspaceShell({
   const [search, setSearch] = useState("")
   const [chatsOpen, setChatsOpen] = useState(false)
   const [chatIdToDelete, setChatIdToDelete] = useState<string | null>(null)
-  const [appearance, setAppearance] = useState(initialAppearance)
+  const hydrateFromServer = useAppearanceStore((s) => s.hydrateFromServer)
+  const setDraft = useAppearanceStore((s) => s.setDraft)
+  const storeDraft = useAppearanceStore((s) => s.draft)
+  const appearance = storeDraft ?? initialAppearance
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window === "undefined") return false
     try {
@@ -98,37 +108,20 @@ export function WorkspaceShell({
   const transition = motionTransition(appearance.motion)
 
   useEffect(() => {
-    const root = document.documentElement
-    const applied = Object.keys(appearance.vars)
-    for (const [key, value] of Object.entries(appearance.vars)) {
-      root.style.setProperty(key, value)
-    }
-    root.dataset.density = appearance.density
-    return () => {
-      for (const key of applied) root.style.removeProperty(key)
-      delete root.dataset.density
-    }
-  }, [appearance.vars, appearance.density])
+    hydrateFromServer(initialAppearance)
+  }, [hydrateFromServer, initialAppearance])
 
   useEffect(() => {
-    const id = "nibchat-remote-appearance"
-    if (!appearance.remoteStylesheet) {
-      document.getElementById(id)?.remove()
-      return
-    }
-    let link = document.getElementById(id) as HTMLLinkElement | null
-    if (!link) {
-      link = document.createElement("link")
-      link.id = id
-      link.rel = "stylesheet"
-      document.head.appendChild(link)
-    }
-    link.href = appearance.remoteStylesheet
+    return applyAppearanceVars(appearance)
+  }, [appearance.vars, appearance.density, appearance])
+
+  useEffect(() => {
+    applyRemoteStylesheet(appearance.remoteStylesheet)
   }, [appearance.remoteStylesheet])
 
   useEffect(() => {
     return () => {
-      document.getElementById("nibchat-remote-appearance")?.remove()
+      removeRemoteStylesheet()
     }
   }, [])
 
@@ -189,7 +182,7 @@ export function WorkspaceShell({
   const chromeValue = useMemo(
     () => ({
       appearance,
-      setAppearance,
+      setAppearance: setDraft,
       providers,
       refreshProviders: async () => {
         await queryClient.invalidateQueries(
@@ -197,7 +190,7 @@ export function WorkspaceShell({
         )
       },
     }),
-    [appearance, providers, queryClient, trpc]
+    [appearance, setDraft, providers, queryClient, trpc]
   )
 
   const deleteChatMutation = useMutation(
@@ -270,6 +263,7 @@ export function WorkspaceShell({
 
         <div className="flex min-h-0 flex-1">
           <motion.aside
+            data-theme-target="sidebar"
             className={cn(
               "hidden min-h-0 shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar text-sidebar-foreground md:flex",
               pad
@@ -360,6 +354,7 @@ export function WorkspaceShell({
               <>
                 <Link
                   href="/chat/new"
+                  data-theme-target="primary"
                   className={cn(buttonVariants(), "mb-3 w-full gap-1.5")}
                 >
                   <HugeiconsIcon
@@ -382,6 +377,7 @@ export function WorkspaceShell({
               <WithTooltip label="New conversation" side="right">
                 <Link
                   href="/chat/new"
+                  data-theme-target="primary"
                   className={cn(
                     buttonVariants({ size: "icon" }),
                     "mb-2 w-full"
@@ -436,7 +432,10 @@ export function WorkspaceShell({
             </ScrollArea>
           </motion.aside>
 
-          <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+          <div
+            data-theme-target="background"
+            className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-background"
+          >
             {children}
           </div>
         </div>
@@ -448,6 +447,7 @@ export function WorkspaceShell({
             </DialogHeader>
             <Link
               href="/chat/new"
+              data-theme-target="primary"
               onClick={() => setChatsOpen(false)}
               className={cn(buttonVariants(), "w-full gap-1.5")}
             >
@@ -567,6 +567,7 @@ export function WorkspaceShell({
           </AlertDialogContent>
         </AlertDialog>
       </div>
+      <AppearanceMagicChrome />
     </ChromeContext.Provider>
   )
 }

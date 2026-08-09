@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest"
 import { parseBackup } from "@/lib/backup"
+import { defaultPromptStack, promptStackToJson } from "@/lib/prompt-stack"
 
 describe("parseBackup", () => {
   it("requires chats and nodes arrays", () => {
     expect(() => parseBackup({ version: 1 })).toThrow()
   })
 
-  it("parses provider profiles without api_key", () => {
+  it("parses v1 with stacks and provider profiles", () => {
     const backup = parseBackup({
       version: 1,
       chats: [
@@ -20,6 +21,15 @@ describe("parseBackup", () => {
         },
       ],
       nodes: [],
+      promptStacks: [
+        {
+          id: "default",
+          name: "Default",
+          stack_json: promptStackToJson(defaultPromptStack()),
+          created_at: "t",
+          updated_at: "t",
+        },
+      ],
       providerProfiles: [
         {
           id: "p1",
@@ -31,6 +41,8 @@ describe("parseBackup", () => {
         },
       ],
     })
+    expect(backup.version).toBe(1)
     expect(backup.providerProfiles).toHaveLength(1)
+    expect(backup.promptStacks).toHaveLength(1)
   })
 })

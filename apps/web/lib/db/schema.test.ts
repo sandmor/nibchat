@@ -12,17 +12,23 @@ describe("applySchema", () => {
       dialect: new SqliteDialect({ database: sqlite }),
     })
     await applySchema(db, "sqlite")
-    const instance = await db
-      .selectFrom("instance")
-      .select("id")
-      .where("id", "=", 1)
-      .executeTakeFirst()
-    expect(instance?.id).toBe(1)
-    // Tables exist and accept empty selects
     await db.selectFrom("chats").select("id").limit(1).execute()
     await db.selectFrom("message_nodes").select("id").limit(1).execute()
     await db.selectFrom("provider_profiles").select("id").limit(1).execute()
+    await db.selectFrom("prompt_stacks").select("id").limit(1).execute()
     await db.selectFrom("user").select("id").limit(1).execute()
+    const defaultStack = await db
+      .selectFrom("prompt_stacks")
+      .select("id")
+      .where("id", "=", "default")
+      .executeTakeFirst()
+    expect(defaultStack?.id).toBe("default")
+    const instance = await db
+      .selectFrom("instance")
+      .select(["id", "default_prompt_stack_id"])
+      .where("id", "=", 1)
+      .executeTakeFirst()
+    expect(instance?.default_prompt_stack_id).toBe("default")
     await db.destroy()
     sqlite.close()
   })

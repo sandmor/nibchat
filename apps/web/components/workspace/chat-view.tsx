@@ -31,6 +31,7 @@ import type { ModelConfigLocal } from "./types"
 import { seedDraftModelConfig, usePrefersReducedMotion } from "./hooks"
 import { ModelPicker } from "./model-picker"
 import { GenerationParameters } from "./generation-parameters"
+import { PromptStackPicker } from "./prompt-stack-picker"
 import { ChatTranscript } from "./chat-transcript"
 import { chatRouteIdentity } from "./chat-transcript-helpers"
 import { useWorkspaceChrome } from "./shell"
@@ -65,6 +66,9 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const [renameTitle, setRenameTitle] = useState("")
   const [draftModelConfig, setDraftModelConfig] = useState<ModelConfigLocal>(
     () => seedDraftModelConfig(initial.chats, chromeProviders)
+  )
+  const [draftPromptStackId, setDraftPromptStackId] = useState<string | null>(
+    null
   )
   const [inFlightCount, setInFlightCount] = useState(0)
   /** Set when a draft creates a chat before `router.replace` remounts ChatView. */
@@ -286,7 +290,8 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
         }
         throw new Error(payload.error || `Stream failed (${response.status})`)
       }
-      const nodeId = response.headers.get("X-Nibchat-Assistant-Node") ?? "pending"
+      const nodeId =
+        response.headers.get("X-Nibchat-Assistant-Node") ?? "pending"
       const parentHeader = response.headers.get("X-Nibchat-Parent-Node")
       const userNodeId = response.headers.get("X-Nibchat-User-Node")
       // Prefer structural parent from the server; fall back to request body.
@@ -381,7 +386,10 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     if (!createChatLock.current) {
       ownsCreate = true
       createChatLock.current = createChatMutation
-        .mutateAsync({ config: modelConfig })
+        .mutateAsync({
+          config: modelConfig,
+          promptStackId: draftPromptStackId,
+        })
         .then((chat) => {
           // Track the new id before replace so stream UI still matches on /chat/new.
           selectedChatIdRef.current = chat.id
@@ -559,8 +567,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     inFlightCount === 0
 
   const chatKey = selectedChatId ?? pendingChatId ?? "draft"
-  const ariaBusy =
-    inFlightCount > 0 || pathVisibleStreams.length > 0
+  const ariaBusy = inFlightCount > 0 || pathVisibleStreams.length > 0
 
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
@@ -589,7 +596,14 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
             Each reply can become its own direction.
           </p>
         </div>
-        <div className="flex min-w-0 items-center gap-0.5 sm:max-w-[min(28rem,55%)] sm:shrink-0 sm:gap-1">
+        <div className="flex min-w-0 items-center gap-0.5 sm:max-w-[min(36rem,70%)] sm:shrink-0 sm:gap-1">
+          <PromptStackPicker
+            chatId={data.chat?.id}
+            promptStackId={data.chat?.prompt_stack_id ?? null}
+            draftStackId={draftPromptStackId}
+            onDraftChange={setDraftPromptStackId}
+            onChanged={invalidateWorkspace}
+          />
           <ModelPicker
             config={activeModelConfig}
             chatId={data.chat?.id}

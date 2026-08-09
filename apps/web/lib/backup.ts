@@ -8,6 +8,7 @@ const chatRowSchema = z
     title: z.string(),
     selected_root_node_id: z.string().nullable(),
     model_config_json: z.string(),
+    prompt_stack_id: z.string().nullable().optional(),
     created_at: z.string(),
     updated_at: z.string(),
   })
@@ -49,16 +50,27 @@ const providerProfileSchema = z
   })
   .loose()
 
-/** Full-instance portable snapshot (no API keys). */
+const promptStackRowSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    stack_json: z.string(),
+    created_at: z.string(),
+    updated_at: z.string(),
+  })
+  .loose()
+
+/** Full-instance portable snapshot (no API keys). Stack docs validated on restore/export. */
 export const backupSchema = z.object({
   version: z.literal(1),
   chats: z.array(chatRowSchema),
   nodes: z.array(nodeRowSchema),
   providerProfiles: z.array(providerProfileSchema).optional().default([]),
+  promptStacks: z.array(promptStackRowSchema).optional().default([]),
   appearance: appearanceSchema.optional(),
   instance: z
     .object({
-      system_prompt: z.string().optional(),
+      default_prompt_stack_id: z.string().optional(),
       appearance: appearanceSchema.optional(),
     })
     .optional(),

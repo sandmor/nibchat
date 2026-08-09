@@ -33,6 +33,8 @@ export interface ChatsTable {
   title: string
   selected_root_node_id: string | null
   model_config_json: string
+  /** Library stack ref; null = use instance default. */
+  prompt_stack_id: string | null
   created_at: string
   updated_at: string
 }
@@ -49,10 +51,17 @@ export interface MessageNodesTable {
   created_at: string
   updated_at: string
 }
+export interface PromptStacksTable {
+  id: string
+  name: string
+  stack_json: string
+  created_at: string
+  updated_at: string
+}
 export interface InstanceTable {
   id: number
   owner_user_id: string | null
-  system_prompt: string
+  default_prompt_stack_id: string
   appearance_json: string
   created_at: string
 }
@@ -76,6 +85,7 @@ export interface ModelCatalogCacheTable {
 export interface DB {
   chats: ChatsTable
   message_nodes: MessageNodesTable
+  prompt_stacks: PromptStacksTable
   instance: InstanceTable
   provider_profiles: ProviderProfilesTable
   model_catalog_cache: ModelCatalogCacheTable
@@ -124,3 +134,4 @@ export interface DB {
 }
 export type ChatRow = Selectable<ChatsTable>
 export type NodeRow = Selectable<MessageNodesTable>
+export type PromptStackRow = Selectable<PromptStacksTable>

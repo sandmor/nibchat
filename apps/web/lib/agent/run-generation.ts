@@ -25,6 +25,10 @@ import {
 } from "@/lib/active-generations"
 import { formatProviderError } from "@/lib/provider-errors"
 import { canReplayReasoning, type ModelConfig } from "@/lib/providers"
+import {
+  assemblePromptContext,
+  type PromptStackDocument,
+} from "@/lib/prompt-stack"
 import type { NodeRow, ToolInvocationPart } from "@/lib/types"
 
 const MAX_STEPS = 20
@@ -48,7 +52,7 @@ export type GenerationSetup = {
   seedParts?: Parts
   config: ModelConfig
   languageModel: LanguageModel
-  systemPrompt: string
+  promptStack: PromptStackDocument
   requestSignal: AbortSignal
   allNodes: NodeRow[]
   previousMetadata?: Record<string, unknown>
@@ -77,7 +81,7 @@ export async function createGenerationResponse(
     seedParts = [],
     config,
     languageModel,
-    systemPrompt,
+    promptStack,
     requestSignal,
     allNodes,
     previousMetadata,
@@ -126,9 +130,13 @@ export async function createGenerationResponse(
       ? ancestorPath(nodesForContext, contextLeafId)
       : []
     const replayReasoning = await canReplayReasoning(userId, config)
-    const messages = buildModelMessages({
+    const pathMessages = buildModelMessages({
       nodes: contextNodes,
       replayReasoning,
+    })
+    const { system: systemPrompt, messages } = assemblePromptContext({
+      stack: promptStack,
+      pathMessages,
     })
 
     let orderedParts: Parts = [...seedParts]
@@ -140,10 +148,7 @@ export async function createGenerationResponse(
     const flushStepTextReasoning = () => {
       const reasoning = stepReasoning.trim()
       if (reasoning)
-        orderedParts = [
-          ...orderedParts,
-          { type: "reasoning", text: reasoning },
-        ]
+        orderedParts = [...orderedParts, { type: "reasoning", text: reasoning }]
       if (stepText)
         orderedParts = [...orderedParts, { type: "text", text: stepText }]
       stepText = ""
@@ -162,7 +167,7 @@ export async function createGenerationResponse(
       settled = true
       flushStepTextReasoning()
       let parts = orderedParts
-      let resolved = resolveStreamTerminalOutcome(outcome, parts)
+      const resolved = resolveStreamTerminalOutcome(outcome, parts)
       if (resolved === "complete" && parts.length === 0) {
         parts = [{ type: "text", text: "" }]
       }

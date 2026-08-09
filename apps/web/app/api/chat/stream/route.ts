@@ -3,10 +3,7 @@ import {
   createGenerationResponse,
   ResumeClaimError,
 } from "@/lib/agent/run-generation"
-import {
-  applyToolOutputs,
-  pendingToolInvocations,
-} from "@/lib/agent/parts"
+import { applyToolOutputs, pendingToolInvocations } from "@/lib/agent/parts"
 import {
   answersFromResumeOutput,
   formatQuestionResult,
@@ -16,6 +13,7 @@ import { requireOwner } from "@/lib/app-session"
 import {
   createTurn,
   nodeParts,
+  resolveStackForChat,
   startGenerate,
   startRegenerate,
 } from "@/lib/chat-service"
@@ -179,9 +177,7 @@ export async function POST(request: Request) {
           const questions =
             inv.input &&
             typeof inv.input === "object" &&
-            Array.isArray(
-              (inv.input as { questions?: unknown }).questions
-            )
+            Array.isArray((inv.input as { questions?: unknown }).questions)
               ? (
                   inv.input as {
                     questions: Parameters<typeof formatQuestionResult>[0]
@@ -213,11 +209,7 @@ export async function POST(request: Request) {
           : {}),
       }
 
-      const instance = await db
-        .selectFrom("instance")
-        .select("system_prompt")
-        .where("id", "=", 1)
-        .executeTakeFirstOrThrow()
+      const resolved = await resolveStackForChat(chat)
 
       const allNodes = await db
         .selectFrom("message_nodes")
@@ -235,7 +227,7 @@ export async function POST(request: Request) {
             seedParts,
             config,
             languageModel,
-            systemPrompt: instance.system_prompt,
+            promptStack: resolved.stack,
             requestSignal: request.signal,
             allNodes,
             previousMetadata: assistantMeta,
@@ -252,11 +244,7 @@ export async function POST(request: Request) {
       }
     }
 
-    const instance = await db
-      .selectFrom("instance")
-      .select("system_prompt")
-      .where("id", "=", 1)
-      .executeTakeFirstOrThrow()
+    const resolved = await resolveStackForChat(chat)
 
     const allNodes = await db
       .selectFrom("message_nodes")
@@ -273,7 +261,7 @@ export async function POST(request: Request) {
         seedParts,
         config,
         languageModel,
-        systemPrompt: instance.system_prompt,
+        promptStack: resolved.stack,
         requestSignal: request.signal,
         allNodes,
         previousMetadata: assistantMeta,

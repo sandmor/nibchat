@@ -2,9 +2,11 @@ import "server-only"
 import { sql } from "kysely"
 import { db } from "@/lib/db"
 import {
+  ancestorPath,
   id,
   now,
   parseJson,
+  resolveActivePath,
   subtreeNodeIds,
 } from "@/lib/domain"
 import {
@@ -13,8 +15,18 @@ import {
   searchTextFromParts,
 } from "@/lib/agent/parts"
 import { abortGenerations } from "@/lib/active-generations"
-import type { MessageRole, MessageStatus, NodeRow, Parts } from "@/lib/types"
-import { defaultModelConfig, type ModelConfig } from "@/lib/providers"
+import type {
+  MessageRole,
+  MessageStatus,
+  NodeRow,
+  Parts,
+  PromptStackRow,
+} from "@/lib/types"
+import {
+  canReplayReasoning,
+  defaultModelConfig,
+  type ModelConfig,
+} from "@/lib/providers"
 import { orderNodesForInsert, parseBackup } from "@/lib/backup"
 import {
   appearanceToJson,
@@ -22,6 +34,16 @@ import {
   parseAppearance,
   type Appearance,
 } from "@/lib/appearance"
+import { buildModelMessages } from "@/lib/agent/build-messages"
+import {
+  assemblePromptContext,
+  defaultPromptStack,
+  promptStackToJson,
+  readStackJson,
+  requirePromptStack,
+  resolvePromptStack,
+  type PromptStackDocument,
+} from "@/lib/prompt-stack"
 
 async function assertChatOwner(chatId: string, userId: string) {
   const chat = await db
@@ -89,12 +111,21 @@ export async function getWorkspace(
 export async function createChat(
   userId: string,
   title = "New conversation",
-  config?: ModelConfig
+  config?: ModelConfig,
+  promptStackId?: string | null
 ) {
   const resolved =
     config && (config.providerId || config.model)
       ? config
       : await defaultModelConfig(userId)
+  if (promptStackId) {
+    const existing = await db
+      .selectFrom("prompt_stacks")
+      .select("id")
+      .where("id", "=", promptStackId)
+      .executeTakeFirst()
+    if (!existing) throw new Error("Prompt stack not found")
+  }
   const timestamp = now()
   const chat = {
     id: id(),
@@ -102,6 +133,7 @@ export async function createChat(
     title,
     selected_root_node_id: null,
     model_config_json: JSON.stringify(resolved),
+    prompt_stack_id: promptStackId ?? null,
     created_at: timestamp,
     updated_at: timestamp,
   }
@@ -1009,26 +1041,269 @@ export async function setAppearance(input: Appearance) {
   return config
 }
 
+function stackRowToSummary(row: PromptStackRow) {
+  return {
+    id: row.id,
+    name: row.name,
+    stack: readStackJson(row.stack_json),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }
+}
+
+export async function listPromptStacks() {
+  const rows = await db
+    .selectFrom("prompt_stacks")
+    .selectAll()
+    .orderBy("name")
+    .execute()
+  return rows.map(stackRowToSummary)
+}
+
+export async function getPromptStack(stackId: string) {
+  const row = await db
+    .selectFrom("prompt_stacks")
+    .selectAll()
+    .where("id", "=", stackId)
+    .executeTakeFirst()
+  if (!row) throw new Error("Prompt stack not found")
+  return stackRowToSummary(row)
+}
+
+export async function createPromptStack(input: {
+  name: string
+  stack?: PromptStackDocument
+}) {
+  const timestamp = now()
+  const stack = input.stack
+    ? requirePromptStack(input.stack)
+    : defaultPromptStack()
+  const row = {
+    id: id(),
+    name: input.name.trim() || "Untitled stack",
+    stack_json: promptStackToJson(stack),
+    created_at: timestamp,
+    updated_at: timestamp,
+  }
+  await db.insertInto("prompt_stacks").values(row).execute()
+  return stackRowToSummary(row)
+}
+
+export async function updatePromptStack(
+  stackId: string,
+  input: { name?: string; stack?: PromptStackDocument }
+) {
+  const existing = await db
+    .selectFrom("prompt_stacks")
+    .selectAll()
+    .where("id", "=", stackId)
+    .executeTakeFirst()
+  if (!existing) throw new Error("Prompt stack not found")
+  const patch: {
+    name?: string
+    stack_json?: string
+    updated_at: string
+  } = { updated_at: now() }
+  if (input.name !== undefined) patch.name = input.name.trim() || existing.name
+  if (input.stack !== undefined) {
+    patch.stack_json = promptStackToJson(requirePromptStack(input.stack))
+  }
+  await db
+    .updateTable("prompt_stacks")
+    .set(patch)
+    .where("id", "=", stackId)
+    .execute()
+  return getPromptStack(stackId)
+}
+
+export async function duplicatePromptStack(stackId: string, name?: string) {
+  const existing = await getPromptStack(stackId)
+  return createPromptStack({
+    name: name?.trim() || `${existing.name} copy`,
+    stack: existing.stack,
+  })
+}
+
+export async function deletePromptStack(stackId: string) {
+  const instance = await db
+    .selectFrom("instance")
+    .select("default_prompt_stack_id")
+    .where("id", "=", 1)
+    .executeTakeFirstOrThrow()
+  if (instance.default_prompt_stack_id === stackId) {
+    throw new Error(
+      "Cannot delete the instance default stack. Choose another default first."
+    )
+  }
+  const existing = await db
+    .selectFrom("prompt_stacks")
+    .select("id")
+    .where("id", "=", stackId)
+    .executeTakeFirst()
+  if (!existing) throw new Error("Prompt stack not found")
+  await db
+    .updateTable("chats")
+    .set({ prompt_stack_id: null })
+    .where("prompt_stack_id", "=", stackId)
+    .execute()
+  await db.deleteFrom("prompt_stacks").where("id", "=", stackId).execute()
+}
+
+export async function setInstanceDefaultPromptStack(stackId: string) {
+  const existing = await db
+    .selectFrom("prompt_stacks")
+    .select("id")
+    .where("id", "=", stackId)
+    .executeTakeFirst()
+  if (!existing) throw new Error("Prompt stack not found")
+  await db
+    .updateTable("instance")
+    .set({ default_prompt_stack_id: stackId })
+    .where("id", "=", 1)
+    .execute()
+  return { ok: true as const, defaultPromptStackId: stackId }
+}
+
+export async function setChatPromptStack(
+  userId: string,
+  chatId: string,
+  stackId: string | null
+) {
+  await assertChatOwner(chatId, userId)
+  if (stackId) {
+    const existing = await db
+      .selectFrom("prompt_stacks")
+      .select("id")
+      .where("id", "=", stackId)
+      .executeTakeFirst()
+    if (!existing) throw new Error("Prompt stack not found")
+  }
+  await db
+    .updateTable("chats")
+    .set({ prompt_stack_id: stackId, updated_at: now() })
+    .where("id", "=", chatId)
+    .where("user_id", "=", userId)
+    .execute()
+  return { ok: true as const }
+}
+
+async function loadStacksById() {
+  const rows = await db.selectFrom("prompt_stacks").selectAll().execute()
+  const map = new Map<string, PromptStackDocument>()
+  for (const row of rows) {
+    map.set(row.id, readStackJson(row.stack_json))
+  }
+  return map
+}
+
+export async function resolveStackForChat(chat: {
+  prompt_stack_id: string | null
+}) {
+  const instance = await db
+    .selectFrom("instance")
+    .select("default_prompt_stack_id")
+    .where("id", "=", 1)
+    .executeTakeFirstOrThrow()
+  const stacksById = await loadStacksById()
+  return resolvePromptStack({
+    chatStackId: chat.prompt_stack_id,
+    defaultStackId: instance.default_prompt_stack_id,
+    stacksById,
+  })
+}
+
 export async function getInstanceSettings() {
   const row = await db
     .selectFrom("instance")
-    .select(["system_prompt", "appearance_json"])
+    .select(["default_prompt_stack_id", "appearance_json"])
     .where("id", "=", 1)
     .executeTakeFirstOrThrow()
+  const stacks = await listPromptStacks()
   return {
-    system_prompt: row.system_prompt,
+    defaultPromptStackId: row.default_prompt_stack_id,
+    promptStacks: stacks,
     appearance: parseAppearance(
       row.appearance_json ? JSON.parse(row.appearance_json) : {}
     ),
   }
 }
 
-export async function updateSystemPrompt(systemPrompt: string) {
-  await db
-    .updateTable("instance")
-    .set({ system_prompt: systemPrompt })
+export async function previewAssembledContext(
+  userId: string,
+  input: { chatId?: string; stackId?: string }
+) {
+  let chatStackId: string | null = null
+  let nodes: NodeRow[] = []
+  let rootId: string | null = null
+
+  if (input.chatId) {
+    await assertChatOwner(input.chatId, userId)
+    const chat = await db
+      .selectFrom("chats")
+      .selectAll()
+      .where("id", "=", input.chatId)
+      .executeTakeFirstOrThrow()
+    chatStackId = chat.prompt_stack_id
+    rootId = chat.selected_root_node_id
+    nodes = await db
+      .selectFrom("message_nodes")
+      .selectAll()
+      .where("chat_id", "=", input.chatId)
+      .orderBy("created_at")
+      .execute()
+  }
+
+  const instance = await db
+    .selectFrom("instance")
+    .select("default_prompt_stack_id")
     .where("id", "=", 1)
-    .execute()
+    .executeTakeFirstOrThrow()
+  const stacksById = await loadStacksById()
+
+  const resolved = input.stackId
+    ? stacksById.has(input.stackId)
+      ? {
+          stack: stacksById.get(input.stackId)!,
+          source: "stack" as const,
+          stackId: input.stackId,
+          missingStackId: undefined as string | undefined,
+        }
+      : resolvePromptStack({
+          chatStackId: input.stackId,
+          defaultStackId: instance.default_prompt_stack_id,
+          stacksById,
+        })
+    : resolvePromptStack({
+        chatStackId,
+        defaultStackId: instance.default_prompt_stack_id,
+        stacksById,
+      })
+
+  const path = resolveActivePath(nodes, rootId)
+  const leafId = path.at(-1)?.id ?? null
+  const contextNodes = leafId ? ancestorPath(nodes, leafId) : []
+  const config = {} as ModelConfig
+  const replayReasoning = input.chatId
+    ? await canReplayReasoning(userId, config)
+    : false
+  const pathMessages = buildModelMessages({
+    nodes: contextNodes,
+    replayReasoning,
+  })
+  const assembled = assemblePromptContext({
+    stack: resolved.stack,
+    pathMessages,
+  })
+
+  return {
+    source: resolved.source,
+    stackId: resolved.stackId,
+    missingStackId: resolved.missingStackId,
+    system: assembled.system,
+    messages: assembled.messages,
+    demotedModuleIds: assembled.demotedModuleIds,
+    warnings: assembled.warnings,
+  }
 }
 
 export async function restoreBackup(userId: string, raw: unknown) {
@@ -1051,6 +1326,29 @@ export async function restoreBackup(userId: string, raw: unknown) {
     if (existing)
       throw new Error("Restore is only available on an empty owner instance")
 
+    if (backup.promptStacks?.length) {
+      for (const stack of backup.promptStacks) {
+        const stackJson = promptStackToJson(readStackJson(stack.stack_json))
+        await trx
+          .insertInto("prompt_stacks")
+          .values({
+            id: stack.id,
+            name: stack.name,
+            stack_json: stackJson,
+            created_at: stack.created_at,
+            updated_at: stack.updated_at,
+          })
+          .onConflict((oc) =>
+            oc.column("id").doUpdateSet({
+              name: stack.name,
+              stack_json: stackJson,
+              updated_at: stack.updated_at,
+            })
+          )
+          .execute()
+      }
+    }
+
     for (const chat of backup.chats) {
       await trx
         .insertInto("chats")
@@ -1060,6 +1358,7 @@ export async function restoreBackup(userId: string, raw: unknown) {
           title: chat.title,
           selected_root_node_id: chat.selected_root_node_id,
           model_config_json: chat.model_config_json,
+          prompt_stack_id: chat.prompt_stack_id ?? null,
           created_at: chat.created_at,
           updated_at: chat.updated_at,
         })
@@ -1106,13 +1405,21 @@ export async function restoreBackup(userId: string, raw: unknown) {
     } else if (backup.appearance) {
       appearance = parseAppearance(backup.appearance)
     }
-    if (backup.instance || backup.appearance) {
+    const defaultStackId =
+      backup.instance?.default_prompt_stack_id ??
+      (
+        await trx
+          .selectFrom("instance")
+          .select("default_prompt_stack_id")
+          .where("id", "=", 1)
+          .executeTakeFirstOrThrow()
+      ).default_prompt_stack_id
+
+    if (backup.instance || backup.appearance || backup.promptStacks?.length) {
       await trx
         .updateTable("instance")
         .set({
-          ...(backup.instance?.system_prompt !== undefined
-            ? { system_prompt: backup.instance.system_prompt }
-            : {}),
+          default_prompt_stack_id: defaultStackId,
           appearance_json: appearanceToJson(appearance, false),
         })
         .where("id", "=", 1)
@@ -1151,9 +1458,17 @@ export async function createBackup(userId: string) {
     ])
     .where("user_id", "=", userId)
     .execute()
+  const promptStacks = await db
+    .selectFrom("prompt_stacks")
+    .selectAll()
+    .execute()
+  const normalizedStacks = promptStacks.map((row) => ({
+    ...row,
+    stack_json: promptStackToJson(readStackJson(row.stack_json)),
+  }))
   const instance = await db
     .selectFrom("instance")
-    .select(["system_prompt", "appearance_json"])
+    .select(["default_prompt_stack_id", "appearance_json"])
     .where("id", "=", 1)
     .executeTakeFirst()
   return {
@@ -1161,12 +1476,13 @@ export async function createBackup(userId: string) {
     createdAt: new Date().toISOString(),
     instance: instance
       ? {
-          system_prompt: instance.system_prompt,
+          default_prompt_stack_id: instance.default_prompt_stack_id,
           appearance: parseAppearance(
             instance.appearance_json ? JSON.parse(instance.appearance_json) : {}
           ),
         }
       : undefined,
+    promptStacks: normalizedStacks,
     chats,
     nodes,
     providerProfiles: providers,

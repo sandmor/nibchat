@@ -3,7 +3,7 @@
 import type { ResolvedAppearance } from "@/lib/appearance"
 import type { ProviderSummary } from "../types"
 import { ProviderSettings } from "./providers"
-import { SystemPromptSettings } from "./system-prompt"
+import { PromptStackSettings } from "./prompt-stacks"
 import { BackupSettings } from "./backup"
 import { AppearanceSettings } from "./appearance"
 
@@ -24,12 +24,14 @@ export function SettingsPanel({
         <p className="text-xs font-semibold tracking-[.18em] text-primary uppercase">
           Instance controls
         </p>
-        <h1 className="mt-1 text-xl font-semibold">Providers & appearance</h1>
+        <h1 className="mt-1 text-xl font-semibold">
+          Providers, prompts & appearance
+        </h1>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         <div className="mx-auto grid max-w-4xl gap-7 p-5 sm:p-8">
           <ProviderSettings providers={providers} onSaved={onProvidersChange} />
-          <SystemPromptSettings />
+          <PromptStackSettings />
           <BackupSettings />
           <AppearanceSettings
             appearance={appearance}

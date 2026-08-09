@@ -10,24 +10,32 @@ import {
 
 import {
   createChat,
+  createPromptStack,
   createProvider,
   deleteChat,
   deleteNode,
+  deletePromptStack,
   deleteProvider,
+  duplicatePromptStack,
   forkEdit,
   getInstanceSettings,
   getWorkspace,
+  listPromptStacks,
+  previewAssembledContext,
   searchChats,
   selectChild,
   selectPath,
   selectRoot,
   setAppearance,
+  setChatPromptStack,
+  setInstanceDefaultPromptStack,
   updateChat,
+  updatePromptStack,
   updateProvider,
-  updateSystemPrompt,
 } from "@/lib/chat-service"
 import { listProviders } from "@/lib/providers"
 import { appearanceSchema } from "@/lib/appearance"
+import { promptStackDocumentSchema } from "@/lib/prompt-stack"
 
 export async function createContext({ req }: { req: Request }) {
   const gate = await resolveAppUser(req.headers)
@@ -109,11 +117,17 @@ export const appRouter = t.router({
           .object({
             title: z.string().max(200).optional(),
             config: modelConfigSchema.optional(),
+            promptStackId: z.string().nullable().optional(),
           })
           .optional()
       )
       .mutation(({ ctx, input }) =>
-        createChat(ctx.user.id, input?.title, input?.config)
+        createChat(
+          ctx.user.id,
+          input?.title,
+          input?.config,
+          input?.promptStackId
+        )
       ),
     updateChat: ownerProcedure
       .input(
@@ -248,11 +262,101 @@ export const appRouter = t.router({
           mapError(error)
         }
       }),
-    updateSystemPrompt: ownerProcedure
-      .input(z.object({ systemPrompt: z.string().max(20_000) }))
+    listPromptStacks: ownerProcedure.query(() => listPromptStacks()),
+    createPromptStack: ownerProcedure
+      .input(
+        z.object({
+          name: z.string().min(1).max(200),
+          stack: promptStackDocumentSchema.optional(),
+        })
+      )
       .mutation(async ({ input }) => {
-        await updateSystemPrompt(input.systemPrompt)
-        return { ok: true }
+        try {
+          return await createPromptStack(input)
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    updatePromptStack: ownerProcedure
+      .input(
+        z.object({
+          id: z.string(),
+          name: z.string().min(1).max(200).optional(),
+          stack: promptStackDocumentSchema.optional(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        try {
+          const { id, ...patch } = input
+          return await updatePromptStack(id, patch)
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    duplicatePromptStack: ownerProcedure
+      .input(
+        z.object({
+          id: z.string(),
+          name: z.string().min(1).max(200).optional(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        try {
+          return await duplicatePromptStack(input.id, input.name)
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    deletePromptStack: ownerProcedure
+      .input(z.object({ id: z.string() }))
+      .mutation(async ({ input }) => {
+        try {
+          await deletePromptStack(input.id)
+          return { ok: true }
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    setInstanceDefaultPromptStack: ownerProcedure
+      .input(z.object({ stackId: z.string() }))
+      .mutation(async ({ input }) => {
+        try {
+          return await setInstanceDefaultPromptStack(input.stackId)
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    setChatPromptStack: ownerProcedure
+      .input(
+        z.object({
+          chatId: z.string(),
+          stackId: z.string().nullable(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await setChatPromptStack(
+            ctx.user.id,
+            input.chatId,
+            input.stackId
+          )
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    previewAssembledContext: ownerProcedure
+      .input(
+        z.object({
+          chatId: z.string().optional(),
+          stackId: z.string().optional(),
+        })
+      )
+      .query(async ({ ctx, input }) => {
+        try {
+          return await previewAssembledContext(ctx.user.id, input)
+        } catch (error) {
+          mapError(error)
+        }
       }),
   }),
 })

@@ -573,6 +573,7 @@ describe("backup schema", () => {
     })
     expect(backup.version).toBe(1)
     expect(backup.providerProfiles).toEqual([])
+    expect(backup.promptStacks).toEqual([])
   })
 
   it("rejects wrong version", () => {
@@ -708,5 +709,80 @@ describe("resume claim and restore", () => {
     expect(await restoreAwaitingInput(assistant.id, pendingParts)).toBe(
       "superseded"
     )
+  })
+})
+
+describe("prompt stacks", () => {
+  it("supports create, chat ref, orphan clear on delete", async () => {
+    const {
+      createPromptStack,
+      deletePromptStack,
+      resolveStackForChat,
+      setChatPromptStack,
+    } = await import("@/lib/chat-service")
+    const stack = await createPromptStack({
+      name: "Coding",
+      stack: {
+        modules: [
+          {
+            id: "m1",
+            kind: "prompt",
+            name: "Sys",
+            enabled: true,
+            body: "Be concise.",
+            placement: "relative",
+            role: "system",
+          },
+          {
+            id: "h",
+            kind: "history",
+            name: "Chat history",
+            enabled: true,
+          },
+        ],
+      },
+    })
+    const chat = await createChat(userId, "Stack test", undefined, stack.id)
+    expect(chat.prompt_stack_id).toBe(stack.id)
+    const resolved = await resolveStackForChat(chat)
+    expect(resolved.source).toBe("chat")
+    const first = resolved.stack.modules[0]
+    expect(first?.kind).toBe("prompt")
+    if (first?.kind === "prompt") {
+      expect(first.body).toBe("Be concise.")
+    }
+
+    await setChatPromptStack(userId, chat.id, null)
+    const afterClear = await db
+      .selectFrom("chats")
+      .select("prompt_stack_id")
+      .where("id", "=", chat.id)
+      .executeTakeFirstOrThrow()
+    expect(afterClear.prompt_stack_id).toBeNull()
+
+    await setChatPromptStack(userId, chat.id, stack.id)
+    await deletePromptStack(stack.id)
+    const afterDelete = await db
+      .selectFrom("chats")
+      .select("prompt_stack_id")
+      .where("id", "=", chat.id)
+      .executeTakeFirstOrThrow()
+    expect(afterDelete.prompt_stack_id).toBeNull()
+
+    await expect(deletePromptStack("default")).rejects.toThrow(/instance default/i)
+  })
+
+  it("previewAssembledContext includes system from default stack", async () => {
+    const { previewAssembledContext } = await import("@/lib/chat-service")
+    const chat = await createChat(userId, "Preview")
+    await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "hi" }],
+    })
+    const preview = await previewAssembledContext(userId, { chatId: chat.id })
+    expect(preview.system).toContain("helpful assistant")
+    expect(preview.source).toBe("instance")
   })
 })

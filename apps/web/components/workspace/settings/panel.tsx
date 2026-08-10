@@ -6,6 +6,7 @@ import { ProviderSettings } from "./providers"
 import { PromptStackSettings } from "./prompt-stacks"
 import { BackupSettings } from "./backup"
 import { AppearanceSettings } from "./appearance"
+import { McpSettings } from "./mcp"
 
 export function SettingsPanel({
   providers,
@@ -25,12 +26,13 @@ export function SettingsPanel({
           Instance controls
         </p>
         <h1 className="mt-1 text-xl font-semibold">
-          Providers, prompts & appearance
+          Providers, MCP, prompts & appearance
         </h1>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         <div className="mx-auto grid max-w-4xl gap-7 p-5 sm:p-8">
           <ProviderSettings providers={providers} onSaved={onProvidersChange} />
+          <McpSettings />
           <PromptStackSettings />
           <BackupSettings />
           <AppearanceSettings

@@ -12,6 +12,7 @@ services:
       # DATABASE_URL=postgres://nibchat:nibchat@postgres:5432/nibchat
       DATABASE_URL: ${DATABASE_URL:-}
       BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
+      MCP_RUNTIME_MODE: ${MCP_RUNTIME_MODE:-stateful}
     volumes:
       - ./data:/data
     depends_on:

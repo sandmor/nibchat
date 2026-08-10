@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { attachmentReferenceSchema } from "@/lib/agent/parts"
 
 export const streamBodySchema = z.discriminatedUnion("intent", [
   z.object({
@@ -6,6 +7,8 @@ export const streamBodySchema = z.discriminatedUnion("intent", [
     chatId: z.string().min(1),
     parentNodeId: z.string().nullish(),
     content: z.string(),
+    /** Resource references resolved and snapshotted by the server at send time. */
+    attachments: z.array(attachmentReferenceSchema).max(20).optional(),
   }),
   z.object({
     intent: z.literal("regenerate"),

@@ -45,10 +45,12 @@ describe("requirePromptStack", () => {
     expect(() => requirePromptStack("nope")).toThrow(/Invalid prompt stack/)
   })
 
-  it("empty modules still normalize with history only", () => {
+  it("empty modules still normalize with MCP server instructions and history", () => {
     const parsed = requirePromptStack({ modules: [] })
-    expect(parsed.modules).toHaveLength(1)
-    expect(parsed.modules[0]?.kind).toBe("history")
+    expect(parsed.modules.map((module) => module.kind)).toEqual([
+      "mcp-instructions",
+      "history",
+    ])
   })
 
   it("accepts valid documents and ensures history", () => {
@@ -123,7 +125,9 @@ describe("invariants", () => {
         },
       ],
     })
-    expect(doc.modules[0]).toMatchObject({
+    expect(
+      doc.modules.find((module) => module.kind === "history")
+    ).toMatchObject({
       kind: "history",
       name: HISTORY_MODULE_NAME,
     })
@@ -366,7 +370,9 @@ describe("assemblePromptContext", () => {
       "user",
       "assistant",
     ])
-    expect(result.demotedModuleIds).toEqual(expect.arrayContaining(["r0", "r1"]))
+    expect(result.demotedModuleIds).toEqual(
+      expect.arrayContaining(["r0", "r1"])
+    )
     expect(result.warnings.map((w) => w.moduleId)).toEqual(
       expect.arrayContaining(["r0", "r1"])
     )
@@ -486,9 +492,9 @@ describe("assemblePromptContext", () => {
     })
     expect(result.demotedModuleIds).toContain("mid")
     expect(result.warnings.map((w) => w.moduleId)).toContain("mid")
-    expect(findSystemAfterNonSystemWarnings(modules, path).map((w) => w.moduleId)).toContain(
-      "mid"
-    )
+    expect(
+      findSystemAfterNonSystemWarnings(modules, path).map((w) => w.moduleId)
+    ).toContain("mid")
   })
 
   it("warns relative system after history with empty path", () => {
@@ -511,6 +517,48 @@ describe("assemblePromptContext", () => {
     ])
     const warnings = findSystemAfterNonSystemWarnings(modules, [])
     expect(warnings.map((w) => w.moduleId)).toContain("after")
+  })
+
+  it("places MCP instructions text only when its module is enabled", () => {
+    const withContext = assemblePromptContext({
+      pathMessages: path,
+      stack: stack([
+        {
+          id: "mcp-instructions",
+          kind: "mcp-instructions",
+          name: "MCP server instructions",
+          enabled: true,
+        },
+        {
+          id: "h",
+          kind: "history",
+          name: "Chat history",
+          enabled: true,
+        },
+      ]),
+      mcpServerInstructionsText: "MCP server “demo”:\nUse carefully",
+    })
+    expect(withContext.system).toContain("Use carefully")
+
+    const disabled = assemblePromptContext({
+      pathMessages: path,
+      stack: stack([
+        {
+          id: "mcp-instructions",
+          kind: "mcp-instructions",
+          name: "MCP server instructions",
+          enabled: false,
+        },
+        {
+          id: "h",
+          kind: "history",
+          name: "Chat history",
+          enabled: true,
+        },
+      ]),
+      mcpServerInstructionsText: "MCP server “demo”:\nUse carefully",
+    })
+    expect(disabled.system ?? "").not.toContain("Use carefully")
   })
 })
 

@@ -1,5 +1,9 @@
 import type { QueryClient } from "@tanstack/react-query"
-import type { NodeRow, ToolInvocationPart } from "@/lib/types"
+import type {
+  AttachmentReference,
+  NodeRow,
+  ToolInvocationPart,
+} from "@/lib/types"
 import { resolveActivePath } from "@/lib/domain"
 import type { WorkspaceData } from "@/lib/workspace-cache"
 
@@ -9,6 +13,7 @@ export type StreamRequestBody =
       intent: "continue"
       parentNodeId?: string | null
       content: string
+      attachments?: AttachmentReference[]
     }
   | {
       chatId: string

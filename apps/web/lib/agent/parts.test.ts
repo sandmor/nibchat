@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest"
 import {
   allPendingResultsReady,
+  attachmentModelText,
+  attachmentPartSchema,
   applyToolOutputs,
   hasToolInvocations,
   partsHavePendingClientTools,
@@ -112,6 +114,48 @@ describe("parts helpers", () => {
     expect(searchTextFromParts(parts)).toContain("hello")
     expect(searchTextFromParts(parts)).toContain("question: Scope")
     expect(searchTextFromParts(parts)).not.toContain("secret")
+  })
+
+  it("includes MCP resource name and body in text and search", () => {
+    const parts: Parts = [
+      {
+        type: "attachment",
+        id: "a1",
+        name: "Usage Guide",
+        content: { kind: "text", text: "Call tools carefully." },
+        source: {
+          kind: "mcp-resource",
+          profileId: "p1",
+          profileName: "Docs",
+          uri: "help://usage-guide",
+        },
+      },
+      { type: "text", text: "summarize this" },
+    ]
+    expect(textFromParts(parts)).toContain("Usage Guide")
+    expect(textFromParts(parts)).toContain("Call tools carefully.")
+    expect(textFromParts(parts)).toContain("summarize this")
+    expect(searchTextFromParts(parts)).toContain("attachment:Usage Guide")
+    expect(searchTextFromParts(parts)).toContain(
+      "mcp-resource:help://usage-guide"
+    )
+    expect(searchTextFromParts(parts)).toContain("Call tools carefully.")
+  })
+
+  it("requires resolved text attachment content", () => {
+    expect(
+      attachmentPartSchema.safeParse({
+        type: "attachment",
+        id: "a1",
+        name: "Usage Guide",
+        source: {
+          kind: "mcp-resource",
+          profileId: "p1",
+          profileName: "Docs",
+          uri: "help://usage-guide",
+        },
+      }).success
+    ).toBe(false)
   })
 
   it("tracks pending tools and applies outputs", () => {
@@ -290,5 +334,65 @@ describe("buildModelMessages", () => {
     })
     expect(messages).toHaveLength(1)
     expect(messages[0]?.role).toBe("assistant")
+  })
+
+  it("expands user attachment parts ahead of text for the model", () => {
+    const messages = buildModelMessages({
+      nodes: [
+        node("u1", "user", [
+          {
+            type: "attachment",
+            id: "a1",
+            name: "Usage Guide",
+            content: { kind: "text", text: "Guide body here." },
+            source: {
+              kind: "mcp-resource",
+              profileId: "p1",
+              profileName: "Docs",
+              uri: "help://usage-guide",
+            },
+          },
+          { type: "text", text: "Use the guide." },
+        ]),
+      ],
+      replayReasoning: false,
+    })
+    expect(messages).toHaveLength(1)
+    const user = messages[0]
+    expect(user?.role).toBe("user")
+    if (user?.role !== "user" || !Array.isArray(user.content)) return
+    const texts = user.content
+      .filter(
+        (part): part is { type: "text"; text: string } =>
+          typeof part === "object" &&
+          part !== null &&
+          "type" in part &&
+          part.type === "text"
+      )
+      .map((part) => part.text)
+    expect(texts[0]).toContain("[Attachment: Usage Guide (help://usage-guide)]")
+    expect(texts[0]).toContain("Guide body here.")
+    expect(texts[1]).toBe("Use the guide.")
+  })
+
+  it("adds truncation metadata to model context", () => {
+    expect(
+      attachmentModelText({
+        type: "attachment",
+        id: "a1",
+        name: "Usage Guide",
+        content: {
+          kind: "text",
+          text: "Guide body here.",
+          truncated: { originalCharacters: 12_000_000 },
+        },
+        source: {
+          kind: "mcp-resource",
+          profileId: "p1",
+          profileName: "Docs",
+          uri: "help://usage-guide",
+        },
+      })
+    ).toContain("[Truncated from 12000000 characters.]")
   })
 })

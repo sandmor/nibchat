@@ -55,7 +55,9 @@ export function MessageParts({
                 key={`text-${index}`}
                 className="prose prose-sm dark:prose-invert max-w-none"
               >
-                <Markdown>{part.text || (streamingPlaceholder ? "Thinking…" : "")}</Markdown>
+                <Markdown>
+                  {part.text || (streamingPlaceholder ? "Thinking…" : "")}
+                </Markdown>
               </div>
             )
           }
@@ -63,6 +65,43 @@ export function MessageParts({
             <p key={`text-${index}`} className="whitespace-pre-wrap">
               {part.text}
             </p>
+          )
+        }
+        if (part.type === "attachment") {
+          const sourceLabel =
+            part.source.kind === "mcp-resource"
+              ? part.source.profileName
+              : undefined
+          const sourceDetail =
+            part.source.kind === "mcp-resource" ? part.source.uri : undefined
+          return (
+            <details
+              key={part.id}
+              className="rounded-lg border border-dashed bg-muted/40 p-3 text-sm"
+            >
+              <summary className="cursor-pointer font-medium">
+                Attached: {part.name}
+                {sourceLabel ? (
+                  <span className="ml-2 text-xs font-normal text-muted-foreground">
+                    {sourceLabel}
+                  </span>
+                ) : null}
+              </summary>
+              {sourceDetail ? (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {sourceDetail}
+                </p>
+              ) : null}
+              <pre className="mt-2 max-h-64 overflow-auto text-xs whitespace-pre-wrap">
+                {part.content.text}
+              </pre>
+              {part.content.truncated ? (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Truncated from {part.content.truncated.originalCharacters}{" "}
+                  characters.
+                </p>
+              ) : null}
+            </details>
           )
         }
         if (part.type === "tool-invocation") {

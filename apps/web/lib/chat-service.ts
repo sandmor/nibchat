@@ -1,6 +1,6 @@
 import "server-only"
 import { sql } from "kysely"
-import { db } from "@/lib/db"
+import { db, databaseKind } from "@/lib/db"
 import {
   ancestorPath,
   id,
@@ -18,6 +18,7 @@ import { abortGenerations } from "@/lib/active-generations"
 import type {
   MessageRole,
   MessageStatus,
+  AttachmentPart,
   NodeRow,
   Parts,
   PromptStackRow,
@@ -28,6 +29,7 @@ import {
   type ModelConfig,
 } from "@/lib/providers"
 import { orderNodesForInsert, parseBackup } from "@/lib/backup"
+import { mcpProfileForBackup, profileFromRow } from "@/lib/mcp"
 import {
   appearanceToJson,
   defaultAppearance,
@@ -249,6 +251,8 @@ export async function createTurn(input: {
   chatId: string
   parentId: string | null
   content: string
+  /** Optional attachments ahead of the user text (MCP resources, future files). */
+  attachments?: AttachmentPart[]
   assistantMetadata: Record<string, unknown>
 }) {
   if (input.parentId) {
@@ -261,12 +265,19 @@ export async function createTurn(input: {
     if (!parent) throw new Error("Parent node not found in chat")
   }
   const timestamp = now()
+  const text = input.content.trim()
+  const attachments = input.attachments ?? []
+  if (!text && attachments.length === 0) throw new Error("Message is required")
+  const parts: Parts = [
+    ...attachments,
+    ...(text ? [{ type: "text" as const, text }] : []),
+  ]
   const user = newNode(
     {
       chatId: input.chatId,
       parentId: input.parentId,
       role: "user",
-      parts: [{ type: "text", text: input.content }],
+      parts,
     },
     timestamp
   )
@@ -1399,6 +1410,28 @@ export async function restoreBackup(userId: string, raw: unknown) {
         })
         .execute()
     }
+    for (const profile of backup.mcpServerProfiles) {
+      await trx
+        .insertInto("mcp_server_profiles")
+        .values({
+          id: profile.id,
+          user_id: userId,
+          name: profile.name,
+          namespace: profile.namespace,
+          enabled:
+            databaseKind === "sqlite"
+              ? ((profile.enabled ? 1 : 0) as unknown as boolean)
+              : profile.enabled,
+          transport: profile.transport,
+          protocol_mode: profile.protocol_mode,
+          config_json: profile.config_json,
+          catalog_json: profile.catalog_json,
+          tool_allowlist_json: profile.tool_allowlist_json,
+          created_at: profile.created_at,
+          updated_at: profile.updated_at,
+        })
+        .execute()
+    }
     let appearance = defaultAppearance()
     if (backup.instance?.appearance) {
       appearance = parseAppearance(backup.instance.appearance)
@@ -1462,6 +1495,14 @@ export async function createBackup(userId: string) {
     .selectFrom("prompt_stacks")
     .selectAll()
     .execute()
+  const mcpRows = await db
+    .selectFrom("mcp_server_profiles")
+    .selectAll()
+    .where("user_id", "=", userId)
+    .execute()
+  const mcpServerProfiles = mcpRows.map((row) =>
+    mcpProfileForBackup(profileFromRow(row))
+  )
   const normalizedStacks = promptStacks.map((row) => ({
     ...row,
     stack_json: promptStackToJson(readStackJson(row.stack_json)),
@@ -1486,5 +1527,6 @@ export async function createBackup(userId: string) {
     chats,
     nodes,
     providerProfiles: providers,
+    mcpServerProfiles,
   }
 }

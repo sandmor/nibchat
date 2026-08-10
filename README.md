@@ -49,6 +49,7 @@ Open the printed URL (or `/reset-password?token=…`).
 | `SQLITE_PATH`        | SQLite path relative to monorepo root (default `./data/nibchat.db`) |
 | `DATABASE_URL`       | When set, selects the Postgres adapter instead of SQLite            |
 | `DATABASE_POOL_SIZE` | Postgres pool size (default `8`)                                    |
+| `MCP_RUNTIME_MODE`   | `stateful` (default) or serverless-safe `stateless`                 |
 
 Copy [`.env.example`](./.env.example) to `.env` and fill secrets. See [DEPLOYMENT.md](./DEPLOYMENT.md).
 

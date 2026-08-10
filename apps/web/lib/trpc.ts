@@ -1,6 +1,6 @@
 import "server-only"
 import { initTRPC, TRPCError } from "@trpc/server"
-import { z } from "zod"
+import { z, ZodError } from "zod"
 import {
   OWNER_FORBIDDEN_MESSAGE,
   UNAUTHORIZED_MESSAGE,
@@ -36,6 +36,17 @@ import {
 import { listProviders } from "@/lib/providers"
 import { appearanceSchema } from "@/lib/appearance"
 import { promptStackDocumentSchema } from "@/lib/prompt-stack"
+import {
+  approveMcpCatalog,
+  createMcpProfile,
+  deleteMcpProfile,
+  getMcpPrompt,
+  listApprovedMcpSurfaces,
+  listMcpProfiles,
+  mcpProfileInputSchema,
+  refreshMcpCatalog,
+  updateMcpProfile,
+} from "@/lib/mcp"
 
 export async function createContext({ req }: { req: Request }) {
   const gate = await resolveAppUser(req.headers)
@@ -54,7 +65,18 @@ export async function createContext({ req }: { req: Request }) {
   }
 }
 
-const t = initTRPC.context<typeof createContext>().create()
+const t = initTRPC.context<typeof createContext>().create({
+  errorFormatter({ shape, error }) {
+    const cause = error.cause
+    if (cause instanceof ZodError) {
+      return {
+        ...shape,
+        message: formatZodIssues(cause),
+      }
+    }
+    return shape
+  },
+})
 const ownerProcedure = t.procedure.use(({ ctx, next }) => {
   if (!ctx.user) {
     if (ctx.authError === OWNER_FORBIDDEN_MESSAGE)
@@ -89,8 +111,80 @@ const providerInputSchema = z.object({
   models: z.array(z.string()),
 })
 
+const FIELD_LABELS: Record<string, string> = {
+  name: "Name",
+  namespace: "Tool namespace",
+  transport: "Transport",
+  protocolMode: "Protocol",
+  "config.url": "Server URL",
+  "config.command": "Command",
+  "config.cwd": "Working directory",
+}
+
+function formatZodIssues(error: ZodError): string {
+  return error.issues
+    .map((issue) => {
+      const path = issue.path.join(".")
+      const label = FIELD_LABELS[path] ?? (path || "Input")
+      const raw = issue.message
+      if (
+        path === "namespace" &&
+        (raw.startsWith("Too small") || raw.startsWith("Invalid string"))
+      ) {
+        return "Tool namespace must start with a letter and use only letters, numbers, and underscores"
+      }
+      if (path === "name" && raw.startsWith("Too small"))
+        return "Name is required"
+      if (path === "config.url")
+        return "Server URL is required and must be a valid URL"
+      if (path === "config.command" && raw.startsWith("Too small"))
+        return "Command is required"
+      if (
+        raw.startsWith("Too small") ||
+        raw.startsWith("Invalid string") ||
+        raw.startsWith("Invalid input")
+      ) {
+        return `${label} is invalid`
+      }
+      return raw.includes(label) ? raw : `${label}: ${raw}`
+    })
+    .join(" · ")
+}
+
+function humanizeError(error: unknown): string {
+  if (error instanceof ZodError) return formatZodIssues(error)
+  if (error instanceof Error) {
+    // ZodError message is often a JSON dump in Zod 4
+    if (error.name === "ZodError" && "issues" in error)
+      return formatZodIssues(error as ZodError)
+    const trimmed = error.message.trim()
+    if (trimmed.startsWith("[") && trimmed.includes('"code"')) {
+      try {
+        const parsed = JSON.parse(trimmed) as Array<{
+          path?: (string | number)[]
+          message?: string
+          code?: string
+        }>
+        if (Array.isArray(parsed) && parsed[0]?.message) {
+          return formatZodIssues({
+            issues: parsed.map((item) => ({
+              path: item.path ?? [],
+              message: item.message ?? "Invalid",
+              code: item.code ?? "custom",
+            })),
+          } as ZodError)
+        }
+      } catch {
+        /* keep original */
+      }
+    }
+    return error.message
+  }
+  return "Request failed"
+}
+
 function mapError(error: unknown): never {
-  const message = error instanceof Error ? error.message : "Request failed"
+  const message = humanizeError(error)
   if (message.toLowerCase().includes("not found"))
     throw new TRPCError({ code: "NOT_FOUND", message })
   throw new TRPCError({ code: "BAD_REQUEST", message })
@@ -222,6 +316,88 @@ export const appRouter = t.router({
     listProviders: ownerProcedure.query(({ ctx }) =>
       listProviders(ctx.user.id)
     ),
+    listMcpProfiles: ownerProcedure.query(({ ctx }) =>
+      listMcpProfiles(ctx.user.id)
+    ),
+    createMcpProfile: ownerProcedure
+      .input(mcpProfileInputSchema)
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await createMcpProfile(ctx.user.id, input)
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    updateMcpProfile: ownerProcedure
+      .input(
+        z.intersection(mcpProfileInputSchema, z.object({ id: z.string() }))
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          const { id, ...profile } = input
+          await updateMcpProfile(ctx.user.id, id, profile)
+          return { ok: true }
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    deleteMcpProfile: ownerProcedure
+      .input(z.object({ id: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          await deleteMcpProfile(ctx.user.id, input.id)
+          return { ok: true }
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    refreshMcpCatalog: ownerProcedure
+      .input(z.object({ id: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await refreshMcpCatalog(ctx.user.id, input.id)
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    approveMcpCatalog: ownerProcedure
+      .input(
+        z.object({
+          id: z.string(),
+          toolAllowlist: z.array(z.string()).max(500),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          await approveMcpCatalog(ctx.user.id, input.id, input.toolAllowlist)
+          return { ok: true }
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    listApprovedMcpSurfaces: ownerProcedure.query(({ ctx }) =>
+      listApprovedMcpSurfaces(ctx.user.id)
+    ),
+    getMcpPrompt: ownerProcedure
+      .input(
+        z.object({
+          profileId: z.string().min(1),
+          name: z.string().min(1).max(200),
+          arguments: z.record(z.string(), z.string()).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await getMcpPrompt(
+            ctx.user.id,
+            input.profileId,
+            input.name,
+            input.arguments ?? {}
+          )
+        } catch (error) {
+          mapError(error)
+        }
+      }),
     createProvider: ownerProcedure
       .input(providerInputSchema)
       .mutation(async ({ ctx, input }) => {

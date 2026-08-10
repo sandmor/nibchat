@@ -9,6 +9,7 @@
     "DATABASE_URL",
     "DATABASE_POOL_SIZE",
     "SQLITE_PATH",
+    "MCP_RUNTIME_MODE",
     "E2E_BASE_URL",
     "CI"
   ],

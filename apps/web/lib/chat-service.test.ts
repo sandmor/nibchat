@@ -76,7 +76,10 @@ describe("SQLite chat repository", () => {
         workspace.chat?.selected_root_node_id ?? null
       ).at(-1)?.id
     ).toBe(second.id)
-    const firstText = nodeParts(first)[0]; expect(firstText?.type === 'text' ? firstText.text : undefined).toBe("first")
+    const firstText = nodeParts(first)[0]
+    expect(firstText?.type === "text" ? firstText.text : undefined).toBe(
+      "first"
+    )
   })
 
   it("createTurn inserts user + streaming assistant without rewriting view selection", async () => {
@@ -96,7 +99,10 @@ describe("SQLite chat repository", () => {
     expect(user.parent_id).toBe(prior.id)
     expect(assistant.parent_id).toBe(user.id)
     expect(assistant.status).toBe("streaming")
-    const userText = nodeParts(user)[0]; expect(userText?.type === 'text' ? userText.text : undefined).toBe("hello turn")
+    const userText = nodeParts(user)[0]
+    expect(userText?.type === "text" ? userText.text : undefined).toBe(
+      "hello turn"
+    )
 
     const workspace = await getWorkspace(userId, { chatId: chat.id })
     // Prior insert attached selection to prior; createTurn must not redirect it.
@@ -105,6 +111,44 @@ describe("SQLite chat repository", () => {
     expect(priorRow?.selected_child_id).toBeNull()
     const userRow = workspace.nodes.find((n) => n.id === user.id)
     expect(userRow?.selected_child_id).toBeNull()
+  })
+
+  it("createTurn persists attachment-only user turns", async () => {
+    const chat = await createChat(userId, "Attachment turn")
+    const { user } = await createTurn({
+      chatId: chat.id,
+      parentId: null,
+      content: "",
+      attachments: [
+        {
+          type: "attachment",
+          id: "attachment-1",
+          name: "Usage Guide",
+          content: { kind: "text", text: "Guide body." },
+          source: {
+            kind: "mcp-resource",
+            profileId: "profile-1",
+            profileName: "Docs",
+            uri: "help://usage-guide",
+          },
+        },
+      ],
+      assistantMetadata: {},
+    })
+    expect(nodeParts(user)).toEqual([
+      {
+        type: "attachment",
+        id: "attachment-1",
+        name: "Usage Guide",
+        content: { kind: "text", text: "Guide body." },
+        source: {
+          kind: "mcp-resource",
+          profileId: "profile-1",
+          profileName: "Docs",
+          uri: "help://usage-guide",
+        },
+      },
+    ])
   })
 
   it("createTurn under a branch parent does not rewire an upstream selection tip", async () => {
@@ -355,7 +399,8 @@ describe("generation abort + finalize", () => {
     const workspace = await getWorkspace(userId, { chatId: chat.id })
     const row = workspace.nodes.find((n) => n.id === assistant.id)
     expect(row?.status).toBe("stopped")
-    const half = nodeParts(row!)[0]; expect(half?.type === 'text' ? half.text : undefined).toBe("half reply")
+    const half = nodeParts(row!)[0]
+    expect(half?.type === "text" ? half.text : undefined).toBe("half reply")
   })
 
   it("finalizeStreamingAssistant deletes empty shells", async () => {
@@ -489,7 +534,8 @@ describe("generation abort + finalize", () => {
     const workspace = await getWorkspace(userId, { chatId: chat.id })
     const row = workspace.nodes.find((n) => n.id === assistant.id)
     expect(row?.status).toBe("stopped")
-    const partial = nodeParts(row!)[0]; expect(partial?.type === 'text' ? partial.text : undefined).toBe("partial")
+    const partial = nodeParts(row!)[0]
+    expect(partial?.type === "text" ? partial.text : undefined).toBe("partial")
   })
 
   it("second finalize returns superseded", async () => {
@@ -605,7 +651,11 @@ describe("resume claim and restore", () => {
     {
       ...pendingParts[0]!,
       state: "output-available" as const,
-      output: { title: "Asked 1 question", output: "ok", metadata: { answers: [["A"]] } },
+      output: {
+        title: "Asked 1 question",
+        output: "ok",
+        metadata: { answers: [["A"]] },
+      },
     },
   ]
 
@@ -678,9 +728,9 @@ describe("resume claim and restore", () => {
     expect(await beginResumeAssistant(assistant.id, answeredParts)).toBe(
       "streaming"
     )
-    expect(
-      await restoreAwaitingInput(assistant.id, pendingParts)
-    ).toBe("awaiting_input")
+    expect(await restoreAwaitingInput(assistant.id, pendingParts)).toBe(
+      "awaiting_input"
+    )
 
     const row = await db
       .selectFrom("message_nodes")
@@ -769,7 +819,9 @@ describe("prompt stacks", () => {
       .executeTakeFirstOrThrow()
     expect(afterDelete.prompt_stack_id).toBeNull()
 
-    await expect(deletePromptStack("default")).rejects.toThrow(/instance default/i)
+    await expect(deletePromptStack("default")).rejects.toThrow(
+      /instance default/i
+    )
   })
 
   it("previewAssembledContext includes system from default stack", async () => {

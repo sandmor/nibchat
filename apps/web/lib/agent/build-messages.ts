@@ -1,6 +1,10 @@
 import type { ModelMessage } from "ai"
 import { parseJson } from "@/lib/domain"
-import { isToolInvocationPart, type Parts } from "@/lib/agent/parts"
+import {
+  attachmentModelText,
+  isToolInvocationPart,
+  type Parts,
+} from "@/lib/agent/parts"
 import type { NodeRow, ToolInvocationPart } from "@/lib/types"
 
 function nodePartsLocal(node: NodeRow): Parts {
@@ -40,9 +44,15 @@ export function buildModelMessages(
     }
 
     if (node.role === "user") {
-      const content = parts
-        .filter((p) => p.type === "text")
-        .map((p) => ({ type: "text" as const, text: p.text }))
+      const content: Array<{ type: "text"; text: string }> = []
+      for (const part of parts) {
+        if (part.type === "text" && part.text) {
+          content.push({ type: "text", text: part.text })
+        } else if (part.type === "attachment") {
+          const text = attachmentModelText(part)
+          content.push({ type: "text", text })
+        }
+      }
       if (content.length > 0) messages.push({ role: "user", content })
       continue
     }
@@ -66,6 +76,7 @@ function filterPartsForModel(
 ): Parts {
   return parts.filter((part) => {
     if (part.type === "text") return true
+    if (part.type === "attachment") return true
     if (part.type === "tool-invocation") return true
     if (part.type !== "reasoning") return false
     return (
@@ -148,10 +159,7 @@ function appendAssistantWithTools(messages: ModelMessage[], parts: Parts) {
         toolName: part.toolName,
         input: part.input,
       })
-      if (
-        part.state === "output-available" ||
-        part.state === "output-error"
-      ) {
+      if (part.state === "output-available" || part.state === "output-error") {
         pendingResults.push(part)
         flushAssistant()
         flushToolResults()

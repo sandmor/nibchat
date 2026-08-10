@@ -1,5 +1,7 @@
 import type { Selectable } from "kysely"
 
+export const MAX_ATTACHMENT_TEXT_CHARS = 10_000_000
+
 export type MessageRole = "user" | "assistant" | "system" | "tool"
 export type MessageStatus =
   | "complete"
@@ -24,7 +26,47 @@ export type ToolInvocationPart = {
   output?: unknown
   errorText?: string
 }
-export type Part = TextPart | ReasoningPart | ToolInvocationPart
+
+/** A source selected in the composer, before the server snapshots its content. */
+export type AttachmentReference = {
+  kind: "mcp-resource"
+  profileId: string
+  uri: string
+}
+
+/** Provenance for a durable attachment snapshot. */
+export type AttachmentSource = {
+  kind: "mcp-resource"
+  profileId: string
+  profileName: string
+  uri: string
+}
+
+/** Resolved attachment content. Future binary variants belong in this union. */
+export type AttachmentContent = {
+  kind: "text"
+  text: string
+  truncated?: {
+    originalCharacters: number
+  }
+}
+
+/**
+ * User-attached context snapshotted by the server at send time.
+ */
+export type AttachmentPart = {
+  type: "attachment"
+  id: string
+  name: string
+  source: AttachmentSource
+  content: AttachmentContent
+}
+
+export type Part =
+  | TextPart
+  | ReasoningPart
+  | ToolInvocationPart
+  | AttachmentPart
 export type Parts = Part[]
 
 export interface ChatsTable {
@@ -82,6 +124,20 @@ export interface ModelCatalogCacheTable {
   models_json: string
   refreshed_at: string
 }
+export interface McpServerProfilesTable {
+  id: string
+  user_id: string
+  name: string
+  namespace: string
+  enabled: boolean
+  transport: string
+  protocol_mode: string
+  config_json: string
+  catalog_json: string
+  tool_allowlist_json: string
+  created_at: string
+  updated_at: string
+}
 export interface DB {
   chats: ChatsTable
   message_nodes: MessageNodesTable
@@ -89,6 +145,7 @@ export interface DB {
   instance: InstanceTable
   provider_profiles: ProviderProfilesTable
   model_catalog_cache: ModelCatalogCacheTable
+  mcp_server_profiles: McpServerProfilesTable
   user: {
     id: string
     name: string

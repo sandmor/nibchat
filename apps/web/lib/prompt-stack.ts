@@ -3,7 +3,9 @@ import { z } from "zod"
 
 export const DEFAULT_PROMPT_STACK_ID = "default"
 export const DEFAULT_HISTORY_MODULE_ID = "chat-history"
+export const DEFAULT_MCP_INSTRUCTIONS_MODULE_ID = "mcp-instructions"
 export const HISTORY_MODULE_NAME = "Chat history" as const
+export const MCP_INSTRUCTIONS_MODULE_NAME = "MCP server instructions" as const
 
 const SYSTEM_AFTER_NON_SYSTEM_MSG =
   "System after chat or non-system may be remapped to assistant for some providers."
@@ -15,6 +17,14 @@ export const historyModuleSchema = z.object({
   id: z.string().min(1),
   kind: z.literal("history"),
   /** Canonicalized to HISTORY_MODULE_NAME on normalize. */
+  name: z.string().min(1),
+  enabled: z.boolean(),
+})
+
+export const mcpInstructionsModuleSchema = z.object({
+  id: z.string().min(1),
+  kind: z.literal("mcp-instructions"),
+  /** Canonicalized to MCP_INSTRUCTIONS_MODULE_NAME on normalize. */
   name: z.string().min(1),
   enabled: z.boolean(),
 })
@@ -32,6 +42,7 @@ export const promptModuleSchema = z.object({
 
 export const stackModuleSchema = z.discriminatedUnion("kind", [
   historyModuleSchema,
+  mcpInstructionsModuleSchema,
   promptModuleSchema,
 ])
 
@@ -45,8 +56,17 @@ export type HistoryModule = {
   name: string
   enabled: boolean
 }
+export type McpInstructionsModule = {
+  id: string
+  kind: "mcp-instructions"
+  name: string
+  enabled: boolean
+}
 export type PromptModule = z.infer<typeof promptModuleSchema>
-export type StackModule = HistoryModule | PromptModule
+export type StackModule =
+  | HistoryModule
+  | McpInstructionsModule
+  | PromptModule
 export type PromptStackDocument = { modules: StackModule[] }
 export type ModuleRole = z.infer<typeof moduleRoleSchema>
 export type ModulePlacement = z.infer<typeof placementSchema>
@@ -58,6 +78,17 @@ export function defaultHistoryModule(
     id,
     kind: "history",
     name: HISTORY_MODULE_NAME,
+    enabled: true,
+  }
+}
+
+export function defaultMcpInstructionsModule(
+  id = DEFAULT_MCP_INSTRUCTIONS_MODULE_ID
+): McpInstructionsModule {
+  return {
+    id,
+    kind: "mcp-instructions",
+    name: MCP_INSTRUCTIONS_MODULE_NAME,
     enabled: true,
   }
 }
@@ -74,14 +105,15 @@ export function defaultPromptStack(): PromptStackDocument {
         placement: "relative",
         role: "system",
       },
+      defaultMcpInstructionsModule(),
       defaultHistoryModule(),
     ],
   }
 }
 
 /**
- * Canonical form: exactly one history, force history name, strip relative depth.
- * Throws if more than one history module (no silent drop).
+ * Canonical form: exactly one history and MCP-instructions module, force canonical names,
+ * strip relative depth. Throws on duplicates (no silent drop).
  */
 export function normalizePromptStack(
   doc: PromptStackDocument
@@ -90,8 +122,14 @@ export function normalizePromptStack(
   if (historyCount > 1) {
     throw new Error("Prompt stack must contain exactly one history module")
   }
+  const mcpInstructionsCount = doc.modules.filter(
+    (m) => m.kind === "mcp-instructions"
+  ).length
+  if (mcpInstructionsCount > 1)
+    throw new Error("Prompt stack must contain exactly one MCP instructions module")
 
   let historySeen = false
+  let mcpInstructionsSeen = false
   const modules: StackModule[] = []
 
   for (const raw of doc.modules) {
@@ -101,6 +139,16 @@ export function normalizePromptStack(
         id: raw.id,
         kind: "history",
         name: HISTORY_MODULE_NAME,
+        enabled: raw.enabled,
+      })
+      continue
+    }
+    if (raw.kind === "mcp-instructions") {
+      mcpInstructionsSeen = true
+      modules.push({
+        id: raw.id,
+        kind: "mcp-instructions",
+        name: MCP_INSTRUCTIONS_MODULE_NAME,
         enabled: raw.enabled,
       })
       continue
@@ -132,6 +180,16 @@ export function normalizePromptStack(
 
   if (!historySeen) {
     modules.push(defaultHistoryModule())
+  }
+  if (!mcpInstructionsSeen) {
+    const historyIndex = modules.findIndex(
+      (module) => module.kind === "history"
+    )
+    modules.splice(
+      historyIndex < 0 ? modules.length : historyIndex,
+      0,
+      defaultMcpInstructionsModule()
+    )
   }
 
   return { modules }
@@ -292,6 +350,7 @@ function injectInChatTagged(
 function assembleTagged(options: {
   stack: PromptStackDocument
   pathMessages: ModelMessage[]
+  mcpServerInstructionsText?: string
 }): TaggedMessage[] {
   const stack = normalizePromptStack(options.stack)
   const injectedHistory = injectInChatTagged(options.pathMessages, stack)
@@ -308,6 +367,15 @@ function assembleTagged(options: {
       for (const t of injectedHistory) {
         out.push(t)
       }
+      continue
+    }
+    if (mod.kind === "mcp-instructions") {
+      const text = options.mcpServerInstructionsText?.trim()
+      if (text)
+        out.push({
+          message: { role: "system", content: text },
+          moduleId: mod.id,
+        })
       continue
     }
     if (mod.placement === "in_chat") continue
@@ -353,7 +421,10 @@ function peelAndDemote(tagged: TaggedMessage[]): {
 
   const systemParts: string[] = []
   let i = 0
-  while (i < contentTagged.length && contentTagged[i]!.message.role === "system") {
+  while (
+    i < contentTagged.length &&
+    contentTagged[i]!.message.role === "system"
+  ) {
     const content = contentTagged[i]!.message.content
     if (typeof content === "string" && content.trim()) {
       systemParts.push(content.trim())
@@ -399,6 +470,8 @@ export type AssemblePromptContextResult = {
 export function assemblePromptContext(options: {
   stack: PromptStackDocument
   pathMessages: ModelMessage[]
+  /** MCP server initialize instructions when this module is enabled. */
+  mcpServerInstructionsText?: string
 }): AssemblePromptContextResult {
   const tagged = assembleTagged(options)
   const warnings = collectWarnings(tagged)

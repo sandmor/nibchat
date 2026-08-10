@@ -1,12 +1,25 @@
 import { z } from "zod"
+import { MAX_ATTACHMENT_TEXT_CHARS } from "@/lib/types"
 import type {
+  AttachmentContent,
+  AttachmentPart,
+  AttachmentReference,
+  AttachmentSource,
   MessageStatus,
   Part,
   Parts,
   ToolInvocationPart,
 } from "@/lib/types"
 
-export type { Parts, Part, ToolInvocationPart }
+export type {
+  Parts,
+  Part,
+  ToolInvocationPart,
+  AttachmentContent,
+  AttachmentPart,
+  AttachmentReference,
+  AttachmentSource,
+}
 
 export const toolInvocationStateSchema = z.enum([
   "input-streaming",
@@ -14,6 +27,43 @@ export const toolInvocationStateSchema = z.enum([
   "output-available",
   "output-error",
 ])
+
+export const attachmentSourceSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("mcp-resource"),
+    profileId: z.string().min(1),
+    profileName: z.string().min(1),
+    uri: z.string().min(1),
+  }),
+])
+
+export const attachmentReferenceSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("mcp-resource"),
+      profileId: z.string().min(1),
+      uri: z.string().min(1).max(4_000),
+    })
+    .strict(),
+])
+
+export const attachmentContentSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("text"),
+    text: z.string().min(1).max(MAX_ATTACHMENT_TEXT_CHARS),
+    truncated: z
+      .object({ originalCharacters: z.number().int().positive() })
+      .optional(),
+  }),
+])
+
+export const attachmentPartSchema = z.object({
+  type: z.literal("attachment"),
+  id: z.string().min(1),
+  name: z.string().min(1),
+  source: attachmentSourceSchema,
+  content: attachmentContentSchema,
+})
 
 export const partsSchema = z.array(
   z.discriminatedUnion("type", [
@@ -28,29 +78,50 @@ export const partsSchema = z.array(
       output: z.unknown().optional(),
       errorText: z.string().optional(),
     }),
+    attachmentPartSchema,
   ])
 )
 
 export type ParsedParts = z.infer<typeof partsSchema>
 
-/** Visible prose only (excludes reasoning and tools). */
+/** Visible prose (text + attachment text bodies). */
 export function textFromParts(parts: Parts): string {
-  return parts
-    .filter((part): part is Extract<Part, { type: "text" }> => part.type === "text")
-    .map((part) => part.text)
-    .join("\n")
+  const chunks: string[] = []
+  for (const part of parts) {
+    if (part.type === "text" && part.text) chunks.push(part.text)
+    else if (part.type === "attachment") {
+      chunks.push(`[${part.name}]\n${part.content.text}`)
+    }
+  }
+  return chunks.join("\n")
 }
 
-/** Denormalized search index: text + short tool labels. */
+/** Denormalized search index: text + attachments + short tool labels. */
 export function searchTextFromParts(parts: Parts): string {
   const chunks: string[] = []
   for (const part of parts) {
     if (part.type === "text" && part.text) chunks.push(part.text)
-    else if (part.type === "tool-invocation") {
+    else if (part.type === "attachment") {
+      chunks.push(`attachment:${part.name}`)
+      if (part.source.kind === "mcp-resource") {
+        chunks.push(`mcp-resource:${part.source.uri}`)
+      }
+      chunks.push(part.content.text)
+    } else if (part.type === "tool-invocation") {
       chunks.push(toolSearchSnippet(part))
     }
   }
   return chunks.join("\n")
+}
+
+/** How attachment content is presented to the model. */
+export function attachmentModelText(part: AttachmentPart): string {
+  const locator =
+    part.source.kind === "mcp-resource" ? ` (${part.source.uri})` : ""
+  const truncated = part.content.truncated
+    ? `\n\n[Truncated from ${part.content.truncated.originalCharacters} characters.]`
+    : ""
+  return `[Attachment: ${part.name}${locator}]\n${part.content.text}${truncated}`
 }
 
 function toolSearchSnippet(part: ToolInvocationPart): string {
@@ -67,7 +138,9 @@ function questionHeaders(input: unknown): string[] {
   if (!Array.isArray(questions)) return []
   return questions
     .map((q) =>
-      q && typeof q === "object" && typeof (q as { header?: unknown }).header === "string"
+      q &&
+      typeof q === "object" &&
+      typeof (q as { header?: unknown }).header === "string"
         ? (q as { header: string }).header
         : null
     )
@@ -76,6 +149,10 @@ function questionHeaders(input: unknown): string[] {
 
 export function isToolInvocationPart(part: Part): part is ToolInvocationPart {
   return part.type === "tool-invocation"
+}
+
+export function isAttachmentPart(part: Part): part is AttachmentPart {
+  return part.type === "attachment"
 }
 
 export function hasToolInvocations(parts: Parts): boolean {
@@ -192,4 +269,3 @@ export function resolveStreamTerminalOutcome(
   }
   return outcome
 }
-

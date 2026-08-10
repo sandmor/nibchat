@@ -29,6 +29,7 @@ import {
   assemblePromptContext,
   type PromptStackDocument,
 } from "@/lib/prompt-stack"
+import { prepareMcpTools } from "@/lib/mcp"
 import type { NodeRow, ToolInvocationPart } from "@/lib/types"
 
 const MAX_STEPS = 20
@@ -134,9 +135,21 @@ export async function createGenerationResponse(
       nodes: contextNodes,
       replayReasoning,
     })
+    const mcpServerInstructionsEnabled = promptStack.modules.some(
+      (module) => module.kind === "mcp-instructions" && module.enabled
+    )
+    // Tools always register from global MCP profiles; this stack module only
+    // injects server initialize instructions (if any) at its stack position.
+    const mcp = await prepareMcpTools(userId, {
+      includeInstructionsText: mcpServerInstructionsEnabled,
+      reservedToolNames: Object.keys(nibchatTools),
+    })
+    for (const warning of mcp.warnings ?? [])
+      console.warn("[nibchat/mcp]", warning)
     const { system: systemPrompt, messages } = assemblePromptContext({
       stack: promptStack,
       pathMessages,
+      mcpServerInstructionsText: mcp.instructionsText,
     })
 
     let orderedParts: Parts = [...seedParts]
@@ -190,7 +203,7 @@ export async function createGenerationResponse(
       model: languageModel,
       system: systemPrompt,
       messages,
-      tools: nibchatTools,
+      tools: { ...mcp.tools, ...nibchatTools },
       stopWhen: stepCountIs(MAX_STEPS),
       abortSignal,
       temperature: config.temperature,
@@ -236,6 +249,23 @@ export async function createGenerationResponse(
             state: "output-available",
             input: existing?.input ?? chunk.input ?? {},
             output: chunk.output,
+          })
+        }
+        if (chunk.type === "tool-error") {
+          flushStepTextReasoning()
+          const existing = orderedParts.find(
+            (p): p is ToolInvocationPart =>
+              p.type === "tool-invocation" && p.toolCallId === chunk.toolCallId
+          )
+          const errorText = formatProviderError(chunk.error)
+          console.warn("[nibchat/mcp-tool]", chunk.toolName, errorText)
+          orderedParts = upsertToolInvocation(orderedParts, {
+            type: "tool-invocation",
+            toolCallId: chunk.toolCallId,
+            toolName: existing?.toolName ?? chunk.toolName,
+            state: "output-error",
+            input: existing?.input ?? chunk.input ?? {},
+            errorText,
           })
         }
       },

@@ -60,12 +60,30 @@ const promptStackRowSchema = z
   })
   .loose()
 
+const mcpServerProfileSchema = z
+  .object({
+    id: z.string(),
+    user_id: z.string().optional(),
+    name: z.string(),
+    namespace: z.string(),
+    enabled: z.boolean(),
+    transport: z.enum(["streamable-http", "sse", "stdio"]),
+    protocol_mode: z.enum(["auto", "modern"]),
+    config_json: z.string(),
+    catalog_json: z.string(),
+    tool_allowlist_json: z.string(),
+    created_at: z.string(),
+    updated_at: z.string(),
+  })
+  .loose()
+
 /** Full-instance portable snapshot (no API keys). Stack docs validated on restore/export. */
 export const backupSchema = z.object({
   version: z.literal(1),
   chats: z.array(chatRowSchema),
   nodes: z.array(nodeRowSchema),
   providerProfiles: z.array(providerProfileSchema).optional().default([]),
+  mcpServerProfiles: z.array(mcpServerProfileSchema).optional().default([]),
   promptStacks: z.array(promptStackRowSchema).optional().default([]),
   appearance: appearanceSchema.optional(),
   instance: z

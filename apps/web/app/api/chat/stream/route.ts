@@ -22,6 +22,7 @@ import { parseJson } from "@/lib/domain"
 import { jsonError, statusFromError } from "@/lib/http-error"
 import { formatProviderError } from "@/lib/provider-errors"
 import { modelFor, type ModelConfig } from "@/lib/providers"
+import { resolveMcpResourceAttachment } from "@/lib/mcp"
 import { streamBodySchema } from "@/lib/stream-body"
 import type { NodeRow, Parts } from "@/lib/types"
 
@@ -70,13 +71,20 @@ export async function POST(request: Request) {
 
     if (body.intent === "continue") {
       const message = body.content.trim()
-      if (!message)
+      const references = uniqueAttachmentReferences(body.attachments ?? [])
+      if (!message && references.length === 0)
         return Response.json({ error: "Message is required" }, { status: 400 })
+      const attachments = await Promise.all(
+        references.map((reference) =>
+          resolveMcpResourceAttachment(user.id, reference)
+        )
+      )
       const parentId = body.parentNodeId ?? null
       const turn = await createTurn({
         chatId: chat.id,
         parentId,
         content: message,
+        attachments,
         assistantMetadata: assistantMeta,
       })
       assistant = turn.assistant
@@ -87,15 +95,20 @@ export async function POST(request: Request) {
           : {}),
         "X-Nibchat-User-Node": turn.user.id,
       }
-      if (chat.title === "New conversation")
+      if (chat.title === "New conversation") {
+        const titleSeed =
+          message ||
+          attachments.map((part) => part.name).join(", ") ||
+          "New conversation"
         await db
           .updateTable("chats")
           .set({
-            title: message.slice(0, 72),
+            title: titleSeed.slice(0, 72),
             updated_at: new Date().toISOString(),
           })
           .where("id", "=", chat.id)
           .execute()
+      }
     } else if (body.intent === "regenerate") {
       const result = await startRegenerate(
         user.id,
@@ -273,4 +286,16 @@ export async function POST(request: Request) {
     if (statusFromError(error) !== 400) return jsonError(error)
     return Response.json({ error: formatProviderError(error) }, { status: 400 })
   }
+}
+
+function uniqueAttachmentReferences(
+  references: Array<{ kind: "mcp-resource"; profileId: string; uri: string }>
+) {
+  const seen = new Set<string>()
+  return references.filter((reference) => {
+    const key = `${reference.kind}\u0000${reference.profileId}\u0000${reference.uri}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }

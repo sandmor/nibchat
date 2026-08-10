@@ -21,10 +21,7 @@ import { CSS } from "@dnd-kit/utilities"
 import { useMutation, useQuery } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { HugeiconsIcon } from "@hugeicons/react"
-import {
-  Delete02Icon,
-  DragDropVerticalIcon,
-} from "@hugeicons/core-free-icons"
+import { Delete02Icon, DragDropVerticalIcon } from "@hugeicons/core-free-icons"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -109,10 +106,10 @@ export function PromptStackSettings() {
 
   const dirty = Boolean(
     selected &&
-      activeDraft &&
-      (activeDraft.name !== selected.name ||
-        JSON.stringify(activeDraft.modules) !==
-          JSON.stringify(selected.stack.modules))
+    activeDraft &&
+    (activeDraft.name !== selected.name ||
+      JSON.stringify(activeDraft.modules) !==
+        JSON.stringify(selected.stack.modules))
   )
 
   const refetch = async () => {
@@ -408,6 +405,21 @@ export function PromptStackSettings() {
                             updateHistoryEnabled(mod.id, enabled)
                           }
                         />
+                      ) : mod.kind === "mcp-instructions" ? (
+                        <SortableMcpInstructionsModule
+                          key={mod.id}
+                          module={mod}
+                          onEnabledChange={(enabled) =>
+                            setModules(
+                              modules.map((item) =>
+                                item.id === mod.id &&
+                                item.kind === "mcp-instructions"
+                                  ? { ...item, enabled }
+                                  : item
+                              )
+                            )
+                          }
+                        />
                       ) : (
                         <SortablePromptModule
                           key={mod.id}
@@ -445,7 +457,10 @@ export function PromptStackSettings() {
   )
 }
 
-function sortableStyle(transform: Parameters<typeof CSS.Translate.toString>[0], transition: string | undefined) {
+function sortableStyle(
+  transform: Parameters<typeof CSS.Translate.toString>[0],
+  transition: string | undefined
+) {
   // Use Translate only — CSS.Transform applies scale when rows differ in height and
   // visually stretches the dragged item.
   return {
@@ -500,6 +515,58 @@ function SortableHistoryModule({
         </Badge>
         <span className="ml-auto text-xs text-muted-foreground">
           Active branch path as conversation history
+        </span>
+      </div>
+    </li>
+  )
+}
+
+function SortableMcpInstructionsModule({
+  module: mod,
+  onEnabledChange,
+}: {
+  module: Extract<StackModule, { kind: "mcp-instructions" }>
+  onEnabledChange: (enabled: boolean) => void
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: mod.id })
+
+  return (
+    <li
+      ref={setNodeRef}
+      style={sortableStyle(transform, transition)}
+      className={cn(
+        "relative rounded-lg border border-dashed bg-muted/30 p-3",
+        isDragging && "z-10 opacity-40 shadow-none"
+      )}
+    >
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          className="cursor-grab touch-none text-muted-foreground active:cursor-grabbing"
+          aria-label="Drag to reorder"
+          {...attributes}
+          {...listeners}
+        >
+          <HugeiconsIcon icon={DragDropVerticalIcon} className="size-4" />
+        </button>
+        <Switch
+          checked={mod.enabled}
+          onCheckedChange={onEnabledChange}
+          size="sm"
+        />
+        <span className="text-sm font-medium">{mod.name}</span>
+        <Badge variant="outline" className="ml-1">
+          Server instructions
+        </Badge>
+        <span className="ml-auto text-xs text-muted-foreground">
+          Places MCP initialize instructions
         </span>
       </div>
     </li>

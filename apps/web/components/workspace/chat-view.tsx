@@ -16,6 +16,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
 import { cn } from "@/lib/utils"
 import { parseJson, resolveActivePath } from "@/lib/domain"
 import { useStreamStore } from "@/lib/stream-store"
@@ -36,7 +41,7 @@ import { ChatTranscript } from "./chat-transcript"
 import { chatRouteIdentity } from "./chat-transcript-helpers"
 import { useWorkspaceChrome } from "./shell"
 import { DocumentTitle } from "@/components/document-title"
-import type { NodeRow } from "@/lib/types"
+import type { AttachmentReference, NodeRow } from "@/lib/types"
 import type { ActiveStream } from "@/lib/stream-store"
 import {
   readStreamEvents,
@@ -54,6 +59,11 @@ type Props = {
   selectNodeId?: string | null
 }
 
+type ComposerAttachment = {
+  name: string
+  reference: AttachmentReference
+}
+
 export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const { appearance, providers: chromeProviders } = useWorkspaceChrome()
   const trpc = useTRPC()
@@ -62,6 +72,10 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   /** URL-derived selection: null when drafting, string when on /chat/[id] */
   const selectedChatId = mode === "draft" ? null : chatId
   const [composer, setComposer] = useState("")
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
+  const [mcpMenuOpen, setMcpMenuOpen] = useState(false)
+  const [resourcePickerOpen, setResourcePickerOpen] = useState(false)
+  const [promptPickerOpen, setPromptPickerOpen] = useState(false)
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameTitle, setRenameTitle] = useState("")
   const [draftModelConfig, setDraftModelConfig] = useState<ModelConfigLocal>(
@@ -146,6 +160,19 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
 
   const createChatMutation = useMutation(
     trpc.workspace.createChat.mutationOptions()
+  )
+
+  const surfacesQuery = useQuery(
+    trpc.workspace.listApprovedMcpSurfaces.queryOptions()
+  )
+  /** Enabled, runtime-supported profiles that generation would load. */
+  const mcpAvailableForGeneration = (surfacesQuery.data?.length ?? 0) > 0
+  const showMcpMenu = mcpAvailableForGeneration || attachments.length > 0
+  const getPromptMut = useMutation(
+    trpc.workspace.getMcpPrompt.mutationOptions({
+      onError: (error) =>
+        toast.error(error.message || "Could not load MCP prompt"),
+    })
   )
 
   const updateChatMutation = useMutation(
@@ -434,12 +461,14 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
 
   async function streamContinue() {
     const content = composer.trim()
-    if (!content) return
+    if (!content && attachments.length === 0) return
     if (!ensureModelReady(activeModelConfig)) return
 
     const contextLeafId = composerParentId
     const modelConfig = activeModelConfig
+    const pendingAttachments = [...attachments]
     setComposer("")
+    setAttachments([])
 
     let ensuredId: string | null = null
     let created = false
@@ -455,6 +484,9 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
           intent: "continue",
           parentNodeId: created ? null : contextLeafId,
           content,
+          ...(pendingAttachments.length
+            ? { attachments: pendingAttachments.map((item) => item.reference) }
+            : {}),
         },
         {
           clearComposer: false,
@@ -470,6 +502,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     } catch (error) {
       if (aliveRef.current) {
         setComposer((prev) => prev || content)
+        setAttachments((prev) => (prev.length ? prev : pendingAttachments))
         toast.error(
           error instanceof Error
             ? error.message
@@ -660,6 +693,35 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
           className="mx-auto rounded-xl border border-border bg-card p-2"
           style={{ maxWidth: "var(--composer-width, 48rem)" }}
         >
+          {attachments.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5 px-2 pt-1">
+              {attachments.map((part) => (
+                <span
+                  key={`${part.reference.profileId}:${part.reference.uri}`}
+                  className="inline-flex items-center gap-1 rounded-full border bg-muted/50 px-2 py-0.5 text-xs"
+                >
+                  Attached: {part.name}
+                  <button
+                    type="button"
+                    className="text-muted-foreground hover:text-foreground"
+                    aria-label={`Remove ${part.name}`}
+                    onClick={() =>
+                      setAttachments((current) =>
+                        current.filter(
+                          (item) =>
+                            item.reference.profileId !==
+                              part.reference.profileId ||
+                            item.reference.uri !== part.reference.uri
+                        )
+                      )
+                    }
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
           <Textarea
             value={composer}
             onChange={(event) => setComposer(event.target.value)}
@@ -673,10 +735,67 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
             rows={3}
             className="min-h-[4.5rem] resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
           />
-          <div className="flex items-center justify-between px-2 pb-1">
-            <span className="text-[11px] text-muted-foreground">
-              Enter to send · Shift + Enter for a new line
-            </span>
+          <div className="flex items-center justify-between gap-2 px-2 pb-1">
+            <div className="flex flex-wrap items-center gap-1">
+              {showMcpMenu ? (
+                <Popover open={mcpMenuOpen} onOpenChange={setMcpMenuOpen}>
+                  <PopoverTrigger
+                    render={
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-xs"
+                      />
+                    }
+                  >
+                    MCP
+                    {attachments.length > 0 ? (
+                      <span className="ml-1 text-muted-foreground">
+                        · {attachments.length}
+                      </span>
+                    ) : null}
+                  </PopoverTrigger>
+                  <PopoverContent
+                    align="start"
+                    side="top"
+                    className="w-72 gap-0.5 p-1.5"
+                  >
+                    <button
+                      type="button"
+                      className="flex w-full flex-col items-start gap-0.5 rounded-xl px-3 py-2 text-left hover:bg-muted/70"
+                      onClick={() => {
+                        setMcpMenuOpen(false)
+                        setResourcePickerOpen(true)
+                      }}
+                    >
+                      <span className="text-sm font-medium">
+                        Attach resource
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        Pull docs or files from an MCP server into this message
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="flex w-full flex-col items-start gap-0.5 rounded-xl px-3 py-2 text-left hover:bg-muted/70"
+                      onClick={() => {
+                        setMcpMenuOpen(false)
+                        setPromptPickerOpen(true)
+                      }}
+                    >
+                      <span className="text-sm font-medium">Insert prompt</span>
+                      <span className="text-xs text-muted-foreground">
+                        Paste a server prompt template into the composer
+                      </span>
+                    </button>
+                  </PopoverContent>
+                </Popover>
+              ) : null}
+              <span className="hidden text-[11px] text-muted-foreground sm:inline">
+                Enter to send · Shift + Enter for a new line
+              </span>
+            </div>
             <div className="flex items-center gap-1.5">
               {streamsForActiveChat.length > 0 && (
                 <Button
@@ -699,7 +818,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
                 size="sm"
                 className="gap-1.5"
                 onClick={() => void streamContinue()}
-                disabled={!composer.trim()}
+                disabled={!composer.trim() && attachments.length === 0}
               >
                 <HugeiconsIcon
                   icon={SentIcon}
@@ -712,6 +831,141 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
           </div>
         </div>
       </div>
+
+      <Dialog open={resourcePickerOpen} onOpenChange={setResourcePickerOpen}>
+        <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Attach MCP resource</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            {surfacesQuery.isLoading ? (
+              <p className="text-sm text-muted-foreground">Loading…</p>
+            ) : null}
+            {surfacesQuery.data?.every((s) => s.resources.length === 0) ? (
+              <p className="text-sm text-muted-foreground">
+                No resources in approved MCP catalogs. Refresh and approve a
+                server that exposes resources.
+              </p>
+            ) : null}
+            {surfacesQuery.data?.map((surface) =>
+              surface.resources.length === 0 ? null : (
+                <div key={surface.profileId} className="space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">
+                    {surface.profileName}
+                  </p>
+                  {surface.resources.map((resource) => (
+                    <Button
+                      key={resource.uri}
+                      type="button"
+                      variant="outline"
+                      className="h-auto w-full justify-start px-3 py-2 text-left"
+                      onClick={() => {
+                        setAttachments((current) => {
+                          if (
+                            current.some(
+                              (item) =>
+                                item.reference.profileId ===
+                                  surface.profileId &&
+                                item.reference.uri === resource.uri
+                            )
+                          )
+                            return current
+                          return [
+                            ...current,
+                            {
+                              name: resource.name,
+                              reference: {
+                                kind: "mcp-resource",
+                                profileId: surface.profileId,
+                                uri: resource.uri,
+                              },
+                            },
+                          ]
+                        })
+                        setResourcePickerOpen(false)
+                        toast.success(`Attached ${resource.name}`)
+                      }}
+                    >
+                      <span className="flex flex-col gap-0.5">
+                        <span className="text-sm font-medium">
+                          {resource.name}
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          {resource.uri}
+                        </span>
+                      </span>
+                    </Button>
+                  ))}
+                </div>
+              )
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={promptPickerOpen} onOpenChange={setPromptPickerOpen}>
+        <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Insert MCP prompt</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            {surfacesQuery.isLoading ? (
+              <p className="text-sm text-muted-foreground">Loading…</p>
+            ) : null}
+            {surfacesQuery.data?.every((s) => s.prompts.length === 0) ? (
+              <p className="text-sm text-muted-foreground">
+                No prompts in approved MCP catalogs.
+              </p>
+            ) : null}
+            {surfacesQuery.data?.map((surface) =>
+              surface.prompts.length === 0 ? null : (
+                <div key={surface.profileId} className="space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">
+                    {surface.profileName}
+                  </p>
+                  {surface.prompts.map((prompt) => (
+                    <Button
+                      key={prompt.name}
+                      type="button"
+                      variant="outline"
+                      className="h-auto w-full justify-start px-3 py-2 text-left"
+                      disabled={getPromptMut.isPending}
+                      onClick={async () => {
+                        try {
+                          const result = await getPromptMut.mutateAsync({
+                            profileId: surface.profileId,
+                            name: prompt.name,
+                          })
+                          setComposer((current) =>
+                            current.trim()
+                              ? `${current.trim()}\n\n${result.text}`
+                              : result.text
+                          )
+                          setPromptPickerOpen(false)
+                          toast.success("Prompt inserted into composer")
+                        } catch {
+                          /* toast in mutation */
+                        }
+                      }}
+                    >
+                      <span className="flex flex-col gap-0.5">
+                        <span className="text-sm font-medium">
+                          {prompt.title || prompt.name}
+                        </span>
+                        {prompt.description ? (
+                          <span className="text-xs text-muted-foreground">
+                            {prompt.description}
+                          </span>
+                        ) : null}
+                      </span>
+                    </Button>
+                  ))}
+                </div>
+              )
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
         <DialogContent>

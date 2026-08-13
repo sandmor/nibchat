@@ -27,6 +27,7 @@ function node(
     parts_json: "[]",
     search_text: "",
     metadata_json: "{}",
+    excluded_from_context: false,
     status: "complete",
     created_at: "",
     updated_at: "",

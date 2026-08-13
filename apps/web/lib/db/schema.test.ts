@@ -14,6 +14,18 @@ describe("applySchema", () => {
     await applySchema(db, "sqlite")
     await db.selectFrom("chats").select("id").limit(1).execute()
     await db.selectFrom("message_nodes").select("id").limit(1).execute()
+    const columns = sqlite.prepare("pragma table_info(message_nodes)").all() as Array<{
+      name: string
+      notnull: number
+      dflt_value: string | null
+    }>
+    expect(columns).toContainEqual(
+      expect.objectContaining({
+        name: "excluded_from_context",
+        notnull: 1,
+        dflt_value: "false",
+      })
+    )
     await db.selectFrom("provider_profiles").select("id").limit(1).execute()
     await db.selectFrom("prompt_stacks").select("id").limit(1).execute()
     await db.selectFrom("user").select("id").limit(1).execute()

@@ -62,7 +62,9 @@ export function PathSlot({
         transition={transition}
       >
         {live ? (
-          <StreamingBubble stream={live[1]} />
+          <StreamingBubble
+            stream={live[1]}
+          />
         ) : (
           <Message
             node={row.node}

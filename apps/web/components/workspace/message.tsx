@@ -1,7 +1,7 @@
 "use client"
 
 import { Fragment, useState } from "react"
-import { useMutation } from "@tanstack/react-query"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
@@ -11,6 +11,8 @@ import {
   Edit02Icon,
   InformationCircleIcon,
   RefreshIcon,
+  ViewIcon,
+  ViewOffIcon,
 } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -36,6 +38,7 @@ import { cn } from "@/lib/utils"
 import type { NodeRow, Parts } from "@/lib/types"
 import { parseJson, textFromParts } from "@/lib/domain"
 import { useTRPC } from "@/lib/trpc-react"
+import { patchContextExcluded, type WorkspaceData } from "@/lib/workspace-cache"
 import { Markdown } from "@/components/markdown"
 import type { ProviderSummary } from "./types"
 import { MessageParts } from "./message-parts"
@@ -51,12 +54,14 @@ export function MessageAction({
   onClick,
   destructive,
   captions,
+  disabled,
 }: {
   icon: typeof RefreshIcon
   children: string
   onClick: () => void
   destructive?: boolean
   captions: boolean
+  disabled?: boolean
 }) {
   const button = (
     <Button
@@ -70,6 +75,7 @@ export function MessageAction({
         destructive && "text-destructive hover:text-destructive"
       )}
       onClick={onClick}
+      disabled={disabled}
       aria-label={children}
     >
       <HugeiconsIcon
@@ -112,6 +118,7 @@ export function Message({
   ) => void | Promise<void>
 }) {
   const trpc = useTRPC()
+  const queryClient = useQueryClient()
   const parts = parseJson<Parts>(node.parts_json, [])
   const metadata = parseJson<Record<string, unknown>>(node.metadata_json, {})
   const text = textFromParts(parts)
@@ -200,6 +207,32 @@ export function Message({
       onError: (error) => toast.error(error.message || "Delete failed"),
     })
   )
+  const setContextExcludedMutation = useMutation(
+    trpc.workspace.setContextExcluded.mutationOptions({
+      onMutate: async (input) => {
+        const key = trpc.workspace.get.queryKey({ chatId: node.chat_id })
+        await queryClient.cancelQueries({ queryKey: key })
+        const previous = queryClient.getQueryData<WorkspaceData>(key)
+        queryClient.setQueryData(
+          key,
+          patchContextExcluded(previous, input.nodeId, input.excluded)
+        )
+        return { previous, key }
+      },
+      onError: (error, _input, context) => {
+        if (context?.previous)
+          queryClient.setQueryData(context.key, context.previous)
+        toast.error(error.message || "Could not update message context")
+      },
+      onSettled: async (_data, _error, _input, context) => {
+        if (context?.key)
+          await queryClient.invalidateQueries({ queryKey: context.key })
+      },
+    })
+  )
+  const contextExclusionPending =
+    setContextExcludedMutation.isPending &&
+    setContextExcludedMutation.variables?.nodeId === node.id
 
   const usage = metadata.usage
   const usageEntries =
@@ -341,6 +374,21 @@ export function Message({
               Edit as branch
             </MessageAction>
           )}
+          <MessageAction
+            onClick={() =>
+              setContextExcludedMutation.mutate({
+                nodeId: node.id,
+                excluded: !node.excluded_from_context,
+              })
+            }
+            icon={node.excluded_from_context ? ViewOffIcon : ViewIcon}
+            captions={messageActionCaptions}
+            disabled={contextExclusionPending}
+          >
+            {node.excluded_from_context
+              ? "Include in context"
+              : "Exclude from context"}
+          </MessageAction>
           {node.role === "assistant" && Object.keys(metadata).length > 0 && (
             <MessageAction
               onClick={() => setDetailsOpen(true)}

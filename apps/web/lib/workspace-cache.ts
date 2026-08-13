@@ -69,3 +69,18 @@ export function patchSelection(
     ),
   }
 }
+
+/** Optimistic context-exclusion state for a single durable message node. */
+export function patchContextExcluded(
+  data: WorkspaceData | undefined,
+  nodeId: string,
+  excluded: boolean
+): WorkspaceData | undefined {
+  if (!data) return data
+  return {
+    ...data,
+    nodes: data.nodes.map((node) =>
+      node.id === nodeId ? { ...node, excluded_from_context: excluded } : node
+    ),
+  }
+}

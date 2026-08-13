@@ -264,7 +264,8 @@ describe("buildModelMessages", () => {
     id: string,
     role: NodeRow["role"],
     parts: Parts,
-    status: NodeRow["status"] = "complete"
+    status: NodeRow["status"] = "complete",
+    excluded_from_context = false
   ): NodeRow {
     return {
       id,
@@ -275,6 +276,7 @@ describe("buildModelMessages", () => {
       parts_json: JSON.stringify(parts),
       search_text: "",
       metadata_json: "{}",
+      excluded_from_context,
       status,
       created_at: "",
       updated_at: "",
@@ -315,6 +317,31 @@ describe("buildModelMessages", () => {
         toolCallId: "c1",
       })
     }
+  })
+
+  it("omits an excluded node without omitting later descendants", async () => {
+    const messages = await buildModelMessages({
+      nodes: [
+        node("u1", "user", [{ type: "text", text: "keep this" }]),
+        node(
+          "a1",
+          "assistant",
+          [{ type: "text", text: "omit this" }],
+          "complete",
+          true
+        ),
+        node("u2", "user", [{ type: "text", text: "keep this too" }]),
+      ],
+      replayReasoning: false,
+    })
+
+    expect(messages).toEqual([
+      { role: "user", content: [{ type: "text", text: "keep this" }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: "keep this too" }],
+      },
+    ])
   })
 
   it("emits pending tool calls without tool results", async () => {

@@ -19,6 +19,7 @@ function node(id: string): NodeRow {
     parts_json: "[]",
     search_text: "",
     metadata_json: "{}",
+    excluded_from_context: false,
     created_at: "",
     updated_at: "",
   }

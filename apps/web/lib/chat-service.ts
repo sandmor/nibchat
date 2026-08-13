@@ -60,6 +60,23 @@ import {
 } from "@/lib/backup-archive"
 import { validateImageSignature } from "@/lib/file-signatures"
 
+/** SQLite drivers reject JS booleans; Postgres wants real booleans. */
+function toDbBool(value: boolean): boolean {
+  if (databaseKind === "sqlite") return (value ? 1 : 0) as unknown as boolean
+  return value
+}
+
+function fromDbBool(value: unknown): boolean {
+  return value === true || value === 1 || value === "1"
+}
+
+function normalizeNodeRow(node: NodeRow): NodeRow {
+  return {
+    ...node,
+    excluded_from_context: fromDbBool(node.excluded_from_context),
+  }
+}
+
 async function assertChatOwner(chatId: string, userId: string) {
   const chat = await db
     .selectFrom("chats")
@@ -84,6 +101,7 @@ async function assertNodeOwner(nodeId: string, userId: string) {
       "message_nodes.parts_json",
       "message_nodes.search_text",
       "message_nodes.metadata_json",
+      "message_nodes.excluded_from_context",
       "message_nodes.status",
       "message_nodes.created_at",
       "message_nodes.updated_at",
@@ -92,7 +110,7 @@ async function assertNodeOwner(nodeId: string, userId: string) {
     .where("chats.user_id", "=", userId)
     .executeTakeFirst()
   if (!row) throw new Error("Node not found")
-  return row as NodeRow
+  return normalizeNodeRow(row as NodeRow)
 }
 
 export async function getWorkspace(
@@ -120,7 +138,11 @@ export async function getWorkspace(
         .orderBy("created_at")
         .execute()
     : []
-  return { chats, chat: selected ?? null, nodes }
+  return {
+    chats,
+    chat: selected ?? null,
+    nodes: nodes.map((node) => normalizeNodeRow(node)),
+  }
 }
 
 export async function createChat(
@@ -193,6 +215,7 @@ export async function insertNode(input: {
     parts_json: JSON.stringify(input.parts),
     search_text: searchTextFromParts(input.parts),
     metadata_json: JSON.stringify(input.metadata ?? {}),
+    excluded_from_context: toDbBool(false),
     status: input.status ?? ("complete" as const),
     created_at: timestamp,
     updated_at: timestamp,
@@ -225,6 +248,7 @@ type InsertableNode = {
   parts_json: string
   search_text: string
   metadata_json: string
+  excluded_from_context: boolean
   status: "complete" | "streaming" | "stopped" | "error"
   created_at: string
   updated_at: string
@@ -250,6 +274,7 @@ function newNode(
     parts_json: JSON.stringify(input.parts),
     search_text: searchTextFromParts(input.parts),
     metadata_json: JSON.stringify(input.metadata ?? {}),
+    excluded_from_context: toDbBool(false),
     status: input.status ?? "complete",
     created_at: timestamp,
     updated_at: timestamp,
@@ -328,6 +353,20 @@ export async function updateNode(
       ...(status ? { status } : {}),
       updated_at: now(),
     })
+    .where("id", "=", nodeId)
+    .execute()
+}
+
+/** Keep a node visible in the tree while opting it in or out of future model context. */
+export async function setNodeContextExcluded(
+  userId: string,
+  nodeId: string,
+  excluded: boolean
+) {
+  await assertNodeOwner(nodeId, userId)
+  await db
+    .updateTable("message_nodes")
+    .set({ excluded_from_context: toDbBool(excluded), updated_at: now() })
     .where("id", "=", nodeId)
     .execute()
 }
@@ -1487,6 +1526,7 @@ export async function restoreBackup(
           parts_json: node.parts_json,
           search_text: node.search_text,
           metadata_json: node.metadata_json,
+          excluded_from_context: toDbBool(node.excluded_from_context),
           status: node.status,
           created_at: node.created_at,
           updated_at: node.updated_at,
@@ -1585,7 +1625,7 @@ export async function createBackup(userId: string) {
     .where("user_id", "=", userId)
     .execute()
   const chatIds = chats.map((chat) => chat.id)
-  const nodes =
+  const rawNodes =
     chatIds.length === 0
       ? []
       : await db
@@ -1593,6 +1633,7 @@ export async function createBackup(userId: string) {
           .selectAll()
           .where("chat_id", "in", chatIds)
           .execute()
+  const nodes = rawNodes.map((node) => normalizeNodeRow(node))
   const providers = await db
     .selectFrom("provider_profiles")
     .select([

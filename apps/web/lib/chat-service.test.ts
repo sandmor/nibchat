@@ -14,6 +14,7 @@ import {
   insertNode,
   nodeParts,
   restoreAwaitingInput,
+  setNodeContextExcluded,
   startGenerate,
   startRegenerate,
 } from "@/lib/chat-service"
@@ -85,6 +86,46 @@ describe("SQLite chat repository", () => {
     expect(firstText?.type === "text" ? firstText.text : undefined).toBe(
       "first"
     )
+  })
+
+  it("toggles context exclusion on one node without changing its branch", async () => {
+    const chat = await createChat(userId, "Context exclusion")
+    const root = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "root" }],
+    })
+    const first = await insertNode({
+      chatId: chat.id,
+      parentId: root.id,
+      role: "assistant",
+      parts: [{ type: "text", text: "first" }],
+    })
+    const second = await insertNode({
+      chatId: chat.id,
+      parentId: root.id,
+      role: "assistant",
+      parts: [{ type: "text", text: "second" }],
+    })
+
+    await setNodeContextExcluded(userId, first.id, true)
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    const firstStored = workspace.nodes.find((node) => node.id === first.id)
+    const secondStored = workspace.nodes.find((node) => node.id === second.id)
+    expect(firstStored?.excluded_from_context).toBe(true)
+    expect(secondStored?.excluded_from_context).toBe(false)
+    expect(workspace.chat?.selected_root_node_id).toBe(root.id)
+    const backup = await createBackup(userId)
+    expect(
+      backup.nodes.find((node) => node.id === first.id)?.excluded_from_context
+    ).toBe(true)
+
+    await setNodeContextExcluded(userId, first.id, false)
+    const restored = await getWorkspace(userId, { chatId: chat.id })
+    expect(
+      restored.nodes.find((node) => node.id === first.id)?.excluded_from_context
+    ).toBe(false)
   })
 
   it("createTurn inserts user + streaming assistant without rewriting view selection", async () => {

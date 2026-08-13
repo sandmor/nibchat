@@ -45,4 +45,28 @@ describe("parseBackup", () => {
     expect(backup.providerProfiles).toHaveLength(1)
     expect(backup.promptStacks).toHaveLength(1)
   })
+
+  it("requires a context-exclusion flag for every message node", () => {
+    const node = {
+      id: "n1",
+      chat_id: "c1",
+      parent_id: null,
+      selected_child_id: null,
+      role: "user",
+      parts_json: "[]",
+      search_text: "",
+      metadata_json: "{}",
+      status: "complete",
+      created_at: "t",
+      updated_at: "t",
+    }
+    expect(() => parseBackup({ version: 1, chats: [], nodes: [node] })).toThrow()
+    expect(
+      parseBackup({
+        version: 1,
+        chats: [],
+        nodes: [{ ...node, excluded_from_context: false }],
+      }).nodes[0]?.excluded_from_context
+    ).toBe(false)
+  })
 })

@@ -24,6 +24,7 @@ const nodeRowSchema = z
     parts_json: z.string(),
     search_text: z.string(),
     metadata_json: z.string(),
+    excluded_from_context: z.boolean(),
     status: z.enum([
       "complete",
       "streaming",

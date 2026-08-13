@@ -24,6 +24,7 @@ import {
   previewAssembledContext,
   searchChats,
   selectChild,
+  setNodeContextExcluded,
   selectPath,
   selectRoot,
   setAppearance,
@@ -283,6 +284,16 @@ export const appRouter = t.router({
       .mutation(async ({ ctx, input }) => {
         try {
           await selectPath(ctx.user.id, input.chatId, input.nodeId)
+          return { ok: true }
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    setContextExcluded: ownerProcedure
+      .input(z.object({ nodeId: z.string(), excluded: z.boolean() }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          await setNodeContextExcluded(ctx.user.id, input.nodeId, input.excluded)
           return { ok: true }
         } catch (error) {
           mapError(error)

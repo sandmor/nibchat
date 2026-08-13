@@ -107,6 +107,8 @@ export interface MessageNodesTable {
   parts_json: string
   search_text: string
   metadata_json: string
+  /** When true, retain this node in the tree but omit it from future model context. */
+  excluded_from_context: boolean
   status: MessageStatus
   created_at: string
   updated_at: string

@@ -29,6 +29,11 @@ export async function buildModelMessages(
   const messages: ModelMessage[] = []
 
   for (const node of options.nodes) {
+    if (
+      node.excluded_from_context === true ||
+      (node.excluded_from_context as unknown) === 1
+    )
+      continue
     if (node.status === "error" && !node.search_text) continue
     const metadata = parseJson<Record<string, unknown>>(node.metadata_json, {})
     const parts = filterPartsForModel(node, nodePartsLocal(node), {

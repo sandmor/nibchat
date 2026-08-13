@@ -21,8 +21,8 @@ import type { Appearance, ResolvedAppearance } from "@/lib/appearance"
 import {
   PRESET_IDS,
   appearanceToJson,
+  applyAppearancePreset,
   parseAppearance,
-  presetDocument,
   presetTemplates,
 } from "@/lib/appearance"
 import { reconcileEditorText } from "@/lib/appearance-editor-sync"
@@ -114,7 +114,10 @@ export function AppearanceSettings({
   }
 
   function loadPreset(id: (typeof PRESET_IDS)[number]) {
-    const doc = presetDocument(id)
+    const doc = applyAppearancePreset(
+      effectiveDraft,
+      presetTemplates[id].document
+    )
     setText(appearanceToJson(doc))
     setParseError(null)
     applyDoc(doc)
@@ -162,8 +165,10 @@ export function AppearanceSettings({
       <CardHeader>
         <CardTitle>Appearance</CardTitle>
         <CardDescription>
-          Valid JSON and presets preview live only in this session. Nothing is
-          written until you save. Discard restores the last saved document.
+          Valid JSON and starters preview live only in this session. Starters
+          resolve into the current document; the editor shows that JSON, not a
+          patch. Nothing is written until you save. Discard restores the last
+          saved document.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -246,9 +251,12 @@ export function AppearanceSettings({
             <code className="text-[11px]">reducedMotion</code>),{" "}
             <code className="text-[11px]">messageActions</code> (
             <code className="text-[11px]">captions</code>),{" "}
+            <code className="text-[11px]">modelPicker</code> (
+            <code className="text-[11px]">showIds</code>),{" "}
             <code className="text-[11px]">remoteStylesheet</code>,{" "}
             <code className="text-[11px]">vars</code> (CSS custom properties →
-            :root).
+            :root). In a starter, <code className="text-[11px]">null</code>{" "}
+            removes a key.
           </p>
         </div>
 

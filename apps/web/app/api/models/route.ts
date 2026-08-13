@@ -23,11 +23,6 @@ export async function GET(request: Request) {
           .executeTakeFirst()
       : undefined
     if (!profile) return Response.json({ models: [] })
-    const manual = parseJson<string[]>(profile.models_json, []).map((id) => ({
-      id,
-      name: id,
-      source: "manual",
-    }))
     const cached = await db
       .selectFrom("model_catalog_cache")
       .selectAll()
@@ -39,16 +34,12 @@ export async function GET(request: Request) {
         []
       )
       return Response.json({
-        models: [
-          ...manual,
-          ...cachedModels.filter(
-            (model) => !manual.some((entry) => entry.id === model.id)
-          ),
-        ],
+        models: cachedModels,
         cachedAt: cached.refreshed_at,
       })
     }
     let discovered: Array<{ id: string; name: string }> = []
+    let discoverySucceeded = false
     if (profile.kind === "openai-compatible" && profile.base_url) {
       const apiKey =
         profile.api_key ??
@@ -66,6 +57,7 @@ export async function GET(request: Request) {
         }
       )
       if (response.ok) {
+        discoverySucceeded = true
         const payload = (await response.json()) as {
           data?: Array<{ id?: string }>
         }
@@ -79,6 +71,7 @@ export async function GET(request: Request) {
         signal: AbortSignal.timeout(8000),
       })
       if (response.ok) {
+        discoverySucceeded = true
         const payload = (await response.json()) as Record<
           string,
           { models?: Record<string, { name?: string }> }
@@ -89,7 +82,9 @@ export async function GET(request: Request) {
         )
       }
     }
-    if (discovered.length)
+    // A successful empty discovery is authoritative. A total discovery failure
+    // must not erase the last known catalog or prune editor selections.
+    if (discoverySucceeded)
       await db
         .insertInto("model_catalog_cache")
         .values({
@@ -105,13 +100,8 @@ export async function GET(request: Request) {
         )
         .execute()
     return Response.json({
-      models: [
-        ...manual,
-        ...discovered.filter(
-          (model) => !manual.some((entry) => entry.id === model.id)
-        ),
-      ],
-      cachedAt: discovered.length
+      models: discovered,
+      cachedAt: discoverySucceeded
         ? new Date().toISOString()
         : (cached?.refreshed_at ?? null),
     })

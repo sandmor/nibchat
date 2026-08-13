@@ -1,9 +1,9 @@
 import { z } from "zod"
 
 /**
- * Appearance is a free-form JSON document. The app only *reads* known fields;
- * presets are starter documents with the same shape — never special-cased at
- * runtime for layout or tokens.
+ * Appearance is a free-form JSON document. The app only *reads* known fields.
+ * Starters overlay the current document, then parse into the same canonical
+ * shape the editor saves — never a patch, and never `null` after parse.
  */
 export const motionSchema = z
   .object({
@@ -35,6 +35,15 @@ export const messageActionsSchema = z
 
 export type AppearanceMessageActions = z.infer<typeof messageActionsSchema>
 
+export const modelPickerSchema = z
+  .object({
+    /** When true, show API model ids in chat chrome. Hidden outside Settings by default. */
+    showIds: z.boolean().default(false),
+  })
+  .default({ showIds: false })
+
+export type AppearanceModelPicker = z.infer<typeof modelPickerSchema>
+
 export const appearanceSchema = z
   .object({
     version: z.literal(1).default(1),
@@ -51,6 +60,8 @@ export const appearanceSchema = z
     motion: motionSchema,
     /** Message chrome (footer actions, etc.). */
     messageActions: messageActionsSchema,
+    /** Chat model selector chrome. */
+    modelPicker: modelPickerSchema,
   })
   .loose()
 
@@ -92,10 +103,6 @@ const defaultMotion: AppearanceMotion = {
   reducedMotion: "respect",
 }
 
-const defaultMessageActions: AppearanceMessageActions = {
-  captions: false,
-}
-
 function easeToCss(ease: AppearanceMotion["ease"]): string {
   if (typeof ease === "string") return ease
   return `cubic-bezier(${ease.join(", ")})`
@@ -114,7 +121,64 @@ function motionVars(motion: AppearanceMotion): Record<string, string> {
   }
 }
 
-/** Named starter documents only — selecting one copies this JSON as-is. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+/** Drop `null` fields. `null` is a delete verb, never a stored token. */
+function omitNullFields(
+  value: Record<string, unknown>
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [key, entry] of Object.entries(value)) {
+    if (entry === null) continue
+    out[key] = isPlainObject(entry) ? omitNullFields(entry) : entry
+  }
+  return out
+}
+
+/**
+ * Overlay a starter onto a document. Omitted keys stay. `null` deletes.
+ * `vars` merges per token; every other object value replaces.
+ */
+export function overlayAppearance(
+  base: unknown,
+  patch: unknown
+): Record<string, unknown> {
+  const root = isPlainObject(base) ? { ...base } : {}
+  if (!isPlainObject(patch)) return root
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) {
+      delete root[key]
+      continue
+    }
+    if (key === "vars" && isPlainObject(value)) {
+      const currentVars = isPlainObject(root.vars) ? { ...root.vars } : {}
+      for (const [token, tokenValue] of Object.entries(value)) {
+        if (tokenValue === null) delete currentVars[token]
+        else currentVars[token] = tokenValue
+      }
+      root.vars = currentVars
+      continue
+    }
+    root[key] = value
+  }
+  return root
+}
+
+/** Apply a starter and return the canonical document the editor should show. */
+export function applyAppearancePreset(
+  current: Appearance,
+  patch: unknown
+): Appearance {
+  return parseAppearance(overlayAppearance(current, patch))
+}
+
+/**
+ * Starter overlays. `null` means delete that key (or token) when applied.
+ * Omitted chrome (`messageActions`, `modelPicker`, extra vars) is left on the
+ * current document.
+ */
 export const presetTemplates = {
   default: {
     name: "Default",
@@ -122,9 +186,9 @@ export const presetTemplates = {
     document: {
       version: 1 as const,
       density: "comfortable" as const,
-      vars: { ...defaultVars },
+      vars: null,
+      remoteStylesheet: null,
       motion: { ...defaultMotion },
-      messageActions: { ...defaultMessageActions },
     },
   },
   spatial: {
@@ -139,7 +203,6 @@ export const presetTemplates = {
         ease: [0.22, 1, 0.36, 1] as [number, number, number, number],
         reducedMotion: "respect" as const,
       },
-      messageActions: { ...defaultMessageActions },
       vars: {
         "--background": "oklch(.96 .012 85)",
         "--foreground": "oklch(.25 .02 75)",
@@ -180,7 +243,6 @@ export const presetTemplates = {
         ease: [0.25, 0.1, 0.25, 1] as [number, number, number, number],
         reducedMotion: "respect" as const,
       },
-      messageActions: { ...defaultMessageActions },
       vars: {
         "--background": "oklch(.975 .012 70)",
         "--foreground": "oklch(.18 .025 35)",
@@ -219,18 +281,20 @@ export function defaultAppearance(): Appearance {
 }
 
 export function presetDocument(id: PresetId): Appearance {
-  return parseAppearance(presetTemplates[id].document)
+  return applyAppearancePreset(
+    defaultAppearance(),
+    presetTemplates[id].document
+  )
 }
 
 /** Normalize a document into the canonical appearance shape. */
 export function parseAppearance(value: unknown): Appearance {
-  if (!value || typeof value !== "object") return defaultAppearance()
-  const raw = { ...(value as Record<string, unknown>) }
+  if (!isPlainObject(value)) return defaultAppearance()
+  const raw = omitNullFields(value)
 
-  const vars =
-    raw.vars && typeof raw.vars === "object" && !Array.isArray(raw.vars)
-      ? (raw.vars as Record<string, string>)
-      : null
+  const vars = isPlainObject(raw.vars)
+    ? (raw.vars as Record<string, string>)
+    : null
   raw.vars = vars && Object.keys(vars).length > 0 ? vars : { ...defaultVars }
   raw.version = 1
   if (raw.density !== "compact") raw.density = "comfortable"

@@ -26,8 +26,6 @@ docker compose --profile postgres up --build
 
 The `postgres` profile starts Postgres (healthchecked). `nibchat` depends on it when the profile is active (`depends_on` with `required: false` for the SQLite path). Use hostname `postgres` from inside the Compose network.
 
-There is a single current schema (version 1). Older on-disk shapes are not upgraded in place; replace `./data` or the database for a clean install.
-
 Nibchat streams responses from its Route Handler. With nginx or another reverse proxy, disable response buffering for `/api/chat/stream` (for nginx: `proxy_buffering off`) and preserve streaming response bodies. The handler also sends `X-Accel-Buffering: no`.
 
 Serverless deployments require PostgreSQL. Set `DATABASE_URL`, `BETTER_AUTH_SECRET`, and `BETTER_AUTH_URL`; do not use the SQLite default path on ephemeral instances.

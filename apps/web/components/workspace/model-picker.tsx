@@ -10,7 +10,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
-import { WithTooltip } from "@/components/ui/tooltip"
+import { TooltipProvider, WithTooltip } from "@/components/ui/tooltip"
 import {
   Dialog,
   DialogContent,
@@ -18,100 +18,89 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
-import { parseJson } from "@/lib/domain"
+import {
+  parseProviderModelsJson,
+  pickerModels,
+  resolveModelLabel,
+} from "@/lib/provider-models"
 import type { CatalogModel, ModelConfigLocal, ProviderSummary } from "./types"
 import { useMediaMdUp } from "./hooks"
+
+function modelsForProvider(
+  provider: ProviderSummary,
+  selectedProviderId?: string,
+  selectedModel?: string
+): CatalogModel[] {
+  const parsed = parseProviderModelsJson(provider.models_json)
+  const models = pickerModels(parsed)
+  if (
+    selectedProviderId === provider.id &&
+    selectedModel &&
+    !models.some((model) => model.id === selectedModel)
+  ) {
+    models.unshift({
+      id: selectedModel,
+      name: resolveModelLabel(parsed, selectedModel) ?? selectedModel,
+    })
+  }
+  return models
+}
+
+function joinLabel(parts: Array<string | null | undefined>) {
+  return parts.filter((part): part is string => Boolean(part?.trim())).join(" / ")
+}
 
 export function ModelPicker({
   config: existing,
   chatId,
   providers,
+  showIds = false,
   onChange,
 }: {
   config: ModelConfigLocal
   chatId?: string
   providers: ProviderSummary[]
+  showIds?: boolean
   onChange: (config: ModelConfigLocal) => void | Promise<void>
 }) {
   const router = useRouter()
   const mdUp = useMediaMdUp()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
-  const [loading, setLoading] = useState(false)
   const [pending, setPending] = useState(false)
-  const [catalog, setCatalog] = useState<Record<string, CatalogModel[]>>(() => {
-    const seed: Record<string, CatalogModel[]> = {}
-    for (const p of providers) {
-      seed[p.id] = parseJson<string[]>(p.models_json, []).map((id) => ({
-        id,
-        name: id,
-      }))
-    }
-    return seed
-  })
 
   const selectedProvider = providers.find((p) => p.id === existing.providerId)
   const modelId = existing.model
-  const modelShort = modelId
-    ? modelId.includes("/")
-      ? modelId.slice(modelId.lastIndexOf("/") + 1)
-      : modelId
+  const displayName =
+    resolveModelLabel(
+      parseProviderModelsJson(selectedProvider?.models_json ?? "[]"),
+      modelId
+    ) ?? modelId
+  const modelShort = displayName
+    ? displayName.includes("/")
+      ? displayName.slice(displayName.lastIndexOf("/") + 1)
+      : displayName
     : null
-  const fullLabel =
-    selectedProvider && modelId
-      ? `${selectedProvider.name} · ${modelId}`
-      : selectedProvider
-        ? selectedProvider.name
-        : modelId
-          ? modelId
-          : "Model"
+  const fullLabel = joinLabel([selectedProvider?.name, displayName]) || "Model"
+  const tooltipLabel =
+    showIds && modelId && displayName && modelId !== displayName
+      ? joinLabel([fullLabel, modelId])
+      : fullLabel
   const compactLabel = modelShort ?? selectedProvider?.name ?? "Model"
-
-  async function loadCatalogs(refresh = false) {
-    if (!providers.length) return
-    setLoading(true)
-    try {
-      const results = await Promise.all(
-        providers.map(async (provider) => {
-          const url = `/api/models?providerId=${encodeURIComponent(provider.id)}${
-            refresh ? "&refresh=1" : ""
-          }`
-          const res = await fetch(url)
-          const payload = (await res.json().catch(() => ({}))) as {
-            models?: Array<{ id: string; name?: string }>
-          }
-          const manual = parseJson<string[]>(provider.models_json, []).map(
-            (id) => ({ id, name: id })
-          )
-          const discovered = Array.isArray(payload.models)
-            ? payload.models.map((m) => ({
-                id: m.id,
-                name: m.name ?? m.id,
-              }))
-            : []
-          const byId = new Map<string, CatalogModel>()
-          for (const m of [...manual, ...discovered]) byId.set(m.id, m)
-          return [provider.id, [...byId.values()]] as const
-        })
-      )
-      setCatalog(Object.fromEntries(results) as Record<string, CatalogModel[]>)
-    } finally {
-      setLoading(false)
-    }
-  }
 
   function setPickerOpen(next: boolean) {
     setOpen(next)
-    if (next) {
-      setQuery("")
-      void loadCatalogs(false)
-    }
+    if (next) setQuery("")
   }
 
   const q = query.trim().toLowerCase()
   const groups = providers
     .map((provider) => {
-      const models = (catalog[provider.id] ?? []).filter((m) => {
+      const models = modelsForProvider(
+        provider,
+        existing.providerId,
+        existing.model
+      ).filter((m) => {
         if (!q) return true
         return (
           m.id.toLowerCase().includes(q) ||
@@ -147,18 +136,14 @@ export function ModelPicker({
         <Input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search models…"
+          placeholder="Search models"
           aria-label="Search models"
           className="flex-1"
           autoFocus={mdUp}
         />
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {loading && !groups.length ? (
-          <p className="px-1 py-6 text-center text-xs text-muted-foreground">
-            Loading models…
-          </p>
-        ) : !providers.length ? (
+        {!providers.length ? (
           <div className="px-1 py-6 text-center text-sm text-muted-foreground">
             <p>No providers configured.</p>
             <Button
@@ -174,7 +159,9 @@ export function ModelPicker({
           </div>
         ) : !groups.length ? (
           <p className="px-1 py-6 text-center text-xs text-muted-foreground">
-            No models match.
+            {q
+              ? "No models match."
+              : "No models are enabled. Turn models on in Settings."}
           </p>
         ) : (
           <div className="space-y-3 py-1">
@@ -202,11 +189,11 @@ export function ModelPicker({
                         <span className="truncate font-medium">
                           {model.name}
                         </span>
-                        {model.name !== model.id && (
+                        {showIds && model.name !== model.id ? (
                           <span className="truncate text-[11px] text-muted-foreground">
                             {model.id}
                           </span>
-                        )}
+                        ) : null}
                       </button>
                     )
                   })}
@@ -216,16 +203,7 @@ export function ModelPicker({
           </div>
         )}
       </div>
-      <div className="flex items-center justify-between gap-2 border-t pt-2">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="text-xs"
-          onClick={() => void loadCatalogs(true)}
-          disabled={loading}
-        >
-          Refresh catalogs
-        </Button>
+      <div className="flex items-center justify-end gap-2 border-t pt-2">
         <Button
           variant="ghost"
           size="sm"
@@ -243,14 +221,14 @@ export function ModelPicker({
 
   if (!mdUp) {
     return (
-      <>
-        <WithTooltip label={fullLabel}>
+      <TooltipProvider delay={400}>
+        <WithTooltip label={tooltipLabel}>
           <Button
             variant="ghost"
             size="sm"
             className="min-w-0 flex-1 justify-start truncate px-2"
             onClick={() => setPickerOpen(true)}
-            aria-label={`Model: ${fullLabel}`}
+            aria-label={`Model: ${tooltipLabel}`}
           >
             <span className="truncate">{compactLabel}</span>
           </Button>
@@ -263,31 +241,34 @@ export function ModelPicker({
             <div className="flex min-h-0 flex-1 flex-col gap-3">{listBody}</div>
           </DialogContent>
         </Dialog>
-      </>
+      </TooltipProvider>
     )
   }
 
   return (
-    <Popover open={open} onOpenChange={setPickerOpen}>
-      <PopoverTrigger
-        render={
-          <Button
-            variant="ghost"
-            size="sm"
-            className="max-w-[min(18rem,40vw)] min-w-0 truncate"
-            aria-label={`Model: ${fullLabel}`}
-            title={fullLabel}
-          />
-        }
-      >
-        <span className="truncate">{fullLabel}</span>
-      </PopoverTrigger>
-      <PopoverContent
-        align="end"
-        className="flex max-h-[min(28rem,70vh)] w-[min(22rem,calc(100vw-2rem))] flex-col gap-3 p-3"
-      >
-        {listBody}
-      </PopoverContent>
-    </Popover>
+    <TooltipProvider delay={400}>
+      <Popover open={open} onOpenChange={setPickerOpen}>
+        <WithTooltip label={tooltipLabel}>
+          <PopoverTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="sm"
+                className="max-w-[min(18rem,40vw)] min-w-0 truncate"
+                aria-label={`Model: ${tooltipLabel}`}
+              />
+            }
+          >
+            <span className="truncate">{fullLabel}</span>
+          </PopoverTrigger>
+        </WithTooltip>
+        <PopoverContent
+          align="end"
+          className="flex max-h-[min(28rem,70vh)] w-[min(22rem,calc(100vw-2rem))] flex-col gap-3 p-3"
+        >
+          {listBody}
+        </PopoverContent>
+      </Popover>
+    </TooltipProvider>
   )
 }

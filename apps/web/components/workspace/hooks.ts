@@ -3,6 +3,10 @@
 import { useEffect, useState } from "react"
 import type { ChatRow } from "@/lib/types"
 import { parseJson } from "@/lib/domain"
+import {
+  firstEnabledModelId,
+  parseProviderModelsJson,
+} from "@/lib/provider-models"
 import type { ModelConfigLocal, ProviderSummary } from "./types"
 
 export function seedDraftModelConfig(
@@ -13,10 +17,12 @@ export function seedDraftModelConfig(
     return parseJson<ModelConfigLocal>(chats[0].model_config_json, {})
   const provider = providers[0]
   if (!provider) return {}
-  const models = parseJson<string[]>(provider.models_json, [])
+  const model = firstEnabledModelId(
+    parseProviderModelsJson(provider.models_json)
+  )
   return {
     providerId: provider.id,
-    model: models[0],
+    ...(model ? { model } : {}),
   }
 }
 

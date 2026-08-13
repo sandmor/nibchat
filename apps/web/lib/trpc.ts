@@ -90,7 +90,6 @@ const ownerProcedure = t.procedure.use(({ ctx, next }) => {
   return next({ ctx: { user: ctx.user } })
 })
 
-import { partsSchema } from "@/lib/agent/parts"
 const modelConfigSchema = z.object({
   providerId: z.string().optional(),
   model: z.string().optional(),
@@ -103,13 +102,19 @@ const modelConfigSchema = z.object({
   providerOptions: z.record(z.string(), z.unknown()).optional(),
   replayReasoning: z.boolean().optional(),
 })
+const providerModelSchema = z.object({
+  id: z.string().trim().min(1).max(256),
+  label: z.string().trim().max(120).optional(),
+  enabled: z.boolean(),
+  source: z.enum(["catalog", "custom"]),
+})
 const providerInputSchema = z.object({
   name: z.string().min(1).max(120),
   kind: z.enum(["openai", "anthropic", "openai-compatible"]),
   baseUrl: z.string().optional(),
   apiKey: z.string().optional(),
   apiKeyEnv: z.string().optional(),
-  models: z.array(z.string()),
+  models: z.array(providerModelSchema),
 })
 
 const FIELD_LABELS: Record<string, string> = {
@@ -293,7 +298,11 @@ export const appRouter = t.router({
       .input(z.object({ nodeId: z.string(), excluded: z.boolean() }))
       .mutation(async ({ ctx, input }) => {
         try {
-          await setNodeContextExcluded(ctx.user.id, input.nodeId, input.excluded)
+          await setNodeContextExcluded(
+            ctx.user.id,
+            input.nodeId,
+            input.excluded
+          )
           return { ok: true }
         } catch (error) {
           mapError(error)

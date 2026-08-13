@@ -21,14 +21,7 @@ export type {
   AttachmentSource,
 }
 
-export const toolInvocationStateSchema = z.enum([
-  "input-streaming",
-  "input-available",
-  "output-available",
-  "output-error",
-])
-
-export const attachmentSourceSchema = z.discriminatedUnion("kind", [
+const attachmentSourceSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("mcp-resource"),
     profileId: z.string().min(1),
@@ -51,7 +44,7 @@ export const attachmentReferenceSchema = z.discriminatedUnion("kind", [
     .strict(),
 ])
 
-export const attachmentContentSchema = z.discriminatedUnion("kind", [
+const attachmentContentSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("text"),
     text: z.string().min(1).max(MAX_ATTACHMENT_TEXT_CHARS),
@@ -75,25 +68,6 @@ export const attachmentPartSchema = z.object({
   source: attachmentSourceSchema,
   content: attachmentContentSchema,
 })
-
-export const partsSchema = z.array(
-  z.discriminatedUnion("type", [
-    z.object({ type: z.literal("text"), text: z.string() }),
-    z.object({ type: z.literal("reasoning"), text: z.string() }),
-    z.object({
-      type: z.literal("tool-invocation"),
-      toolCallId: z.string().min(1),
-      toolName: z.string().min(1),
-      state: toolInvocationStateSchema,
-      input: z.unknown(),
-      output: z.unknown().optional(),
-      errorText: z.string().optional(),
-    }),
-    attachmentPartSchema,
-  ])
-)
-
-export type ParsedParts = z.infer<typeof partsSchema>
 
 /** Visible prose (text + attachment text bodies). */
 export function textFromParts(parts: Parts): string {

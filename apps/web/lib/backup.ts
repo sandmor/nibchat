@@ -1,5 +1,6 @@
 import { z } from "zod"
 import { appearanceSchema } from "@/lib/appearance"
+import { isProviderModelsJson } from "@/lib/provider-models"
 
 const chatRowSchema = z
   .object({
@@ -45,7 +46,9 @@ const providerProfileSchema = z
     kind: z.string(),
     base_url: z.string().nullable().optional(),
     api_key_env: z.string().nullable().optional(),
-    models_json: z.string(),
+    models_json: z.string().refine(isProviderModelsJson, {
+      message: "Invalid provider model preferences",
+    }),
     created_at: z.string(),
     updated_at: z.string(),
   })

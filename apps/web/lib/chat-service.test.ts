@@ -28,7 +28,7 @@ import { unpackBackupArchive } from "@/lib/backup-archive"
 import { db, migrate } from "@/lib/db"
 import { ancestorPath, parseJson, resolveActivePath } from "@/lib/domain"
 import { formatProviderError } from "@/lib/provider-errors"
-import { modelFor, type ModelConfig } from "@/lib/providers"
+import { modelFor, resolveModelConfig, type ModelConfig } from "@/lib/providers"
 
 const userId = "test-owner"
 beforeAll(async () => {
@@ -476,7 +476,14 @@ describe("SQLite chat repository", () => {
       name: `Seed provider ${Date.now()}`,
       kind: "openai-compatible",
       baseUrl: "http://127.0.0.1:8080/v1",
-      models: ["seed-model"],
+      models: [
+        {
+          id: "seed-model",
+          label: "seed-model",
+          enabled: true,
+          source: "custom",
+        },
+      ],
     })
     await createChat(userId, "Template chat", {
       providerId: provider.id,
@@ -799,11 +806,32 @@ describe("generation abort + finalize", () => {
 })
 
 describe("modelFor preflight", () => {
+  it("replaces a stale model selection with the first enabled model", async () => {
+    const provider = await createProvider(userId, {
+      name: `Fallback ${Date.now()}`,
+      kind: "openai-compatible",
+      models: [
+        { id: "first", label: "First", enabled: true, source: "custom" },
+        { id: "second", label: "Second", enabled: true, source: "custom" },
+      ],
+    })
+    await expect(
+      resolveModelConfig(userId, { providerId: provider.id, model: "removed" })
+    ).resolves.toMatchObject({ providerId: provider.id, model: "first" })
+  })
+
   it("requires API key", async () => {
     const provider = await createProvider(userId, {
       name: `No key ${Date.now()}`,
       kind: "openai",
-      models: ["gpt-4o-mini"],
+      models: [
+        {
+          id: "gpt-4o-mini",
+          label: "gpt-4o-mini",
+          enabled: true,
+          source: "custom",
+        },
+      ],
     })
     await expect(
       modelFor(userId, { providerId: provider.id, model: "gpt-4o-mini" })
@@ -815,7 +843,14 @@ describe("modelFor preflight", () => {
       name: `No base ${Date.now()}`,
       kind: "openai-compatible",
       apiKey: "sk-test",
-      models: ["local-model"],
+      models: [
+        {
+          id: "local-model",
+          label: "local-model",
+          enabled: true,
+          source: "custom",
+        },
+      ],
     })
     await expect(
       modelFor(userId, { providerId: provider.id, model: "local-model" })
@@ -844,10 +879,6 @@ describe("backup schema", () => {
     expect(backup.promptStacks).toEqual([])
     expect(backup.attachments).toEqual([])
     expect(backup.messageAttachments).toEqual([])
-  })
-
-  it("rejects wrong version", () => {
-    expect(() => parseBackup({ version: 2, chats: [], nodes: [] })).toThrow()
   })
 })
 

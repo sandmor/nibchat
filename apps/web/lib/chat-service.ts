@@ -30,6 +30,10 @@ import {
   type ModelConfig,
 } from "@/lib/providers"
 import { orderNodesForInsert, parseBackup } from "@/lib/backup"
+import {
+  parseProviderModels,
+  providerModelsToJson,
+} from "@/lib/provider-models"
 import { mcpProfileForBackup, profileFromRow } from "@/lib/mcp"
 import {
   appearanceToJson,
@@ -1067,16 +1071,23 @@ async function deleteSingleNodeWithSelectionRepair(
   })
 }
 
+type ProviderProfileInput = {
+  name: string
+  kind: "openai" | "anthropic" | "openai-compatible"
+  baseUrl?: string
+  apiKey?: string
+  apiKeyEnv?: string
+  models: Array<{
+    id: string
+    label?: string
+    enabled: boolean
+    source: "catalog" | "custom"
+  }>
+}
+
 export async function createProvider(
   userId: string,
-  profile: {
-    name: string
-    kind: "openai" | "anthropic" | "openai-compatible"
-    baseUrl?: string
-    apiKey?: string
-    apiKeyEnv?: string
-    models: string[]
-  }
+  profile: ProviderProfileInput
 ) {
   const timestamp = now()
   const row = {
@@ -1087,7 +1098,7 @@ export async function createProvider(
     base_url: profile.baseUrl || null,
     api_key: profile.apiKey || null,
     api_key_env: profile.apiKeyEnv || null,
-    models_json: JSON.stringify(profile.models),
+    models_json: providerModelsToJson(parseProviderModels(profile.models)),
     created_at: timestamp,
     updated_at: timestamp,
   }
@@ -1098,14 +1109,7 @@ export async function createProvider(
 export async function updateProvider(
   userId: string,
   providerId: string,
-  profile: {
-    name: string
-    kind: "openai" | "anthropic" | "openai-compatible"
-    baseUrl?: string
-    apiKey?: string
-    apiKeyEnv?: string
-    models: string[]
-  }
+  profile: ProviderProfileInput
 ) {
   const existing = await db
     .selectFrom("provider_profiles")
@@ -1124,7 +1128,7 @@ export async function updateProvider(
         ? { api_key: profile.apiKey || null }
         : {}),
       api_key_env: profile.apiKeyEnv || null,
-      models_json: JSON.stringify(profile.models),
+      models_json: providerModelsToJson(parseProviderModels(profile.models)),
       updated_at: now(),
     })
     .where("id", "=", providerId)

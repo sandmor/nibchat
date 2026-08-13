@@ -50,28 +50,14 @@ async function ensureMockProviderViaSettingsUi(page: Page, baseUrl: string) {
   if ((await editInMockRow.count()) > 0) {
     await editInMockRow.first().click()
   } else {
-    await page
-      .locator("label:text-is('Display name')")
-      .locator("..")
-      .getByRole("textbox")
-      .fill("E2E Mock")
-    await page
-      .locator("label:text-is('Models (comma-separated)')")
-      .locator("..")
-      .getByRole("textbox")
-      .fill("e2e-model")
+    await page.getByLabel("Display name").fill("E2E Mock")
+    await page.getByLabel("Add model ID").fill("e2e-model")
+    await page.getByRole("button", { name: "Add model" }).click()
+    await expect(page.getByLabel("Alias for e2e-model")).toBeVisible()
   }
 
-  await page
-    .locator("label:text-is('Base URL')")
-    .locator("..")
-    .getByRole("textbox")
-    .fill(baseUrl)
-  await page
-    .locator("label:text-is('Stored API key')")
-    .locator("..")
-    .getByRole("textbox")
-    .fill("sk-e2e-test-key")
+  await page.getByLabel("Base URL").fill(baseUrl)
+  await page.getByLabel("Stored API key").fill("sk-e2e-test-key")
 
   await page
     .getByRole("button", { name: /^(Save provider|Update provider)$/ })

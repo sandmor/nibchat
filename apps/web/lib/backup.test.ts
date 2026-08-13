@@ -3,6 +3,10 @@ import { parseBackup } from "@/lib/backup"
 import { defaultPromptStack, promptStackToJson } from "@/lib/prompt-stack"
 
 describe("parseBackup", () => {
+  it("rejects the incompatible v1 format", () => {
+    expect(() => parseBackup({ version: 1, chats: [], nodes: [] })).toThrow()
+  })
+
   it("requires chats and nodes arrays", () => {
     expect(() => parseBackup({ version: 1 })).toThrow()
   })
@@ -35,7 +39,7 @@ describe("parseBackup", () => {
           id: "p1",
           name: "Local",
           kind: "openai-compatible",
-          models_json: "[]",
+          models_json: '{"version":1,"preferences":[]}',
           created_at: "t",
           updated_at: "t",
         },
@@ -60,7 +64,9 @@ describe("parseBackup", () => {
       created_at: "t",
       updated_at: "t",
     }
-    expect(() => parseBackup({ version: 1, chats: [], nodes: [node] })).toThrow()
+    expect(() =>
+      parseBackup({ version: 1, chats: [], nodes: [node] })
+    ).toThrow()
     expect(
       parseBackup({
         version: 1,

@@ -21,7 +21,7 @@ import { db } from "@/lib/db"
 import { parseJson } from "@/lib/domain"
 import { jsonError, statusFromError } from "@/lib/http-error"
 import { formatProviderError } from "@/lib/provider-errors"
-import { modelFor, type ModelConfig } from "@/lib/providers"
+import { modelFor, resolveModelConfig, type ModelConfig } from "@/lib/providers"
 import { resolveMcpResourceAttachment } from "@/lib/mcp"
 import { resolveUploadedAttachments } from "@/lib/attachments"
 import { streamBodySchema } from "@/lib/stream-body"
@@ -61,7 +61,17 @@ export async function POST(request: Request) {
       .executeTakeFirst()
     if (!chat)
       return Response.json({ error: "Chat not found" }, { status: 404 })
-    const config = parseJson<ModelConfig>(chat.model_config_json, {})
+    const savedConfig = parseJson<ModelConfig>(chat.model_config_json, {})
+    const config = await resolveModelConfig(user.id, savedConfig)
+    if (JSON.stringify(config) !== JSON.stringify(savedConfig))
+      await db
+        .updateTable("chats")
+        .set({
+          model_config_json: JSON.stringify(config),
+          updated_at: new Date().toISOString(),
+        })
+        .where("id", "=", chat.id)
+        .execute()
     const languageModel = await modelFor(user.id, config)
     const assistantMeta = streamMeta(config)
 

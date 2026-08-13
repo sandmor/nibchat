@@ -37,11 +37,16 @@ import { TooltipProvider, WithTooltip } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import type { NodeRow, Parts } from "@/lib/types"
 import { parseJson, textFromParts } from "@/lib/domain"
+import {
+  parseProviderModelsJson,
+  resolveModelLabel,
+} from "@/lib/provider-models"
 import { useTRPC } from "@/lib/trpc-react"
 import { patchContextExcluded, type WorkspaceData } from "@/lib/workspace-cache"
 import { Markdown } from "@/components/markdown"
 import type { ProviderSummary } from "./types"
 import { MessageParts } from "./message-parts"
+import { useWorkspaceChrome } from "./shell"
 import {
   allPendingResultsReady,
   hasToolInvocations,
@@ -179,9 +184,19 @@ export function Message({
     }
   })
 
+  const { appearance } = useWorkspaceChrome()
+  const showIds = appearance.modelPicker.showIds
+  const provider = providers.find((p) => p.id === metadata.provider)
   const providerName =
-    providers.find((p) => p.id === metadata.provider)?.name ??
+    provider?.name ??
     (typeof metadata.provider === "string" ? metadata.provider : "—")
+  const modelName =
+    typeof metadata.model === "string"
+      ? (resolveModelLabel(
+          parseProviderModelsJson(provider?.models_json ?? "[]"),
+          metadata.model
+        ) ?? metadata.model)
+      : "—"
 
   const forkEditMutation = useMutation(
     trpc.workspace.forkEdit.mutationOptions({
@@ -426,7 +441,14 @@ export function Message({
             <dd className="min-w-0 break-all">{providerName}</dd>
             <dt className="text-muted-foreground">Model</dt>
             <dd className="min-w-0 break-all">
-              {String(metadata.model ?? "—")}
+              {modelName}
+              {showIds &&
+              typeof metadata.model === "string" &&
+              modelName !== metadata.model ? (
+                <span className="mt-0.5 block text-xs text-muted-foreground">
+                  {metadata.model}
+                </span>
+              ) : null}
             </dd>
             <dt className="text-muted-foreground">Finish</dt>
             <dd className="min-w-0 break-all">

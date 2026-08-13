@@ -5,6 +5,10 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 import type { LanguageModel } from "ai"
 import { db } from "@/lib/db"
 import { parseJson } from "@/lib/domain"
+import {
+  firstEnabledModelId,
+  parseProviderModelsJson,
+} from "@/lib/provider-models"
 
 export type ModelConfig = {
   providerId?: string
@@ -65,10 +69,12 @@ export async function defaultModelConfig(userId: string): Promise<ModelConfig> {
     .orderBy("created_at", "asc")
     .executeTakeFirst()
   if (!provider) return {}
-  const models = parseJson<string[]>(provider.models_json, [])
+  const model = firstEnabledModelId(
+    parseProviderModelsJson(provider.models_json)
+  )
   return {
     providerId: provider.id,
-    ...(models[0] ? { model: models[0] } : {}),
+    ...(model ? { model } : {}),
   }
 }
 
@@ -84,8 +90,13 @@ export async function modelFor(
         .where("user_id", "=", userId)
         .executeTakeFirst()
     : undefined
+  const enabledModels = parseProviderModelsJson(profile?.models_json ?? "[]")
+  const configuredModel = config.model
   const model =
-    config.model || parseJson<string[]>(profile?.models_json ?? "[]", [])[0]
+    configuredModel &&
+    enabledModels.some((entry) => entry.enabled && entry.id === configuredModel)
+      ? configuredModel
+      : firstEnabledModelId(enabledModels)
   if (!profile || !model)
     throw new Error(
       "Choose a provider and model in Settings before sending a message."
@@ -116,6 +127,29 @@ export async function modelFor(
     apiKey,
     baseURL: profile.base_url ?? "",
   })(model)
+}
+
+/** Resolve stale chat selections to the provider's current first enabled model. */
+export async function resolveModelConfig(
+  userId: string,
+  config: ModelConfig
+): Promise<ModelConfig> {
+  if (!config.providerId) return config
+  const profile = await db
+    .selectFrom("provider_profiles")
+    .select("models_json")
+    .where("id", "=", config.providerId)
+    .where("user_id", "=", userId)
+    .executeTakeFirst()
+  if (!profile) return config
+  const models = parseProviderModelsJson(profile.models_json)
+  if (
+    config.model &&
+    models.some((model) => model.enabled && model.id === config.model)
+  )
+    return config
+  const model = firstEnabledModelId(models)
+  return { ...config, ...(model ? { model } : { model: undefined }) }
 }
 
 export async function canReplayReasoning(userId: string, config: ModelConfig) {

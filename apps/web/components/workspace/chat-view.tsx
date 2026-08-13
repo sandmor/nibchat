@@ -784,6 +784,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
             config={activeModelConfig}
             chatId={data.chat?.id}
             providers={providers}
+            showIds={appearance.modelPicker.showIds}
             onChange={(config) => void commitModelConfig(config)}
           />
           <GenerationParameters

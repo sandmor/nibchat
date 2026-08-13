@@ -281,8 +281,8 @@ describe("buildModelMessages", () => {
     }
   }
 
-  it("expands completed tool rounds into assistant + tool messages", () => {
-    const messages = buildModelMessages({
+  it("expands completed tool rounds into assistant + tool messages", async () => {
+    const messages = await buildModelMessages({
       nodes: [
         node("u1", "user", [{ type: "text", text: "hi" }]),
         node("a1", "assistant", [
@@ -317,8 +317,8 @@ describe("buildModelMessages", () => {
     }
   })
 
-  it("emits pending tool calls without tool results", () => {
-    const messages = buildModelMessages({
+  it("emits pending tool calls without tool results", async () => {
+    const messages = await buildModelMessages({
       nodes: [
         node("a1", "assistant", [
           {
@@ -336,8 +336,8 @@ describe("buildModelMessages", () => {
     expect(messages[0]?.role).toBe("assistant")
   })
 
-  it("expands user attachment parts ahead of text for the model", () => {
-    const messages = buildModelMessages({
+  it("expands user attachment parts ahead of text for the model", async () => {
+    const messages = await buildModelMessages({
       nodes: [
         node("u1", "user", [
           {
@@ -373,6 +373,39 @@ describe("buildModelMessages", () => {
     expect(texts[0]).toContain("[Attachment: Usage Guide (help://usage-guide)]")
     expect(texts[0]).toContain("Guide body here.")
     expect(texts[1]).toBe("Use the guide.")
+  })
+
+  it("renders image attachments as placeholders when bytes are omitted", async () => {
+    const messages = await buildModelMessages({
+      nodes: [
+        node("u1", "user", [
+          {
+            type: "attachment",
+            id: "img1",
+            name: "photo.png",
+            source: { kind: "upload" },
+            content: {
+              kind: "binary",
+              attachmentId: "missing-on-purpose",
+              mediaType: "image/png",
+              byteSize: 4,
+              sha256: "a".repeat(64),
+            },
+          },
+          { type: "text", text: "What is this?" },
+        ]),
+      ],
+      replayReasoning: false,
+      binaryAttachments: "placeholder",
+    })
+    expect(messages).toHaveLength(1)
+    const user = messages[0]
+    expect(user?.role).toBe("user")
+    if (user?.role !== "user" || !Array.isArray(user.content)) return
+    expect(user.content).toEqual([
+      { type: "text", text: "[Image attachment: photo.png]" },
+      { type: "text", text: "What is this?" },
+    ])
   })
 
   it("adds truncation metadata to model context", () => {

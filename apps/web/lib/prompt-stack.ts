@@ -63,10 +63,7 @@ export type McpInstructionsModule = {
   enabled: boolean
 }
 export type PromptModule = z.infer<typeof promptModuleSchema>
-export type StackModule =
-  | HistoryModule
-  | McpInstructionsModule
-  | PromptModule
+export type StackModule = HistoryModule | McpInstructionsModule | PromptModule
 export type PromptStackDocument = { modules: StackModule[] }
 export type ModuleRole = z.infer<typeof moduleRoleSchema>
 export type ModulePlacement = z.infer<typeof placementSchema>
@@ -126,7 +123,9 @@ export function normalizePromptStack(
     (m) => m.kind === "mcp-instructions"
   ).length
   if (mcpInstructionsCount > 1)
-    throw new Error("Prompt stack must contain exactly one MCP instructions module")
+    throw new Error(
+      "Prompt stack must contain exactly one MCP instructions module"
+    )
 
   let historySeen = false
   let mcpInstructionsSeen = false

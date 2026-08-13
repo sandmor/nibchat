@@ -115,6 +115,13 @@ export function Message({
   const parts = parseJson<Parts>(node.parts_json, [])
   const metadata = parseJson<Record<string, unknown>>(node.metadata_json, {})
   const text = textFromParts(parts)
+  const editableText = parts
+    .filter(
+      (part): part is Extract<Parts[number], { type: "text" }> =>
+        part.type === "text"
+    )
+    .map((part) => part.text)
+    .join("\n")
   const toolful = hasToolInvocations(parts)
   const canEditAsBranch = !toolful
   const interactiveTools =
@@ -129,7 +136,7 @@ export function Message({
   const index = siblings.findIndex((candidate) => candidate.id === node.id)
   const [editOpen, setEditOpen] = useState(false)
   const [detailsOpen, setDetailsOpen] = useState(false)
-  const [editText, setEditText] = useState(text)
+  const [editText, setEditText] = useState(editableText)
   const [deleteOpen, setDeleteOpen] = useState(false)
   /** Local answers for multi-pending tools before a single resume fires. */
   const [localToolResults, setLocalToolResults] = useState<
@@ -144,7 +151,7 @@ export function Message({
     setEditOpen(false)
     setDetailsOpen(false)
     setDeleteOpen(false)
-    setEditText(text)
+    setEditText(editableText)
     setLocalToolResults({})
     setResumeInFlight(false)
   }
@@ -267,6 +274,7 @@ export function Message({
       </div>
       {displayParts.some((part) => part.type === "reasoning") ||
       displayParts.some((part) => part.type === "text") ||
+      displayParts.some((part) => part.type === "attachment") ||
       displayParts.some((part) => part.type === "tool-invocation") ? (
         <MessageParts
           parts={displayParts}
@@ -324,7 +332,7 @@ export function Message({
           {canEditAsBranch && (
             <MessageAction
               onClick={() => {
-                setEditText(text)
+                setEditText(editableText)
                 setEditOpen(true)
               }}
               icon={Edit02Icon}
@@ -443,7 +451,7 @@ export function Message({
               onClick={() =>
                 forkEditMutation.mutate({
                   nodeId: node.id,
-                  parts: [{ type: "text", text: editText }],
+                  text: editText,
                 })
               }
             >

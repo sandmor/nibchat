@@ -13,6 +13,8 @@ services:
       DATABASE_URL: ${DATABASE_URL:-}
       BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
       MCP_RUNTIME_MODE: ${MCP_RUNTIME_MODE:-stateful}
+      ATTACHMENT_STORAGE: ${ATTACHMENT_STORAGE:-filesystem}
+      ATTACHMENT_FILESYSTEM_PATH: ${ATTACHMENT_FILESYSTEM_PATH:-/data/attachments}
     volumes:
       - ./data:/data
     depends_on:

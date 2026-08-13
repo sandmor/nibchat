@@ -1,11 +1,15 @@
 import { beforeAll, describe, expect, it } from "vitest"
 import {
   beginResumeAssistant,
+  createBackup,
+  createBackupArchive,
   createChat,
   createProvider,
   createTurn,
+  deleteChat,
   deleteNode,
   finalizeStreamingAssistant,
+  forkEdit,
   getWorkspace,
   insertNode,
   nodeParts,
@@ -19,6 +23,7 @@ import {
   clearActiveGenerations,
 } from "@/lib/active-generations"
 import { parseBackup } from "@/lib/backup"
+import { unpackBackupArchive } from "@/lib/backup-archive"
 import { db, migrate } from "@/lib/db"
 import { ancestorPath, parseJson, resolveActivePath } from "@/lib/domain"
 import { formatProviderError } from "@/lib/provider-errors"
@@ -91,6 +96,7 @@ describe("SQLite chat repository", () => {
       parts: [{ type: "text", text: "prior" }],
     })
     const { user, assistant } = await createTurn({
+      userId,
       chatId: chat.id,
       parentId: prior.id,
       content: "hello turn",
@@ -116,6 +122,7 @@ describe("SQLite chat repository", () => {
   it("createTurn persists attachment-only user turns", async () => {
     const chat = await createChat(userId, "Attachment turn")
     const { user } = await createTurn({
+      userId,
       chatId: chat.id,
       parentId: null,
       content: "",
@@ -175,6 +182,7 @@ describe("SQLite chat repository", () => {
 
     // Turn parents under root while selection still favors leaf
     const { user, assistant } = await createTurn({
+      userId,
       chatId: chat.id,
       parentId: root.id,
       content: "branch turn",
@@ -191,6 +199,179 @@ describe("SQLite chat repository", () => {
     expect(path.map((n) => n.id)).toEqual([root.id, leaf.id])
     const rootRow = workspace.nodes.find((n) => n.id === root.id)
     expect(rootRow?.selected_child_id).toBe(leaf.id)
+  })
+
+  it("keeps image bytes while an edited branch still references them", async () => {
+    const chat = await createChat(userId, "Attachment branch")
+    const original = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [
+        {
+          type: "attachment",
+          id: "image-branch",
+          name: "image.png",
+          source: { kind: "upload" },
+          content: {
+            kind: "binary",
+            attachmentId: "image-branch",
+            mediaType: "image/png",
+            byteSize: 4,
+            sha256: "a".repeat(64),
+          },
+        },
+        { type: "text", text: "original" },
+      ],
+    })
+    await db
+      .insertInto("attachments")
+      .values({
+        id: "image-branch",
+        user_id: userId,
+        filename: "image.png",
+        media_type: "image/png",
+        byte_size: 4,
+        sha256: "a".repeat(64),
+        storage_backend: "database",
+        storage_key: null,
+        data: new Uint8Array([1, 2, 3, 4]),
+        claimed_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+      })
+      .execute()
+    await db
+      .insertInto("message_attachments")
+      .values({ message_node_id: original.id, attachment_id: "image-branch" })
+      .execute()
+    const edited = await forkEdit(userId, original.id, "edited")
+    await deleteNode(userId, original.id, "subtree")
+    const reference = await db
+      .selectFrom("message_attachments")
+      .selectAll()
+      .where("message_node_id", "=", edited.id)
+      .executeTakeFirst()
+    const attachment = await db
+      .selectFrom("attachments")
+      .select("id")
+      .where("id", "=", "image-branch")
+      .executeTakeFirst()
+    expect(reference?.attachment_id).toBe("image-branch")
+    expect(attachment?.id).toBe("image-branch")
+  })
+
+  it("keeps pending uploads when sweeping detached claimed images", async () => {
+    const pendingId = crypto.randomUUID()
+    const orphanId = crypto.randomUUID()
+    await db
+      .insertInto("attachments")
+      .values([
+        {
+          id: pendingId,
+          user_id: userId,
+          filename: "pending.png",
+          media_type: "image/png",
+          byte_size: 4,
+          sha256: "b".repeat(64),
+          storage_backend: "database",
+          storage_key: null,
+          data: new Uint8Array([1, 2, 3, 4]),
+          claimed_at: null,
+          created_at: new Date().toISOString(),
+        },
+        {
+          id: orphanId,
+          user_id: userId,
+          filename: "orphan.png",
+          media_type: "image/png",
+          byte_size: 4,
+          sha256: "c".repeat(64),
+          storage_backend: "database",
+          storage_key: null,
+          data: new Uint8Array([1, 2, 3, 4]),
+          claimed_at: new Date().toISOString(),
+          created_at: new Date().toISOString(),
+        },
+      ])
+      .execute()
+    const chat = await createChat(userId, "Pending sweep")
+    await deleteChat(userId, chat.id)
+    const pending = await db
+      .selectFrom("attachments")
+      .select("id")
+      .where("id", "=", pendingId)
+      .executeTakeFirst()
+    const orphan = await db
+      .selectFrom("attachments")
+      .select("id")
+      .where("id", "=", orphanId)
+      .executeTakeFirst()
+    expect(pending?.id).toBe(pendingId)
+    expect(orphan).toBeUndefined()
+    await db.deleteFrom("attachments").where("id", "=", pendingId).execute()
+  })
+
+  it("createBackup references attachment files in a zip archive", async () => {
+    const chat = await createChat(userId, "Backup images")
+    const attachmentId = crypto.randomUUID()
+    const original = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [
+        {
+          type: "attachment",
+          id: attachmentId,
+          name: "shot.png",
+          source: { kind: "upload" },
+          content: {
+            kind: "binary",
+            attachmentId,
+            mediaType: "image/png",
+            byteSize: 4,
+            sha256: "d".repeat(64),
+          },
+        },
+        { type: "text", text: "see this" },
+      ],
+    })
+    await db
+      .insertInto("attachments")
+      .values({
+        id: attachmentId,
+        user_id: userId,
+        filename: "shot.png",
+        media_type: "image/png",
+        byte_size: 4,
+        sha256: "d".repeat(64),
+        storage_backend: "database",
+        storage_key: null,
+        data: new Uint8Array([9, 8, 7, 6]),
+        claimed_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+      })
+      .execute()
+    await db
+      .insertInto("message_attachments")
+      .values({ message_node_id: original.id, attachment_id: attachmentId })
+      .execute()
+    const backup = await createBackup(userId)
+    const row = backup.attachments.find((item) => item.id === attachmentId)
+    expect(row?.file).toBe(`attachments/${attachmentId}`)
+    expect(row && "data" in row).toBe(false)
+    expect(
+      backup.messageAttachments.some(
+        (link) =>
+          link.message_node_id === original.id &&
+          link.attachment_id === attachmentId
+      )
+    ).toBe(true)
+    const zip = await createBackupArchive(userId)
+    const unpacked = unpackBackupArchive(zip)
+    expect([...unpacked.files.get(row!.file)!]).toEqual([9, 8, 7, 6])
+    expect(
+      unpacked.backup.attachments.some((item) => item.id === attachmentId)
+    ).toBe(true)
   })
 
   it("deleteNode reparent promotes a single child and fixes selection", async () => {
@@ -620,6 +801,8 @@ describe("backup schema", () => {
     expect(backup.version).toBe(1)
     expect(backup.providerProfiles).toEqual([])
     expect(backup.promptStacks).toEqual([])
+    expect(backup.attachments).toEqual([])
+    expect(backup.messageAttachments).toEqual([])
   })
 
   it("rejects wrong version", () => {

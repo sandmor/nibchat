@@ -77,7 +77,25 @@ const mcpServerProfileSchema = z
   })
   .loose()
 
-/** Full-instance portable snapshot (no API keys). Stack docs validated on restore/export. */
+const attachmentBackupSchema = z.object({
+  id: z.string(),
+  filename: z.string(),
+  media_type: z.string(),
+  byte_size: z.number().int().nonnegative(),
+  sha256: z.string(),
+  claimed_at: z.string().nullable(),
+  created_at: z.string(),
+  /** Path of the raw file inside the backup zip (`attachments/<id>`). */
+  file: z.string().regex(/^attachments\/[A-Za-z0-9._-]+$/),
+})
+
+const messageAttachmentBackupSchema = z.object({
+  message_node_id: z.string(),
+  attachment_id: z.string(),
+})
+
+/** Full-instance portable snapshot (no API keys or attachment bytes).
+ * Bytes live next to this manifest in the backup zip. */
 export const backupSchema = z.object({
   version: z.literal(1),
   chats: z.array(chatRowSchema),
@@ -85,6 +103,11 @@ export const backupSchema = z.object({
   providerProfiles: z.array(providerProfileSchema).optional().default([]),
   mcpServerProfiles: z.array(mcpServerProfileSchema).optional().default([]),
   promptStacks: z.array(promptStackRowSchema).optional().default([]),
+  attachments: z.array(attachmentBackupSchema).optional().default([]),
+  messageAttachments: z
+    .array(messageAttachmentBackupSchema)
+    .optional()
+    .default([]),
   appearance: appearanceSchema.optional(),
   instance: z
     .object({

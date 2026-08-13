@@ -18,14 +18,15 @@ export function BackupSettings() {
       <CardHeader>
         <CardTitle>Backup & restore</CardTitle>
         <CardDescription>
-          API keys are never included. Restore only works when this instance has
+          Downloads a zip with chat metadata and original attachment files. API
+          keys are never included. Restore only works when this instance has
           zero chats.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-wrap gap-2">
         <a
           href="/api/backup"
-          download
+          download="nibchat-backup.zip"
           className={buttonVariants({ variant: "outline" })}
         >
           Download full backup
@@ -36,17 +37,18 @@ export function BackupSettings() {
         <input
           ref={fileRef}
           type="file"
-          accept="application/json,.json"
+          accept="application/zip,.zip,application/json,.json"
           className="hidden"
           onChange={async (event) => {
             const file = event.target.files?.[0]
             if (!file) return
             try {
-              const body = JSON.parse(await file.text())
               const response = await fetch("/api/restore", {
                 method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify(body),
+                headers: {
+                  "content-type": file.type || "application/octet-stream",
+                },
+                body: file,
               })
               const payload = await response.json()
               if (!response.ok)

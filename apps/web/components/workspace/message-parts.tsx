@@ -1,7 +1,9 @@
 "use client"
 
+import { useState } from "react"
 import { Markdown } from "@/components/markdown"
 import { QuestionToolView } from "@/components/workspace/tools/question-tool"
+import { ImageViewer } from "@/components/workspace/image-viewer"
 import type { QuestionAnswers } from "@/lib/agent/tools/question-shared"
 import type { Parts, ToolInvocationPart } from "@/lib/types"
 
@@ -23,6 +25,9 @@ export function MessageParts({
     output: unknown
   ) => void | Promise<void>
 }) {
+  const [viewer, setViewer] = useState<{ src: string; name: string } | null>(
+    null
+  )
   if (parts.length === 0) {
     if (streamingPlaceholder) {
       return (
@@ -35,90 +40,114 @@ export function MessageParts({
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      {parts.map((part, index) => {
-        if (part.type === "reasoning") {
-          return (
-            <details
-              key={`reasoning-${index}`}
-              className="rounded-lg bg-muted p-3 text-xs text-muted-foreground"
-            >
-              <summary className="cursor-pointer">Reasoning</summary>
-              <p className="mt-2 whitespace-pre-wrap">{part.text}</p>
-            </details>
-          )
-        }
-        if (part.type === "text") {
-          if (role === "assistant") {
+    <>
+      <div className="flex flex-col gap-3">
+        {parts.map((part, index) => {
+          if (part.type === "reasoning") {
             return (
-              <div
-                key={`text-${index}`}
-                className="prose prose-sm dark:prose-invert max-w-none"
+              <details
+                key={`reasoning-${index}`}
+                className="rounded-lg bg-muted p-3 text-xs text-muted-foreground"
               >
-                <Markdown>
-                  {part.text || (streamingPlaceholder ? "Thinking…" : "")}
-                </Markdown>
-              </div>
+                <summary className="cursor-pointer">Reasoning</summary>
+                <p className="mt-2 whitespace-pre-wrap">{part.text}</p>
+              </details>
             )
           }
-          return (
-            <p key={`text-${index}`} className="whitespace-pre-wrap">
-              {part.text}
-            </p>
-          )
-        }
-        if (part.type === "attachment") {
-          const sourceLabel =
-            part.source.kind === "mcp-resource"
-              ? part.source.profileName
-              : undefined
-          const sourceDetail =
-            part.source.kind === "mcp-resource" ? part.source.uri : undefined
-          return (
-            <details
-              key={part.id}
-              className="rounded-lg border border-dashed bg-muted/40 p-3 text-sm"
-            >
-              <summary className="cursor-pointer font-medium">
-                Attached: {part.name}
-                {sourceLabel ? (
-                  <span className="ml-2 text-xs font-normal text-muted-foreground">
-                    {sourceLabel}
-                  </span>
+          if (part.type === "text") {
+            if (role === "assistant") {
+              return (
+                <div
+                  key={`text-${index}`}
+                  className="prose prose-sm dark:prose-invert max-w-none"
+                >
+                  <Markdown>
+                    {part.text || (streamingPlaceholder ? "Thinking…" : "")}
+                  </Markdown>
+                </div>
+              )
+            }
+            return (
+              <p key={`text-${index}`} className="whitespace-pre-wrap">
+                {part.text}
+              </p>
+            )
+          }
+          if (part.type === "attachment") {
+            if (part.content.kind === "binary") {
+              const src = `/api/attachments/${part.content.attachmentId}`
+              return (
+                <figure key={part.id} className="w-fit max-w-full">
+                  <button
+                    type="button"
+                    className="block max-w-full cursor-zoom-in rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                    onClick={() => setViewer({ src, name: part.name })}
+                  >
+                    <img
+                      src={src}
+                      alt={part.name}
+                      className="max-h-80 max-w-full rounded-md object-contain"
+                    />
+                  </button>
+                  <figcaption className="mt-1 text-[11px] text-muted-foreground">
+                    {part.name}
+                  </figcaption>
+                </figure>
+              )
+            }
+            const sourceLabel =
+              part.source.kind === "mcp-resource"
+                ? part.source.profileName
+                : undefined
+            const sourceDetail =
+              part.source.kind === "mcp-resource" ? part.source.uri : undefined
+            return (
+              <details
+                key={part.id}
+                className="rounded-lg border border-dashed bg-muted/40 p-3 text-sm"
+              >
+                <summary className="cursor-pointer font-medium">
+                  Attached: {part.name}
+                  {sourceLabel ? (
+                    <span className="ml-2 text-xs font-normal text-muted-foreground">
+                      {sourceLabel}
+                    </span>
+                  ) : null}
+                </summary>
+                {sourceDetail ? (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {sourceDetail}
+                  </p>
                 ) : null}
-              </summary>
-              {sourceDetail ? (
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {sourceDetail}
-                </p>
-              ) : null}
-              <pre className="mt-2 max-h-64 overflow-auto text-xs whitespace-pre-wrap">
-                {part.content.text}
-              </pre>
-              {part.content.truncated ? (
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Truncated from {part.content.truncated.originalCharacters}{" "}
-                  characters.
-                </p>
-              ) : null}
-            </details>
-          )
-        }
-        if (part.type === "tool-invocation") {
-          return (
-            <ToolPart
-              key={part.toolCallId}
-              part={part}
-              interactive={Boolean(
-                interactiveTools && part.state === "input-available"
-              )}
-              onAnswerTool={onAnswerTool}
-            />
-          )
-        }
-        return null
-      })}
-    </div>
+                <pre className="mt-2 max-h-64 overflow-auto text-xs whitespace-pre-wrap">
+                  {part.content.text}
+                </pre>
+                {part.content.truncated ? (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Truncated from {part.content.truncated.originalCharacters}{" "}
+                    characters.
+                  </p>
+                ) : null}
+              </details>
+            )
+          }
+          if (part.type === "tool-invocation") {
+            return (
+              <ToolPart
+                key={part.toolCallId}
+                part={part}
+                interactive={Boolean(
+                  interactiveTools && part.state === "input-available"
+                )}
+                onAnswerTool={onAnswerTool}
+              />
+            )
+          }
+          return null
+        })}
+      </div>
+      <ImageViewer image={viewer} onClose={() => setViewer(null)} />
+    </>
   )
 }
 

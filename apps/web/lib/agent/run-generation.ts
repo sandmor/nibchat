@@ -131,7 +131,7 @@ export async function createGenerationResponse(
       ? ancestorPath(nodesForContext, contextLeafId)
       : []
     const replayReasoning = await canReplayReasoning(userId, config)
-    const pathMessages = buildModelMessages({
+    const pathMessages = await buildModelMessages({
       nodes: contextNodes,
       replayReasoning,
     })

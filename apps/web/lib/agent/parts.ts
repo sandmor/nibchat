@@ -35,6 +35,7 @@ export const attachmentSourceSchema = z.discriminatedUnion("kind", [
     profileName: z.string().min(1),
     uri: z.string().min(1),
   }),
+  z.object({ kind: z.literal("upload") }),
 ])
 
 export const attachmentReferenceSchema = z.discriminatedUnion("kind", [
@@ -45,6 +46,9 @@ export const attachmentReferenceSchema = z.discriminatedUnion("kind", [
       uri: z.string().min(1).max(4_000),
     })
     .strict(),
+  z
+    .object({ kind: z.literal("uploaded-file"), id: z.string().min(1) })
+    .strict(),
 ])
 
 export const attachmentContentSchema = z.discriminatedUnion("kind", [
@@ -54,6 +58,13 @@ export const attachmentContentSchema = z.discriminatedUnion("kind", [
     truncated: z
       .object({ originalCharacters: z.number().int().positive() })
       .optional(),
+  }),
+  z.object({
+    kind: z.literal("binary"),
+    attachmentId: z.string().min(1),
+    mediaType: z.string().regex(/^image\/(jpeg|png|webp|gif)$/),
+    byteSize: z.number().int().positive(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/),
   }),
 ])
 
@@ -90,7 +101,9 @@ export function textFromParts(parts: Parts): string {
   for (const part of parts) {
     if (part.type === "text" && part.text) chunks.push(part.text)
     else if (part.type === "attachment") {
-      chunks.push(`[${part.name}]\n${part.content.text}`)
+      if (part.content.kind === "text")
+        chunks.push(`[${part.name}]\n${part.content.text}`)
+      else chunks.push(`[Image: ${part.name}]`)
     }
   }
   return chunks.join("\n")
@@ -106,7 +119,7 @@ export function searchTextFromParts(parts: Parts): string {
       if (part.source.kind === "mcp-resource") {
         chunks.push(`mcp-resource:${part.source.uri}`)
       }
-      chunks.push(part.content.text)
+      if (part.content.kind === "text") chunks.push(part.content.text)
     } else if (part.type === "tool-invocation") {
       chunks.push(toolSearchSnippet(part))
     }
@@ -116,6 +129,7 @@ export function searchTextFromParts(parts: Parts): string {
 
 /** How attachment content is presented to the model. */
 export function attachmentModelText(part: AttachmentPart): string {
+  if (part.content.kind !== "text") return `[Image attachment: ${part.name}]`
   const locator =
     part.source.kind === "mcp-resource" ? ` (${part.source.uri})` : ""
   const truncated = part.content.truncated

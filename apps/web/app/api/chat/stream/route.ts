@@ -23,8 +23,9 @@ import { jsonError, statusFromError } from "@/lib/http-error"
 import { formatProviderError } from "@/lib/provider-errors"
 import { modelFor, type ModelConfig } from "@/lib/providers"
 import { resolveMcpResourceAttachment } from "@/lib/mcp"
+import { resolveUploadedAttachments } from "@/lib/attachments"
 import { streamBodySchema } from "@/lib/stream-body"
-import type { NodeRow, Parts } from "@/lib/types"
+import type { AttachmentReference, NodeRow, Parts } from "@/lib/types"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -74,13 +75,20 @@ export async function POST(request: Request) {
       const references = uniqueAttachmentReferences(body.attachments ?? [])
       if (!message && references.length === 0)
         return Response.json({ error: "Message is required" }, { status: 400 })
-      const attachments = await Promise.all(
-        references.map((reference) =>
-          resolveMcpResourceAttachment(user.id, reference)
-        )
+      const mcpReferences = references.filter(
+        (reference) => reference.kind === "mcp-resource"
       )
+      const attachments = [
+        ...(await Promise.all(
+          mcpReferences.map((reference) =>
+            resolveMcpResourceAttachment(user.id, reference)
+          )
+        )),
+        ...(await resolveUploadedAttachments(user.id, references)),
+      ]
       const parentId = body.parentNodeId ?? null
       const turn = await createTurn({
+        userId: user.id,
         chatId: chat.id,
         parentId,
         content: message,
@@ -288,12 +296,13 @@ export async function POST(request: Request) {
   }
 }
 
-function uniqueAttachmentReferences(
-  references: Array<{ kind: "mcp-resource"; profileId: string; uri: string }>
-) {
+function uniqueAttachmentReferences(references: AttachmentReference[]) {
   const seen = new Set<string>()
   return references.filter((reference) => {
-    const key = `${reference.kind}\u0000${reference.profileId}\u0000${reference.uri}`
+    const key =
+      reference.kind === "mcp-resource"
+        ? `${reference.kind}\u0000${reference.profileId}\u0000${reference.uri}`
+        : `${reference.kind}\u0000${reference.id}`
     if (seen.has(key)) return false
     seen.add(key)
     return true

@@ -17,6 +17,12 @@ describe("applySchema", () => {
     await db.selectFrom("provider_profiles").select("id").limit(1).execute()
     await db.selectFrom("prompt_stacks").select("id").limit(1).execute()
     await db.selectFrom("user").select("id").limit(1).execute()
+    await db.selectFrom("attachments").select("id").limit(1).execute()
+    await db
+      .selectFrom("message_attachments")
+      .select("attachment_id")
+      .limit(1)
+      .execute()
     const defaultStack = await db
       .selectFrom("prompt_stacks")
       .select("id")

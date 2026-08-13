@@ -6,6 +6,7 @@ import {
   type Parts,
 } from "@/lib/agent/parts"
 import type { NodeRow, ToolInvocationPart } from "@/lib/types"
+import { getAttachedAttachment, readAttachment } from "@/lib/attachments"
 
 function nodePartsLocal(node: NodeRow): Parts {
   return parseJson<Parts>(node.parts_json, [])
@@ -14,15 +15,17 @@ function nodePartsLocal(node: NodeRow): Parts {
 export type BuildMessagesOptions = {
   nodes: NodeRow[]
   replayReasoning: boolean
+  /** Previews should not load or serialize image bytes. */
+  binaryAttachments?: "embed" | "placeholder"
 }
 
 /**
  * Convert tree context nodes into AI SDK model messages, expanding
  * tool-invocation parts into assistant tool-call + tool-result turns.
  */
-export function buildModelMessages(
+export async function buildModelMessages(
   options: BuildMessagesOptions
-): ModelMessage[] {
+): Promise<ModelMessage[]> {
   const messages: ModelMessage[] = []
 
   for (const node of options.nodes) {
@@ -44,13 +47,35 @@ export function buildModelMessages(
     }
 
     if (node.role === "user") {
-      const content: Array<{ type: "text"; text: string }> = []
+      const content: Array<
+        | { type: "text"; text: string }
+        | {
+            type: "file"
+            filename: string
+            mediaType: string
+            data: { type: "data"; data: Uint8Array }
+          }
+      > = []
       for (const part of parts) {
         if (part.type === "text" && part.text) {
           content.push({ type: "text", text: part.text })
         } else if (part.type === "attachment") {
-          const text = attachmentModelText(part)
-          content.push({ type: "text", text })
+          if (part.content.kind === "text") {
+            content.push({ type: "text", text: attachmentModelText(part) })
+          } else if (options.binaryAttachments === "placeholder") {
+            content.push({
+              type: "text",
+              text: attachmentModelText(part),
+            })
+          } else {
+            const row = await getAttachedAttachment(part.content.attachmentId)
+            content.push({
+              type: "file",
+              filename: row.filename,
+              mediaType: row.media_type,
+              data: { type: "data", data: await readAttachment(row) },
+            })
+          }
         }
       }
       if (content.length > 0) messages.push({ role: "user", content })

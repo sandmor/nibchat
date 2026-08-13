@@ -5,7 +5,12 @@ import { useRouter } from "next/navigation"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { SentIcon, StopIcon } from "@hugeicons/core-free-icons"
+import {
+  ImageAdd02Icon,
+  Loading03Icon,
+  SentIcon,
+  StopIcon,
+} from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -21,6 +26,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
+import { TooltipProvider, WithTooltip } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { parseJson, resolveActivePath } from "@/lib/domain"
 import { useStreamStore } from "@/lib/stream-store"
@@ -38,10 +44,15 @@ import { ModelPicker } from "./model-picker"
 import { GenerationParameters } from "./generation-parameters"
 import { PromptStackPicker } from "./prompt-stack-picker"
 import { ChatTranscript } from "./chat-transcript"
+import { ImageViewer } from "./image-viewer"
 import { chatRouteIdentity } from "./chat-transcript-helpers"
 import { useWorkspaceChrome } from "./shell"
 import { DocumentTitle } from "@/components/document-title"
-import type { AttachmentReference, NodeRow } from "@/lib/types"
+import {
+  MAX_IMAGE_ATTACHMENTS,
+  type AttachmentReference,
+  type NodeRow,
+} from "@/lib/types"
 import type { ActiveStream } from "@/lib/stream-store"
 import {
   readStreamEvents,
@@ -62,6 +73,8 @@ type Props = {
 type ComposerAttachment = {
   name: string
   reference: AttachmentReference
+  previewUrl?: string
+  uploading?: boolean
 }
 
 export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
@@ -73,6 +86,14 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const selectedChatId = mode === "draft" ? null : chatId
   const [composer, setComposer] = useState("")
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
+  const attachmentsRef = useRef<ComposerAttachment[]>([])
+  attachmentsRef.current = attachments
+  const imageInputRef = useRef<HTMLInputElement>(null)
+  const [viewer, setViewer] = useState<{ src: string; name: string } | null>(
+    null
+  )
+  const [dropActive, setDropActive] = useState(false)
+  const dropDepthRef = useRef(0)
   const [mcpMenuOpen, setMcpMenuOpen] = useState(false)
   const [resourcePickerOpen, setResourcePickerOpen] = useState(false)
   const [promptPickerOpen, setPromptPickerOpen] = useState(false)
@@ -98,6 +119,8 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   /** Last route identity we bound deep-link / scroll lifecycle to. */
   const boundChatIdentityRef = useRef<string | null>(null)
   const aliveRef = useRef(true)
+  /** Removed uploads can finish after their chip is gone; delete their server row. */
+  const cancelledUploadIds = useRef(new Set<string>())
   const consumeScrollTarget = useCallback(() => setScrollTargetId(null), [])
   // Sync route selection only when URL has a real chat id. On draft (null) we
   // intentionally keep ensureChatId's assigned id until navigation remounts.
@@ -298,9 +321,10 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     }
   ) {
     const modelConfig = options?.modelConfig ?? activeModelConfig
-    if (!ensureModelReady(modelConfig)) return
+    if (!ensureModelReady(modelConfig)) return false
     let streamId: string | undefined
     if (aliveRef.current) setInFlightCount((n) => n + 1)
+    let failed = false
     try {
       const controller = new AbortController()
       streamId = crypto.randomUUID()
@@ -384,6 +408,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       })
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
+        failed = true
         if (aliveRef.current) {
           toast.error(error instanceof Error ? error.message : "Stream failed")
         }
@@ -395,6 +420,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       if (aliveRef.current) setInFlightCount((n) => Math.max(0, n - 1))
       if (streamId) finishStream(streamId)
     }
+    return !failed
   }
 
   async function ensureChatId(
@@ -462,6 +488,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   async function streamContinue() {
     const content = composer.trim()
     if (!content && attachments.length === 0) return
+    if (attachments.some((attachment) => attachment.uploading)) return
     if (!ensureModelReady(activeModelConfig)) return
 
     const contextLeafId = composerParentId
@@ -469,6 +496,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     const pendingAttachments = [...attachments]
     setComposer("")
     setAttachments([])
+    attachmentsRef.current = []
 
     let ensuredId: string | null = null
     let created = false
@@ -478,7 +506,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       ensuredId = ensured.chatId
       created = ensured.created
       // Start the stream before URL replace so remount sees Zustand state.
-      await runStream(
+      const started = await runStream(
         {
           chatId: ensuredId,
           intent: "continue",
@@ -499,10 +527,22 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
             : undefined,
         }
       )
+      if (!started && aliveRef.current) {
+        setComposer((prev) => prev || content)
+        setAttachments((prev) => {
+          const next = prev.length ? prev : pendingAttachments
+          attachmentsRef.current = next
+          return next
+        })
+      }
     } catch (error) {
       if (aliveRef.current) {
         setComposer((prev) => prev || content)
-        setAttachments((prev) => (prev.length ? prev : pendingAttachments))
+        setAttachments((prev) => {
+          const next = prev.length ? prev : pendingAttachments
+          attachmentsRef.current = next
+          return next
+        })
         toast.error(
           error instanceof Error
             ? error.message
@@ -515,6 +555,109 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
         router.replace(`/chat/${ensuredId}`)
       }
     }
+  }
+
+  async function uploadImages(files: FileList | File[]) {
+    const all = Array.from(files)
+    const selected = all.filter(
+      (file) =>
+        file.type.startsWith("image/") ||
+        file.type === "" ||
+        file.type === "application/octet-stream"
+    )
+    if (selected.length !== all.length)
+      toast.error("Only image files can be attached")
+    if (!selected.length) return
+    const imageCount = attachmentsRef.current.filter(
+      (item) => item.reference.kind === "uploaded-file"
+    ).length
+    if (imageCount + selected.length > MAX_IMAGE_ATTACHMENTS) {
+      toast.error("You can attach up to four images")
+      return
+    }
+    const placeholders: ComposerAttachment[] = selected.map((file) => ({
+      name: file.name,
+      previewUrl: URL.createObjectURL(file),
+      uploading: true,
+      reference: { kind: "uploaded-file", id: crypto.randomUUID() },
+    }))
+    attachmentsRef.current = [...attachmentsRef.current, ...placeholders]
+    setAttachments(attachmentsRef.current)
+    for (const [index, file] of selected.entries()) {
+      const part = placeholders[index]!
+      const localId =
+        part.reference.kind === "uploaded-file" ? part.reference.id : ""
+      const previewUrl = part.previewUrl!
+      try {
+        const form = new FormData()
+        form.set("file", file)
+        const response = await fetch("/api/attachments", {
+          method: "POST",
+          body: form,
+        })
+        const payload = (await response.json().catch(() => ({}))) as {
+          id?: string
+          filename?: string
+          error?: string
+        }
+        if (!response.ok || !payload.id)
+          throw new Error(payload.error || "Image upload failed")
+        if (!aliveRef.current || cancelledUploadIds.current.has(localId)) {
+          void fetch(`/api/attachments/${payload.id}`, { method: "DELETE" })
+          URL.revokeObjectURL(previewUrl)
+          continue
+        }
+        setAttachments((current) => {
+          const next = current.map((item) =>
+            item.reference.kind === "uploaded-file" &&
+            item.reference.id === localId
+              ? {
+                  ...item,
+                  name: payload.filename ?? item.name,
+                  reference: {
+                    kind: "uploaded-file" as const,
+                    id: payload.id!,
+                  },
+                  uploading: false,
+                }
+              : item
+          )
+          attachmentsRef.current = next
+          return next
+        })
+      } catch (error) {
+        if (aliveRef.current) {
+          setAttachments((current) => {
+            const next = current.filter(
+              (item) =>
+                item.reference.kind !== "uploaded-file" ||
+                item.reference.id !== localId
+            )
+            attachmentsRef.current = next
+            return next
+          })
+          URL.revokeObjectURL(previewUrl)
+          if (viewer?.src === previewUrl) setViewer(null)
+          toast.error(
+            error instanceof Error ? error.message : "Image upload failed"
+          )
+        }
+      }
+    }
+  }
+
+  function removeAttachment(part: ComposerAttachment) {
+    if (part.uploading && part.reference.kind === "uploaded-file")
+      cancelledUploadIds.current.add(part.reference.id)
+    if (part.previewUrl && viewer?.src === part.previewUrl) setViewer(null)
+    setAttachments((current) => {
+      const next = current.filter((item) => item !== part)
+      attachmentsRef.current = next
+      return next
+    })
+    if (part.previewUrl) URL.revokeObjectURL(part.previewUrl)
+    if (part.reference.kind === "uploaded-file" && !part.uploading)
+      void fetch(`/api/attachments/${part.reference.id}`, { method: "DELETE" })
   }
 
   async function streamRegenerate(assistantNodeId: string) {
@@ -690,36 +833,106 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       <div className="border-t border-border bg-background p-3 sm:px-6 sm:py-4">
         <div
           data-theme-target="composer"
-          className="mx-auto rounded-xl border border-border bg-card p-2"
+          className={cn(
+            "relative mx-auto rounded-xl border bg-card p-2",
+            dropActive ? "border-foreground/40 bg-muted/40" : "border-border"
+          )}
           style={{ maxWidth: "var(--composer-width, 48rem)" }}
+          onDragEnter={(event) => {
+            event.preventDefault()
+            dropDepthRef.current += 1
+            setDropActive(true)
+          }}
+          onDragOver={(event) => event.preventDefault()}
+          onDragLeave={(event) => {
+            event.preventDefault()
+            dropDepthRef.current = Math.max(0, dropDepthRef.current - 1)
+            if (dropDepthRef.current === 0) setDropActive(false)
+          }}
+          onDrop={(event) => {
+            event.preventDefault()
+            dropDepthRef.current = 0
+            setDropActive(false)
+            if (event.dataTransfer.files.length)
+              void uploadImages(event.dataTransfer.files)
+          }}
         >
+          {dropActive ? (
+            <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-xl bg-background/70 text-sm text-muted-foreground">
+              Drop images
+            </div>
+          ) : null}
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/gif"
+            multiple
+            className="sr-only"
+            onChange={(event) => {
+              if (event.target.files) void uploadImages(event.target.files)
+              event.target.value = ""
+            }}
+          />
           {attachments.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5 px-2 pt-1">
-              {attachments.map((part) => (
-                <span
-                  key={`${part.reference.profileId}:${part.reference.uri}`}
-                  className="inline-flex items-center gap-1 rounded-full border bg-muted/50 px-2 py-0.5 text-xs"
-                >
-                  Attached: {part.name}
-                  <button
-                    type="button"
-                    className="text-muted-foreground hover:text-foreground"
-                    aria-label={`Remove ${part.name}`}
-                    onClick={() =>
-                      setAttachments((current) =>
-                        current.filter(
-                          (item) =>
-                            item.reference.profileId !==
-                              part.reference.profileId ||
-                            item.reference.uri !== part.reference.uri
-                        )
-                      )
-                    }
+            <div className="flex flex-wrap items-end gap-1.5 px-2 pt-1">
+              {attachments.map((part) => {
+                const key =
+                  part.reference.kind === "mcp-resource"
+                    ? `${part.reference.profileId}:${part.reference.uri}`
+                    : part.reference.id
+                if (part.previewUrl) {
+                  return (
+                    <span key={key} className="relative size-14 shrink-0">
+                      <button
+                        type="button"
+                        className="size-14 overflow-hidden rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                        onClick={() =>
+                          setViewer({ src: part.previewUrl!, name: part.name })
+                        }
+                      >
+                        <img
+                          src={part.previewUrl}
+                          alt={part.name}
+                          className="size-full object-cover"
+                        />
+                      </button>
+                      {part.uploading ? (
+                        <span className="pointer-events-none absolute inset-0 grid place-items-center rounded-md bg-background/60">
+                          <HugeiconsIcon
+                            icon={Loading03Icon}
+                            strokeWidth={2}
+                            className="size-4 animate-spin"
+                          />
+                        </span>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="absolute -top-1 -right-1 flex size-5 items-center justify-center rounded-full border bg-background text-xs leading-none text-muted-foreground hover:text-foreground"
+                        aria-label={`Remove ${part.name}`}
+                        onClick={() => removeAttachment(part)}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  )
+                }
+                return (
+                  <span
+                    key={key}
+                    className="inline-flex items-center gap-1 rounded-full border bg-muted/50 px-2 py-0.5 text-xs"
                   >
-                    ×
-                  </button>
-                </span>
-              ))}
+                    Attached: {part.name}
+                    <button
+                      type="button"
+                      className="text-muted-foreground hover:text-foreground"
+                      aria-label={`Remove ${part.name}`}
+                      onClick={() => removeAttachment(part)}
+                    >
+                      ×
+                    </button>
+                  </span>
+                )
+              })}
             </div>
           ) : null}
           <Textarea
@@ -732,11 +945,36 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
               }
             }}
             placeholder="Message Nibchat…"
+            onPaste={(event) => {
+              const files = Array.from(event.clipboardData.files)
+              if (files.length) {
+                event.preventDefault()
+                void uploadImages(files)
+              }
+            }}
             rows={3}
             className="min-h-[4.5rem] resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
           />
           <div className="flex items-center justify-between gap-2 px-2 pb-1">
             <div className="flex flex-wrap items-center gap-1">
+              <TooltipProvider delay={400}>
+                <WithTooltip label="Attach image">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    className="size-7"
+                    aria-label="Attach image"
+                    onClick={() => imageInputRef.current?.click()}
+                  >
+                    <HugeiconsIcon
+                      icon={ImageAdd02Icon}
+                      strokeWidth={2}
+                      className="size-3.5"
+                    />
+                  </Button>
+                </WithTooltip>
+              </TooltipProvider>
               {showMcpMenu ? (
                 <Popover open={mcpMenuOpen} onOpenChange={setMcpMenuOpen}>
                   <PopoverTrigger
@@ -750,9 +988,16 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
                     }
                   >
                     MCP
-                    {attachments.length > 0 ? (
+                    {attachments.some(
+                      (item) => item.reference.kind === "mcp-resource"
+                    ) ? (
                       <span className="ml-1 text-muted-foreground">
-                        · {attachments.length}
+                        ·{" "}
+                        {
+                          attachments.filter(
+                            (item) => item.reference.kind === "mcp-resource"
+                          ).length
+                        }
                       </span>
                     ) : null}
                   </PopoverTrigger>
@@ -818,7 +1063,10 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
                 size="sm"
                 className="gap-1.5"
                 onClick={() => void streamContinue()}
-                disabled={!composer.trim() && attachments.length === 0}
+                disabled={
+                  (!composer.trim() && attachments.length === 0) ||
+                  attachments.some((attachment) => attachment.uploading)
+                }
               >
                 <HugeiconsIcon
                   icon={SentIcon}
@@ -831,6 +1079,8 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
           </div>
         </div>
       </div>
+
+      <ImageViewer image={viewer} onClose={() => setViewer(null)} />
 
       <Dialog open={resourcePickerOpen} onOpenChange={setResourcePickerOpen}>
         <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-lg">
@@ -864,23 +1114,26 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
                           if (
                             current.some(
                               (item) =>
+                                item.reference.kind === "mcp-resource" &&
                                 item.reference.profileId ===
                                   surface.profileId &&
                                 item.reference.uri === resource.uri
                             )
                           )
                             return current
-                          return [
+                          const next = [
                             ...current,
                             {
                               name: resource.name,
                               reference: {
-                                kind: "mcp-resource",
+                                kind: "mcp-resource" as const,
                                 profileId: surface.profileId,
                                 uri: resource.uri,
                               },
                             },
                           ]
+                          attachmentsRef.current = next
+                          return next
                         })
                         setResourcePickerOpen(false)
                         toast.success(`Attached ${resource.name}`)

@@ -1,4 +1,5 @@
 import "server-only"
+import { createHash } from "node:crypto"
 import { sql } from "kysely"
 import { db, databaseKind } from "@/lib/db"
 import {
@@ -46,6 +47,18 @@ import {
   resolvePromptStack,
   type PromptStackDocument,
 } from "@/lib/prompt-stack"
+import {
+  claimUploadedAttachments,
+  cleanupDetachedAttachments,
+  readAttachment,
+} from "@/lib/attachments"
+import { attachmentStorage } from "@/lib/attachments/default-port"
+import {
+  attachmentArchivePath,
+  packBackupArchive,
+  unpackBackupArchive,
+} from "@/lib/backup-archive"
+import { validateImageSignature } from "@/lib/file-signatures"
 
 async function assertChatOwner(chatId: string, userId: string) {
   const chat = await db
@@ -156,6 +169,7 @@ export async function deleteChat(userId: string, chatId: string) {
     .where("id", "=", chatId)
     .where("user_id", "=", userId)
     .execute()
+  await cleanupDetachedAttachments()
 }
 
 export async function insertNode(input: {
@@ -248,6 +262,7 @@ function newNode(
  * placement is purely structural; the client may soft-follow if still on tip.
  */
 export async function createTurn(input: {
+  userId: string
   chatId: string
   parentId: string | null
   content: string
@@ -294,6 +309,7 @@ export async function createTurn(input: {
   )
   await db.transaction().execute(async (trx) => {
     await trx.insertInto("message_nodes").values(user).execute()
+    await claimUploadedAttachments(input.userId, user.id, attachments, trx)
     await trx.insertInto("message_nodes").values(assistant).execute()
   })
   return { user, assistant }
@@ -441,19 +457,60 @@ export async function selectPath(
   })
 }
 
-export async function forkEdit(userId: string, nodeId: string, parts: Parts) {
+export async function forkEdit(userId: string, nodeId: string, text: string) {
   const original = await assertNodeOwner(nodeId, userId)
-  return insertNode({
-    chatId: original.chat_id,
-    parentId: original.parent_id,
-    role: original.role,
-    parts,
-    metadata: {
-      ...parseJson<Record<string, unknown>>(original.metadata_json, {}),
-      provenance: "owner-edited",
-      editedFrom: original.id,
+  const originalParts = nodeParts(original)
+  const parts: Parts = [
+    ...originalParts.filter((part) => part.type === "attachment"),
+    { type: "text", text: text.trim() },
+  ]
+  if (!text.trim()) throw new Error("Message is required")
+  const timestamp = now()
+  const node = newNode(
+    {
+      chatId: original.chat_id,
+      parentId: original.parent_id,
+      role: original.role,
+      parts,
+      metadata: {
+        ...parseJson<Record<string, unknown>>(original.metadata_json, {}),
+        provenance: "owner-edited",
+        editedFrom: original.id,
+      },
     },
+    timestamp
+  )
+  const attachmentIds = parts.flatMap((part) =>
+    part.type === "attachment" && part.content.kind === "binary"
+      ? [part.content.attachmentId]
+      : []
+  )
+  await db.transaction().execute(async (trx) => {
+    await trx.insertInto("message_nodes").values(node).execute()
+    if (attachmentIds.length)
+      await trx
+        .insertInto("message_attachments")
+        .values(
+          attachmentIds.map((attachment_id) => ({
+            message_node_id: node.id,
+            attachment_id,
+          }))
+        )
+        .execute()
+    if (node.parent_id)
+      await trx
+        .updateTable("message_nodes")
+        .set({ selected_child_id: node.id, updated_at: timestamp })
+        .where("id", "=", node.parent_id)
+        .execute()
+    else
+      await trx
+        .updateTable("chats")
+        .set({ selected_root_node_id: node.id, updated_at: timestamp })
+        .where("id", "=", node.chat_id)
+        .execute()
   })
+  return node
 }
 
 /** New streaming assistant as a sibling of an existing assistant (any parent role). */
@@ -827,6 +884,7 @@ export async function deleteNode(
   if (mode === "reparent") {
     abortGenerations([node.id])
     await deleteNodeInternal(node.id, node.chat_id, "reparent")
+    await cleanupDetachedAttachments()
     return
   }
 
@@ -838,6 +896,7 @@ export async function deleteNode(
     .execute()
   abortGenerations(subtreeNodeIds(chatNodes, node.id))
   await deleteNodeInternal(node.id, node.chat_id, "subtree")
+  await cleanupDetachedAttachments()
 }
 
 /**
@@ -1297,9 +1356,10 @@ export async function previewAssembledContext(
   const replayReasoning = input.chatId
     ? await canReplayReasoning(userId, config)
     : false
-  const pathMessages = buildModelMessages({
+  const pathMessages = await buildModelMessages({
     nodes: contextNodes,
     replayReasoning,
+    binaryAttachments: "placeholder",
   })
   const assembled = assemblePromptContext({
     stack: resolved.stack,
@@ -1317,7 +1377,11 @@ export async function previewAssembledContext(
   }
 }
 
-export async function restoreBackup(userId: string, raw: unknown) {
+export async function restoreBackup(
+  userId: string,
+  raw: unknown,
+  files: ReadonlyMap<string, Uint8Array> = new Map()
+) {
   const backup = parseBackup(raw)
   const chatIds = new Set(backup.chats.map((chat) => chat.id))
   for (const node of backup.nodes) {
@@ -1375,6 +1439,42 @@ export async function restoreBackup(userId: string, raw: unknown) {
         })
         .execute()
     }
+
+    const nodeIds = new Set(orderedNodes.map((node) => node.id))
+    const restoredAttachmentIds = new Set<string>()
+    for (const attachment of backup.attachments) {
+      const data = files.get(attachment.file)
+      if (!data)
+        throw new Error("This backup includes files; restore the .zip archive")
+      if (data.byteLength !== attachment.byte_size)
+        throw new Error(`Backup attachment ${attachment.id} has the wrong size`)
+      const mediaType = validateImageSignature(data, attachment.media_type)
+      const sha256 = createHash("sha256").update(data).digest("hex")
+      if (sha256 !== attachment.sha256)
+        throw new Error(`Backup attachment ${attachment.id} is corrupt`)
+      const stored = await attachmentStorage.put({
+        sha256: attachment.sha256,
+        data,
+      })
+      await trx
+        .insertInto("attachments")
+        .values({
+          id: attachment.id,
+          user_id: userId,
+          filename: attachment.filename,
+          media_type: mediaType,
+          byte_size: attachment.byte_size,
+          sha256: attachment.sha256,
+          storage_backend: attachmentStorage.kind,
+          storage_key: stored.storageKey,
+          data: stored.data,
+          claimed_at: attachment.claimed_at,
+          created_at: attachment.created_at,
+        })
+        .execute()
+      restoredAttachmentIds.add(attachment.id)
+    }
+
     for (const node of orderedNodes) {
       await trx
         .insertInto("message_nodes")
@@ -1390,6 +1490,23 @@ export async function restoreBackup(userId: string, raw: unknown) {
           status: node.status,
           created_at: node.created_at,
           updated_at: node.updated_at,
+        })
+        .execute()
+    }
+    for (const link of backup.messageAttachments) {
+      if (!nodeIds.has(link.message_node_id))
+        throw new Error(
+          `Backup message attachment references unknown node ${link.message_node_id}`
+        )
+      if (!restoredAttachmentIds.has(link.attachment_id))
+        throw new Error(
+          `Backup message attachment references unknown attachment ${link.attachment_id}`
+        )
+      await trx
+        .insertInto("message_attachments")
+        .values({
+          message_node_id: link.message_node_id,
+          attachment_id: link.attachment_id,
         })
         .execute()
     }
@@ -1503,6 +1620,37 @@ export async function createBackup(userId: string) {
   const mcpServerProfiles = mcpRows.map((row) =>
     mcpProfileForBackup(profileFromRow(row))
   )
+  const attachmentRows = await db
+    .selectFrom("attachments")
+    .selectAll()
+    .where("user_id", "=", userId)
+    .execute()
+  const attachments = attachmentRows.map((row) => ({
+    id: row.id,
+    filename: row.filename,
+    media_type: row.media_type,
+    byte_size: row.byte_size,
+    sha256: row.sha256,
+    claimed_at: row.claimed_at,
+    created_at: row.created_at,
+    file: attachmentArchivePath(row.id),
+  }))
+  const messageAttachments =
+    chatIds.length === 0
+      ? []
+      : await db
+          .selectFrom("message_attachments")
+          .innerJoin(
+            "message_nodes",
+            "message_nodes.id",
+            "message_attachments.message_node_id"
+          )
+          .select([
+            "message_attachments.message_node_id",
+            "message_attachments.attachment_id",
+          ])
+          .where("message_nodes.chat_id", "in", chatIds)
+          .execute()
   const normalizedStacks = promptStacks.map((row) => ({
     ...row,
     stack_json: promptStackToJson(readStackJson(row.stack_json)),
@@ -1526,7 +1674,33 @@ export async function createBackup(userId: string) {
     promptStacks: normalizedStacks,
     chats,
     nodes,
+    attachments,
+    messageAttachments,
     providerProfiles: providers,
     mcpServerProfiles,
   }
+}
+
+export async function createBackupArchive(userId: string) {
+  const backup = await createBackup(userId)
+  const files = new Map<string, Uint8Array>()
+  if (backup.attachments.length) {
+    const rows = await db
+      .selectFrom("attachments")
+      .selectAll()
+      .where("user_id", "=", userId)
+      .execute()
+    const byId = new Map(rows.map((row) => [row.id, row]))
+    for (const attachment of backup.attachments) {
+      const row = byId.get(attachment.id)
+      if (!row) throw new Error(`Attachment ${attachment.id} is missing`)
+      files.set(attachment.file, await readAttachment(row))
+    }
+  }
+  return packBackupArchive(backup, files)
+}
+
+export async function restoreBackupArchive(userId: string, bytes: Uint8Array) {
+  const { backup, files } = unpackBackupArchive(bytes)
+  await restoreBackup(userId, backup, files)
 }

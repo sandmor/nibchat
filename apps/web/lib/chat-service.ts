@@ -500,7 +500,12 @@ export async function selectPath(
   })
 }
 
-export async function forkEdit(userId: string, nodeId: string, text: string) {
+export async function forkEdit(
+  userId: string,
+  nodeId: string,
+  text: string,
+  options: { attachSelection?: boolean } = {}
+) {
   const original = await assertNodeOwner(nodeId, userId)
   const originalParts = nodeParts(original)
   const parts: Parts = [
@@ -540,6 +545,7 @@ export async function forkEdit(userId: string, nodeId: string, text: string) {
           }))
         )
         .execute()
+    if (options.attachSelection === false) return
     if (node.parent_id)
       await trx
         .updateTable("message_nodes")

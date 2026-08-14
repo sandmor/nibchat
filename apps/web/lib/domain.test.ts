@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest"
-import { ancestorPath, resolveActivePath, subtreeNodeIds, textFromParts } from "@/lib/domain"
+import {
+  ancestorPath,
+  resolveActivePath,
+  subtreeNodeIds,
+  textFromParts,
+} from "@/lib/domain"
 import type { NodeRow } from "@/lib/types"
 
 const node = (
@@ -32,6 +37,28 @@ describe("tree navigation", () => {
       "root",
       "a",
       "a1",
+    ])
+  })
+  it("uses the first chronological child when there is no explicit selection", () => {
+    const nodes = [
+      { ...node("root", null, null), created_at: "1" },
+      { ...node("later", "root", null), created_at: "3" },
+      { ...node("first", "root", null), created_at: "2" },
+    ]
+    expect(resolveActivePath(nodes, "root").map((item) => item.id)).toEqual([
+      "root",
+      "first",
+    ])
+  })
+  it("keeps an explicit branch over the chronological fallback", () => {
+    const nodes = [
+      node("root", null, "later"),
+      { ...node("first", "root", null), created_at: "1" },
+      { ...node("later", "root", null), created_at: "2" },
+    ]
+    expect(resolveActivePath(nodes, "root").map((item) => item.id)).toEqual([
+      "root",
+      "later",
     ])
   })
   it("resolves ancestors without normalizing roles", () => {

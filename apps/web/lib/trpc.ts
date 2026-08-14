@@ -309,10 +309,18 @@ export const appRouter = t.router({
         }
       }),
     forkEdit: ownerProcedure
-      .input(z.object({ nodeId: z.string(), text: z.string().min(1) }))
+      .input(
+        z.object({
+          nodeId: z.string(),
+          text: z.string().min(1),
+          attachSelection: z.boolean().optional(),
+        })
+      )
       .mutation(async ({ ctx, input }) => {
         try {
-          const node = await forkEdit(ctx.user.id, input.nodeId, input.text)
+          const node = await forkEdit(ctx.user.id, input.nodeId, input.text, {
+            attachSelection: input.attachSelection,
+          })
           return { ok: true, node }
         } catch (error) {
           mapError(error)

@@ -2,6 +2,8 @@
  * Deterministic theme surface registry for the magic appearance editor.
  * Identity is the CSS custom property written into appearance.vars — never
  * sampled pixels. One ThemeSurface per token; multiple DOM hosts via targets.
+ * Hosts may be tagged before their token is registered; unregistered targets
+ * fall through to the nearest registered ancestor.
  */
 
 export type ThemeSurface = {
@@ -87,17 +89,22 @@ export function querySurfacesByCssVar(cssVar: string): Element[] {
 
 /**
  * Closest registered theme surface (buttons inside a region still pick that region).
- * Ignores magic chrome; unknown targets are no-ops.
+ * Ignores magic chrome. Unregistered `data-theme-target` values fall through so
+ * tokens can be tagged before they join THEME_SURFACES.
  */
 export function resolveThemeTarget(el: Element | null): ThemeSurface | null {
   if (!el || typeof el.closest !== "function") return null
   if (el.closest("[data-magic-chrome]")) return null
 
-  const host = el.closest("[data-theme-target]")
-  if (!host) return null
-  const target = host.getAttribute("data-theme-target")
-  if (!target) return null
-  return byTarget.get(target) ?? null
+  let host: Element | null = el.closest("[data-theme-target]")
+  while (host) {
+    const target = host.getAttribute("data-theme-target")
+    const surface = target ? (byTarget.get(target) ?? null) : null
+    if (surface) return surface
+    const parent = host.parentElement
+    host = parent?.closest("[data-theme-target]") ?? null
+  }
+  return null
 }
 
 /**

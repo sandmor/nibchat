@@ -108,12 +108,14 @@ export function Message({
   onRegenerate,
   onGenerateUnder,
   onAnswerTools,
+  presentation = "linear",
+  attachSelectionOnEdit = true,
 }: {
   node: NodeRow
   nodes: NodeRow[]
   providers: ProviderSummary[]
   messageActionCaptions: boolean
-  onSelect: (parentId: string, childId: string) => void
+  onSelect?: (parentId: string, childId: string) => void
   onChanged?: () => void | Promise<void>
   onRegenerate?: () => void
   onGenerateUnder?: (parentNodeId: string) => void | Promise<void>
@@ -121,6 +123,10 @@ export function Message({
     assistantNodeId: string,
     toolResults: Array<{ toolCallId: string; output: unknown }>
   ) => void | Promise<void>
+  /** Tree cards retain message actions but never mutate linear branch selection. */
+  presentation?: "linear" | "tree"
+  /** Tree edits create real branches without changing Linear's selected path. */
+  attachSelectionOnEdit?: boolean
 }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
@@ -260,7 +266,11 @@ export function Message({
       data-theme-target={node.role === "user" ? "muted" : "card"}
       className={cn(
         "group relative min-w-0 overflow-hidden rounded-xl border p-4",
-        node.role === "user" ? "ml-auto max-w-[88%] bg-muted/40" : "bg-card"
+        node.role === "user" && presentation === "linear"
+          ? "ml-auto max-w-[88%] bg-muted/40"
+          : node.role === "user"
+            ? "bg-muted/40"
+            : "bg-card"
       )}
     >
       <div className="mb-2 flex items-center justify-between text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
@@ -274,7 +284,7 @@ export function Message({
                 ? " · error"
                 : null}
         </span>
-        {siblings.length > 1 && (
+        {presentation === "linear" && siblings.length > 1 && (
           <span className="flex items-center gap-1">
             <WithTooltip label="Previous branch">
               <Button
@@ -284,7 +294,7 @@ export function Message({
                 aria-label="Previous branch"
                 onClick={() => {
                   const previous = siblings[index - 1]
-                  if (previous) onSelect(node.parent_id ?? "", previous.id)
+                  if (previous) onSelect?.(node.parent_id ?? "", previous.id)
                 }}
               >
                 <HugeiconsIcon
@@ -306,7 +316,7 @@ export function Message({
                 aria-label="Next branch"
                 onClick={() => {
                   const next = siblings[index + 1]
-                  if (next) onSelect(node.parent_id ?? "", next.id)
+                  if (next) onSelect?.(node.parent_id ?? "", next.id)
                 }}
               >
                 <HugeiconsIcon
@@ -522,6 +532,7 @@ export function Message({
                 forkEditMutation.mutate({
                   nodeId: node.id,
                   text: editText,
+                  attachSelection: attachSelectionOnEdit,
                 })
               }
             >

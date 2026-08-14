@@ -15,6 +15,7 @@ function mockEl(attrs: {
 }): {
   closest: (sel: string) => ReturnType<typeof mockEl> | null
   getAttribute: (name: string) => string | null
+  parentElement: ReturnType<typeof mockEl> | null
 } {
   const self = {
     closest(sel: string) {
@@ -31,6 +32,9 @@ function mockEl(attrs: {
     getAttribute(name: string) {
       if (name === "data-theme-target") return attrs.target ?? null
       return null
+    },
+    get parentElement() {
+      return attrs.parent ?? null
     },
   }
   return self
@@ -84,6 +88,16 @@ describe("appearance-targets", () => {
     ).toBeNull()
     expect(resolveThemeTarget(mockEl({}) as unknown as Element)).toBeNull()
     expect(resolveThemeTarget(null)).toBeNull()
+  })
+
+  it("falls through unregistered targets to the nearest registered ancestor", () => {
+    const child = mockEl({
+      target: "tree-minimap-node",
+      parent: mockEl({ target: "background" }),
+    })
+    expect(resolveThemeTarget(child as unknown as Element)?.id).toBe(
+      "background"
+    )
   })
 
   describe("resolveThemeTargetAtPoint", () => {

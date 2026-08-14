@@ -92,8 +92,37 @@ const defaultVars: Record<string, string> = {
   "--sidebar-accent": "oklch(0.97 0 0)",
   "--sidebar-accent-foreground": "oklch(0.205 0 0)",
   "--sidebar-border": "oklch(0.922 0 0)",
+  "--tree-grid-color":
+    "color-mix(in oklab, var(--muted-foreground) 18%, transparent)",
+  "--tree-edge-color": "var(--border)",
+  "--tree-active-color": "color-mix(in oklab, var(--primary) 70%, transparent)",
+  "--tree-focus-color": "color-mix(in oklab, var(--primary) 70%, transparent)",
+  "--tree-path-color": "color-mix(in oklab, var(--primary) 35%, transparent)",
+  "--tree-active-surface":
+    "color-mix(in oklab, var(--primary) 20%, transparent)",
+  "--tree-chrome-background":
+    "color-mix(in oklab, var(--background) 90%, transparent)",
+  "--tree-overlay-background":
+    "color-mix(in oklab, var(--background) 45%, transparent)",
+  // One token per minimap paint. Defaults stay derived from semantic tokens;
+  // a picker write to that key snapshots it to oklch.
+  "--tree-minimap-background": "var(--muted)",
+  "--tree-minimap-edge":
+    "color-mix(in oklab, var(--muted-foreground) 80%, var(--muted))",
+  "--tree-minimap-node": "var(--muted-foreground)",
+  "--tree-minimap-path":
+    "color-mix(in oklab, var(--primary) 82%, var(--muted-foreground))",
+  "--tree-minimap-focus": "var(--primary)",
+  "--tree-viewport-color": "var(--foreground)",
+  "--tree-shadow-sm":
+    "0 1px 3px color-mix(in oklab, var(--foreground) 12%, transparent)",
+  "--tree-shadow-lg":
+    "0 12px 28px -12px color-mix(in oklab, var(--foreground) 24%, transparent)",
+  "--tree-shadow-xl":
+    "0 24px 56px -20px color-mix(in oklab, var(--foreground) 28%, transparent)",
   "--motion-duration": "220ms",
   "--motion-ease": "cubic-bezier(0.22, 1, 0.36, 1)",
+  "--motion-spinner-duration": "900ms",
 }
 
 const defaultMotion: AppearanceMotion = {
@@ -103,9 +132,38 @@ const defaultMotion: AppearanceMotion = {
   reducedMotion: "respect",
 }
 
+const cssEaseCurves: Record<string, [number, number, number, number]> = {
+  linear: [0, 0, 1, 1],
+  ease: [0.25, 0.1, 0.25, 1],
+  "ease-in": [0.42, 0, 1, 1],
+  "ease-out": [0, 0, 0.58, 1],
+  "ease-in-out": [0.42, 0, 0.58, 1],
+}
+
+/** Convert the CSS easing syntax accepted by appearance JSON into Motion. */
+export function motionEase(
+  ease: AppearanceMotion["ease"]
+): [number, number, number, number] {
+  if (Array.isArray(ease)) return ease
+  const named = cssEaseCurves[ease.trim().toLowerCase()]
+  if (named) return named
+  const match = ease.match(/^cubic-bezier\(([^)]+)\)$/i)
+  if (!match) return defaultMotion.ease as [number, number, number, number]
+  const values = match[1]!.split(",").map((value) => Number(value.trim()))
+  if (
+    values.length !== 4 ||
+    values.some((value) => !Number.isFinite(value)) ||
+    values[0]! < 0 ||
+    values[0]! > 1 ||
+    values[2]! < 0 ||
+    values[2]! > 1
+  )
+    return defaultMotion.ease as [number, number, number, number]
+  return values as [number, number, number, number]
+}
+
 function easeToCss(ease: AppearanceMotion["ease"]): string {
-  if (typeof ease === "string") return ease
-  return `cubic-bezier(${ease.join(", ")})`
+  return `cubic-bezier(${motionEase(ease).join(", ")})`
 }
 
 function motionVars(motion: AppearanceMotion): Record<string, string> {
@@ -340,11 +398,8 @@ export function motionTransition(motion: AppearanceMotion): {
   duration: number
   ease: [number, number, number, number]
 } {
-  const ease: [number, number, number, number] = Array.isArray(motion.ease)
-    ? motion.ease
-    : [0.22, 1, 0.36, 1]
   return {
     duration: motion.durationMs / 1000,
-    ease,
+    ease: motionEase(motion.ease),
   }
 }

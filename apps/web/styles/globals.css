@@ -84,8 +84,50 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+  --tree-grid-color: color-mix(
+    in oklab,
+    var(--muted-foreground) 18%,
+    transparent
+  );
+  --tree-edge-color: var(--border);
+  --tree-active-color: color-mix(in oklab, var(--primary) 70%, transparent);
+  --tree-focus-color: color-mix(in oklab, var(--primary) 70%, transparent);
+  --tree-path-color: color-mix(in oklab, var(--primary) 35%, transparent);
+  --tree-active-surface: color-mix(in oklab, var(--primary) 20%, transparent);
+  --tree-chrome-background: color-mix(
+    in oklab,
+    var(--background) 90%,
+    transparent
+  );
+  --tree-overlay-background: color-mix(
+    in oklab,
+    var(--background) 45%,
+    transparent
+  );
+  --tree-minimap-background: var(--muted);
+  --tree-minimap-edge: color-mix(
+    in oklab,
+    var(--muted-foreground) 80%,
+    var(--muted)
+  );
+  --tree-minimap-node: var(--muted-foreground);
+  --tree-minimap-path: color-mix(
+    in oklab,
+    var(--primary) 82%,
+    var(--muted-foreground)
+  );
+  --tree-minimap-focus: var(--primary);
+  --tree-viewport-color: var(--foreground);
+  --tree-shadow-sm: 0 1px 3px
+    color-mix(in oklab, var(--foreground) 12%, transparent);
+  --tree-shadow-lg: 0 12px 28px -12px
+    color-mix(in oklab, var(--foreground) 24%, transparent);
+  --tree-shadow-xl: 0 24px 56px -20px
+    color-mix(in oklab, var(--foreground) 28%, transparent);
   --motion-duration: 220ms;
+  --motion-effective-duration: var(--motion-duration);
   --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-spinner-duration: 900ms;
 }
 
 .dark {
@@ -139,7 +181,10 @@
   [class*="border"] {
     transition-property:
       color, background-color, border-color, opacity, box-shadow, transform;
-    transition-duration: var(--motion-duration, 220ms);
+    transition-duration: var(
+      --motion-effective-duration,
+      var(--motion-duration, 220ms)
+    );
     transition-timing-function: var(
       --motion-ease,
       cubic-bezier(0.22, 1, 0.36, 1)
@@ -147,10 +192,22 @@
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  :root {
-    --motion-duration: 0ms;
+@layer utilities {
+  [data-tree-motion] :where(button, input, textarea, select) {
+    transition-duration: var(--tree-motion-duration);
+    transition-timing-function: var(--tree-motion-ease);
   }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-motion-reduced="never"]) {
+    --motion-effective-duration: 0ms;
+  }
+}
+
+:root[data-motion-enabled="false"],
+:root[data-motion-reduced="always"] {
+  --motion-effective-duration: 0ms;
 }
 
 /* Magic pick: portal SVG path aura (paint only; holes carve nested surfaces) */

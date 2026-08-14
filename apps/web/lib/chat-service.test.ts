@@ -160,6 +160,33 @@ describe("SQLite chat repository", () => {
     expect(userRow?.selected_child_id).toBeNull()
   })
 
+  it("can fork an edit without rewriting the selected linear branch", async () => {
+    const chat = await createChat(userId, "Tree edit selection")
+    const root = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "root" }],
+    })
+    const selected = await insertNode({
+      chatId: chat.id,
+      parentId: root.id,
+      role: "assistant",
+      parts: [{ type: "text", text: "selected" }],
+    })
+    const edited = await forkEdit(userId, selected.id, "tree edit", {
+      attachSelection: false,
+    })
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    expect(edited.parent_id).toBe(root.id)
+    expect(
+      resolveActivePath(
+        workspace.nodes,
+        workspace.chat?.selected_root_node_id ?? null
+      ).at(-1)?.id
+    ).toBe(selected.id)
+  })
+
   it("createTurn persists attachment-only user turns", async () => {
     const chat = await createChat(userId, "Attachment turn")
     const { user } = await createTurn({

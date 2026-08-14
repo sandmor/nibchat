@@ -16,17 +16,33 @@ export const textFromParts = (parts: Parts) => textFromPartsImpl(parts)
 
 export function resolveActivePath(nodes: NodeRow[], rootId: string | null) {
   const byId = new Map(nodes.map((node) => [node.id, node]))
-  let current = rootId
-    ? byId.get(rootId)
-    : nodes.find((node) => !node.parent_id)
+  const children = new Map<string | null, NodeRow[]>()
+  for (const node of nodes) {
+    const siblings = children.get(node.parent_id) ?? []
+    siblings.push(node)
+    children.set(node.parent_id, siblings)
+  }
+  for (const siblings of children.values())
+    siblings.sort(
+      (left, right) =>
+        left.created_at.localeCompare(right.created_at) ||
+        left.id.localeCompare(right.id)
+    )
+  let current = rootId ? byId.get(rootId) : children.get(null)?.[0]
   const path: NodeRow[] = []
   const seen = new Set<string>()
   while (current && !seen.has(current.id)) {
     path.push(current)
     seen.add(current.id)
-    current = current.selected_child_id
+    const directChildren = children.get(current.id) ?? []
+    const selected = current.selected_child_id
       ? byId.get(current.selected_child_id)
       : undefined
+    // A null pointer means no explicit branch preference, not “hide all
+    // children”. This gives Tree-created first children a Linear continuation
+    // without modifying the user's persisted branch selection.
+    current =
+      selected?.parent_id === path.at(-1)?.id ? selected : directChildren[0]
   }
   return path
 }

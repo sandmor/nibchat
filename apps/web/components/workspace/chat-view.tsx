@@ -5,15 +5,9 @@ import { useRouter } from "next/navigation"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { HugeiconsIcon } from "@hugeicons/react"
-import {
-  ImageAdd02Icon,
-  Loading03Icon,
-  SentIcon,
-  StopIcon,
-} from "@hugeicons/core-free-icons"
+import { LayoutTable01Icon } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Textarea } from "@/components/ui/textarea"
 import {
   Dialog,
   DialogContent,
@@ -21,12 +15,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover"
-import { TooltipProvider, WithTooltip } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { parseJson, resolveActivePath } from "@/lib/domain"
 import { useStreamStore } from "@/lib/stream-store"
@@ -44,15 +32,21 @@ import { ModelPicker } from "./model-picker"
 import { GenerationParameters } from "./generation-parameters"
 import { PromptStackPicker } from "./prompt-stack-picker"
 import { ChatTranscript } from "./chat-transcript"
+import { ChatTree } from "./chat-tree"
+import { composeLayoutAnchor, composeLayoutId } from "./tree-layout"
+import { ConversationComposer } from "./conversation-composer"
+import {
+  composerSlotId,
+  emptyComposerDraft,
+  shouldDeleteUploadedAttachment,
+  type ComposerAttachment,
+  useConversationSessionStore,
+} from "./conversation-session-store"
 import { ImageViewer } from "./image-viewer"
 import { chatRouteIdentity } from "./chat-transcript-helpers"
 import { useWorkspaceChrome } from "./shell"
 import { DocumentTitle } from "@/components/document-title"
-import {
-  MAX_IMAGE_ATTACHMENTS,
-  type AttachmentReference,
-  type NodeRow,
-} from "@/lib/types"
+import { MAX_IMAGE_ATTACHMENTS, type NodeRow } from "@/lib/types"
 import type { ActiveStream } from "@/lib/stream-store"
 import {
   readStreamEvents,
@@ -70,13 +64,6 @@ type Props = {
   selectNodeId?: string | null
 }
 
-type ComposerAttachment = {
-  name: string
-  reference: AttachmentReference
-  previewUrl?: string
-  uploading?: boolean
-}
-
 export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const { appearance, providers: chromeProviders } = useWorkspaceChrome()
   const trpc = useTRPC()
@@ -84,17 +71,35 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const router = useRouter()
   /** URL-derived selection: null when drafting, string when on /chat/[id] */
   const selectedChatId = mode === "draft" ? null : chatId
-  const [composer, setComposer] = useState("")
-  const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
-  const attachmentsRef = useRef<ComposerAttachment[]>([])
-  attachmentsRef.current = attachments
-  const imageInputRef = useRef<HTMLInputElement>(null)
+  const linearComposerSlot = composerSlotId(selectedChatId, "linear", null)
+  const sessionDrafts = useConversationSessionStore((state) => state.drafts)
+  const updateSessionDraft = useConversationSessionStore(
+    (state) => state.update
+  )
+  const clearSessionDraft = useConversationSessionStore((state) => state.clear)
+  const clearSessionChat = useConversationSessionStore(
+    (state) => state.clearChat
+  )
+  const linearDraft = sessionDrafts[linearComposerSlot] ?? emptyComposerDraft()
+  const composer = linearDraft.text
+  const attachments = linearDraft.attachments
+  const restoreLinearDraft = (
+    text: string,
+    pending: ComposerAttachment[]
+  ) => {
+    const current =
+      useConversationSessionStore.getState().drafts[linearComposerSlot] ??
+      emptyComposerDraft()
+    updateSessionDraft(linearComposerSlot, {
+      text: current.text || text,
+      attachments: current.attachments.length
+        ? current.attachments
+        : pending,
+    })
+  }
   const [viewer, setViewer] = useState<{ src: string; name: string } | null>(
     null
   )
-  const [dropActive, setDropActive] = useState(false)
-  const dropDepthRef = useRef(0)
-  const [mcpMenuOpen, setMcpMenuOpen] = useState(false)
   const [resourcePickerOpen, setResourcePickerOpen] = useState(false)
   const [promptPickerOpen, setPromptPickerOpen] = useState(false)
   const [renameOpen, setRenameOpen] = useState(false)
@@ -106,6 +111,12 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     null
   )
   const [inFlightCount, setInFlightCount] = useState(0)
+  /** Deliberately route-local: every chat opens in the familiar linear view. */
+  const [view, setView] = useState<"linear" | "tree">("linear")
+  /** User node id → compose-slot id. Tree owns the overlay; this only names the pair. */
+  const [composeMorphs, setComposeMorphs] = useState<Record<string, string>>({})
+  /** Which composer slot MCP pickers write into. */
+  const [pickerSlot, setPickerSlot] = useState(linearComposerSlot)
   /** Set when a draft creates a chat before `router.replace` remounts ChatView. */
   const [pendingChatId, setPendingChatId] = useState<string | null>(null)
   /**
@@ -119,30 +130,70 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   /** Last route identity we bound deep-link / scroll lifecycle to. */
   const boundChatIdentityRef = useRef<string | null>(null)
   const aliveRef = useRef(true)
+  const disposalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   /** Removed uploads can finish after their chip is gone; delete their server row. */
   const cancelledUploadIds = useRef(new Set<string>())
   const consumeScrollTarget = useCallback(() => setScrollTargetId(null), [])
+  const disposeSessionChat = useCallback(
+    (chatId: string | null) => {
+      const prefix = `${chatId ?? "draft"}:`
+      const drafts = useConversationSessionStore.getState().drafts
+      for (const [slot, draft] of Object.entries(drafts)) {
+        if (!slot.startsWith(prefix)) continue
+        for (const attachment of draft.attachments) {
+          if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl)
+          if (attachment.reference.kind !== "uploaded-file") continue
+          if (attachment.uploading) {
+            cancelledUploadIds.current.add(attachment.reference.id)
+          } else if (shouldDeleteUploadedAttachment(attachment)) {
+            void fetch(`/api/attachments/${attachment.reference.id}`, {
+              method: "DELETE",
+            })
+          }
+        }
+      }
+      clearSessionChat(chatId)
+    },
+    [clearSessionChat]
+  )
   // Sync route selection only when URL has a real chat id. On draft (null) we
   // intentionally keep ensureChatId's assigned id until navigation remounts.
   useEffect(() => {
     if (selectedChatId !== null) selectedChatIdRef.current = selectedChatId
   }, [selectedChatId])
   useEffect(() => {
+    if (disposalTimerRef.current) clearTimeout(disposalTimerRef.current)
+    disposalTimerRef.current = null
     aliveRef.current = true
     return () => {
       aliveRef.current = false
+      const bound = boundChatIdentityRef.current
+      // Delay destructive disposal by one task so React development strict
+      // effects can remount without deleting a live draft.
+      disposalTimerRef.current = setTimeout(() => {
+        if (!aliveRef.current && bound)
+          disposeSessionChat(bound === "draft" ? null : bound)
+      }, 0)
     }
-  }, [])
+  }, [disposeSessionChat])
 
   // Soft-nav between /chat/[id] reuses this component instance. Drop scroll
   // targets and re-enable deep links for the chat now on screen.
   const chatIdentity = chatRouteIdentity(selectedChatId)
   useEffect(() => {
     if (boundChatIdentityRef.current === chatIdentity) return
+    const previous = boundChatIdentityRef.current
     boundChatIdentityRef.current = chatIdentity
     setScrollTargetId(null)
+    if (previous) {
+      const previousChatId = previous === "draft" ? null : previous
+      disposeSessionChat(previousChatId)
+    }
+    setView("linear")
+    setPickerSlot(composerSlotId(selectedChatId, "linear", null))
+    setComposeMorphs({})
     nodeDeepLinkDone.current = false
-  }, [chatIdentity])
+  }, [chatIdentity, disposeSessionChat, selectedChatId])
 
   const prefersReduced = usePrefersReducedMotion()
   const animate = shouldAnimate(appearance.motion, prefersReduced)
@@ -190,7 +241,6 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   )
   /** Enabled, runtime-supported profiles that generation would load. */
   const mcpAvailableForGeneration = (surfacesQuery.data?.length ?? 0) > 0
-  const showMcpMenu = mcpAvailableForGeneration || attachments.length > 0
   const getPromptMut = useMutation(
     trpc.workspace.getMcpPrompt.mutationOptions({
       onError: (error) =>
@@ -314,10 +364,19 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   async function runStream(
     body: StreamRequestBody,
     options?: {
-      clearComposer?: boolean
       modelConfig?: ModelConfigLocal
       /** Called after the stream is registered (response ok + startStream). */
-      onStreamStarted?: () => void
+      onStreamStarted?: (info: {
+        userNodeId: string | null
+        assistantNodeId: string
+      }) => void
+      /** After the first workspace refresh that includes the new rows. */
+      onWorkspaceReady?: (info: {
+        userNodeId: string | null
+        assistantNodeId: string
+      }) => void
+      /** Tree actions must not rewrite the persisted linear-path selection. */
+      suppressSelectionFollow?: boolean
     }
   ) {
     const modelConfig = options?.modelConfig ?? activeModelConfig
@@ -360,49 +419,66 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
         chatId: body.chatId,
         parentNodeId,
       })
-      options?.onStreamStarted?.()
-      if (options?.clearComposer && aliveRef.current) setComposer("")
-
-      // Soft-follow may fail on a stale workspace cache (e.g. Edit-as-branch
-      // already attached selection on the server, but the client tip is still
-      // the previous branch). Re-check once after a forced refresh.
-      const pathFromCache = () =>
-        viewPathFromCache(
-          queryClient,
-          (input) => trpc.workspace.get.queryKey(input),
-          body.chatId
-        )
-      const trySoftFollow = (path: NodeRow[]) =>
-        nodeId !== "pending" &&
-        shouldSoftFollow(body, path, selectedChatIdRef.current)
-      let didSoftFollow = trySoftFollow(pathFromCache())
-      if (!didSoftFollow) {
-        // fetchQuery works even when the { chatId } workspace query is not
-        // the active observer (e.g. still mounted on /chat/new draft).
-        const fresh = await queryClient.fetchQuery(
-          trpc.workspace.get.queryOptions({ chatId: body.chatId })
-        )
-        const path = fresh.chat
-          ? resolveActivePath(fresh.nodes, fresh.chat.selected_root_node_id)
-          : []
-        didSoftFollow = trySoftFollow(path)
-      }
-      if (didSoftFollow) {
-        await selectPathMutation.mutateAsync({
-          chatId: body.chatId,
-          nodeId,
-        })
-      }
-      await queryClient.invalidateQueries({
-        queryKey: trpc.workspace.get.queryKey({ draft: true }),
+      options?.onStreamStarted?.({
+        userNodeId,
+        assistantNodeId: nodeId,
       })
-      if (response.body) {
-        await readStreamEvents(response.body, {
-          onText: (delta) => appendText(streamId!, delta),
-          onReasoning: (delta) => appendReasoning(streamId!, delta),
-          onTool: (tool) => upsertTool(streamId!, tool),
+
+      // Reading the response stream is an independent real-time boundary.
+      // Start it before any query refetch or selection mutation so unrelated
+      // cache latency can never delay first-token rendering.
+      const streamRead = response.body
+        ? readStreamEvents(response.body, {
+            onText: (delta) => appendText(streamId!, delta),
+            onReasoning: (delta) => appendReasoning(streamId!, delta),
+            onTool: (tool) => upsertTool(streamId!, tool),
+          })
+        : Promise.resolve()
+
+      const reconcileWorkspace = async () => {
+        // Tree needs the durable user/assistant rows while SSE continues; all
+        // surfaces benefit from the refresh, but none wait on it to read tokens.
+        await queryClient.invalidateQueries({
+          queryKey: trpc.workspace.get.queryKey({ chatId: body.chatId }),
+        })
+
+        const pathFromCache = () =>
+          viewPathFromCache(
+            queryClient,
+            (input) => trpc.workspace.get.queryKey(input),
+            body.chatId
+          )
+        const trySoftFollow = (path: NodeRow[]) =>
+          nodeId !== "pending" &&
+          shouldSoftFollow(body, path, selectedChatIdRef.current)
+        let didSoftFollow = options?.suppressSelectionFollow
+          ? false
+          : trySoftFollow(pathFromCache())
+        if (!didSoftFollow && !options?.suppressSelectionFollow) {
+          const fresh = await queryClient.fetchQuery(
+            trpc.workspace.get.queryOptions({ chatId: body.chatId })
+          )
+          const path = fresh.chat
+            ? resolveActivePath(fresh.nodes, fresh.chat.selected_root_node_id)
+            : []
+          didSoftFollow = trySoftFollow(path)
+        }
+        if (didSoftFollow) {
+          await selectPathMutation.mutateAsync({
+            chatId: body.chatId,
+            nodeId,
+          })
+        }
+        await queryClient.invalidateQueries({
+          queryKey: trpc.workspace.get.queryKey({ draft: true }),
+        })
+        options?.onWorkspaceReady?.({
+          userNodeId,
+          assistantNodeId: nodeId,
         })
       }
+
+      await Promise.all([streamRead, reconcileWorkspace()])
       await queryClient.invalidateQueries({
         queryKey: trpc.workspace.get.queryKey({ chatId: body.chatId }),
       })
@@ -471,7 +547,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   }
 
   /**
-   * Composer attach target.
+   * Composer attach target for the Linear dock.
    * When the path tip is awaiting tool input (e.g. questionnaire), send as a
    * sibling under the tip's parent so an unfinished Q&A is not buried under
    * a new user message child.
@@ -494,9 +570,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     const contextLeafId = composerParentId
     const modelConfig = activeModelConfig
     const pendingAttachments = [...attachments]
-    setComposer("")
-    setAttachments([])
-    attachmentsRef.current = []
+    updateSessionDraft(linearComposerSlot, { text: "", attachments: [] })
 
     let ensuredId: string | null = null
     let created = false
@@ -517,7 +591,6 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
             : {}),
         },
         {
-          clearComposer: false,
           modelConfig,
           onStreamStarted: created
             ? () => {
@@ -527,22 +600,11 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
             : undefined,
         }
       )
-      if (!started && aliveRef.current) {
-        setComposer((prev) => prev || content)
-        setAttachments((prev) => {
-          const next = prev.length ? prev : pendingAttachments
-          attachmentsRef.current = next
-          return next
-        })
-      }
+      if (!started && aliveRef.current)
+        restoreLinearDraft(content, pendingAttachments)
     } catch (error) {
       if (aliveRef.current) {
-        setComposer((prev) => prev || content)
-        setAttachments((prev) => {
-          const next = prev.length ? prev : pendingAttachments
-          attachmentsRef.current = next
-          return next
-        })
+        restoreLinearDraft(content, pendingAttachments)
         toast.error(
           error instanceof Error
             ? error.message
@@ -557,7 +619,13 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     }
   }
 
-  async function uploadImages(files: FileList | File[]) {
+  async function uploadImages(slot: string, files: FileList | File[]) {
+    const read = () =>
+      useConversationSessionStore.getState().drafts[slot] ??
+      emptyComposerDraft()
+    const writeAttachments = (next: ComposerAttachment[]) => {
+      updateSessionDraft(slot, { attachments: next })
+    }
     const all = Array.from(files)
     const selected = all.filter(
       (file) =>
@@ -568,7 +636,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     if (selected.length !== all.length)
       toast.error("Only image files can be attached")
     if (!selected.length) return
-    const imageCount = attachmentsRef.current.filter(
+    const imageCount = read().attachments.filter(
       (item) => item.reference.kind === "uploaded-file"
     ).length
     if (imageCount + selected.length > MAX_IMAGE_ATTACHMENTS) {
@@ -581,8 +649,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       uploading: true,
       reference: { kind: "uploaded-file", id: crypto.randomUUID() },
     }))
-    attachmentsRef.current = [...attachmentsRef.current, ...placeholders]
-    setAttachments(attachmentsRef.current)
+    writeAttachments([...read().attachments, ...placeholders])
     for (const [index, file] of selected.entries()) {
       const part = placeholders[index]!
       const localId =
@@ -607,8 +674,8 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
           URL.revokeObjectURL(previewUrl)
           continue
         }
-        setAttachments((current) => {
-          const next = current.map((item) =>
+        writeAttachments(
+          read().attachments.map((item) =>
             item.reference.kind === "uploaded-file" &&
             item.reference.id === localId
               ? {
@@ -622,20 +689,16 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
                 }
               : item
           )
-          attachmentsRef.current = next
-          return next
-        })
+        )
       } catch (error) {
         if (aliveRef.current) {
-          setAttachments((current) => {
-            const next = current.filter(
+          writeAttachments(
+            read().attachments.filter(
               (item) =>
                 item.reference.kind !== "uploaded-file" ||
                 item.reference.id !== localId
             )
-            attachmentsRef.current = next
-            return next
-          })
+          )
           URL.revokeObjectURL(previewUrl)
           if (viewer?.src === previewUrl) setViewer(null)
           toast.error(
@@ -646,17 +709,20 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     }
   }
 
-  function removeAttachment(part: ComposerAttachment) {
+  function removeAttachment(slot: string, part: ComposerAttachment) {
     if (part.uploading && part.reference.kind === "uploaded-file")
       cancelledUploadIds.current.add(part.reference.id)
     if (part.previewUrl && viewer?.src === part.previewUrl) setViewer(null)
-    setAttachments((current) => {
-      const next = current.filter((item) => item !== part)
-      attachmentsRef.current = next
-      return next
-    })
+    const current =
+      useConversationSessionStore.getState().drafts[slot] ??
+      emptyComposerDraft()
+    const next = current.attachments.filter((item) => item !== part)
+    updateSessionDraft(slot, { attachments: next })
     if (part.previewUrl) URL.revokeObjectURL(part.previewUrl)
-    if (part.reference.kind === "uploaded-file" && !part.uploading)
+    if (
+      shouldDeleteUploadedAttachment(part) &&
+      part.reference.kind === "uploaded-file"
+    )
       void fetch(`/api/attachments/${part.reference.id}`, { method: "DELETE" })
   }
 
@@ -678,6 +744,131 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     })
   }
 
+  function treeSlot(anchor: string | null) {
+    return composerSlotId(data.chat?.id ?? selectedChatId, "tree", anchor)
+  }
+
+  function openTreeDraft(anchor: string | null) {
+    if (!data.chat) return
+    const slot = treeSlot(anchor)
+    if (!sessionDrafts[slot]) updateSessionDraft(slot, { text: "" })
+  }
+
+  function closeTreeDraft(
+    anchor: string | null,
+    mode: "discard" | "sent" = "discard"
+  ) {
+    if (!data.chat) return
+    const slot = treeSlot(anchor)
+    const draft =
+      useConversationSessionStore.getState().drafts[slot] ??
+      emptyComposerDraft()
+    for (const attachment of draft.attachments) {
+      if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl)
+      if (mode === "sent") continue
+      removeAttachment(slot, attachment)
+    }
+    clearSessionDraft(slot)
+  }
+
+  function finishComposeHandoff(anchor: string | null) {
+    closeTreeDraft(anchor, "sent")
+    setComposeMorphs((current) => {
+      const want = composeLayoutId(anchor)
+      const next = { ...current }
+      for (const [nodeId, layoutId] of Object.entries(next)) {
+        if (layoutId === want) delete next[nodeId]
+      }
+      return next
+    })
+  }
+
+  async function streamTreeSend(parentNodeId: string | null) {
+    if (!data.chat || !ensureModelReady(activeModelConfig)) return false
+    const slot = treeSlot(parentNodeId)
+    const draft =
+      useConversationSessionStore.getState().drafts[slot] ??
+      emptyComposerDraft()
+    const content = draft.text.trim()
+    if (!content && draft.attachments.length === 0) return false
+    if (draft.attachments.some((attachment) => attachment.uploading))
+      return false
+    const treeChatId = data.chat.id
+    const pendingAttachments = [...draft.attachments]
+    updateSessionDraft(slot, {
+      attachments: pendingAttachments.map((item) => ({
+        ...item,
+        claimed: true,
+      })),
+    })
+    return new Promise<boolean>((resolve) => {
+      let started = false
+      let settled = false
+      const finish = (ok: boolean) => {
+        if (settled) return
+        settled = true
+        resolve(ok)
+      }
+      void runStream(
+        {
+          chatId: treeChatId,
+          intent: "continue",
+          parentNodeId,
+          content,
+          ...(pendingAttachments.length
+            ? {
+                attachments: pendingAttachments.map((item) => item.reference),
+              }
+            : {}),
+        },
+        {
+          suppressSelectionFollow: true,
+          onStreamStarted: ({ userNodeId }) => {
+            started = true
+            if (userNodeId) {
+              setComposeMorphs((current) => ({
+                ...current,
+                [userNodeId]: composeLayoutId(parentNodeId),
+              }))
+            }
+          },
+          onWorkspaceReady: () => {
+            finish(true)
+          },
+        }
+      ).then(() => {
+        if (!started) {
+          const current =
+            useConversationSessionStore.getState().drafts[slot] ??
+            emptyComposerDraft()
+          updateSessionDraft(slot, {
+            attachments: current.attachments.map((item) => ({
+              ...item,
+              claimed: false,
+            })),
+          })
+        }
+        finish(started)
+      })
+    })
+  }
+
+  async function streamTreeGenerate(parentNodeId: string) {
+    if (!data.chat) return
+    await runStream(
+      { chatId: data.chat.id, intent: "generate", parentNodeId },
+      { suppressSelectionFollow: true }
+    )
+  }
+
+  async function streamTreeRegenerate(assistantNodeId: string) {
+    if (!data.chat) return
+    await runStream(
+      { chatId: data.chat.id, intent: "regenerate", assistantNodeId },
+      { suppressSelectionFollow: true }
+    )
+  }
+
   async function streamResume(
     assistantNodeId: string,
     toolResults: Array<{ toolCallId: string; output: unknown }>
@@ -689,6 +880,17 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       assistantNodeId,
       toolResults,
     })
+  }
+
+  async function streamTreeResume(
+    assistantNodeId: string,
+    toolResults: Array<{ toolCallId: string; output: unknown }>
+  ) {
+    if (!data.chat) return
+    await runStream(
+      { chatId: data.chat.id, intent: "resume", assistantNodeId, toolResults },
+      { suppressSelectionFollow: true }
+    )
   }
 
   const setModelMutation = useMutation(
@@ -744,6 +946,23 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
 
   const chatKey = selectedChatId ?? pendingChatId ?? "draft"
   const ariaBusy = inFlightCount > 0 || pathVisibleStreams.length > 0
+  const treeDraftAnchors = useMemo(() => {
+    if (!data.chat) return new Set<string | null>()
+    const prefix = `${data.chat.id}:tree:`
+    const anchors = new Set<string | null>()
+    for (const slot of Object.keys(sessionDrafts)) {
+      if (!slot.startsWith(prefix)) continue
+      const rest = slot.slice(prefix.length)
+      anchors.add(rest === "root" ? null : rest)
+    }
+    // Hide the composer in the same render the user node appears, so layout
+    // does not slide the open plus (composer) to the right of the new child.
+    for (const [nodeId, layoutId] of Object.entries(composeMorphs)) {
+      if (!data.nodes.some((node) => node.id === nodeId)) continue
+      anchors.delete(composeLayoutAnchor(layoutId))
+    }
+    return anchors
+  }, [data.chat, data.nodes, sessionDrafts, composeMorphs])
 
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
@@ -773,6 +992,26 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
           </p>
         </div>
         <div className="flex min-w-0 items-center gap-0.5 sm:max-w-[min(36rem,70%)] sm:shrink-0 sm:gap-1">
+          <Button
+            type="button"
+            variant={view === "tree" ? "secondary" : "ghost"}
+            size="sm"
+            className="gap-1.5"
+            aria-pressed={view === "tree"}
+            disabled={!data.chat}
+            onClick={() =>
+              setView((current) => (current === "tree" ? "linear" : "tree"))
+            }
+          >
+            <HugeiconsIcon
+              icon={LayoutTable01Icon}
+              strokeWidth={2}
+              className="size-3.5"
+            />
+            <span className="hidden sm:inline">
+              {view === "tree" ? "Linear" : "Tree"}
+            </span>
+          </Button>
           <PromptStackPicker
             chatId={data.chat?.id}
             promptStackId={data.chat?.prompt_stack_id ?? null}
@@ -796,290 +1035,133 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
         </div>
       </header>
 
-      <ChatTranscript
-        chatKey={chatKey}
-        density={density}
-        activePath={activePath}
-        nodes={data.nodes}
-        providers={providers}
-        streamByNodeId={streamByNodeId}
-        afterTipStreams={afterTipStreams}
-        showEmpty={showEmpty}
-        ariaBusy={ariaBusy}
-        animate={animate}
-        transition={transition}
-        messageActionCaptions={appearance.messageActions.captions}
-        scrollTargetId={scrollTargetId}
-        onScrollTargetConsumed={consumeScrollTarget}
-        onSelect={(parentId, childId) => {
-          if (parentId)
-            selectChildMutation.mutate({
-              nodeId: parentId,
-              childId,
-            })
-          else
-            selectRootMutation.mutate({
-              chatId: data.chat!.id,
-              nodeId: childId,
-            })
-          // User-driven branch navigation — bring the selected tip into view.
-          setScrollTargetId(childId)
-        }}
-        onChanged={() => invalidateWorkspace()}
-        onRegenerate={streamRegenerate}
-        onGenerateUnder={streamGenerate}
-        onAnswerTools={streamResume}
-      />
+      {view === "linear" ? (
+        <ChatTranscript
+          chatKey={chatKey}
+          density={density}
+          activePath={activePath}
+          nodes={data.nodes}
+          providers={providers}
+          streamByNodeId={streamByNodeId}
+          afterTipStreams={afterTipStreams}
+          showEmpty={showEmpty}
+          ariaBusy={ariaBusy}
+          animate={animate}
+          transition={transition}
+          messageActionCaptions={appearance.messageActions.captions}
+          scrollTargetId={scrollTargetId}
+          onScrollTargetConsumed={consumeScrollTarget}
+          onSelect={(parentId, childId) => {
+            if (parentId)
+              selectChildMutation.mutate({
+                nodeId: parentId,
+                childId,
+              })
+            else
+              selectRootMutation.mutate({
+                chatId: data.chat!.id,
+                nodeId: childId,
+              })
+            // User-driven branch navigation — bring the selected tip into view.
+            setScrollTargetId(childId)
+          }}
+          onChanged={() => invalidateWorkspace()}
+          onRegenerate={streamRegenerate}
+          onGenerateUnder={streamGenerate}
+          onAnswerTools={streamResume}
+        />
+      ) : (
+        <ChatTree
+          key={chatIdentity}
+          nodes={data.nodes}
+          activePath={activePath}
+          draftAnchors={treeDraftAnchors}
+          providers={providers}
+          streams={streamsForActiveChat}
+          animate={animate}
+          transition={transition}
+          messageActionCaptions={appearance.messageActions.captions}
+          messageLayoutIds={composeMorphs}
+          onHandoffComplete={finishComposeHandoff}
+          onSendDraft={streamTreeSend}
+          renderComposer={(anchor, options) => {
+            const slot = treeSlot(anchor)
+            const draft = sessionDrafts[slot] ?? emptyComposerDraft()
+            return (
+              <ConversationComposer
+                variant="inline"
+                draft={draft}
+                autoFocus={options.autoFocus}
+                submitting={options.submitting}
+                animate={animate && transition.duration > 0}
+                placeholder={
+                  anchor
+                    ? "Take this conversation somewhere new…"
+                    : "Start a new root…"
+                }
+                mcpAvailable={mcpAvailableForGeneration}
+                onTextChange={(text) => updateSessionDraft(slot, { text })}
+                onSend={options.onSend}
+                onCancel={() => closeTreeDraft(anchor)}
+                onFiles={(files) => void uploadImages(slot, files)}
+                onRemoveAttachment={(part) => removeAttachment(slot, part)}
+                onPreview={(src, name) => setViewer({ src, name })}
+                onOpenResources={() => {
+                  setPickerSlot(slot)
+                  setResourcePickerOpen(true)
+                }}
+                onOpenPrompts={() => {
+                  setPickerSlot(slot)
+                  setPromptPickerOpen(true)
+                }}
+              />
+            )
+          }}
+          onOpenDraft={openTreeDraft}
+          onChanged={invalidateWorkspace}
+          onRegenerate={streamTreeRegenerate}
+          onGenerateUnder={streamTreeGenerate}
+          onAnswerTools={streamTreeResume}
+          onStop={() => streamsForActiveChat.forEach(([id]) => stopStream(id))}
+        />
+      )}
 
-      <div className="border-t border-border bg-background p-3 sm:px-6 sm:py-4">
-        <div
-          data-theme-target="composer"
-          className={cn(
-            "relative mx-auto rounded-xl border bg-card p-2",
-            dropActive ? "border-foreground/40 bg-muted/40" : "border-border"
-          )}
-          style={{ maxWidth: "var(--composer-width, 48rem)" }}
-          onDragEnter={(event) => {
-            event.preventDefault()
-            dropDepthRef.current += 1
-            setDropActive(true)
-          }}
-          onDragOver={(event) => event.preventDefault()}
-          onDragLeave={(event) => {
-            event.preventDefault()
-            dropDepthRef.current = Math.max(0, dropDepthRef.current - 1)
-            if (dropDepthRef.current === 0) setDropActive(false)
-          }}
-          onDrop={(event) => {
-            event.preventDefault()
-            dropDepthRef.current = 0
-            setDropActive(false)
-            if (event.dataTransfer.files.length)
-              void uploadImages(event.dataTransfer.files)
-          }}
-        >
-          {dropActive ? (
-            <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-xl bg-background/70 text-sm text-muted-foreground">
-              Drop images
-            </div>
-          ) : null}
-          <input
-            ref={imageInputRef}
-            type="file"
-            accept="image/jpeg,image/png,image/webp,image/gif"
-            multiple
-            className="sr-only"
-            onChange={(event) => {
-              if (event.target.files) void uploadImages(event.target.files)
-              event.target.value = ""
-            }}
-          />
-          {attachments.length > 0 ? (
-            <div className="flex flex-wrap items-end gap-1.5 px-2 pt-1">
-              {attachments.map((part) => {
-                const key =
-                  part.reference.kind === "mcp-resource"
-                    ? `${part.reference.profileId}:${part.reference.uri}`
-                    : part.reference.id
-                if (part.previewUrl) {
-                  return (
-                    <span key={key} className="relative size-14 shrink-0">
-                      <button
-                        type="button"
-                        className="size-14 overflow-hidden rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                        onClick={() =>
-                          setViewer({ src: part.previewUrl!, name: part.name })
-                        }
-                      >
-                        <img
-                          src={part.previewUrl}
-                          alt={part.name}
-                          className="size-full object-cover"
-                        />
-                      </button>
-                      {part.uploading ? (
-                        <span className="pointer-events-none absolute inset-0 grid place-items-center rounded-md bg-background/60">
-                          <HugeiconsIcon
-                            icon={Loading03Icon}
-                            strokeWidth={2}
-                            className="size-4 animate-spin"
-                          />
-                        </span>
-                      ) : null}
-                      <button
-                        type="button"
-                        className="absolute -top-1 -right-1 flex size-5 items-center justify-center rounded-full border bg-background text-xs leading-none text-muted-foreground hover:text-foreground"
-                        aria-label={`Remove ${part.name}`}
-                        onClick={() => removeAttachment(part)}
-                      >
-                        ×
-                      </button>
-                    </span>
-                  )
-                }
-                return (
-                  <span
-                    key={key}
-                    className="inline-flex items-center gap-1 rounded-full border bg-muted/50 px-2 py-0.5 text-xs"
-                  >
-                    Attached: {part.name}
-                    <button
-                      type="button"
-                      className="text-muted-foreground hover:text-foreground"
-                      aria-label={`Remove ${part.name}`}
-                      onClick={() => removeAttachment(part)}
-                    >
-                      ×
-                    </button>
-                  </span>
-                )
-              })}
-            </div>
-          ) : null}
-          <Textarea
-            value={composer}
-            onChange={(event) => setComposer(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault()
-                void streamContinue()
+      {view === "linear" ? (
+        <div className="border-t border-border bg-background p-3 sm:px-6 sm:py-4">
+          <div
+            className="mx-auto"
+            style={{ maxWidth: "var(--composer-width, 48rem)" }}
+          >
+            <ConversationComposer
+              draft={linearDraft}
+              animate={animate && transition.duration > 0}
+              placeholder="Message Nibchat…"
+              mcpAvailable={mcpAvailableForGeneration}
+              streaming={streamsForActiveChat.length > 0}
+              onTextChange={(text) =>
+                updateSessionDraft(linearComposerSlot, { text })
               }
-            }}
-            placeholder="Message Nibchat…"
-            onPaste={(event) => {
-              const files = Array.from(event.clipboardData.files)
-              if (files.length) {
-                event.preventDefault()
-                void uploadImages(files)
+              onSend={() => void streamContinue()}
+              onFiles={(files) => void uploadImages(linearComposerSlot, files)}
+              onRemoveAttachment={(part) =>
+                removeAttachment(linearComposerSlot, part)
               }
-            }}
-            rows={3}
-            className="min-h-[4.5rem] resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
-          />
-          <div className="flex items-center justify-between gap-2 px-2 pb-1">
-            <div className="flex flex-wrap items-center gap-1">
-              <TooltipProvider delay={400}>
-                <WithTooltip label="Attach image">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-xs"
-                    className="size-7"
-                    aria-label="Attach image"
-                    onClick={() => imageInputRef.current?.click()}
-                  >
-                    <HugeiconsIcon
-                      icon={ImageAdd02Icon}
-                      strokeWidth={2}
-                      className="size-3.5"
-                    />
-                  </Button>
-                </WithTooltip>
-              </TooltipProvider>
-              {showMcpMenu ? (
-                <Popover open={mcpMenuOpen} onOpenChange={setMcpMenuOpen}>
-                  <PopoverTrigger
-                    render={
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 text-xs"
-                      />
-                    }
-                  >
-                    MCP
-                    {attachments.some(
-                      (item) => item.reference.kind === "mcp-resource"
-                    ) ? (
-                      <span className="ml-1 text-muted-foreground">
-                        ·{" "}
-                        {
-                          attachments.filter(
-                            (item) => item.reference.kind === "mcp-resource"
-                          ).length
-                        }
-                      </span>
-                    ) : null}
-                  </PopoverTrigger>
-                  <PopoverContent
-                    align="start"
-                    side="top"
-                    className="w-72 gap-0.5 p-1.5"
-                  >
-                    <button
-                      type="button"
-                      className="flex w-full flex-col items-start gap-0.5 rounded-xl px-3 py-2 text-left hover:bg-muted/70"
-                      onClick={() => {
-                        setMcpMenuOpen(false)
-                        setResourcePickerOpen(true)
-                      }}
-                    >
-                      <span className="text-sm font-medium">
-                        Attach resource
-                      </span>
-                      <span className="text-xs text-muted-foreground">
-                        Pull docs or files from an MCP server into this message
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      className="flex w-full flex-col items-start gap-0.5 rounded-xl px-3 py-2 text-left hover:bg-muted/70"
-                      onClick={() => {
-                        setMcpMenuOpen(false)
-                        setPromptPickerOpen(true)
-                      }}
-                    >
-                      <span className="text-sm font-medium">Insert prompt</span>
-                      <span className="text-xs text-muted-foreground">
-                        Paste a server prompt template into the composer
-                      </span>
-                    </button>
-                  </PopoverContent>
-                </Popover>
-              ) : null}
-              <span className="hidden text-[11px] text-muted-foreground sm:inline">
-                Enter to send · Shift + Enter for a new line
-              </span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              {streamsForActiveChat.length > 0 && (
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  className="gap-1.5"
-                  onClick={() =>
-                    streamsForActiveChat.forEach(([id]) => stopStream(id))
-                  }
-                >
-                  <HugeiconsIcon
-                    icon={StopIcon}
-                    strokeWidth={2}
-                    className="size-4"
-                  />
-                  Stop
-                </Button>
-              )}
-              <Button
-                size="sm"
-                className="gap-1.5"
-                onClick={() => void streamContinue()}
-                disabled={
-                  (!composer.trim() && attachments.length === 0) ||
-                  attachments.some((attachment) => attachment.uploading)
-                }
-              >
-                <HugeiconsIcon
-                  icon={SentIcon}
-                  strokeWidth={2}
-                  className="size-4"
-                />
-                Send
-              </Button>
-            </div>
+              onPreview={(src, name) => setViewer({ src, name })}
+              onOpenResources={() => {
+                setPickerSlot(linearComposerSlot)
+                setResourcePickerOpen(true)
+              }}
+              onOpenPrompts={() => {
+                setPickerSlot(linearComposerSlot)
+                setPromptPickerOpen(true)
+              }}
+              onStop={() =>
+                streamsForActiveChat.forEach(([id]) => stopStream(id))
+              }
+            />
           </div>
         </div>
-      </div>
+      ) : null}
 
       <ImageViewer image={viewer} onClose={() => setViewer(null)} />
 
@@ -1111,31 +1193,33 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
                       variant="outline"
                       className="h-auto w-full justify-start px-3 py-2 text-left"
                       onClick={() => {
-                        setAttachments((current) => {
-                          if (
-                            current.some(
-                              (item) =>
-                                item.reference.kind === "mcp-resource" &&
-                                item.reference.profileId ===
-                                  surface.profileId &&
-                                item.reference.uri === resource.uri
-                            )
+                        const current =
+                          useConversationSessionStore.getState().drafts[
+                            pickerSlot
+                          ] ?? emptyComposerDraft()
+                        if (
+                          current.attachments.some(
+                            (item) =>
+                              item.reference.kind === "mcp-resource" &&
+                              item.reference.profileId === surface.profileId &&
+                              item.reference.uri === resource.uri
                           )
-                            return current
-                          const next = [
-                            ...current,
-                            {
-                              name: resource.name,
-                              reference: {
-                                kind: "mcp-resource" as const,
-                                profileId: surface.profileId,
-                                uri: resource.uri,
-                              },
+                        ) {
+                          setResourcePickerOpen(false)
+                          return
+                        }
+                        const next = [
+                          ...current.attachments,
+                          {
+                            name: resource.name,
+                            reference: {
+                              kind: "mcp-resource" as const,
+                              profileId: surface.profileId,
+                              uri: resource.uri,
                             },
-                          ]
-                          attachmentsRef.current = next
-                          return next
-                        })
+                          },
+                        ]
+                        updateSessionDraft(pickerSlot, { attachments: next })
                         setResourcePickerOpen(false)
                         toast.success(`Attached ${resource.name}`)
                       }}
@@ -1190,11 +1274,14 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
                             profileId: surface.profileId,
                             name: prompt.name,
                           })
-                          setComposer((current) =>
-                            current.trim()
-                              ? `${current.trim()}\n\n${result.text}`
-                              : result.text
-                          )
+                          const current =
+                            useConversationSessionStore.getState().drafts[
+                              pickerSlot
+                            ] ?? emptyComposerDraft()
+                          const next = current.text.trim()
+                            ? `${current.text.trim()}\n\n${result.text}`
+                            : result.text
+                          updateSessionDraft(pickerSlot, { text: next })
                           setPromptPickerOpen(false)
                           toast.success("Prompt inserted into composer")
                         } catch {

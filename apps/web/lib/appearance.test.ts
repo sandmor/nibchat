@@ -3,12 +3,57 @@ import {
   appearanceToJson,
   applyAppearancePreset,
   defaultAppearance,
+  motionTransition,
   parseAppearance,
   presetDocument,
   presetTemplates,
+  shouldAnimate,
 } from "@/lib/appearance"
 
 describe("appearance document", () => {
+  it("normalizes CSS easing strings for Motion", () => {
+    expect(
+      motionTransition({
+        enabled: true,
+        durationMs: 300,
+        ease: "ease-in-out",
+        reducedMotion: "respect",
+      })
+    ).toEqual({ duration: 0.3, ease: [0.42, 0, 0.58, 1] })
+    expect(
+      motionTransition({
+        enabled: true,
+        durationMs: 180,
+        ease: "cubic-bezier(0.1, -0.2, 0.8, 1.3)",
+        reducedMotion: "respect",
+      }).ease
+    ).toEqual([0.1, -0.2, 0.8, 1.3])
+    const doc = parseAppearance({
+      motion: {
+        enabled: true,
+        durationMs: 240,
+        ease: "ease-in-out",
+        reducedMotion: "respect",
+      },
+    })
+    expect(doc.vars["--motion-ease"]).toBe("cubic-bezier(0.42, 0, 0.58, 1)")
+  })
+
+  it("applies the JSON reduced-motion policy consistently", () => {
+    const base = {
+      enabled: true,
+      durationMs: 220,
+      ease: "linear" as const,
+    }
+    expect(shouldAnimate({ ...base, reducedMotion: "respect" }, true)).toBe(
+      false
+    )
+    expect(shouldAnimate({ ...base, reducedMotion: "never" }, true)).toBe(true)
+    expect(shouldAnimate({ ...base, reducedMotion: "always" }, false)).toBe(
+      false
+    )
+  })
+
   it("resolves starters into full documents, not patches", () => {
     const spatial = presetDocument("spatial")
     expect(spatial.vars["--primary"]).toBeTruthy()
@@ -33,6 +78,11 @@ describe("appearance document", () => {
       remoteStylesheet: "  https://example.com/theme.css  ",
     })
     expect(doc.vars["--background"]).toBeTruthy()
+    expect(doc.vars["--tree-grid-color"]).toContain("--muted-foreground")
+    expect(doc.vars["--tree-minimap-node"]).toBe("var(--muted-foreground)")
+    expect(doc.vars["--tree-minimap-path"]).toContain("--primary")
+    expect(doc.vars["--tree-shadow-lg"]).toContain("--foreground")
+    expect(doc.vars["--motion-spinner-duration"]).toBe("900ms")
     expect(doc.density).toBe("compact")
     expect(doc.remoteStylesheet).toBe("https://example.com/theme.css")
   })

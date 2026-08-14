@@ -10,9 +10,13 @@ export function applyAppearanceVars(doc: Appearance): () => void {
     root.style.setProperty(key, value)
   }
   root.dataset.density = doc.density
+  root.dataset.motionEnabled = String(doc.motion.enabled)
+  root.dataset.motionReduced = doc.motion.reducedMotion
   return () => {
     for (const key of applied) root.style.removeProperty(key)
     delete root.dataset.density
+    delete root.dataset.motionEnabled
+    delete root.dataset.motionReduced
   }
 }
 

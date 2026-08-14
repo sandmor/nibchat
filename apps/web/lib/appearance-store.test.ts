@@ -1,18 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import {
-  defaultAppearance,
-  appearanceToJson,
-  parseAppearance,
-  presetDocument,
-} from "@/lib/appearance"
+import { defaultAppearance, parseAppearance, patchToken } from "@/lib/appearance"
 import {
   APPEARANCE_MAGIC_LS_KEY,
   MAGIC_PERSIST_DEBOUNCE_MS,
   flushMagicPersist,
   isAppearanceDirty,
   parseMagicPersist,
-  reconcileHydrate,
-  reconcileServerUpdate,
   resetMagicPersistRuntime,
   serializeMagicPersist,
   useAppearanceStore,
@@ -39,78 +32,29 @@ function memoryStorage(): Storage {
 describe("appearance-store pure helpers", () => {
   it("detects dirty via appearanceToJson", () => {
     const a = defaultAppearance()
-    const b = parseAppearance({
-      ...a,
-      vars: { ...a.vars, "--sidebar": "oklch(0.5 0.1 200)" },
-    })
+    const b = patchToken(a, "--sidebar", { literal: "oklch(0.5 0.1 200)" })
     expect(isAppearanceDirty(a, a)).toBe(false)
     expect(isAppearanceDirty(b, a)).toBe(true)
-    expect(appearanceToJson(a, false)).not.toBe(appearanceToJson(b, false))
   })
 
   it("round-trips localStorage payload", () => {
-    const draft = presetDocument("spatial")
-    const raw = serializeMagicPersist({ v: 1, open: true, draft })
+    const draft = parseAppearance({
+      palette: { paper: "oklch(0.96 0.012 85)" },
+    })
+    const raw = serializeMagicPersist({
+      v: 2,
+      open: true,
+      themeId: "paper",
+      drafts: { paper: draft },
+    })
     const parsed = parseMagicPersist(raw)
     expect(parsed?.open).toBe(true)
-    expect(parsed?.draft.vars["--primary"]).toBe(draft.vars["--primary"])
-  })
-
-  it("hydrate keeps dirty local draft over server", () => {
-    const server = defaultAppearance()
-    const draft = parseAppearance({
-      ...server,
-      vars: { ...server.vars, "--primary": "oklch(0.4 0.2 30)" },
-    })
-    const result = reconcileHydrate(server, {
-      v: 1,
-      open: true,
-      draft,
-    })
-    expect(result.open).toBe(true)
-    expect(result.saved.vars["--primary"]).toBe(server.vars["--primary"])
-    expect(result.draft.vars["--primary"]).toBe("oklch(0.4 0.2 30)")
-  })
-
-  it("hydrate uses server when not dirty", () => {
-    const server = defaultAppearance()
-    const result = reconcileHydrate(server, {
-      v: 1,
-      open: true,
-      draft: server,
-    })
-    expect(result.draft).toEqual(result.saved)
-    expect(result.open).toBe(true)
-  })
-
-  it("server update adopts when clean vs previous saved", () => {
-    const previous = defaultAppearance()
-    const server = parseAppearance({
-      ...previous,
-      vars: { ...previous.vars, "--primary": "oklch(0.1 0 0)" },
-    })
-    const result = reconcileServerUpdate(server, previous, previous)
-    expect(result.draft.vars["--primary"]).toBe("oklch(0.1 0 0)")
-    expect(result.saved.vars["--primary"]).toBe("oklch(0.1 0 0)")
-  })
-
-  it("server update keeps dirty draft and refreshes saved", () => {
-    const previousSaved = defaultAppearance()
-    const dirty = parseAppearance({
-      ...previousSaved,
-      vars: { ...previousSaved.vars, "--sidebar": "oklch(0.2 0 0)" },
-    })
-    const server = parseAppearance({
-      ...previousSaved,
-      vars: { ...previousSaved.vars, "--primary": "oklch(0.1 0 0)" },
-    })
-    const result = reconcileServerUpdate(server, dirty, previousSaved)
-    expect(result.draft.vars["--sidebar"]).toBe("oklch(0.2 0 0)")
-    expect(result.saved.vars["--primary"]).toBe("oklch(0.1 0 0)")
+    expect(parsed?.themeId).toBe("paper")
+    expect(parsed?.drafts.paper?.palette.paper).toBe(draft.palette.paper)
   })
 })
 
-describe("appearance-store setVar + persist", () => {
+describe("appearance-store setToken + persist", () => {
   beforeEach(() => {
     vi.useFakeTimers()
     const storage = memoryStorage()
@@ -123,9 +67,13 @@ describe("appearance-store setVar + persist", () => {
     useAppearanceStore.setState({
       open: false,
       pickArmed: false,
+      themeId: "paper",
       draft: null,
+      preview: null,
       saved: null,
-      selectedSurfaceId: null,
+      drafts: {},
+      savedById: {},
+      selected: null,
       pickPoint: null,
       hydrated: false,
     })
@@ -139,55 +87,164 @@ describe("appearance-store setVar + persist", () => {
     vi.unstubAllGlobals()
   })
 
-  it("patches a single css var on draft without waiting for LS", () => {
+  it("patches a single token on draft without waiting for LS", () => {
     const base = defaultAppearance()
-    useAppearanceStore.setState({ draft: base, saved: base, open: true })
-    useAppearanceStore.getState().setVar("--sidebar", "oklch(0.2 0.05 100)")
+    useAppearanceStore.setState({
+      draft: base,
+      saved: base,
+      themeId: "paper",
+      savedById: { paper: base },
+      open: true,
+    })
+    useAppearanceStore.getState().setToken("--sidebar", {
+      literal: "oklch(0.2 0.05 100)",
+    })
     const draft = useAppearanceStore.getState().draft!
-    expect(draft.vars["--sidebar"]).toBe("oklch(0.2 0.05 100)")
-    expect(draft.vars["--background"]).toBe(base.vars["--background"])
+    expect(draft.tokens["--sidebar"]).toEqual({
+      literal: "oklch(0.2 0.05 100)",
+    })
     expect(isAppearanceDirty(draft, base)).toBe(true)
-    // Debounced: nothing written yet
     expect(localStorage.getItem(APPEARANCE_MAGIC_LS_KEY)).toBeNull()
   })
 
-  it("coalesces rapid setVar into one localStorage write", () => {
+  it("keeps drag previews out of the draft and persistence until committed", () => {
     const base = defaultAppearance()
-    useAppearanceStore.setState({ draft: base, saved: base, open: true })
+    useAppearanceStore.setState({
+      draft: base,
+      saved: base,
+      themeId: "paper",
+      savedById: { paper: base },
+      open: true,
+    })
+
     const store = useAppearanceStore.getState()
-    store.setVar("--sidebar", "oklch(0.1 0 0)")
-    store.setVar("--sidebar", "oklch(0.2 0 0)")
-    store.setVar("--sidebar", "oklch(0.3 0 0)")
+    store.previewToken("--sidebar", { literal: "oklch(0.2 0.05 100)" })
+
+    expect(useAppearanceStore.getState().draft).toBe(base)
+    const preview = useAppearanceStore.getState().preview
+    expect(preview?.kind).toBe("document")
+    expect(preview?.document.tokens["--sidebar"]).toEqual({
+      literal: "oklch(0.2 0.05 100)",
+    })
+    expect(localStorage.getItem(APPEARANCE_MAGIC_LS_KEY)).toBeNull()
+
+    store.commitPreview()
+
+    expect(useAppearanceStore.getState().preview).toBeNull()
+    expect(useAppearanceStore.getState().draft?.tokens["--sidebar"]).toEqual({
+      literal: "oklch(0.2 0.05 100)",
+    })
+    expect(localStorage.getItem(APPEARANCE_MAGIC_LS_KEY)).toBeNull()
+  })
+
+  it("discards a preview without changing the canonical draft", () => {
+    const base = defaultAppearance()
+    useAppearanceStore.setState({
+      draft: base,
+      saved: base,
+      themeId: "paper",
+      savedById: { paper: base },
+      open: true,
+    })
+
+    const store = useAppearanceStore.getState()
+    store.previewPaletteRole("accent", "oklch(0.4 0.1 40)")
+    store.discardPreview()
+
+    expect(useAppearanceStore.getState().preview).toBeNull()
+    expect(useAppearanceStore.getState().draft).toBe(base)
+    expect(localStorage.getItem(APPEARANCE_MAGIC_LS_KEY)).toBeNull()
+  })
+
+  it("can preview and commit a palette role back to its original value", () => {
+    const base = defaultAppearance()
+    useAppearanceStore.setState({
+      draft: base,
+      saved: base,
+      themeId: "paper",
+      savedById: { paper: base },
+      open: true,
+    })
+
+    const store = useAppearanceStore.getState()
+    store.previewPaletteRole("accent", "oklch(0.4 0.1 40)")
+    store.previewPaletteRole("accent", base.palette.accent)
+    store.commitPreview()
+
+    expect(useAppearanceStore.getState().draft).toBe(base)
+    expect(useAppearanceStore.getState().preview).toBeNull()
+    expect(isAppearanceDirty(useAppearanceStore.getState().draft, base)).toBe(
+      false
+    )
+  })
+
+  it("coalesces rapid setToken into one localStorage write", () => {
+    const base = defaultAppearance()
+    useAppearanceStore.setState({
+      draft: base,
+      saved: base,
+      themeId: "paper",
+      savedById: { paper: base },
+      open: true,
+    })
+    const store = useAppearanceStore.getState()
+    store.setToken("--sidebar", { literal: "oklch(0.1 0 0)" })
+    store.setToken("--sidebar", { literal: "oklch(0.2 0 0)" })
+    store.setToken("--sidebar", { literal: "oklch(0.3 0 0)" })
     expect(localStorage.getItem(APPEARANCE_MAGIC_LS_KEY)).toBeNull()
 
     vi.advanceTimersByTime(MAGIC_PERSIST_DEBOUNCE_MS)
     const raw = localStorage.getItem(APPEARANCE_MAGIC_LS_KEY)
     expect(raw).toBeTruthy()
     const parsed = parseMagicPersist(raw)
-    expect(parsed?.draft.vars["--sidebar"]).toBe("oklch(0.3 0 0)")
+    expect(parsed?.drafts.paper?.tokens["--sidebar"]).toEqual({
+      literal: "oklch(0.3 0 0)",
+    })
     expect(parsed?.open).toBe(true)
   })
 
   it("flushMagicPersist writes immediately and cancels debounce", () => {
     const base = defaultAppearance()
-    useAppearanceStore.setState({ draft: base, saved: base, open: true })
-    useAppearanceStore.getState().setVar("--primary", "oklch(0.4 0.1 40)")
+    useAppearanceStore.setState({
+      draft: base,
+      saved: base,
+      themeId: "paper",
+      savedById: { paper: base },
+      open: true,
+    })
+    const store = useAppearanceStore.getState()
+    store.previewPaletteRole("accent", "oklch(0.4 0.1 40)")
+    expect(useAppearanceStore.getState().preview).toMatchObject({
+      kind: "variable",
+      name: "--palette-accent",
+      value: "oklch(0.4 0.1 40)",
+    })
+    store.commitPreview()
     flushMagicPersist()
     const raw = localStorage.getItem(APPEARANCE_MAGIC_LS_KEY)
-    expect(parseMagicPersist(raw)?.draft.vars["--primary"]).toBe(
+    expect(parseMagicPersist(raw)?.drafts.paper?.palette.accent).toBe(
       "oklch(0.4 0.1 40)"
     )
-    // Later timer must not double-write corrupted state
+    expect(parseMagicPersist(raw)?.preview?.themeId).toBe("paper")
+    expect(parseMagicPersist(raw)?.preview?.vars["--palette-accent"]).toBe(
+      "oklch(0.4 0.1 40)"
+    )
     vi.advanceTimersByTime(MAGIC_PERSIST_DEBOUNCE_MS * 2)
     expect(
-      parseMagicPersist(localStorage.getItem(APPEARANCE_MAGIC_LS_KEY))?.draft
-        .vars["--primary"]
+      parseMagicPersist(localStorage.getItem(APPEARANCE_MAGIC_LS_KEY))?.drafts
+        .paper?.palette.accent
     ).toBe("oklch(0.4 0.1 40)")
   })
 
   it("removes LS when closed and clean", () => {
     const base = defaultAppearance()
-    useAppearanceStore.setState({ draft: base, saved: base, open: true })
+    useAppearanceStore.setState({
+      draft: base,
+      saved: base,
+      themeId: "paper",
+      savedById: { paper: base },
+      open: true,
+    })
     flushMagicPersist()
     expect(localStorage.getItem(APPEARANCE_MAGIC_LS_KEY)).toBeTruthy()
 
@@ -197,44 +254,131 @@ describe("appearance-store setVar + persist", () => {
 
   it("keeps LS when closed but dirty", () => {
     const base = defaultAppearance()
-    useAppearanceStore.setState({ draft: base, saved: base, open: true })
-    useAppearanceStore.getState().setVar("--sidebar", "oklch(0.2 0 0)")
+    useAppearanceStore.setState({
+      draft: base,
+      saved: base,
+      themeId: "paper",
+      savedById: { paper: base },
+      open: true,
+    })
+    useAppearanceStore.getState().setToken("--sidebar", {
+      literal: "oklch(0.2 0 0)",
+    })
     flushMagicPersist()
     useAppearanceStore.getState().closeMagic()
-    const parsed = parseMagicPersist(localStorage.getItem(APPEARANCE_MAGIC_LS_KEY))
+    const parsed = parseMagicPersist(
+      localStorage.getItem(APPEARANCE_MAGIC_LS_KEY)
+    )
     expect(parsed?.open).toBe(false)
-    expect(parsed?.draft.vars["--sidebar"]).toBe("oklch(0.2 0 0)")
+    expect(parsed?.drafts.paper?.tokens["--sidebar"]).toEqual({
+      literal: "oklch(0.2 0 0)",
+    })
   })
 
-  it("hydrateFromServer re-syncs clean session when server props change", () => {
-    const serverA = defaultAppearance()
-    useAppearanceStore.getState().hydrateFromServer(serverA)
-    expect(useAppearanceStore.getState().hydrated).toBe(true)
-
-    const serverB = parseAppearance({
-      ...serverA,
-      vars: { ...serverA.vars, "--primary": "oklch(0.3 0.1 50)" },
+  it("hydrateTheme keeps dirty local draft for that theme id", () => {
+    const server = defaultAppearance()
+    const dirty = patchToken(server, "--sidebar", {
+      literal: "oklch(0.11 0 0)",
     })
-    useAppearanceStore.getState().hydrateFromServer(serverB)
+    localStorage.setItem(
+      APPEARANCE_MAGIC_LS_KEY,
+      serializeMagicPersist({
+        v: 2,
+        open: true,
+        themeId: "paper",
+        drafts: { paper: dirty },
+      })
+    )
+    useAppearanceStore.getState().hydrateTheme("paper", server)
     const { draft, saved, open } = useAppearanceStore.getState()
-    expect(draft?.vars["--primary"]).toBe("oklch(0.3 0.1 50)")
-    expect(saved?.vars["--primary"]).toBe("oklch(0.3 0.1 50)")
-    expect(open).toBe(false)
+    expect(open).toBe(true)
+    expect(useAppearanceStore.getState().pickArmed).toBe(true)
+    expect(saved?.tokens["--sidebar"]).toBeUndefined()
+    expect(draft?.tokens["--sidebar"]).toEqual({ literal: "oklch(0.11 0 0)" })
   })
 
-  it("hydrateFromServer keeps dirty draft on later server update", () => {
-    const serverA = defaultAppearance()
-    useAppearanceStore.getState().hydrateFromServer(serverA)
-    useAppearanceStore.getState().setVar("--sidebar", "oklch(0.11 0 0)")
-    flushMagicPersist()
-
-    const serverB = parseAppearance({
-      ...serverA,
-      vars: { ...serverA.vars, "--primary": "oklch(0.3 0.1 50)" },
+  it("restores the open magic document instead of the active slot", () => {
+    const paper = defaultAppearance()
+    const ink = parseAppearance({ scheme: "dark" })
+    const dirtyInk = patchToken(ink, "--composer", {
+      literal: "oklch(0.3 0.05 20)",
     })
-    useAppearanceStore.getState().hydrateFromServer(serverB)
-    const { draft, saved } = useAppearanceStore.getState()
-    expect(draft?.vars["--sidebar"]).toBe("oklch(0.11 0 0)")
-    expect(saved?.vars["--primary"]).toBe("oklch(0.3 0.1 50)")
+    localStorage.setItem(
+      APPEARANCE_MAGIC_LS_KEY,
+      serializeMagicPersist({
+        v: 2,
+        open: true,
+        themeId: "ink",
+        drafts: { ink: dirtyInk },
+      })
+    )
+    useAppearanceStore.getState().hydrateThemeLibrary(
+      [
+        { id: "paper", document: paper },
+        { id: "ink", document: ink },
+      ],
+      "paper"
+    )
+    expect(useAppearanceStore.getState().themeId).toBe("ink")
+    expect(useAppearanceStore.getState().draft?.tokens["--composer"]).toEqual(
+      dirtyInk.tokens["--composer"]
+    )
+    expect(useAppearanceStore.getState().pickArmed).toBe(true)
+  })
+
+  it("keeps the hydrated document when the active slot changes", () => {
+    const paper = defaultAppearance()
+    const ink = parseAppearance({ scheme: "dark" })
+    useAppearanceStore.getState().hydrateThemeLibrary(
+      [
+        { id: "paper", document: paper },
+        { id: "ink", document: ink },
+      ],
+      "paper"
+    )
+    useAppearanceStore.getState().hydrateTheme("ink", ink)
+    useAppearanceStore.getState().hydrateThemeLibrary(
+      [
+        { id: "paper", document: paper },
+        { id: "ink", document: ink },
+      ],
+      "paper"
+    )
+    expect(useAppearanceStore.getState().themeId).toBe("ink")
+  })
+
+  it("switching themes restores a dirty draft for the other id", () => {
+    const paper = defaultAppearance()
+    const ink = parseAppearance({ scheme: "dark" })
+    useAppearanceStore.getState().hydrateTheme("paper", paper)
+    useAppearanceStore.getState().setToken("--composer", {
+      literal: "oklch(0.5 0.1 20)",
+    })
+    flushMagicPersist()
+    useAppearanceStore.getState().hydrateTheme("ink", ink)
+    expect(useAppearanceStore.getState().themeId).toBe("ink")
+    expect(useAppearanceStore.getState().draft?.scheme).toBe("dark")
+    useAppearanceStore.getState().hydrateTheme("paper", paper)
+    expect(useAppearanceStore.getState().draft?.tokens["--composer"]).toEqual({
+      literal: "oklch(0.5 0.1 20)",
+    })
+  })
+
+  it("hydrating a library theme then setDraft dirties that document", () => {
+    const paper = defaultAppearance()
+    const ink = parseAppearance({ scheme: "dark" })
+    useAppearanceStore.getState().hydrateTheme("paper", paper)
+    useAppearanceStore.getState().hydrateTheme("ink", ink)
+    useAppearanceStore.getState().setDraft(
+      parseAppearance({
+        scheme: "dark",
+        palette: { accent: "oklch(0.4 0.15 40)" },
+      })
+    )
+    const { themeId, draft, saved } = useAppearanceStore.getState()
+    expect(themeId).toBe("ink")
+    expect(draft?.palette.accent).toBe("oklch(0.4 0.15 40)")
+    expect(isAppearanceDirty(draft, saved)).toBe(true)
+    expect(isAppearanceDirty(draft, ink)).toBe(true)
   })
 })

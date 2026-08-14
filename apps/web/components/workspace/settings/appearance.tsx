@@ -1,13 +1,21 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import CodeMirror from "@uiw/react-codemirror"
-import { json as jsonLang } from "@codemirror/lang-json"
+import { useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
-import { useMutation } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import { Label } from "@/components/ui/label"
-import { Switch } from "@/components/ui/switch"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import {
   Card,
   CardContent,
@@ -15,270 +23,380 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { TooltipProvider, WithTooltip } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { useTRPC } from "@/lib/trpc-react"
-import type { Appearance, ResolvedAppearance } from "@/lib/appearance"
-import {
-  PRESET_IDS,
-  appearanceToJson,
-  applyAppearancePreset,
-  parseAppearance,
-  presetTemplates,
-} from "@/lib/appearance"
-import { reconcileEditorText } from "@/lib/appearance-editor-sync"
-import {
-  isAppearanceDirty,
-  useAppearanceStore,
-} from "@/lib/appearance-store"
+import { compileAppearance, type ThemeRecord } from "@/lib/appearance"
+import { PALETTE_ROLES } from "@/lib/appearance-registry"
+import { isAppearanceDirty, useAppearanceStore } from "@/lib/appearance-store"
+import { useWorkspaceChrome } from "../shell"
+import { ThemeDocumentEditor } from "./theme-document-editor"
 
-export function AppearanceSettings({
-  appearance,
-  onChange,
-}: {
-  appearance: ResolvedAppearance
-  onChange: (next: ResolvedAppearance) => void
-}) {
+const EMPTY_THEMES: ThemeRecord[] = []
+
+export function AppearanceSettings() {
   const trpc = useTRPC()
-  const magicOpen = useAppearanceStore((s) => s.open)
+  const queryClient = useQueryClient()
+  const { activeThemeId, lightThemeId, darkThemeId } = useWorkspaceChrome()
   const storeDraft = useAppearanceStore((s) => s.draft)
   const storeSaved = useAppearanceStore((s) => s.saved)
-  const openMagic = useAppearanceStore((s) => s.openMagic)
-  const closeMagic = useAppearanceStore((s) => s.closeMagic)
-  const markSaved = useAppearanceStore((s) => s.markSaved)
-  const discardToSaved = useAppearanceStore((s) => s.discardToSaved)
+  const storeThemeId = useAppearanceStore((s) => s.themeId)
+  const storeDrafts = useAppearanceStore((s) => s.drafts)
+  const hydrateTheme = useAppearanceStore((s) => s.hydrateTheme)
 
-  const effectiveDraft = storeDraft ?? appearance
-  const effectiveSaved = storeSaved ?? appearance
-  const dirty = isAppearanceDirty(effectiveDraft, effectiveSaved)
+  const settingsQuery = useQuery(trpc.workspace.getSettings.queryOptions())
+  const themes = settingsQuery.data?.themes ?? EMPTY_THEMES
+  const themeItems = Object.fromEntries(
+    themes.map((theme) => [theme.id, theme.name])
+  )
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const previousActiveThemeId = useRef(activeThemeId)
 
-  const [text, setText] = useState(() => appearanceToJson(effectiveDraft))
-  const [parseError, setParseError] = useState<string | null>(null)
-  const [saving, setSaving] = useState(false)
-
-  const save = useMutation(trpc.workspace.setAppearance.mutationOptions())
-
-  // Store draft is SOT: rewrite editor when external draft changes (preserve format if equal).
   useEffect(() => {
-    setText((prev) => {
-      const { text: next, replaced } = reconcileEditorText(prev, effectiveDraft)
-      if (replaced) setParseError(null)
-      return next
-    })
-  }, [effectiveDraft])
+    if (previousActiveThemeId.current === activeThemeId) return
+    previousActiveThemeId.current = activeThemeId
+    const state = useAppearanceStore.getState()
+    // Slot changes (including D) end a clean library viewing session.
+    // Dirty drafts and an open picker keep the document being painted.
+    if (state.open || isAppearanceDirty(state.draft, state.saved)) return
+    setSelectedId(null)
+    const slotTheme = themes.find((theme) => theme.id === activeThemeId)
+    if (slotTheme) hydrateTheme(slotTheme.id, slotTheme.document)
+  }, [activeThemeId, hydrateTheme, themes])
 
-  function applyDoc(doc: Appearance) {
-    onChange(doc)
-  }
+  const requestedId =
+    selectedId ?? storeThemeId ?? activeThemeId ?? themes[0]?.id ?? null
+  const selected =
+    themes.find((theme) => theme.id === requestedId) ??
+    themes.find((theme) => theme.id === activeThemeId) ??
+    themes[0] ??
+    null
+  const effectiveId = selected?.id ?? null
 
-  function saveNow() {
-    let doc: Appearance
-    try {
-      doc = parseAppearance(JSON.parse(text))
-      setParseError(null)
-    } catch (error) {
-      setParseError(
-        error instanceof Error ? error.message : "Invalid appearance document"
-      )
-      toast.error("Fix JSON before saving")
-      return
+  const editingSelected = storeThemeId === effectiveId
+  const effectiveDraft =
+    editingSelected && storeDraft ? storeDraft : (selected?.document ?? null)
+  const effectiveSaved =
+    editingSelected && storeSaved ? storeSaved : (selected?.document ?? null)
+
+  const slotThemeRef = useRef(
+    themes.find((theme) => theme.id === activeThemeId) ?? null
+  )
+  const hydrateThemeRef = useRef(hydrateTheme)
+
+  useEffect(() => {
+    slotThemeRef.current =
+      themes.find((theme) => theme.id === activeThemeId) ?? null
+    hydrateThemeRef.current = hydrateTheme
+  }, [activeThemeId, hydrateTheme, themes])
+
+  useEffect(() => {
+    if (!selected) return
+    if (storeThemeId === selected.id) return
+    hydrateTheme(selected.id, selected.document)
+  }, [hydrateTheme, selected, storeThemeId])
+
+  useEffect(() => {
+    return () => {
+      const state = useAppearanceStore.getState()
+      if (state.open || isAppearanceDirty(state.draft, state.saved)) return
+      const slotTheme = slotThemeRef.current
+      if (slotTheme) hydrateThemeRef.current(slotTheme.id, slotTheme.document)
     }
-    setText(appearanceToJson(doc))
-    applyDoc(doc)
-    if (!isAppearanceDirty(doc, effectiveSaved)) {
-      toast.success("Already saved")
-      return
-    }
-    setSaving(true)
-    save.mutate(doc, {
-      onSuccess: (next) => {
-        setSaving(false)
-        if (!next) return
-        markSaved(next)
-        setText(appearanceToJson(next))
-        applyDoc(next)
-        toast.success("Appearance saved")
+  }, [])
+
+  const refetch = () =>
+    queryClient.invalidateQueries(trpc.workspace.getSettings.queryFilter())
+
+  const createMut = useMutation(
+    trpc.workspace.createTheme.mutationOptions({
+      onSuccess: async (created) => {
+        toast.success("Theme created")
+        await refetch()
+        setSelectedId(created.id)
       },
-      onError: (error) => {
-        setSaving(false)
-        toast.error(error.message || "Could not save appearance")
-      },
+      onError: (error) => toast.error(error.message || "Could not create"),
     })
-  }
+  )
+  const duplicateMut = useMutation(
+    trpc.workspace.duplicateTheme.mutationOptions({
+      onSuccess: async (created) => {
+        toast.success("Theme duplicated")
+        await refetch()
+        setSelectedId(created.id)
+      },
+      onError: (error) => toast.error(error.message || "Could not duplicate"),
+    })
+  )
+  const deleteMut = useMutation(
+    trpc.workspace.deleteTheme.mutationOptions({
+      onSuccess: async () => {
+        toast.success("Theme deleted")
+        setSelectedId(null)
+        setDeleteId(null)
+        await refetch()
+      },
+      onError: (error) => toast.error(error.message || "Could not delete"),
+    })
+  )
+  const slotsMut = useMutation(
+    trpc.workspace.setThemeSlots.mutationOptions({
+      onSuccess: async () => {
+        toast.success("In-use themes updated")
+        await refetch()
+      },
+      onError: (error) => toast.error(error.message || "Could not assign"),
+    })
+  )
 
-  function discardPreview() {
-    discardToSaved()
-    const saved = useAppearanceStore.getState().saved ?? effectiveSaved
-    setText(appearanceToJson(saved))
-    setParseError(null)
-    applyDoc(saved)
-  }
+  const deleteTarget = themes.find((theme) => theme.id === deleteId) ?? null
+  const deleteBlocked =
+    deleteTarget != null &&
+    (deleteTarget.id === lightThemeId || deleteTarget.id === darkThemeId)
 
-  function loadPreset(id: (typeof PRESET_IDS)[number]) {
-    const doc = applyAppearancePreset(
-      effectiveDraft,
-      presetTemplates[id].document
-    )
-    setText(appearanceToJson(doc))
-    setParseError(null)
-    applyDoc(doc)
-  }
-
-  function onEditorChange(next: string) {
-    setText(next)
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(next)
-    } catch {
-      setParseError("Invalid JSON")
-      return
+  function themeIsDirty(theme: ThemeRecord) {
+    if (storeThemeId === theme.id) {
+      return isAppearanceDirty(storeDraft, storeSaved)
     }
-
-    let doc: Appearance
-    try {
-      doc = parseAppearance(parsed)
-      setParseError(null)
-    } catch (error) {
-      setParseError(
-        error instanceof Error ? error.message : "Invalid appearance document"
-      )
-      return
-    }
-
-    applyDoc(doc)
+    const draft = storeDrafts[theme.id]
+    return draft ? isAppearanceDirty(draft, theme.document) : false
   }
 
-  const statusLabel = parseError
-    ? parseError
-    : saving
-      ? "Saving…"
-      : dirty
-        ? "Preview · unsaved"
-        : "Saved"
-
-  const invalid = parseError != null
-  // Save when dirty, or when invalid so user can't save broken JSON, or when fixed-but-need-reentry — dirty only
-  const canSave = !invalid && !saving && dirty
-  const canDiscard = !saving && dirty
+  function documentForCard(theme: ThemeRecord) {
+    if (theme.id === storeThemeId && storeDraft) return storeDraft
+    return storeDrafts[theme.id] ?? theme.document
+  }
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>Appearance</CardTitle>
-        <CardDescription>
-          Valid JSON and starters preview live only in this session. Starters
-          resolve into the current document; the editor shows that JSON, not a
-          patch. Nothing is written until you save. Discard restores the last
-          saved document.
-        </CardDescription>
+        <CardDescription>Select. Preview. Save.</CardDescription>
       </CardHeader>
-      <CardContent className="space-y-5">
-        <div className="flex items-center justify-between gap-3 rounded-xl border border-border px-3 py-3">
-          <div className="min-w-0">
-            <Label htmlFor="magic-editor" className="text-sm font-medium">
-              Magic editor
-            </Label>
-            <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-              Floating pick mode: recolor tagged surfaces. Survives navigation
-              until you close or save.
-            </p>
+      <CardContent className="space-y-6">
+        <section className="space-y-3">
+          <div className="flex items-center gap-1.5">
+            <h3 className="text-sm font-medium">In use</h3>
           </div>
-          <Switch
-            id="magic-editor"
-            checked={magicOpen}
-            onCheckedChange={(checked) => {
-              if (checked) openMagic()
-              else closeMagic()
-            }}
-          />
-        </div>
-
-        <div>
-          <Label className="mb-2 block text-xs text-muted-foreground">
-            Load starter
-          </Label>
-          <div className="grid gap-2 sm:grid-cols-3">
-            {PRESET_IDS.map((id) => {
-              const preset = presetTemplates[id]
-              return (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => loadPreset(id)}
-                  className="rounded-xl border border-border p-3 text-left transition-colors hover:bg-muted/60"
-                >
-                  <span className="block text-sm font-medium">
-                    {preset.name}
-                  </span>
-                  <span className="mt-1 block text-xs leading-5 text-muted-foreground">
-                    {preset.description}
-                  </span>
-                </button>
-              )
-            })}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <SlotSelect
+              label="Light"
+              value={lightThemeId}
+              items={themeItems}
+              themes={themes}
+              disabled={slotsMut.isPending}
+              onChange={(id) =>
+                slotsMut.mutate({ lightThemeId: id, darkThemeId })
+              }
+            />
+            <SlotSelect
+              label="Dark"
+              value={darkThemeId}
+              items={themeItems}
+              themes={themes}
+              disabled={slotsMut.isPending}
+              onChange={(id) =>
+                slotsMut.mutate({ lightThemeId, darkThemeId: id })
+              }
+            />
           </div>
-        </div>
+        </section>
 
-        <div className="grid gap-1.5">
-          <div className="flex items-center justify-between gap-2">
-            <Label>Appearance JSON</Label>
-            <span
-              className={cn(
-                "text-[11px]",
-                invalid
-                  ? "text-destructive"
-                  : dirty
-                    ? "text-amber-700 dark:text-amber-400"
-                    : "text-muted-foreground"
-              )}
+        <section className="space-y-3">
+          <div className="flex flex-wrap items-end justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-medium">Library</h3>
+              <p className="text-xs leading-5 text-muted-foreground">
+                Named documents. Click one to view and paint it.
+              </p>
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => createMut.mutate({ name: "Untitled theme" })}
             >
-              {statusLabel}
-            </span>
+              New theme
+            </Button>
           </div>
-          <CodeMirror
-            value={text}
-            onChange={onEditorChange}
-            extensions={[jsonLang()]}
-            height="22rem"
-            className="overflow-hidden rounded-lg border bg-background text-xs text-foreground"
-            basicSetup={{ lineNumbers: true, foldGutter: true }}
-          />
-          <p className="text-xs leading-5 text-muted-foreground">
-            Known keys: <code className="text-[11px]">density</code>,{" "}
-            <code className="text-[11px]">motion</code> (
-            <code className="text-[11px]">enabled</code>,{" "}
-            <code className="text-[11px]">durationMs</code>,{" "}
-            <code className="text-[11px]">ease</code>,{" "}
-            <code className="text-[11px]">reducedMotion</code>),{" "}
-            <code className="text-[11px]">messageActions</code> (
-            <code className="text-[11px]">captions</code>),{" "}
-            <code className="text-[11px]">modelPicker</code> (
-            <code className="text-[11px]">showIds</code>),{" "}
-            <code className="text-[11px]">remoteStylesheet</code>,{" "}
-            <code className="text-[11px]">vars</code> (CSS custom properties →
-            :root). In a starter, <code className="text-[11px]">null</code>{" "}
-            removes a key.
-          </p>
-        </div>
 
-        <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={!canSave}
-            onClick={saveNow}
-          >
-            Save
+          <ul className="grid gap-2 sm:grid-cols-2">
+            {themes.map((theme) => (
+              <ThemeCard
+                key={theme.id}
+                theme={theme}
+                appearance={documentForCard(theme)}
+                selected={theme.id === effectiveId}
+                light={theme.id === lightThemeId}
+                dark={theme.id === darkThemeId}
+                unsaved={themeIsDirty(theme)}
+                onSelect={() => {
+                  setSelectedId(theme.id)
+                  hydrateTheme(theme.id, theme.document)
+                }}
+                onDuplicate={() => duplicateMut.mutate({ id: theme.id })}
+                onDelete={() => setDeleteId(theme.id)}
+              />
+            ))}
+          </ul>
+        </section>
+
+        {selected && effectiveDraft && effectiveSaved && (
+          <ThemeDocumentEditor
+            key={selected.id}
+            theme={selected}
+            draft={effectiveDraft}
+            saved={effectiveSaved}
+          />
+        )}
+      </CardContent>
+
+      <AlertDialog
+        open={deleteId != null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteId(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {deleteBlocked ? "Theme is in use" : "Delete theme?"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteBlocked
+                ? "Assign another theme to Light or Dark before deleting this one."
+                : `Delete “${deleteTarget?.name ?? "this theme"}”? This cannot be undone.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            {!deleteBlocked && (
+              <AlertDialogAction
+                variant="destructive"
+                disabled={deleteMut.isPending}
+                onClick={() => {
+                  if (deleteId) deleteMut.mutate({ id: deleteId })
+                }}
+              >
+                Delete
+              </AlertDialogAction>
+            )}
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </Card>
+  )
+}
+
+function SlotSelect({
+  label,
+  value,
+  items,
+  themes,
+  disabled,
+  onChange,
+}: {
+  label: string
+  value: string
+  items: Record<string, string>
+  themes: ThemeRecord[]
+  disabled: boolean
+  onChange: (id: string) => void
+}) {
+  return (
+    <div className="grid gap-1.5">
+      <Label>{label}</Label>
+      <Select
+        value={value}
+        items={items}
+        disabled={disabled}
+        onValueChange={(id) => {
+          if (typeof id === "string" && id !== value) onChange(id)
+        }}
+      >
+        <SelectTrigger className="w-full min-w-0">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {themes.map((theme) => (
+            <SelectItem key={theme.id} value={theme.id}>
+              {theme.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  )
+}
+
+function ThemeCard({
+  theme,
+  appearance,
+  selected,
+  light,
+  dark,
+  unsaved,
+  onSelect,
+  onDuplicate,
+  onDelete,
+}: {
+  theme: ThemeRecord
+  appearance: ThemeRecord["document"]
+  selected: boolean
+  light: boolean
+  dark: boolean
+  unsaved: boolean
+  onSelect: () => void
+  onDuplicate: () => void
+  onDelete: () => void
+}) {
+  const compiled = compileAppearance(appearance)
+  return (
+    <li className="space-y-1">
+      <button
+        type="button"
+        onClick={onSelect}
+        className={cn(
+          "w-full rounded-xl border p-3 text-left",
+          selected ? "border-ring ring-2 ring-ring/30" : "border-border"
+        )}
+      >
+        <span className="flex items-start justify-between gap-2">
+          <span className="block text-sm font-medium">{theme.name}</span>
+          <span className="flex flex-wrap justify-end gap-1">
+            {light ? <Badge variant="outline">Light</Badge> : null}
+            {dark ? <Badge variant="outline">Dark</Badge> : null}
+            {unsaved ? <Badge variant="secondary">Unsaved</Badge> : null}
+          </span>
+        </span>
+        <span className="mt-2 flex gap-1">
+          {PALETTE_ROLES.map((role) => (
+            <span
+              key={role}
+              className="size-4 rounded-full ring-1 ring-border"
+              style={{ background: compiled[`--palette-${role}`] }}
+            />
+          ))}
+        </span>
+      </button>
+      {selected ? (
+        <div className="flex flex-wrap gap-1">
+          <Button type="button" size="xs" variant="ghost" onClick={onDuplicate}>
+            Duplicate
           </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={!canDiscard}
-            onClick={discardPreview}
-          >
-            Discard preview
+          <Button type="button" size="xs" variant="ghost" onClick={onDelete}>
+            Delete
           </Button>
         </div>
-      </CardContent>
-    </Card>
+      ) : null}
+    </li>
   )
 }

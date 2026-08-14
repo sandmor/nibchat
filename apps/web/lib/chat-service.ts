@@ -23,6 +23,7 @@ import type {
   NodeRow,
   Parts,
   PromptStackRow,
+  ThemeRow,
 } from "@/lib/types"
 import {
   canReplayReasoning,
@@ -37,9 +38,11 @@ import {
 import { mcpProfileForBackup, profileFromRow } from "@/lib/mcp"
 import {
   appearanceToJson,
-  defaultAppearance,
+  INK_THEME_ID,
+  PAPER_THEME_ID,
   parseAppearance,
   type Appearance,
+  type ThemeRecord,
 } from "@/lib/appearance"
 import { buildModelMessages } from "@/lib/agent/build-messages"
 import {
@@ -1150,14 +1153,145 @@ export async function deleteProvider(userId: string, providerId: string) {
     .execute()
 }
 
-export async function setAppearance(input: Appearance) {
-  const config = parseAppearance(input)
+function themeRowToRecord(row: ThemeRow): ThemeRecord {
+  return {
+    id: row.id,
+    name: row.name,
+    document: parseAppearance(
+      row.document_json ? JSON.parse(row.document_json) : {}
+    ),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }
+}
+
+export async function listThemes() {
+  const rows = await db
+    .selectFrom("themes")
+    .selectAll()
+    .orderBy("name")
+    .execute()
+  return rows.map(themeRowToRecord)
+}
+
+export async function getTheme(themeId: string) {
+  const row = await db
+    .selectFrom("themes")
+    .selectAll()
+    .where("id", "=", themeId)
+    .executeTakeFirst()
+  if (!row) throw new Error("Theme not found")
+  return themeRowToRecord(row)
+}
+
+export async function createTheme(input: {
+  name: string
+  document?: Appearance
+}) {
+  const timestamp = now()
+  const document = parseAppearance(input.document ?? {})
+  const row = {
+    id: id(),
+    name: input.name.trim() || "Untitled theme",
+    document_json: appearanceToJson(document, false),
+    created_at: timestamp,
+    updated_at: timestamp,
+  }
+  await db.insertInto("themes").values(row).execute()
+  return themeRowToRecord(row)
+}
+
+export async function updateTheme(
+  themeId: string,
+  input: { name?: string; document?: Appearance }
+) {
+  const existing = await db
+    .selectFrom("themes")
+    .selectAll()
+    .where("id", "=", themeId)
+    .executeTakeFirst()
+  if (!existing) throw new Error("Theme not found")
+  const patch: {
+    name?: string
+    document_json?: string
+    updated_at: string
+  } = { updated_at: now() }
+  if (input.name !== undefined) patch.name = input.name.trim() || existing.name
+  if (input.document !== undefined) {
+    patch.document_json = appearanceToJson(
+      parseAppearance(input.document),
+      false
+    )
+  }
+  await db.updateTable("themes").set(patch).where("id", "=", themeId).execute()
+  return getTheme(themeId)
+}
+
+export async function duplicateTheme(themeId: string, name?: string) {
+  const existing = await getTheme(themeId)
+  return createTheme({
+    name: name?.trim() || `${existing.name} copy`,
+    document: existing.document,
+  })
+}
+
+export async function deleteTheme(themeId: string) {
+  const instance = await db
+    .selectFrom("instance")
+    .select(["light_theme_id", "dark_theme_id"])
+    .where("id", "=", 1)
+    .executeTakeFirstOrThrow()
+  if (
+    instance.light_theme_id === themeId ||
+    instance.dark_theme_id === themeId
+  ) {
+    throw new Error(
+      "Cannot delete a theme assigned to light or dark. Choose another theme for that slot first."
+    )
+  }
+  const count = await db
+    .selectFrom("themes")
+    .select(sql<number>`count(*)`.as("n"))
+    .executeTakeFirst()
+  if (Number(count?.n ?? 0) <= 1) {
+    throw new Error("Cannot delete the last theme.")
+  }
+  const existing = await db
+    .selectFrom("themes")
+    .select("id")
+    .where("id", "=", themeId)
+    .executeTakeFirst()
+  if (!existing) throw new Error("Theme not found")
+  await db.deleteFrom("themes").where("id", "=", themeId).execute()
+}
+
+export async function setThemeSlots(input: {
+  lightThemeId: string
+  darkThemeId: string
+}) {
+  const light = await db
+    .selectFrom("themes")
+    .select("id")
+    .where("id", "=", input.lightThemeId)
+    .executeTakeFirst()
+  const dark = await db
+    .selectFrom("themes")
+    .select("id")
+    .where("id", "=", input.darkThemeId)
+    .executeTakeFirst()
+  if (!light || !dark) throw new Error("Theme not found")
   await db
     .updateTable("instance")
-    .set({ appearance_json: appearanceToJson(config, false) })
+    .set({
+      light_theme_id: input.lightThemeId,
+      dark_theme_id: input.darkThemeId,
+    })
     .where("id", "=", 1)
     .execute()
-  return config
+  return {
+    lightThemeId: input.lightThemeId,
+    darkThemeId: input.darkThemeId,
+  }
 }
 
 function stackRowToSummary(row: PromptStackRow) {
@@ -1334,16 +1468,17 @@ export async function resolveStackForChat(chat: {
 export async function getInstanceSettings() {
   const row = await db
     .selectFrom("instance")
-    .select(["default_prompt_stack_id", "appearance_json"])
+    .select(["default_prompt_stack_id", "light_theme_id", "dark_theme_id"])
     .where("id", "=", 1)
     .executeTakeFirstOrThrow()
   const stacks = await listPromptStacks()
+  const themes = await listThemes()
   return {
     defaultPromptStackId: row.default_prompt_stack_id,
     promptStacks: stacks,
-    appearance: parseAppearance(
-      row.appearance_json ? JSON.parse(row.appearance_json) : {}
-    ),
+    themes,
+    lightThemeId: row.light_theme_id || PAPER_THEME_ID,
+    darkThemeId: row.dark_theme_id || INK_THEME_ID,
   }
 }
 
@@ -1599,11 +1734,37 @@ export async function restoreBackup(
         })
         .execute()
     }
-    let appearance = defaultAppearance()
-    if (backup.instance?.appearance) {
-      appearance = parseAppearance(backup.instance.appearance)
-    } else if (backup.appearance) {
-      appearance = parseAppearance(backup.appearance)
+    if (backup.themes?.length) {
+      for (const theme of backup.themes) {
+        const documentJson = appearanceToJson(
+          parseAppearance(theme.document),
+          false
+        )
+        await trx
+          .insertInto("themes")
+          .values({
+            id: theme.id,
+            name: theme.name,
+            document_json: documentJson,
+            created_at: theme.created_at,
+            updated_at: theme.updated_at,
+          })
+          .onConflict((oc) =>
+            oc.column("id").doUpdateSet({
+              name: theme.name,
+              document_json: documentJson,
+              updated_at: theme.updated_at,
+            })
+          )
+          .execute()
+      }
+    }
+
+    let lightThemeId = PAPER_THEME_ID
+    let darkThemeId = INK_THEME_ID
+    if (backup.instance?.lightThemeId && backup.instance?.darkThemeId) {
+      lightThemeId = backup.instance.lightThemeId
+      darkThemeId = backup.instance.darkThemeId
     }
     const defaultStackId =
       backup.instance?.default_prompt_stack_id ??
@@ -1615,12 +1776,13 @@ export async function restoreBackup(
           .executeTakeFirstOrThrow()
       ).default_prompt_stack_id
 
-    if (backup.instance || backup.appearance || backup.promptStacks?.length) {
+    if (backup.instance || backup.themes?.length || backup.promptStacks?.length) {
       await trx
         .updateTable("instance")
         .set({
           default_prompt_stack_id: defaultStackId,
-          appearance_json: appearanceToJson(appearance, false),
+          light_theme_id: lightThemeId,
+          dark_theme_id: darkThemeId,
         })
         .where("id", "=", 1)
         .execute()
@@ -1663,6 +1825,7 @@ export async function createBackup(userId: string) {
     .selectFrom("prompt_stacks")
     .selectAll()
     .execute()
+  const themes = await db.selectFrom("themes").selectAll().execute()
   const mcpRows = await db
     .selectFrom("mcp_server_profiles")
     .selectAll()
@@ -1706,9 +1869,18 @@ export async function createBackup(userId: string) {
     ...row,
     stack_json: promptStackToJson(readStackJson(row.stack_json)),
   }))
+  const normalizedThemes = themes.map((row) => ({
+    id: row.id,
+    name: row.name,
+    document: parseAppearance(
+      row.document_json ? JSON.parse(row.document_json) : {}
+    ),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }))
   const instance = await db
     .selectFrom("instance")
-    .select(["default_prompt_stack_id", "appearance_json"])
+    .select(["default_prompt_stack_id", "light_theme_id", "dark_theme_id"])
     .where("id", "=", 1)
     .executeTakeFirst()
   return {
@@ -1717,12 +1889,12 @@ export async function createBackup(userId: string) {
     instance: instance
       ? {
           default_prompt_stack_id: instance.default_prompt_stack_id,
-          appearance: parseAppearance(
-            instance.appearance_json ? JSON.parse(instance.appearance_json) : {}
-          ),
+          lightThemeId: instance.light_theme_id,
+          darkThemeId: instance.dark_theme_id,
         }
       : undefined,
     promptStacks: normalizedStacks,
+    themes: normalizedThemes,
     chats,
     nodes,
     attachments,

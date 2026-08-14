@@ -263,14 +263,19 @@ export function Message({
 
   return (
     <article
-      data-theme-target={node.role === "user" ? "muted" : "card"}
+      data-theme-group={
+        node.role === "user" ? "message-user" : "message-assistant"
+      }
+      data-theme-target={
+        node.role === "user" ? "message-user" : "message-assistant"
+      }
       className={cn(
         "group relative min-w-0 overflow-hidden rounded-xl border p-4",
         node.role === "user" && presentation === "linear"
-          ? "ml-auto max-w-[88%] bg-muted/40"
+          ? "ml-auto max-w-[88%] border-message-user-border bg-message-user text-message-user-foreground"
           : node.role === "user"
-            ? "bg-muted/40"
-            : "bg-card"
+            ? "border-message-user-border bg-message-user text-message-user-foreground"
+            : "border-message-assistant-border bg-message-assistant text-message-assistant-foreground"
       )}
     >
       <div className="mb-2 flex items-center justify-between text-[11px] font-medium tracking-wide text-muted-foreground uppercase">

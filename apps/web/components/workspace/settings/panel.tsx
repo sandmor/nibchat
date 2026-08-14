@@ -1,6 +1,5 @@
 "use client"
 
-import type { ResolvedAppearance } from "@/lib/appearance"
 import type { ProviderSummary } from "../types"
 import { ProviderSettings } from "./providers"
 import { PromptStackSettings } from "./prompt-stacks"
@@ -10,14 +9,10 @@ import { McpSettings } from "./mcp"
 
 export function SettingsPanel({
   providers,
-  appearance,
   onProvidersChange,
-  onAppearanceChange,
 }: {
   providers: ProviderSummary[]
-  appearance: ResolvedAppearance
   onProvidersChange: () => void
-  onAppearanceChange: (next: ResolvedAppearance) => void
 }) {
   return (
     <section className="flex h-full min-h-0 flex-col overflow-hidden">
@@ -30,15 +25,15 @@ export function SettingsPanel({
         </h1>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        <div className="mx-auto grid max-w-4xl gap-7 p-5 sm:p-8">
+        <div
+          data-theme-group="settings"
+          className="mx-auto grid max-w-4xl gap-7 p-5 sm:p-8"
+        >
           <ProviderSettings providers={providers} onSaved={onProvidersChange} />
           <McpSettings />
           <PromptStackSettings />
           <BackupSettings />
-          <AppearanceSettings
-            appearance={appearance}
-            onChange={onAppearanceChange}
-          />
+          <AppearanceSettings />
         </div>
       </div>
     </section>

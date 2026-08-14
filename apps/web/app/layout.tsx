@@ -2,7 +2,6 @@ import type { Metadata, Viewport } from "next"
 import { Geist_Mono, Figtree } from "next/font/google"
 
 import "@/styles/globals.css"
-import { ThemeProvider } from "@/components/theme-provider"
 import { TrpcProvider } from "@/components/trpc-provider"
 import { cn } from "@/lib/utils"
 import { Toaster } from "@/components/ui/sonner"
@@ -99,12 +98,10 @@ export default function RootLayout({
       )}
     >
       <body>
-        <ThemeProvider>
-          <TrpcProvider>
-            {children}
-            <Toaster />
-          </TrpcProvider>
-        </ThemeProvider>
+        <TrpcProvider>
+          {children}
+          <Toaster />
+        </TrpcProvider>
       </body>
     </html>
   )

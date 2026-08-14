@@ -40,7 +40,9 @@ export function StreamingBubble({
   if (animate && transition) {
     return (
       <motion.article
-        className="min-w-0 overflow-hidden rounded-xl border bg-card p-4"
+        data-theme-group="message-assistant"
+        data-theme-target="message-assistant"
+        className="min-w-0 overflow-hidden rounded-xl border border-message-assistant-border bg-message-assistant p-4 text-message-assistant-foreground"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={transition}
@@ -51,7 +53,11 @@ export function StreamingBubble({
   }
 
   return (
-    <article className="min-w-0 overflow-hidden rounded-xl border bg-card p-4">
+    <article
+      data-theme-group="message-assistant"
+      data-theme-target="message-assistant"
+      className="min-w-0 overflow-hidden rounded-xl border border-message-assistant-border bg-message-assistant p-4 text-message-assistant-foreground"
+    >
       {body}
     </article>
   )

@@ -3,71 +3,75 @@
 import { useCallback, useEffect, useId, useState } from "react"
 import { createPortal } from "react-dom"
 import {
+  measureGroupGhosts,
   measurePickGhosts,
   shapesToEvenOddPath,
   type PickGhostShape,
 } from "@/lib/appearance-pick-geometry"
-import { querySurfacesByCssVar } from "@/lib/appearance-targets"
+import {
+  queryGroupHosts,
+  querySurfacesByCssVar,
+} from "@/lib/appearance-targets"
 
-/**
- * Paint-only fixed aura portals for the currently hovered css token.
- * Uses evenodd SVG paths so nested themed surfaces carve holes, and respects
- * each surface's border-radius (pills, cards, etc.).
- */
-export function PickAuraLayer({ cssVar }: { cssVar: string | null }) {
+/** Paint-only fixed aura portals for the currently hovered theme target. */
+export function PickAuraLayer({
+  cssVar,
+  groupId,
+}: {
+  cssVar: string | null
+  groupId?: string | null
+}) {
+  if (!cssVar && !groupId) return null
+  return <ActivePickAura cssVar={cssVar} groupId={groupId ?? null} />
+}
+
+function ActivePickAura({
+  cssVar,
+  groupId,
+}: {
+  cssVar: string | null
+  groupId: string | null
+}) {
   const reactId = useId()
   const filterId = `${reactId.replace(/:/g, "")}-ghost-glow`
   const [ghosts, setGhosts] = useState<PickGhostShape[]>([])
-  const [viewport, setViewport] = useState({ w: 0, h: 0 })
-  const [mounted, setMounted] = useState(false)
+  const [viewport, setViewport] = useState(() => ({
+    w: window.innerWidth,
+    h: window.innerHeight,
+  }))
 
   const remesh = useCallback(() => {
     setViewport({ w: window.innerWidth, h: window.innerHeight })
-    setGhosts(measurePickGhosts(cssVar))
-  }, [cssVar])
+    setGhosts(cssVar ? measurePickGhosts(cssVar) : measureGroupGhosts(groupId))
+  }, [cssVar, groupId])
 
   useEffect(() => {
-    setMounted(true)
-  }, [])
-
-  useEffect(() => {
-    if (!cssVar) {
-      setGhosts([])
-      return
-    }
-
-    remesh()
-    const raf = requestAnimationFrame(() => remesh())
-
-    function onScrollOrResize() {
-      remesh()
-    }
-
-    const ro = new ResizeObserver(() => remesh())
+    const raf = requestAnimationFrame(remesh)
+    const ro = new ResizeObserver(remesh)
     ro.observe(document.documentElement)
-    for (const el of querySurfacesByCssVar(cssVar)) {
-      ro.observe(el)
-    }
-
-    window.addEventListener("scroll", onScrollOrResize, true)
-    window.addEventListener("resize", onScrollOrResize)
+    const observed = cssVar
+      ? querySurfacesByCssVar(cssVar)
+      : queryGroupHosts(groupId ?? "")
+    for (const element of observed) ro.observe(element)
+    window.addEventListener("scroll", remesh, true)
+    window.addEventListener("resize", remesh)
     return () => {
       cancelAnimationFrame(raf)
       ro.disconnect()
-      window.removeEventListener("scroll", onScrollOrResize, true)
-      window.removeEventListener("resize", onScrollOrResize)
+      window.removeEventListener("scroll", remesh, true)
+      window.removeEventListener("resize", remesh)
     }
-  }, [cssVar, remesh])
+  }, [cssVar, groupId, remesh])
 
-  if (!mounted || !cssVar || ghosts.length === 0) return null
+  if (ghosts.length === 0) return null
 
   return createPortal(
     <svg
       data-magic-chrome
       data-theme-pick-ghosts
       className="pointer-events-none fixed inset-0 z-[70]"
-      width={viewport.w || "100%"}
-      height={viewport.h || "100%"}
+      width={viewport.w}
+      height={viewport.h}
       aria-hidden
     >
       <defs>
@@ -79,11 +83,11 @@ export function PickAuraLayer({ cssVar }: { cssVar: string | null }) {
           </feMerge>
         </filter>
       </defs>
-      {ghosts.map((g) => (
+      {ghosts.map((ghost) => (
         <path
-          key={g.key}
+          key={ghost.key}
           className="theme-pick-ghost-path"
-          d={shapesToEvenOddPath(g.outer, g.holes)}
+          d={shapesToEvenOddPath(ghost.outer, ghost.holes)}
           fillRule="evenodd"
           clipRule="evenodd"
           filter={`url(#${filterId})`}

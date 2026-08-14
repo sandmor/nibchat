@@ -80,7 +80,7 @@ export function AuthCard({
             </Button>
           </CardFooter>
         ) : (
-          <form action={submit}>
+          <form action={submit} className="contents">
             <CardContent className="space-y-4">
               {setup && (
                 <div className="grid gap-2">

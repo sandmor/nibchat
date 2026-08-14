@@ -370,6 +370,8 @@ export function ChatTree({
       ref={viewportRef}
       data-testid="chat-tree"
       data-tree-motion
+      data-theme-group="tree"
+      data-theme-target="tree-chrome"
       style={
         {
           "--tree-motion-duration": animate ? `${transition.duration}s` : "0s",
@@ -521,7 +523,7 @@ export function ChatTree({
               className={cn(
                 "absolute rounded-xl",
                 live
-                  ? "overflow-auto overscroll-contain [touch-action:pan-x_pan-y] select-text"
+                  ? "[touch-action:pan-x_pan-y] overflow-auto overscroll-contain select-text"
                   : "cursor-pointer overflow-hidden",
                 focused && "z-10 ring-2 ring-[var(--tree-focus-color)]",
                 pathIds.has(node.id) &&
@@ -550,7 +552,7 @@ export function ChatTree({
                     "h-full w-full rounded-xl border",
                     pathIds.has(node.id)
                       ? "border-[var(--tree-active-color)] bg-[var(--tree-active-surface)]"
-                      : "bg-card"
+                      : "border-message-assistant-border bg-message-assistant"
                   )}
                 />
               ) : (

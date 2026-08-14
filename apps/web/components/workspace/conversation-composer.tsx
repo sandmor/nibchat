@@ -79,13 +79,14 @@ export function ConversationComposer({
 
   return (
     <div
+      data-theme-group="composer"
       data-theme-target="composer"
       data-tree-chrome={inline ? true : undefined}
       className={cn(
-        "relative rounded-xl border bg-card p-2",
+        "relative rounded-xl border border-composer-border bg-composer p-2 text-composer-foreground",
         inline &&
-          "overflow-auto overscroll-contain [touch-action:pan-x_pan-y] shadow-[var(--tree-shadow-lg)]",
-        dropActive ? "border-foreground/40 bg-muted/40" : "border-border"
+          "[touch-action:pan-x_pan-y] overflow-auto overscroll-contain shadow-[var(--tree-shadow-lg)]",
+        dropActive ? "border-foreground/40 bg-muted/40" : null
       )}
       onDragEnter={(event) => {
         event.preventDefault()

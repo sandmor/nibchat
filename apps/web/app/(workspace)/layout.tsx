@@ -2,6 +2,8 @@ import { requireWorkspaceUser } from "@/lib/app-session"
 import { getWorkspace, getInstanceSettings } from "@/lib/chat-service"
 import { listProviders } from "@/lib/providers"
 import { WorkspaceShell } from "@/components/workspace/shell"
+import { ThemeProvider } from "@/components/theme-provider"
+import { ThemeBootstrap } from "@/components/workspace/theme-bootstrap"
 
 export const dynamic = "force-dynamic"
 
@@ -18,12 +20,21 @@ export default async function WorkspaceLayout({
   ])
 
   return (
-    <WorkspaceShell
-      initialChats={workspace.chats}
-      providers={providers}
-      appearance={settings.appearance}
-    >
-      {children}
-    </WorkspaceShell>
+    <ThemeProvider>
+      <ThemeBootstrap
+        themes={settings.themes}
+        lightThemeId={settings.lightThemeId}
+        darkThemeId={settings.darkThemeId}
+      />
+      <WorkspaceShell
+        initialChats={workspace.chats}
+        providers={providers}
+        themes={settings.themes}
+        lightThemeId={settings.lightThemeId}
+        darkThemeId={settings.darkThemeId}
+      >
+        {children}
+      </WorkspaceShell>
+    </ThemeProvider>
   )
 }

@@ -83,18 +83,13 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const linearDraft = sessionDrafts[linearComposerSlot] ?? emptyComposerDraft()
   const composer = linearDraft.text
   const attachments = linearDraft.attachments
-  const restoreLinearDraft = (
-    text: string,
-    pending: ComposerAttachment[]
-  ) => {
+  const restoreLinearDraft = (text: string, pending: ComposerAttachment[]) => {
     const current =
       useConversationSessionStore.getState().drafts[linearComposerSlot] ??
       emptyComposerDraft()
     updateSessionDraft(linearComposerSlot, {
       text: current.text || text,
-      attachments: current.attachments.length
-        ? current.attachments
-        : pending,
+      attachments: current.attachments.length ? current.attachments : pending,
     })
   }
   const [viewer, setViewer] = useState<{ src: string; name: string } | null>(
@@ -965,7 +960,11 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   }, [data.chat, data.nodes, sessionDrafts, composeMorphs])
 
   return (
-    <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+    <section
+      data-theme-group="chat"
+      data-theme-target="chat"
+      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-chat"
+    >
       <DocumentTitle title={data.chat?.title ?? "New conversation"} />
       <header
         className={cn(

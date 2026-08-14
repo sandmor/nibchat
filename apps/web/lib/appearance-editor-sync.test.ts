@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   appearanceToJson,
   defaultAppearance,
-  parseAppearance,
+  patchPalette,
 } from "@/lib/appearance"
 import { reconcileEditorText } from "@/lib/appearance-editor-sync"
 
@@ -17,10 +17,7 @@ describe("reconcileEditorText", () => {
 
   it("replaces when draft diverged", () => {
     const a = defaultAppearance()
-    const b = parseAppearance({
-      ...a,
-      vars: { ...a.vars, "--primary": "oklch(0.2 0 0)" },
-    })
+    const b = patchPalette(a, "accent", "oklch(0.2 0 0)")
     const result = reconcileEditorText(appearanceToJson(a), b)
     expect(result.replaced).toBe(true)
     expect(result.text).toBe(appearanceToJson(b))

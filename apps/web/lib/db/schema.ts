@@ -1,6 +1,11 @@
 import type { Kysely } from "kysely"
 import { sql } from "kysely"
-import { appearanceToJson, defaultAppearance } from "@/lib/appearance"
+import {
+  appearanceToJson,
+  INK_THEME_ID,
+  PAPER_THEME_ID,
+  SEED_THEMES,
+} from "@/lib/appearance"
 import type { DbKind } from "@/lib/db/port"
 import {
   DEFAULT_PROMPT_STACK_ID,
@@ -29,7 +34,10 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create table if not exists prompt_stacks (id text primary key, name text not null, stack_json text not null, created_at text not null, updated_at text not null)`.execute(
     db
   )
-  await sql`create table if not exists instance (id integer primary key, owner_user_id text unique, default_prompt_stack_id text not null, appearance_json text not null, created_at text not null)`.execute(
+  await sql`create table if not exists themes (id text primary key, name text not null, document_json text not null, created_at text not null, updated_at text not null)`.execute(
+    db
+  )
+  await sql`create table if not exists instance (id integer primary key, owner_user_id text unique, default_prompt_stack_id text not null, light_theme_id text not null, dark_theme_id text not null, created_at text not null)`.execute(
     db
   )
   await sql`create table if not exists chats (id text primary key, user_id text not null references "user"(id) on delete cascade, title text not null, selected_root_node_id text, model_config_json text not null, prompt_stack_id text, created_at text not null, updated_at text not null)`.execute(
@@ -81,16 +89,42 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
     .onConflict((oc) => oc.column("id").doNothing())
     .execute()
 
+  for (const theme of SEED_THEMES) {
+    await db
+      .insertInto("themes")
+      .values({
+        id: theme.id,
+        name: theme.name,
+        document_json: appearanceToJson(theme.document, false),
+        created_at: seedAt,
+        updated_at: seedAt,
+      })
+      .onConflict((oc) => oc.column("id").doNothing())
+      .execute()
+  }
+
   await db
     .insertInto("instance")
     .values({
       id: 1,
       owner_user_id: null,
       default_prompt_stack_id: DEFAULT_PROMPT_STACK_ID,
-      appearance_json: appearanceToJson(defaultAppearance(), false),
+      light_theme_id: PAPER_THEME_ID,
+      dark_theme_id: INK_THEME_ID,
       created_at: seedAt,
     })
     .onConflict((oc) => oc.column("id").doNothing())
+    .execute()
+
+  await db
+    .updateTable("instance")
+    .set({ light_theme_id: PAPER_THEME_ID })
+    .where("light_theme_id", "is", null)
+    .execute()
+  await db
+    .updateTable("instance")
+    .set({ dark_theme_id: INK_THEME_ID })
+    .where("dark_theme_id", "is", null)
     .execute()
 
   // Interrupted streams cannot be resumed across process restarts.

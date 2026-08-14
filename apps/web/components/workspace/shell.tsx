@@ -3,7 +3,6 @@
 import {
   createContext,
   useContext,
-  useEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -44,23 +43,24 @@ import {
 } from "@/components/ui/alert-dialog"
 import { cn } from "@/lib/utils"
 import type { ChatRow } from "@/lib/types"
-import type { ResolvedAppearance } from "@/lib/appearance"
-import { motionTransition } from "@/lib/appearance"
-import {
-  applyAppearanceVars,
-  applyRemoteStylesheet,
-  removeRemoteStylesheet,
-} from "@/lib/apply-appearance"
+import type { Appearance, ThemeRecord } from "@/lib/appearance"
+import { defaultAppearance, motionTransition } from "@/lib/appearance"
 import { useAppearanceStore } from "@/lib/appearance-store"
+import { activeThemeId } from "@/lib/theme-slot"
+import { useThemeSlot } from "@/components/theme-provider"
 import { useTRPC } from "@/lib/trpc-react"
 import { omitChat, type WorkspaceData } from "@/lib/workspace-cache"
 import type { ProviderSummary } from "./types"
 import { ChatListItem } from "./chat-list"
 import { AppearanceMagicChrome } from "./appearance-magic"
+import { AppearanceRuntime } from "./appearance-runtime"
 
 type ChromeContextValue = {
-  appearance: ResolvedAppearance
-  setAppearance: (next: ResolvedAppearance) => void
+  appearance: Appearance
+  themes: ThemeRecord[]
+  lightThemeId: string
+  darkThemeId: string
+  activeThemeId: string
   providers: ProviderSummary[]
   refreshProviders: () => Promise<void>
 }
@@ -78,25 +78,30 @@ export function useWorkspaceChrome() {
 export function WorkspaceShell({
   initialChats,
   providers: initialProviders,
-  appearance: initialAppearance,
+  themes: initialThemes,
+  lightThemeId,
+  darkThemeId,
   children,
 }: {
   initialChats: ChatRow[]
   providers: ProviderSummary[]
-  appearance: ResolvedAppearance
+  themes: ThemeRecord[]
+  lightThemeId: string
+  darkThemeId: string
   children: ReactNode
 }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const pathname = usePathname()
   const router = useRouter()
+  const { resolved: resolvedSlot } = useThemeSlot()
   const [search, setSearch] = useState("")
   const [chatsOpen, setChatsOpen] = useState(false)
   const [chatIdToDelete, setChatIdToDelete] = useState<string | null>(null)
-  const hydrateFromServer = useAppearanceStore((s) => s.hydrateFromServer)
-  const setDraft = useAppearanceStore((s) => s.setDraft)
-  const storeDraft = useAppearanceStore((s) => s.draft)
-  const appearance = storeDraft ?? initialAppearance
+  const draftDensity = useAppearanceStore((s) => s.draft?.density)
+  const draftMotion = useAppearanceStore((s) => s.draft?.motion)
+  const draftMessageActions = useAppearanceStore((s) => s.draft?.messageActions)
+  const draftModelPicker = useAppearanceStore((s) => s.draft?.modelPicker)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window === "undefined") return false
     try {
@@ -105,34 +110,6 @@ export function WorkspaceShell({
       return false
     }
   })
-  const transition = motionTransition(appearance.motion)
-
-  useEffect(() => {
-    hydrateFromServer(initialAppearance)
-  }, [hydrateFromServer, initialAppearance])
-
-  useEffect(() => {
-    return applyAppearanceVars(appearance)
-  }, [appearance.vars, appearance.density, appearance])
-
-  useEffect(() => {
-    applyRemoteStylesheet(appearance.remoteStylesheet)
-  }, [appearance.remoteStylesheet])
-
-  useEffect(() => {
-    return () => {
-      removeRemoteStylesheet()
-    }
-  }, [])
-
-  function setSidebarCollapsedPersist(next: boolean) {
-    setSidebarCollapsed(next)
-    try {
-      localStorage.setItem("nibchat.sidebarCollapsed", next ? "1" : "0")
-    } catch {
-      /* ignore */
-    }
-  }
 
   const chatsQuery = useQuery({
     ...trpc.workspace.get.queryOptions({ draft: true }),
@@ -143,10 +120,63 @@ export function WorkspaceShell({
     } satisfies WorkspaceData,
   })
 
+  const settingsQuery = useQuery({
+    ...trpc.workspace.getSettings.queryOptions(),
+    initialData: {
+      themes: initialThemes,
+      lightThemeId,
+      darkThemeId,
+      defaultPromptStackId: "",
+      promptStacks: [],
+    },
+  })
+  const themes = settingsQuery.data?.themes?.length
+    ? settingsQuery.data.themes
+    : initialThemes
+  const lightId = settingsQuery.data?.lightThemeId ?? lightThemeId
+  const darkId = settingsQuery.data?.darkThemeId ?? darkThemeId
+
   const providersQuery = useQuery({
     ...trpc.workspace.listProviders.queryOptions(),
     initialData: initialProviders,
   })
+
+  const currentThemeId = activeThemeId({
+    slot: resolvedSlot,
+    lightThemeId: lightId,
+    darkThemeId: darkId,
+  })
+  const activeTheme =
+    themes.find((theme) => theme.id === currentThemeId) ?? themes[0]
+  const activeAppearance = activeTheme?.document ?? defaultAppearance()
+  // Color-only edits retain these nested references, so consumers of chrome do
+  // not rerender while the picker is dragged.
+  const appearance = useMemo(
+    () => ({
+      ...activeAppearance,
+      density: draftDensity ?? activeAppearance.density,
+      motion: draftMotion ?? activeAppearance.motion,
+      messageActions: draftMessageActions ?? activeAppearance.messageActions,
+      modelPicker: draftModelPicker ?? activeAppearance.modelPicker,
+    }),
+    [
+      activeAppearance,
+      draftDensity,
+      draftMessageActions,
+      draftModelPicker,
+      draftMotion,
+    ]
+  )
+  const transition = motionTransition(appearance.motion)
+
+  function setSidebarCollapsedPersist(next: boolean) {
+    setSidebarCollapsed(next)
+    try {
+      localStorage.setItem("nibchat.sidebarCollapsed", next ? "1" : "0")
+    } catch {
+      /* ignore */
+    }
+  }
 
   const searchQuery = useQuery({
     ...trpc.workspace.search.queryOptions({ query: search }),
@@ -182,7 +212,10 @@ export function WorkspaceShell({
   const chromeValue = useMemo(
     () => ({
       appearance,
-      setAppearance: setDraft,
+      themes,
+      lightThemeId: lightId,
+      darkThemeId: darkId,
+      activeThemeId: activeTheme?.id ?? currentThemeId,
       providers,
       refreshProviders: async () => {
         await queryClient.invalidateQueries(
@@ -190,7 +223,17 @@ export function WorkspaceShell({
         )
       },
     }),
-    [appearance, setDraft, providers, queryClient, trpc]
+    [
+      appearance,
+      themes,
+      lightId,
+      darkId,
+      activeTheme?.id,
+      currentThemeId,
+      providers,
+      queryClient,
+      trpc,
+    ]
   )
 
   const deleteChatMutation = useMutation(
@@ -227,6 +270,11 @@ export function WorkspaceShell({
 
   return (
     <ChromeContext.Provider value={chromeValue}>
+      <AppearanceRuntime
+        themes={themes}
+        activeThemeId={currentThemeId}
+        fallback={activeAppearance}
+      />
       <div className="flex h-svh flex-col bg-background text-foreground">
         <div className="flex h-12 shrink-0 items-center justify-between border-b px-3 md:hidden">
           <div className="flex items-center gap-2">
@@ -263,9 +311,10 @@ export function WorkspaceShell({
 
         <div className="flex min-h-0 flex-1">
           <motion.aside
+            data-theme-group="sidebar"
             data-theme-target="sidebar"
             className={cn(
-              "hidden min-h-0 shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar text-sidebar-foreground md:flex",
+              "hidden min-h-0 shrink-0 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground md:flex",
               pad
             )}
             initial={false}
@@ -354,7 +403,8 @@ export function WorkspaceShell({
               <>
                 <Link
                   href="/chat/new"
-                  data-theme-target="primary"
+                  data-theme-group="button"
+                  data-theme-target="button"
                   className={cn(buttonVariants(), "mb-3 w-full gap-1.5")}
                 >
                   <HugeiconsIcon
@@ -377,7 +427,8 @@ export function WorkspaceShell({
               <WithTooltip label="New conversation" side="right">
                 <Link
                   href="/chat/new"
-                  data-theme-target="primary"
+                  data-theme-group="button"
+                  data-theme-target="button"
                   className={cn(
                     buttonVariants({ size: "icon" }),
                     "mb-2 w-full"
@@ -433,8 +484,9 @@ export function WorkspaceShell({
           </motion.aside>
 
           <div
-            data-theme-target="background"
-            className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-background"
+            data-theme-group="app"
+            data-theme-target="app-background"
+            className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-app-background"
           >
             {children}
           </div>
@@ -447,7 +499,8 @@ export function WorkspaceShell({
             </DialogHeader>
             <Link
               href="/chat/new"
-              data-theme-target="primary"
+              data-theme-group="button"
+              data-theme-target="button"
               onClick={() => setChatsOpen(false)}
               className={cn(buttonVariants(), "w-full gap-1.5")}
             >

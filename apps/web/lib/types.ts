@@ -137,11 +137,19 @@ export interface PromptStacksTable {
   created_at: string
   updated_at: string
 }
+export interface ThemesTable {
+  id: string
+  name: string
+  document_json: string
+  created_at: string
+  updated_at: string
+}
 export interface InstanceTable {
   id: number
   owner_user_id: string | null
   default_prompt_stack_id: string
-  appearance_json: string
+  light_theme_id: string
+  dark_theme_id: string
   created_at: string
 }
 export interface ProviderProfilesTable {
@@ -181,6 +189,7 @@ export interface DB {
   attachments: AttachmentsTable
   message_attachments: MessageAttachmentsTable
   prompt_stacks: PromptStacksTable
+  themes: ThemesTable
   instance: InstanceTable
   provider_profiles: ProviderProfilesTable
   model_catalog_cache: ModelCatalogCacheTable
@@ -231,3 +240,4 @@ export interface DB {
 export type ChatRow = Selectable<ChatsTable>
 export type NodeRow = Selectable<MessageNodesTable>
 export type PromptStackRow = Selectable<PromptStacksTable>
+export type ThemeRow = Selectable<ThemesTable>

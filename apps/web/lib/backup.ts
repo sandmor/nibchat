@@ -98,6 +98,14 @@ const messageAttachmentBackupSchema = z.object({
   attachment_id: z.string(),
 })
 
+const themeBackupSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  document: appearanceSchema,
+  created_at: z.string(),
+  updated_at: z.string(),
+})
+
 /** Full-instance portable snapshot (no API keys or attachment bytes).
  * Bytes live next to this manifest in the backup zip. */
 export const backupSchema = z.object({
@@ -107,16 +115,17 @@ export const backupSchema = z.object({
   providerProfiles: z.array(providerProfileSchema).optional().default([]),
   mcpServerProfiles: z.array(mcpServerProfileSchema).optional().default([]),
   promptStacks: z.array(promptStackRowSchema).optional().default([]),
+  themes: z.array(themeBackupSchema).optional().default([]),
   attachments: z.array(attachmentBackupSchema).optional().default([]),
   messageAttachments: z
     .array(messageAttachmentBackupSchema)
     .optional()
     .default([]),
-  appearance: appearanceSchema.optional(),
   instance: z
     .object({
       default_prompt_stack_id: z.string().optional(),
-      appearance: appearanceSchema.optional(),
+      lightThemeId: z.string().optional(),
+      darkThemeId: z.string().optional(),
     })
     .optional(),
   createdAt: z.string().optional(),

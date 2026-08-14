@@ -1,14 +1,23 @@
 import { describe, expect, it } from "vitest"
 import {
   appearanceToJson,
-  applyAppearancePreset,
+  appearanceReferenceIssues,
+  compileAppearance,
   defaultAppearance,
   motionTransition,
   parseAppearance,
-  presetDocument,
-  presetTemplates,
+  patchGroupFill,
+  patchPalette,
+  patchPaletteExtra,
+  patchToken,
+  addPaletteExtra,
+  newPaletteExtraId,
+  removePaletteExtra,
+  SEED_THEMES,
   shouldAnimate,
+  cssForColor,
 } from "@/lib/appearance"
+import { ref } from "@/lib/appearance-registry"
 
 describe("appearance document", () => {
   it("normalizes CSS easing strings for Motion", () => {
@@ -36,7 +45,9 @@ describe("appearance document", () => {
         reducedMotion: "respect",
       },
     })
-    expect(doc.vars["--motion-ease"]).toBe("cubic-bezier(0.42, 0, 0.58, 1)")
+    expect(compileAppearance(doc)["--motion-ease"]).toBe(
+      "cubic-bezier(0.42, 0, 0.58, 1)"
+    )
   })
 
   it("applies the JSON reduced-motion policy consistently", () => {
@@ -54,77 +65,49 @@ describe("appearance document", () => {
     )
   })
 
-  it("resolves starters into full documents, not patches", () => {
-    const spatial = presetDocument("spatial")
-    expect(spatial.vars["--primary"]).toBeTruthy()
-    expect(spatial.vars["--background"]).toBeTruthy()
-    expect(spatial.density).toBe("comfortable")
-    expect(spatial.messageActions.captions).toBe(false)
-    expect(spatial.modelPicker.showIds).toBe(false)
-    expect(appearanceToJson(spatial)).not.toMatch(/: null/)
-    expect(parseAppearance(spatial)).toEqual(spatial)
-  })
-
-  it("defaults message action captions off for all starters", () => {
-    for (const id of ["default", "spatial", "editorial"] as const) {
-      expect(presetDocument(id).messageActions.captions).toBe(false)
+  it("seeds full documents from palettes", () => {
+    for (const seed of SEED_THEMES) {
+      expect(seed.document.version).toBe(1)
+      expect(seed.document.scheme).toBe(seed.id === "ink" ? "dark" : "light")
+      expect(seed.document.palette.paper).toBeTruthy()
+      expect(seed.document.messageActions.captions).toBe(false)
+      expect(seed.document.modelPicker.showIds).toBe(false)
+      expect(appearanceToJson(seed.document)).not.toMatch(/: null/)
+      expect(parseAppearance(seed.document)).toEqual(seed.document)
     }
   })
 
-  it("fills missing vars from defaults", () => {
+  it("fills missing palette from Paper defaults", () => {
     const doc = parseAppearance({
-      version: 1,
       density: "compact",
       remoteStylesheet: "  https://example.com/theme.css  ",
     })
-    expect(doc.vars["--background"]).toBeTruthy()
-    expect(doc.vars["--tree-grid-color"]).toContain("--muted-foreground")
-    expect(doc.vars["--tree-minimap-node"]).toBe("var(--muted-foreground)")
-    expect(doc.vars["--tree-minimap-path"]).toContain("--primary")
-    expect(doc.vars["--tree-shadow-lg"]).toContain("--foreground")
-    expect(doc.vars["--motion-spinner-duration"]).toBe("900ms")
+    expect(doc.palette.paper).toBe("oklch(1 0 0)")
     expect(doc.density).toBe("compact")
     expect(doc.remoteStylesheet).toBe("https://example.com/theme.css")
-  })
-
-  it("hides model ids in chat chrome by default", () => {
-    expect(defaultAppearance().modelPicker.showIds).toBe(false)
-  })
-
-  it("honors modelPicker.showIds when set", () => {
-    const doc = parseAppearance({
-      version: 1,
-      modelPicker: { showIds: true },
-    })
-    expect(doc.modelPicker.showIds).toBe(true)
+    const vars = compileAppearance(doc)
+    expect(vars["--app-background"]).toBe("var(--palette-paper)")
+    expect(vars["--background"]).toBe("var(--app-background)")
   })
 
   it("drops nulls so canonical JSON never stores them", () => {
     const doc = parseAppearance({
-      version: 1,
       remoteStylesheet: null,
-      vars: {
-        "--background": "oklch(1 0 0)",
-        "--radius": null,
-      },
     })
     expect(doc.remoteStylesheet).toBeUndefined()
-    expect(doc.vars["--radius"]).toBeUndefined()
-    expect(doc.vars["--background"]).toBe("oklch(1 0 0)")
     expect(appearanceToJson(doc)).not.toMatch(/: null/)
   })
 
   it("round-trips JSON", () => {
-    const doc = presetDocument("default")
+    const doc = defaultAppearance()
     const again = parseAppearance(JSON.parse(appearanceToJson(doc)))
-    expect(again.vars["--background"]).toBe(doc.vars["--background"])
+    expect(again.palette.paper).toBe(doc.palette.paper)
     expect(again.messageActions.captions).toBe(false)
   })
 
   it("keeps unknown keys via loose object parse", () => {
     const doc = parseAppearance({
-      version: 1,
-      vars: { "--radius": "1rem" },
+      palette: { paper: "oklch(1 0 0)" },
       customExtension: { ok: true },
     })
     expect((doc as { customExtension?: unknown }).customExtension).toEqual({
@@ -133,58 +116,155 @@ describe("appearance document", () => {
   })
 })
 
-describe("applyAppearancePreset", () => {
-  it("keeps chrome the starter omits", () => {
-    const current = parseAppearance({
-      ...defaultAppearance(),
-      messageActions: { captions: true },
-      modelPicker: { showIds: true },
-      vars: {
-        ...defaultAppearance().vars,
-        "--foo": "1px",
-      },
-    })
-    const next = applyAppearancePreset(
-      current,
-      presetTemplates.spatial.document
-    )
-    expect(next.messageActions.captions).toBe(true)
-    expect(next.vars["--foo"]).toBe("1px")
-    expect(next.modelPicker.showIds).toBe(true)
-    expect(next.vars["--primary"]).toBe(
-      presetTemplates.spatial.document.vars["--primary"]
-    )
-    expect(next.density).toBe("comfortable")
-    expect(appearanceToJson(next)).not.toMatch(/: null/)
+describe("compileAppearance", () => {
+  it("keeps linked tokens as var() so palette edits flow through", () => {
+    const doc = defaultAppearance()
+    const vars = compileAppearance(doc)
+    expect(vars["--palette-paper"]).toBe(doc.palette.paper)
+    expect(vars["--app-background"]).toBe("var(--palette-paper)")
+    expect(vars["--app-foreground"]).toBe("var(--palette-ink)")
+    expect(vars["--button"]).toBe("var(--palette-accent)")
   })
 
-  it("resets the token map when vars is null", () => {
-    const current = parseAppearance({
-      ...defaultAppearance(),
-      messageActions: { captions: true },
-      remoteStylesheet: "https://example.com/extra.css",
-      vars: {
-        ...defaultAppearance().vars,
-        "--foo": "1px",
-        "--primary": "oklch(0.1 0 0)",
-      },
-    })
-    const next = applyAppearancePreset(
-      current,
-      presetTemplates.default.document
+  it("palette edit updates linked tokens without rewriting them", () => {
+    const next = patchPalette(
+      defaultAppearance(),
+      "paper",
+      "oklch(0.9 0.02 80)"
     )
-    expect(next.vars["--foo"]).toBeUndefined()
-    expect(next.vars["--primary"]).toBe(defaultAppearance().vars["--primary"])
-    expect(next.messageActions.captions).toBe(true)
-    expect(next.remoteStylesheet).toBeUndefined()
+    const vars = compileAppearance(next)
+    expect(vars["--palette-paper"]).toBe("oklch(0.9 0.02 80)")
+    expect(vars["--app-background"]).toBe("var(--palette-paper)")
   })
 
-  it("deletes one token with null", () => {
-    const current = defaultAppearance()
-    const next = applyAppearancePreset(current, {
-      vars: { "--radius": null },
+  it("group fill does not clobber a surface override", () => {
+    let doc = patchToken(defaultAppearance(), "--sidebar", {
+      literal: "oklch(0.4 0.1 200)",
     })
-    expect(next.vars["--radius"]).toBeUndefined()
-    expect(next.vars["--background"]).toBe(current.vars["--background"])
+    doc = patchGroupFill(doc, "sidebar", { ref: "accent" })
+    const vars = compileAppearance(doc)
+    expect(vars["--sidebar"]).toBe("oklch(0.4 0.1 200)")
+    expect(vars["--group-sidebar-fill"]).toBe("var(--palette-accent)")
+    expect(vars["--sidebar-hover"]).toContain("var(--group-sidebar-fill)")
+  })
+
+  it("group fill without override makes fill tokens follow the group", () => {
+    const doc = patchGroupFill(defaultAppearance(), "sidebar", {
+      ref: "accent",
+    })
+    const vars = compileAppearance(doc)
+    expect(vars["--sidebar"]).toBe("var(--group-sidebar-fill)")
+    expect(vars["--group-sidebar-fill"]).toBe("var(--palette-accent)")
+  })
+
+  it("literal token stays put when palette changes", () => {
+    const overridden = patchToken(defaultAppearance(), "--composer", {
+      literal: "oklch(0.7 0.2 40)",
+    })
+    const next = patchPalette(overridden, "paper", "oklch(0.2 0 0)")
+    expect(compileAppearance(next)["--composer"]).toBe("oklch(0.7 0.2 40)")
+  })
+
+  it("recolorText paints group foreground from the group fill", () => {
+    const doc = patchGroupFill(
+      defaultAppearance(),
+      "sidebar",
+      { ref: "accent" },
+      true
+    )
+    const vars = compileAppearance(doc)
+    expect(vars["--sidebar-foreground"]).toBe("var(--group-sidebar-fill)")
+  })
+})
+
+describe("palette extras", () => {
+  it("slugs extra ids from names and avoids collisions", () => {
+    const base = addPaletteExtra(defaultAppearance(), {
+      id: "sidebar-wash",
+      name: "Sidebar wash",
+      value: "oklch(0.8 0.05 80)",
+    })
+    expect(newPaletteExtraId(base, "Sidebar wash")).toBe("sidebar-wash-2")
+    expect(newPaletteExtraId(defaultAppearance(), "Sidebar wash")).toBe(
+      "sidebar-wash"
+    )
+  })
+
+  it("patches extra value and name", () => {
+    const doc = addPaletteExtra(defaultAppearance(), {
+      id: "wash",
+      name: "Wash",
+      value: "oklch(0.8 0.05 80)",
+    })
+    const next = patchPaletteExtra(doc, "wash", {
+      name: "Sidebar",
+      value: "oklch(0.7 0.04 70)",
+    })
+    expect(next.palette.extras[0]).toMatchObject({
+      id: "wash",
+      name: "Sidebar",
+      value: "oklch(0.7 0.04 70)",
+    })
+  })
+
+  it("removing an extra turns leftover refs into literals", () => {
+    let doc = addPaletteExtra(defaultAppearance(), {
+      id: "wash",
+      name: "Wash",
+      value: "oklch(0.8 0.05 80)",
+    })
+    doc = patchToken(doc, "--sidebar", { ref: "extra:wash" })
+    doc = patchGroupFill(doc, "composer", { ref: "extra:wash" })
+    const next = removePaletteExtra(doc, "wash")
+    expect(next.palette.extras).toEqual([])
+    expect(next.tokens["--sidebar"]).toEqual({
+      literal: "oklch(0.8 0.05 80)",
+    })
+    expect(next.groups.composer?.fill).toEqual({
+      literal: "oklch(0.8 0.05 80)",
+    })
+  })
+})
+
+describe("appearance references", () => {
+  it("rejects direct and indirect group cycles", () => {
+    const self = {
+      ...defaultAppearance(),
+      groups: { app: { fill: { ref: "group:app" } } },
+    }
+    expect(appearanceReferenceIssues(self)).toHaveLength(1)
+    expect(() => parseAppearance(self)).toThrow(/cycle/i)
+
+    const indirect = {
+      ...defaultAppearance(),
+      groups: {
+        app: { fill: { ref: "group:sidebar" } },
+        sidebar: { fill: { ref: "group:app" } },
+      },
+    }
+    expect(() => parseAppearance(indirect)).toThrow(/cycle/i)
+  })
+
+  it("rejects dangling palette and group references", () => {
+    expect(() =>
+      parseAppearance({ tokens: { "--button": { ref: "extra:missing" } } })
+    ).toThrow(/Unknown palette extra/)
+    expect(() =>
+      parseAppearance({ tokens: { "--button": { ref: "group:missing" } } })
+    ).toThrow(/Unknown theme group/)
+  })
+})
+
+describe("cssForColor", () => {
+  it("emits palette vars, mixes, and alpha", () => {
+    expect(cssForColor(ref("paper"))).toBe("var(--palette-paper)")
+    expect(cssForColor({ ref: "paper", alpha: 0.4 })).toBe(
+      "color-mix(in oklab, var(--palette-paper) 40%, transparent)"
+    )
+    expect(
+      cssForColor({
+        mix: { from: { ref: "ink" }, onto: { ref: "paper" }, amount: 0.08 },
+      })
+    ).toBe("color-mix(in oklab, var(--palette-ink) 8%, var(--palette-paper))")
   })
 })

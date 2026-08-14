@@ -3,43 +3,118 @@
 import { create } from "zustand"
 import {
   appearanceToJson,
+  compileAppearance,
   parseAppearance,
+  patchGroupFill,
+  patchPalette,
+  patchPaletteExtra,
+  patchToken,
   type Appearance,
 } from "@/lib/appearance"
+import {
+  extraPaletteVar,
+  type ColorValue,
+  type PaletteRole,
+  type ThemeGroupId,
+} from "@/lib/appearance-registry"
+import type { ThemeHit } from "@/lib/appearance-targets"
+
+type ThemeDocument = { id: string; document: Appearance }
 
 export const APPEARANCE_MAGIC_LS_KEY = "nibchat.appearance.magic"
-const LS_VERSION = 1 as const
+const LS_VERSION = 2 as const
 
-/** Idle wait before writing draft/open to localStorage during rapid edits. */
 export const MAGIC_PERSIST_DEBOUNCE_MS = 250
 
 export type PickPoint = { x: number; y: number }
 
+export type ThemeSelection =
+  | { kind: "group"; groupId: ThemeGroupId }
+  | { kind: "surface"; surfaceId: string }
+
+export type AppearancePreview =
+  | { kind: "document"; document: Appearance }
+  | {
+      kind: "variable"
+      document: Appearance
+      name: `--${string}`
+      value: string
+    }
+
 export type AppearanceMagicPersist = {
   v: typeof LS_VERSION
   open: boolean
-  draft: Appearance
+  themeId: string | null
+  drafts: Record<string, Appearance>
+  preview?: AppearancePreviewSnapshot
+}
+
+export type AppearancePreviewSnapshot = {
+  themeId: string
+  vars: Record<string, string>
+  scheme: "light" | "dark"
+  density: Appearance["density"]
+  motionEnabled: boolean
+  motionReduced: Appearance["motion"]["reducedMotion"]
+}
+
+function previewSnapshot(
+  themeId: string | null,
+  doc: Appearance | undefined
+): AppearancePreviewSnapshot | undefined {
+  if (!themeId || !doc) return undefined
+  return {
+    themeId,
+    vars: compileAppearance(doc),
+    scheme: doc.scheme,
+    density: doc.density,
+    motionEnabled: doc.motion.enabled,
+    motionReduced: doc.motion.reducedMotion,
+  }
 }
 
 type AppearanceStore = {
   open: boolean
-  /** When true, surface clicks open the color picker. Off until pencil armed. */
   pickArmed: boolean
+  themeId: string | null
   draft: Appearance | null
+  /** Drag-time state used for rendering only; it is never persisted. */
+  preview: AppearancePreview | null
   saved: Appearance | null
-  selectedSurfaceId: string | null
+  drafts: Record<string, Appearance>
+  savedById: Record<string, Appearance>
+  selected: ThemeSelection | null
   pickPoint: PickPoint | null
   hydrated: boolean
   openMagic: () => void
   closeMagic: () => void
   togglePickArmed: () => void
   setDraft: (doc: Appearance) => void
-  setVar: (cssVar: `--${string}` | string, value: string) => void
-  selectSurface: (id: string | null, point?: PickPoint | null) => void
-  markSaved: (doc: Appearance) => void
-  hydrateFromServer: (serverDoc: Appearance) => void
+  previewPaletteRole: (role: PaletteRole, value: string) => void
+  previewPaletteExtra: (id: string, value: string) => void
+  previewGroupFill: (
+    groupId: ThemeGroupId,
+    fill: ColorValue | undefined,
+    recolorText?: boolean
+  ) => void
+  previewToken: (cssVar: string, value: ColorValue | undefined) => void
+  commitPreview: () => void
+  discardPreview: () => void
+  setGroupFill: (
+    groupId: ThemeGroupId,
+    fill: ColorValue | undefined,
+    recolorText?: boolean
+  ) => void
+  setToken: (cssVar: string, value: ColorValue | undefined) => void
+  selectHit: (hit: ThemeHit | null, point?: PickPoint | null) => void
+  selectTarget: (
+    selection: ThemeSelection | null,
+    point?: PickPoint | null
+  ) => void
+  markSaved: (themeId: string, doc: Appearance) => void
+  hydrateThemeLibrary: (themes: ThemeDocument[], activeThemeId: string) => void
+  hydrateTheme: (themeId: string, saved: Appearance) => void
   discardToSaved: () => void
-  isDirty: () => boolean
 }
 
 function sameDoc(a: Appearance, b: Appearance): boolean {
@@ -54,16 +129,13 @@ export function isAppearanceDirty(
   return !sameDoc(draft, saved)
 }
 
-/** Canonical document shape (Zod + motion vars merged into vars). */
-export function canonicalAppearance(doc: Appearance): Appearance {
-  return parseAppearance(doc)
-}
-
 export function serializeMagicPersist(payload: AppearanceMagicPersist): string {
   return JSON.stringify({
     v: LS_VERSION,
     open: payload.open,
-    draft: payload.draft,
+    themeId: payload.themeId,
+    drafts: payload.drafts,
+    ...(payload.preview ? { preview: payload.preview } : {}),
   })
 }
 
@@ -75,15 +147,36 @@ export function parseMagicPersist(
     const data = JSON.parse(raw) as {
       v?: number
       open?: unknown
-      draft?: unknown
+      themeId?: unknown
+      drafts?: unknown
+      preview?: unknown
     }
-    if (data.v !== LS_VERSION || !data.draft || typeof data.draft !== "object") {
-      return null
+    if (data.v !== LS_VERSION) return null
+    const drafts: Record<string, Appearance> = {}
+    if (data.drafts && typeof data.drafts === "object") {
+      for (const [id, doc] of Object.entries(
+        data.drafts as Record<string, unknown>
+      )) {
+        drafts[id] = parseAppearance(doc)
+      }
     }
+    const preview = data.preview
+    const hasPreview =
+      preview &&
+      typeof preview === "object" &&
+      typeof (preview as AppearancePreviewSnapshot).themeId === "string" &&
+      typeof (preview as AppearancePreviewSnapshot).vars === "object" &&
+      (preview as AppearancePreviewSnapshot).vars !== null &&
+      ((preview as AppearancePreviewSnapshot).scheme === "light" ||
+        (preview as AppearancePreviewSnapshot).scheme === "dark") &&
+      ((preview as AppearancePreviewSnapshot).density === "comfortable" ||
+        (preview as AppearancePreviewSnapshot).density === "compact")
     return {
       v: LS_VERSION,
       open: Boolean(data.open),
-      draft: parseAppearance(data.draft),
+      themeId: typeof data.themeId === "string" ? data.themeId : null,
+      drafts,
+      ...(hasPreview ? { preview: preview as AppearancePreviewSnapshot } : {}),
     }
   } catch {
     return null
@@ -108,25 +201,35 @@ function removeLocalMagic(): void {
   }
 }
 
-/**
- * Synchronous LS sync for open+draft.
- * Clean + closed → remove key. Otherwise write canonical draft.
- */
-export function writeLocalMagic(
+function writeLocalMagic(
   open: boolean,
-  draft: Appearance | null,
-  saved: Appearance | null = null
+  themeId: string | null,
+  drafts: Record<string, Appearance>,
+  savedById: Record<string, Appearance>
 ): void {
-  if (typeof window === "undefined" || !draft) return
-  const canonical = canonicalAppearance(draft)
-  if (!open && !isAppearanceDirty(canonical, saved)) {
+  if (typeof window === "undefined") return
+  const dirtyDrafts: Record<string, Appearance> = {}
+  for (const [id, draft] of Object.entries(drafts)) {
+    const saved = savedById[id]
+    if (!saved || isAppearanceDirty(draft, saved)) dirtyDrafts[id] = draft
+  }
+  if (!open && Object.keys(dirtyDrafts).length === 0) {
     removeLocalMagic()
     return
   }
   try {
+    const preview = open
+      ? previewSnapshot(themeId, drafts[themeId ?? ""])
+      : undefined
     localStorage.setItem(
       APPEARANCE_MAGIC_LS_KEY,
-      serializeMagicPersist({ v: LS_VERSION, open, draft: canonical })
+      serializeMagicPersist({
+        v: LS_VERSION,
+        open,
+        themeId,
+        drafts: dirtyDrafts,
+        preview,
+      })
     )
   } catch {
     /* ignore quota / private mode */
@@ -136,21 +239,14 @@ export function writeLocalMagic(
 let persistTimer: ReturnType<typeof setTimeout> | null = null
 let unloadBound = false
 
-/**
- * Write LS from store; coalesce in-store draft to canonical when it would
- * change structural identity (motion-var merge, etc.).
- */
 function writeFromStore(): void {
-  const { open, draft, saved } = useAppearanceStore.getState()
-  if (!draft) return
-  const canonical = canonicalAppearance(draft)
-  if (!sameDoc(draft, canonical)) {
-    useAppearanceStore.setState({ draft: canonical })
-  }
-  writeLocalMagic(open, canonical, saved)
+  const { open, themeId, draft, drafts, savedById } =
+    useAppearanceStore.getState()
+  const nextDrafts = { ...drafts }
+  if (themeId && draft) nextDrafts[themeId] = parseAppearance(draft)
+  writeLocalMagic(open, themeId, nextDrafts, savedById)
 }
 
-/** Cancel a pending debounce and write the latest draft now. */
 export function flushMagicPersist(): void {
   if (persistTimer != null) {
     clearTimeout(persistTimer)
@@ -159,11 +255,7 @@ export function flushMagicPersist(): void {
   writeFromStore()
 }
 
-/**
- * Coalesce rapid draft mutations (color drag, JSON typing) into one LS write.
- * Survivability for full-page exit is handled by flushMagicPersist + unload.
- */
-export function scheduleMagicPersist(): void {
+function scheduleMagicPersist(): void {
   if (typeof window === "undefined") return
   ensureUnloadFlush()
   if (persistTimer != null) clearTimeout(persistTimer)
@@ -181,7 +273,6 @@ function ensureUnloadFlush(): void {
   window.addEventListener("beforeunload", onLeave)
 }
 
-/** Test helper: clear debounce timer (does not remove window unload listeners). */
 export function resetMagicPersistRuntime(): void {
   if (persistTimer != null) {
     clearTimeout(persistTimer)
@@ -189,60 +280,54 @@ export function resetMagicPersistRuntime(): void {
   }
 }
 
-/**
- * Pure hydrate reconcile: prefer local dirty draft over server document,
- * still restore magic open flag from localStorage.
- */
-export function reconcileHydrate(
-  serverDoc: Appearance,
-  local: AppearanceMagicPersist | null
-): { draft: Appearance; saved: Appearance; open: boolean } {
-  const saved = parseAppearance(serverDoc)
-  if (local && !sameDoc(local.draft, saved)) {
-    return {
-      draft: parseAppearance(local.draft),
-      saved,
-      open: local.open,
-    }
+function hitToSelection(hit: ThemeHit): ThemeSelection {
+  if (hit.kind === "group" || !hit.surface) {
+    return { kind: "group", groupId: hit.group.id }
   }
-  return {
-    draft: saved,
-    saved,
-    open: local?.open ?? false,
-  }
+  return { kind: "surface", surfaceId: hit.surface.id }
 }
 
-/**
- * Later server prop updates (not first paint): always refresh `saved`;
- * take server into `draft` only when the session was clean vs previous saved.
- */
-export function reconcileServerUpdate(
-  serverDoc: Appearance,
-  draft: Appearance | null,
-  previousSaved: Appearance | null
-): { draft: Appearance; saved: Appearance } {
-  const saved = parseAppearance(serverDoc)
-  if (!draft || !previousSaved || !isAppearanceDirty(draft, previousSaved)) {
-    return { draft: saved, saved }
-  }
-  return { draft, saved }
+function draftState(
+  draft: Appearance,
+  themeId: string | null,
+  drafts: Record<string, Appearance>
+) {
+  return {
+    draft,
+    preview: null,
+    drafts: themeId ? { ...drafts, [themeId]: draft } : drafts,
+  } satisfies Partial<AppearanceStore>
+}
+
+function reconcileDraft(
+  themeId: string,
+  saved: Appearance,
+  drafts: Record<string, Appearance>
+): Appearance {
+  const candidate = drafts[themeId]
+  if (candidate && isAppearanceDirty(candidate, saved)) return candidate
+  delete drafts[themeId]
+  return saved
 }
 
 export const useAppearanceStore = create<AppearanceStore>((set, get) => ({
   open: false,
   pickArmed: false,
+  themeId: null,
   draft: null,
+  preview: null,
   saved: null,
-  selectedSurfaceId: null,
+  drafts: {},
+  savedById: {},
+  selected: null,
   pickPoint: null,
   hydrated: false,
 
   openMagic: () => {
-    // Entering magic does not arm pick — user must tap the pencil orb.
     set({
       open: true,
-      pickArmed: false,
-      selectedSurfaceId: null,
+      pickArmed: true,
+      selected: null,
       pickPoint: null,
     })
     flushMagicPersist()
@@ -251,8 +336,9 @@ export const useAppearanceStore = create<AppearanceStore>((set, get) => ({
   closeMagic: () => {
     set({
       open: false,
+      preview: null,
       pickArmed: false,
-      selectedSurfaceId: null,
+      selected: null,
       pickPoint: null,
     })
     flushMagicPersist()
@@ -262,75 +348,226 @@ export const useAppearanceStore = create<AppearanceStore>((set, get) => ({
     const next = !get().pickArmed
     set({
       pickArmed: next,
-      ...(next ? {} : { selectedSurfaceId: null, pickPoint: null }),
+      ...(next ? {} : { selected: null, pickPoint: null }),
     })
   },
 
   setDraft: (doc) => {
-    // Full-document path (JSON editor / presets) — normalize once.
-    set({ draft: parseAppearance(doc) })
+    const { themeId, drafts } = get()
+    const parsed = parseAppearance(doc)
+    set(draftState(parsed, themeId, drafts))
     scheduleMagicPersist()
   },
 
-  setVar: (cssVar, value) => {
+  previewPaletteRole: (role, value) => {
     const { draft } = get()
     if (!draft) return
-    // Hot path: patch one token only — no Zod re-parse (live preview + apply).
+    const document =
+      draft.palette[role] === value ? draft : patchPalette(draft, role, value)
     set({
-      draft: {
-        ...draft,
-        vars: { ...draft.vars, [cssVar]: value },
+      preview: {
+        kind: "variable",
+        document,
+        name: `--palette-${role}`,
+        value,
       },
     })
+  },
+
+  previewPaletteExtra: (id, value) => {
+    const { draft } = get()
+    if (!draft) return
+    const extra = draft.palette.extras.find((item) => item.id === id)
+    const document =
+      extra?.value === value ? draft : patchPaletteExtra(draft, id, { value })
+    set({
+      preview: {
+        kind: "variable",
+        document,
+        name: extraPaletteVar(id),
+        value,
+      },
+    })
+  },
+
+  previewGroupFill: (groupId, fill, recolorText) => {
+    const { draft } = get()
+    if (!draft) return
+    set({
+      preview: {
+        kind: "document",
+        document: patchGroupFill(draft, groupId, fill, recolorText),
+      },
+    })
+  },
+
+  previewToken: (cssVar, value) => {
+    const { draft } = get()
+    if (!draft) return
+    set({
+      preview: {
+        kind: "document",
+        document: patchToken(draft, cssVar, value),
+      },
+    })
+  },
+
+  commitPreview: () => {
+    const { preview, themeId, drafts } = get()
+    if (!preview) return
+    const next = preview.document
+    set(draftState(next, themeId, drafts))
     scheduleMagicPersist()
   },
 
-  selectSurface: (id, point = null) => {
+  discardPreview: () => set({ preview: null }),
+
+  setGroupFill: (groupId, fill, recolorText) => {
+    const { draft, themeId, drafts } = get()
+    if (!draft) return
+    const next = patchGroupFill(draft, groupId, fill, recolorText)
+    set(draftState(next, themeId, drafts))
+    scheduleMagicPersist()
+  },
+
+  setToken: (cssVar, value) => {
+    const { draft, themeId, drafts } = get()
+    if (!draft) return
+    const next = patchToken(draft, cssVar, value)
+    set(draftState(next, themeId, drafts))
+    scheduleMagicPersist()
+  },
+
+  selectHit: (hit, point = null) => {
     set({
-      selectedSurfaceId: id,
-      pickPoint: id ? (point ?? null) : null,
+      selected: hit ? hitToSelection(hit) : null,
+      pickPoint: hit ? (point ?? null) : null,
     })
   },
 
-  markSaved: (doc) => {
-    const next = parseAppearance(doc)
+  selectTarget: (selection, point = null) => {
     set({
-      draft: next,
-      saved: next,
-      selectedSurfaceId: null,
-      pickPoint: null,
+      selected: selection,
+      pickPoint: selection ? (point ?? null) : null,
+    })
+  },
+
+  markSaved: (themeId, doc) => {
+    const next = parseAppearance(doc)
+    const { drafts, savedById, themeId: currentId } = get()
+    const nextDrafts = { ...drafts }
+    delete nextDrafts[themeId]
+    set({
+      drafts: nextDrafts,
+      savedById: { ...savedById, [themeId]: next },
+      ...(currentId === themeId ? { draft: next, saved: next } : {}),
+      preview: null,
     })
     flushMagicPersist()
   },
 
-  hydrateFromServer: (serverDoc) => {
-    if (!get().hydrated) {
-      const local = readLocalMagic()
-      const { draft, saved, open } = reconcileHydrate(serverDoc, local)
-      set({ draft, saved, open, hydrated: true })
-      writeLocalMagic(open, draft, saved)
-      return
+  hydrateThemeLibrary: (themes, activeThemeId) => {
+    const library = new Map(
+      themes.map((theme) => [theme.id, parseAppearance(theme.document)])
+    )
+    const active = library.get(activeThemeId) ?? library.values().next().value
+    if (!active) return
+    const {
+      hydrated,
+      drafts: existingDrafts,
+      open,
+      savedById,
+      themeId: currentId,
+      pickArmed,
+    } = get()
+    const local = hydrated ? null : readLocalMagic()
+    const drafts: Record<string, Appearance> = {}
+    for (const [id, draft] of Object.entries(existingDrafts)) {
+      if (library.has(id)) drafts[id] = draft
     }
-    // Subsequent server props: refresh saved; adopt into draft only if clean.
-    const { draft, saved: previousSaved, open } = get()
-    const next = reconcileServerUpdate(serverDoc, draft, previousSaved)
-    set({ draft: next.draft, saved: next.saved })
-    writeLocalMagic(open, next.draft, next.saved)
+    if (local) {
+      for (const [id, draft] of Object.entries(local.drafts)) {
+        if (library.has(id)) drafts[id] = draft
+      }
+    }
+    const preferredId =
+      !hydrated && local?.open && local.themeId && library.has(local.themeId)
+        ? local.themeId
+        : hydrated && currentId && library.has(currentId)
+          ? currentId
+          : activeThemeId
+    const themeId = library.has(preferredId) ? preferredId : activeThemeId
+    const saved = library.get(themeId) ?? active
+    const draft = reconcileDraft(themeId, saved, drafts)
+    const nextSavedById = Object.fromEntries(library) as Record<
+      string,
+      Appearance
+    >
+    const restoredOpen = hydrated ? open : (local?.open ?? false)
+    set({
+      themeId,
+      draft,
+      preview: null,
+      saved,
+      drafts,
+      savedById: { ...savedById, ...nextSavedById },
+      hydrated: true,
+      open: restoredOpen,
+      pickArmed: hydrated ? pickArmed : restoredOpen,
+    })
+    writeLocalMagic(restoredOpen, themeId, drafts, {
+      ...savedById,
+      ...nextSavedById,
+    })
+  },
+
+  hydrateTheme: (themeId, savedDoc) => {
+    const saved = parseAppearance(savedDoc)
+    const local = get().hydrated ? null : readLocalMagic()
+    const {
+      drafts: existingDrafts,
+      savedById,
+      hydrated,
+      open,
+      pickArmed,
+    } = get()
+    const drafts = { ...existingDrafts }
+    if (local) {
+      for (const [id, doc] of Object.entries(local.drafts)) {
+        drafts[id] = doc
+      }
+    }
+    const draft = reconcileDraft(themeId, saved, drafts)
+    const restoredOpen = hydrated ? open : (local?.open ?? false)
+    set({
+      themeId,
+      draft,
+      preview: null,
+      saved,
+      drafts,
+      savedById: { ...savedById, [themeId]: saved },
+      hydrated: true,
+      open: restoredOpen,
+      pickArmed: hydrated ? pickArmed : restoredOpen,
+    })
+    writeLocalMagic(restoredOpen, themeId, drafts, {
+      ...savedById,
+      [themeId]: saved,
+    })
   },
 
   discardToSaved: () => {
-    const { saved } = get()
+    const { saved, themeId, drafts } = get()
     if (!saved) return
+    const nextDrafts = { ...drafts }
+    if (themeId) delete nextDrafts[themeId]
     set({
       draft: parseAppearance(saved),
-      selectedSurfaceId: null,
+      preview: null,
+      drafts: nextDrafts,
+      selected: null,
       pickPoint: null,
     })
     flushMagicPersist()
-  },
-
-  isDirty: () => {
-    const { draft, saved } = get()
-    return isAppearanceDirty(draft, saved)
   },
 }))

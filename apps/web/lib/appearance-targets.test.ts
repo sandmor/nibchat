@@ -1,16 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
-  THEME_SURFACES,
-  resolveThemeTarget,
-  resolveThemeTargetAtPoint,
+  resolveThemeHit,
+  resolveThemeHitAtPoint,
   surfaceById,
   surfaceByTarget,
-  targetsSharingCssVar,
 } from "@/lib/appearance-targets"
 
 function mockEl(attrs: {
   magic?: boolean
   target?: string
+  group?: string
   parent?: ReturnType<typeof mockEl> | null
 }): {
   closest: (sel: string) => ReturnType<typeof mockEl> | null
@@ -27,10 +26,19 @@ function mockEl(attrs: {
         if (attrs.target) return self
         return attrs.parent?.closest(sel) ?? null
       }
+      if (sel === "[data-theme-group]") {
+        if (attrs.group) return self
+        return attrs.parent?.closest(sel) ?? null
+      }
+      if (sel === "[data-theme-target], [data-theme-group]") {
+        if (attrs.target || attrs.group) return self
+        return attrs.parent?.closest(sel) ?? null
+      }
       return null
     },
     getAttribute(name: string) {
       if (name === "data-theme-target") return attrs.target ?? null
+      if (name === "data-theme-group") return attrs.group ?? null
       return null
     },
     get parentElement() {
@@ -41,23 +49,20 @@ function mockEl(attrs: {
 }
 
 describe("appearance-targets", () => {
-  it("registers one surface per token; composer maps to card", () => {
-    expect(THEME_SURFACES.every((s) => s.targets.length >= 1)).toBe(true)
+  it("maps composer and messages to their own tokens", () => {
     expect(surfaceByTarget("sidebar")?.cssVar).toBe("--sidebar")
-    expect(surfaceById("background")?.cssVar).toBe("--background")
-    expect(surfaceByTarget("composer")?.id).toBe("card")
-    expect(surfaceByTarget("card")?.id).toBe("card")
-    expect(surfaceByTarget("composer")?.cssVar).toBe("--card")
+    expect(surfaceById("app-background")?.cssVar).toBe("--app-background")
+    expect(surfaceByTarget("composer")?.cssVar).toBe("--composer")
+    expect(surfaceByTarget("message-user")?.cssVar).toBe("--message-user")
   })
 
   it("resolves known data-theme-target via closest", () => {
     const child = mockEl({
       parent: mockEl({ target: "sidebar" }),
     })
-    expect(resolveThemeTarget(child as unknown as Element)?.id).toBe("sidebar")
-    expect(resolveThemeTarget(child as unknown as Element)?.cssVar).toBe(
-      "--sidebar"
-    )
+    const hit = resolveThemeHit(child as unknown as Element)
+    expect(hit?.surface?.id).toBe("sidebar")
+    expect(hit?.surface?.cssVar).toBe("--sidebar")
   })
 
   it("ignores magic chrome", () => {
@@ -65,69 +70,60 @@ describe("appearance-targets", () => {
       magic: true,
       parent: mockEl({ target: "sidebar" }),
     })
-    expect(resolveThemeTarget(child as unknown as Element)).toBeNull()
+    expect(resolveThemeHit(child as unknown as Element)).toBeNull()
   })
 
   it("picks nearest surface under nested children", () => {
     const child = mockEl({
-      parent: mockEl({ target: "card" }),
+      parent: mockEl({ target: "composer" }),
     })
-    expect(resolveThemeTarget(child as unknown as Element)?.id).toBe("card")
-  })
-
-  it("lists all targets sharing a css var", () => {
-    expect(targetsSharingCssVar("--card").sort()).toEqual(
-      ["card", "composer"].sort()
+    expect(resolveThemeHit(child as unknown as Element)?.surface?.id).toBe(
+      "composer"
     )
-    expect(targetsSharingCssVar("--sidebar")).toEqual(["sidebar"])
   })
 
-  it("no-ops on unknown target or untagged", () => {
-    expect(
-      resolveThemeTarget(mockEl({ target: "nope" }) as unknown as Element)
-    ).toBeNull()
-    expect(resolveThemeTarget(mockEl({}) as unknown as Element)).toBeNull()
-    expect(resolveThemeTarget(null)).toBeNull()
-  })
-
-  it("falls through unregistered targets to the nearest registered ancestor", () => {
+  it("selects a group host when no surface is tagged", () => {
     const child = mockEl({
-      target: "tree-minimap-node",
-      parent: mockEl({ target: "background" }),
+      parent: mockEl({ group: "sidebar" }),
     })
-    expect(resolveThemeTarget(child as unknown as Element)?.id).toBe(
-      "background"
-    )
+    const hit = resolveThemeHit(child as unknown as Element)
+    expect(hit?.kind).toBe("group")
+    expect(hit?.group.id).toBe("sidebar")
+    expect(hit?.surface).toBeNull()
   })
 
-  describe("resolveThemeTargetAtPoint", () => {
+  it("prefers a nested surface over the wrapping group", () => {
+    const child = mockEl({
+      target: "sidebar-hover",
+      parent: mockEl({ group: "sidebar", target: "sidebar" }),
+    })
+    const hit = resolveThemeHit(child as unknown as Element)
+    expect(hit?.kind).toBe("surface")
+    expect(hit?.surface?.id).toBe("sidebar-hover")
+    expect(hit?.group.id).toBe("sidebar")
+  })
+
+  describe("resolveThemeHitAtPoint", () => {
     afterEach(() => {
       vi.unstubAllGlobals()
     })
 
     it("skips magic chrome stack entries and returns next surface", () => {
       const magic = mockEl({ magic: true })
-      const under = mockEl({ target: "primary" })
+      const under = mockEl({ target: "sidebar" })
       vi.stubGlobal("document", {
         elementsFromPoint: () => [magic, under],
       })
-      expect(resolveThemeTargetAtPoint(10, 20)?.id).toBe("primary")
+      const hit = resolveThemeHitAtPoint(1, 1)
+      expect(hit?.kind).toBe("surface")
+      expect(hit?.surface?.id).toBe("sidebar")
     })
 
-    it("returns null when no surface under point", () => {
-      const bare = mockEl({})
+    it("returns null when every stack entry is magic chrome", () => {
       vi.stubGlobal("document", {
-        elementsFromPoint: () => [bare],
+        elementsFromPoint: () => [mockEl({ magic: true, target: "sidebar" })],
       })
-      expect(resolveThemeTargetAtPoint(0, 0)).toBeNull()
-    })
-
-    it("resolves composer host to card token id", () => {
-      const composer = mockEl({ target: "composer" })
-      vi.stubGlobal("document", {
-        elementsFromPoint: () => [composer],
-      })
-      expect(resolveThemeTargetAtPoint(1, 1)?.id).toBe("card")
+      expect(resolveThemeHitAtPoint(0, 0)).toBeNull()
     })
   })
 })

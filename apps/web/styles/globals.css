@@ -17,6 +17,7 @@
   --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-hover: var(--sidebar-hover);
   --color-sidebar: var(--sidebar);
   --color-chart-5: var(--chart-5);
   --color-chart-4: var(--chart-4);
@@ -25,8 +26,12 @@
   --color-chart-1: var(--chart-1);
   --color-ring: var(--ring);
   --color-input: var(--input);
+  --color-input-border: var(--input-border);
   --color-border: var(--border);
-  --color-destructive: var(--destructive);
+  --color-destructive: var(--danger);
+  --color-danger: var(--danger);
+  --color-danger-fill: var(--danger-fill);
+  --color-danger-foreground: var(--danger-foreground);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -36,11 +41,35 @@
   --color-primary-foreground: var(--primary-foreground);
   --color-primary: var(--primary);
   --color-popover-foreground: var(--popover-foreground);
+  --color-popover-border: var(--popover-border);
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
   --color-foreground: var(--foreground);
   --color-background: var(--background);
+  --color-app-background: var(--app-background);
+  --color-app-foreground: var(--app-foreground);
+  --color-chat: var(--chat-background);
+  --color-message-user: var(--message-user);
+  --color-message-user-foreground: var(--message-user-foreground);
+  --color-message-user-border: var(--message-user-border);
+  --color-message-assistant: var(--message-assistant);
+  --color-message-assistant-foreground: var(--message-assistant-foreground);
+  --color-message-assistant-border: var(--message-assistant-border);
+  --color-composer: var(--composer);
+  --color-composer-foreground: var(--composer-foreground);
+  --color-composer-border: var(--composer-border);
+  --color-settings-card: var(--settings-card);
+  --color-settings-card-foreground: var(--settings-card-foreground);
+  --color-settings-card-border: var(--settings-card-border);
+  --color-button: var(--button);
+  --color-button-foreground: var(--button-foreground);
+  --color-button-hover: var(--button-hover);
+  --color-palette-paper: var(--palette-paper);
+  --color-palette-ink: var(--palette-ink);
+  --color-palette-muted: var(--palette-muted);
+  --color-palette-accent: var(--palette-accent);
+  --color-palette-danger: var(--palette-danger);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -52,116 +81,127 @@
 }
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  --palette-paper: oklch(1 0 0);
+  --palette-ink: oklch(0.145 0 0);
+  --palette-muted: oklch(0.556 0 0);
+  --palette-accent: oklch(0.205 0 0);
+  --palette-danger: oklch(0.577 0.245 27.325);
+  --app-background: var(--palette-paper);
+  --app-foreground: var(--palette-ink);
+  --sidebar: color-mix(in oklab, var(--palette-ink) 1.5%, var(--palette-paper));
+  --sidebar-foreground: var(--palette-ink);
+  --sidebar-border: color-mix(in oklab, var(--palette-ink) 8%, var(--sidebar));
+  --sidebar-hover: color-mix(in oklab, var(--palette-ink) 6%, var(--sidebar));
+  --chat-background: var(--palette-paper);
+  --message-user: color-mix(in oklab, var(--palette-ink) 4%, var(--palette-paper));
+  --message-user-foreground: var(--palette-ink);
+  --message-user-border: color-mix(
+    in oklab,
+    var(--palette-ink) 8%,
+    var(--message-user)
+  );
+  --message-assistant: var(--palette-paper);
+  --message-assistant-foreground: var(--palette-ink);
+  --message-assistant-border: color-mix(
+    in oklab,
+    var(--palette-ink) 8%,
+    var(--message-assistant)
+  );
+  --composer: var(--palette-paper);
+  --composer-foreground: var(--palette-ink);
+  --composer-border: color-mix(in oklab, var(--palette-ink) 8%, var(--composer));
+  --settings-card: var(--palette-paper);
+  --settings-card-foreground: var(--palette-ink);
+  --settings-card-border: color-mix(
+    in oklab,
+    var(--palette-ink) 8%,
+    var(--settings-card)
+  );
+  --popover: var(--palette-paper);
+  --popover-foreground: var(--palette-ink);
+  --popover-border: color-mix(in oklab, var(--palette-ink) 8%, var(--popover));
+  --input: color-mix(in oklab, var(--palette-ink) 8%, var(--palette-paper));
+  --input-border: color-mix(in oklab, var(--palette-ink) 8%, var(--palette-paper));
+  --ring: var(--palette-accent);
+  --button: var(--palette-accent);
+  --button-foreground: var(--palette-paper);
+  --button-hover: color-mix(in oklab, var(--palette-paper) 20%, var(--button));
+  --danger: var(--palette-danger);
+  --danger-fill: color-mix(in oklab, var(--palette-danger) 12%, transparent);
+  --danger-foreground: var(--palette-paper);
+  --background: var(--app-background);
+  --foreground: var(--app-foreground);
+  --card: var(--settings-card);
+  --card-foreground: var(--settings-card-foreground);
+  --primary: var(--button);
+  --primary-foreground: var(--button-foreground);
+  --secondary: var(--sidebar-hover);
+  --secondary-foreground: var(--app-foreground);
+  --muted: var(--sidebar-hover);
+  --muted-foreground: var(--palette-muted);
+  --accent: var(--sidebar-hover);
+  --accent-foreground: var(--app-foreground);
+  --border: var(--composer-border);
+  --destructive: var(--danger);
+  --sidebar-primary: var(--button);
+  --sidebar-primary-foreground: var(--button-foreground);
+  --sidebar-accent: var(--sidebar-hover);
+  --sidebar-accent-foreground: var(--sidebar-foreground);
+  --sidebar-ring: var(--ring);
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
   --tree-grid-color: color-mix(
     in oklab,
-    var(--muted-foreground) 18%,
+    var(--palette-muted) 18%,
     transparent
   );
-  --tree-edge-color: var(--border);
-  --tree-active-color: color-mix(in oklab, var(--primary) 70%, transparent);
-  --tree-focus-color: color-mix(in oklab, var(--primary) 70%, transparent);
-  --tree-path-color: color-mix(in oklab, var(--primary) 35%, transparent);
-  --tree-active-surface: color-mix(in oklab, var(--primary) 20%, transparent);
+  --tree-edge-color: color-mix(in oklab, var(--palette-ink) 8%, var(--palette-paper));
+  --tree-active-color: color-mix(in oklab, var(--palette-accent) 70%, transparent);
+  --tree-focus-color: color-mix(in oklab, var(--palette-accent) 70%, transparent);
+  --tree-path-color: color-mix(in oklab, var(--palette-accent) 35%, transparent);
+  --tree-active-surface: color-mix(in oklab, var(--palette-accent) 20%, transparent);
   --tree-chrome-background: color-mix(
     in oklab,
-    var(--background) 90%,
+    var(--palette-paper) 90%,
     transparent
   );
   --tree-overlay-background: color-mix(
     in oklab,
-    var(--background) 45%,
+    var(--palette-paper) 45%,
     transparent
   );
-  --tree-minimap-background: var(--muted);
+  --tree-minimap-background: color-mix(
+    in oklab,
+    var(--palette-ink) 3%,
+    var(--palette-paper)
+  );
   --tree-minimap-edge: color-mix(
     in oklab,
-    var(--muted-foreground) 80%,
-    var(--muted)
+    var(--palette-muted) 80%,
+    var(--tree-minimap-background)
   );
-  --tree-minimap-node: var(--muted-foreground);
+  --tree-minimap-node: var(--palette-muted);
   --tree-minimap-path: color-mix(
     in oklab,
-    var(--primary) 82%,
-    var(--muted-foreground)
+    var(--palette-accent) 82%,
+    var(--palette-muted)
   );
-  --tree-minimap-focus: var(--primary);
-  --tree-viewport-color: var(--foreground);
+  --tree-minimap-focus: var(--palette-accent);
+  --tree-viewport-color: var(--palette-ink);
   --tree-shadow-sm: 0 1px 3px
-    color-mix(in oklab, var(--foreground) 12%, transparent);
+    color-mix(in oklab, var(--palette-ink) 12%, transparent);
   --tree-shadow-lg: 0 12px 28px -12px
-    color-mix(in oklab, var(--foreground) 24%, transparent);
+    color-mix(in oklab, var(--palette-ink) 24%, transparent);
   --tree-shadow-xl: 0 24px 56px -20px
-    color-mix(in oklab, var(--foreground) 28%, transparent);
+    color-mix(in oklab, var(--palette-ink) 28%, transparent);
   --motion-duration: 220ms;
   --motion-effective-duration: var(--motion-duration);
   --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
   --motion-spinner-duration: 900ms;
-}
-
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
 }
 
 @layer base {
@@ -169,13 +209,14 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-app-background text-app-foreground;
   }
   button,
   a,
   [data-slot="button"],
   .bg-sidebar,
   .bg-background,
+  .bg-app-background,
   .bg-card,
   .bg-muted,
   [class*="border"] {
@@ -212,8 +253,8 @@
 
 /* Magic pick: portal SVG path aura (paint only; holes carve nested surfaces) */
 .theme-pick-ghost-path {
-  fill: color-mix(in oklch, var(--primary) 12%, transparent);
-  stroke: color-mix(in oklch, var(--primary) 75%, white);
+  fill: color-mix(in oklch, var(--palette-accent) 12%, transparent);
+  stroke: color-mix(in oklch, var(--palette-accent) 75%, var(--palette-paper));
   stroke-width: 2;
   pointer-events: none;
 }

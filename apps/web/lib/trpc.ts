@@ -27,7 +27,12 @@ import {
   setNodeContextExcluded,
   selectPath,
   selectRoot,
-  setAppearance,
+  createTheme,
+  deleteTheme,
+  duplicateTheme,
+  listThemes,
+  setThemeSlots,
+  updateTheme,
   setChatPromptStack,
   setInstanceDefaultPromptStack,
   updateChat,
@@ -457,11 +462,71 @@ export const appRouter = t.router({
         }
       }),
     getSettings: ownerProcedure.query(() => getInstanceSettings()),
-    setAppearance: ownerProcedure
-      .input(appearanceSchema)
+    listThemes: ownerProcedure.query(() => listThemes()),
+    createTheme: ownerProcedure
+      .input(
+        z.object({
+          name: z.string().min(1).max(200),
+          document: appearanceSchema.optional(),
+        })
+      )
       .mutation(async ({ input }) => {
         try {
-          return await setAppearance(input)
+          return await createTheme(input)
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    updateTheme: ownerProcedure
+      .input(
+        z.object({
+          id: z.string(),
+          name: z.string().min(1).max(200).optional(),
+          document: appearanceSchema.optional(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        try {
+          const { id, ...patch } = input
+          return await updateTheme(id, patch)
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    duplicateTheme: ownerProcedure
+      .input(
+        z.object({
+          id: z.string(),
+          name: z.string().min(1).max(200).optional(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        try {
+          return await duplicateTheme(input.id, input.name)
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    deleteTheme: ownerProcedure
+      .input(z.object({ id: z.string() }))
+      .mutation(async ({ input }) => {
+        try {
+          await deleteTheme(input.id)
+          return { ok: true }
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    setThemeSlots: ownerProcedure
+      .input(
+        z.object({
+          lightThemeId: z.string(),
+          darkThemeId: z.string(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        try {
+          return await setThemeSlots(input)
         } catch (error) {
           mapError(error)
         }

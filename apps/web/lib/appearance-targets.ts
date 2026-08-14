@@ -1,81 +1,58 @@
 /**
- * Deterministic theme surface registry for the magic appearance editor.
- * Identity is the CSS custom property written into appearance.vars — never
- * sampled pixels. One ThemeSurface per token; multiple DOM hosts via targets.
+ * Deterministic theme surface + group registry for the magic appearance editor.
+ * Identity is the CSS custom property / group id — never sampled pixels.
  * Hosts may be tagged before their token is registered; unregistered targets
  * fall through to the nearest registered ancestor.
  */
 
+import {
+  groupById,
+  THEME_TOKENS,
+  tokenById,
+  tokenByTarget,
+  type ThemeGroup,
+  type ThemeGroupId,
+  type ThemeToken,
+} from "@/lib/appearance-registry"
+
 export type ThemeSurface = {
   id: string
   label: string
-  /** data-theme-target values that hit this token for pick geometry */
   targets: string[]
-  /** CSS custom property key written under appearance.vars */
   cssVar: `--${string}`
+  groupId: ThemeGroupId
 }
 
-export const THEME_SURFACES: ThemeSurface[] = [
-  {
-    id: "sidebar",
-    label: "Sidebar",
-    targets: ["sidebar"],
-    cssVar: "--sidebar",
-  },
-  {
-    id: "background",
-    label: "App background",
-    targets: ["background"],
-    cssVar: "--background",
-  },
-  {
-    id: "primary",
-    label: "Primary",
-    targets: ["primary"],
-    cssVar: "--primary",
-  },
-  {
-    id: "muted",
-    label: "Muted",
-    targets: ["muted"],
-    cssVar: "--muted",
-  },
-  {
-    id: "card",
-    label: "Card",
-    // Composer reuses --card until a dedicated token exists.
-    targets: ["card", "composer"],
-    cssVar: "--card",
-  },
-]
+export type ThemeHit =
+  | { kind: "group"; group: ThemeGroup; surface: null }
+  | { kind: "surface"; group: ThemeGroup; surface: ThemeToken }
 
-const byTarget = new Map<string, ThemeSurface>()
-for (const surface of THEME_SURFACES) {
-  for (const target of surface.targets) {
-    byTarget.set(target, surface)
+function toSurface(token: ThemeToken): ThemeSurface {
+  return {
+    id: token.id,
+    label: token.label,
+    targets: token.targets,
+    cssVar: token.cssVar,
+    groupId: token.groupId,
   }
 }
-const byId = new Map(THEME_SURFACES.map((s) => [s.id, s]))
 
 export function surfaceById(id: string): ThemeSurface | null {
-  return byId.get(id) ?? null
+  const token = tokenById(id)
+  return token ? toSurface(token) : null
 }
 
 export function surfaceByTarget(target: string): ThemeSurface | null {
-  return byTarget.get(target) ?? null
+  const token = tokenByTarget(target)
+  return token ? toSurface(token) : null
 }
 
-/** All `data-theme-target` values that map to the same CSS custom property. */
 export function targetsSharingCssVar(cssVar: string): string[] {
-  return THEME_SURFACES.filter((s) => s.cssVar === cssVar).flatMap(
-    (s) => s.targets
+  return THEME_TOKENS.filter((token) => token.cssVar === cssVar).flatMap(
+    (token) => token.targets
   )
 }
 
-/**
- * Live DOM nodes tagged with a target for this css var.
- * Safe when `document` is missing (SSR / unit tests).
- */
 export function querySurfacesByCssVar(cssVar: string): Element[] {
   if (typeof document === "undefined") return []
   const out: Element[] = []
@@ -87,43 +64,53 @@ export function querySurfacesByCssVar(cssVar: string): Element[] {
   return out
 }
 
+export function queryGroupHosts(groupId: string): Element[] {
+  if (typeof document === "undefined") return []
+  return [
+    ...document.querySelectorAll(`[data-theme-group="${CSS.escape(groupId)}"]`),
+  ]
+}
+
+function groupFromEl(el: Element): ThemeGroup | null {
+  const id = el.getAttribute("data-theme-group")
+  return id ? groupById(id) : null
+}
+
 /**
- * Closest registered theme surface (buttons inside a region still pick that region).
- * Ignores magic chrome. Unregistered `data-theme-target` values fall through so
- * tokens can be tagged before they join THEME_SURFACES.
+ * Closest registered theme hit (buttons inside a region still pick that region
+ * when they have no surface of their own). Ignores magic chrome.
  */
-export function resolveThemeTarget(el: Element | null): ThemeSurface | null {
+export function resolveThemeHit(el: Element | null): ThemeHit | null {
   if (!el || typeof el.closest !== "function") return null
   if (el.closest("[data-magic-chrome]")) return null
 
-  let host: Element | null = el.closest("[data-theme-target]")
+  let host: Element | null = el.closest(
+    "[data-theme-target], [data-theme-group]"
+  )
   while (host) {
+    if (host.closest("[data-magic-chrome]")) return null
     const target = host.getAttribute("data-theme-target")
-    const surface = target ? (byTarget.get(target) ?? null) : null
-    if (surface) return surface
+    const token = target ? tokenByTarget(target) : null
+    if (token) {
+      const group = groupById(token.groupId)
+      if (group) return { kind: "surface", group, surface: token }
+    }
+    const group = groupFromEl(host)
+    if (group) return { kind: "group", group, surface: null }
     const parent = host.parentElement
-    host = parent?.closest("[data-theme-target]") ?? null
+    host = parent?.closest("[data-theme-target], [data-theme-group]") ?? null
   }
   return null
 }
 
-/**
- * Hit-test under a viewport point for pick mode.
- * Skips magic chrome / portal ghosts (pointer-events: none + data-magic-chrome).
- * Selection identity is the real surface under the cursor, never an aura ghost.
- */
-export function resolveThemeTargetAtPoint(
-  x: number,
-  y: number
-): ThemeSurface | null {
+export function resolveThemeHitAtPoint(x: number, y: number): ThemeHit | null {
   if (typeof document === "undefined") return null
   const stack = document.elementsFromPoint(x, y)
   for (const el of stack) {
-    // Node test env may lack Element; duck-type DOM nodes.
     if (!el || typeof (el as Element).closest !== "function") continue
     if ((el as Element).closest("[data-magic-chrome]")) continue
-    const surface = resolveThemeTarget(el as Element)
-    if (surface) return surface
+    const hit = resolveThemeHit(el as Element)
+    if (hit) return hit
   }
   return null
 }

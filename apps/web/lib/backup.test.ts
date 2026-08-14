@@ -3,8 +3,8 @@ import { parseBackup } from "@/lib/backup"
 import { defaultPromptStack, promptStackToJson } from "@/lib/prompt-stack"
 
 describe("parseBackup", () => {
-  it("rejects the incompatible v1 format", () => {
-    expect(() => parseBackup({ version: 1, chats: [], nodes: [] })).toThrow()
+  it("rejects unknown backup versions", () => {
+    expect(() => parseBackup({ version: 0, chats: [], nodes: [] })).toThrow()
   })
 
   it("requires chats and nodes arrays", () => {

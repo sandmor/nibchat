@@ -4,6 +4,7 @@
  */
 
 import {
+  queryGroupHosts,
   querySurfacesByCssVar,
   surfaceByTarget,
 } from "@/lib/appearance-targets"
@@ -181,10 +182,21 @@ export function collectOccluderShapes(
 /** Measure portal ghost shapes for every live region using this css var. */
 export function measurePickGhosts(cssVar: string | null): PickGhostShape[] {
   if (!cssVar || typeof document === "undefined") return []
+  return measureElements(querySurfacesByCssVar(cssVar), cssVar)
+}
+
+export function measureGroupGhosts(groupId: string | null): PickGhostShape[] {
+  if (!groupId || typeof document === "undefined") return []
+  return measureElements(queryGroupHosts(groupId), `group:${groupId}`)
+}
+
+function measureElements(
+  elements: Element[],
+  keyPrefix: string
+): PickGhostShape[] {
   const vw = window.innerWidth
   const vh = window.innerHeight
   const ghosts: PickGhostShape[] = []
-  const elements = querySurfacesByCssVar(cssVar)
 
   elements.forEach((el, index) => {
     const r = el.getBoundingClientRect()
@@ -199,7 +211,7 @@ export function measurePickGhosts(cssVar: string | null): PickGhostShape[] {
       radii: cornerRadiiFromComputed(cs, r.width, r.height),
     }
     ghosts.push({
-      key: `${cssVar}:${index}:${el.getAttribute("data-theme-target") ?? ""}`,
+      key: `${keyPrefix}:${index}:${el.getAttribute("data-theme-target") ?? el.getAttribute("data-theme-group") ?? ""}`,
       outer,
       holes: collectOccluderShapes(el),
     })

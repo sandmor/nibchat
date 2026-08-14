@@ -28,6 +28,7 @@ describe("applySchema", () => {
     )
     await db.selectFrom("provider_profiles").select("id").limit(1).execute()
     await db.selectFrom("prompt_stacks").select("id").limit(1).execute()
+    await db.selectFrom("themes").select("id").limit(1).execute()
     await db.selectFrom("user").select("id").limit(1).execute()
     await db.selectFrom("attachments").select("id").limit(1).execute()
     await db
@@ -43,10 +44,18 @@ describe("applySchema", () => {
     expect(defaultStack?.id).toBe("default")
     const instance = await db
       .selectFrom("instance")
-      .select(["id", "default_prompt_stack_id"])
+      .select(["id", "default_prompt_stack_id", "light_theme_id", "dark_theme_id"])
       .where("id", "=", 1)
       .executeTakeFirst()
     expect(instance?.default_prompt_stack_id).toBe("default")
+    expect(instance?.light_theme_id).toBe("paper")
+    expect(instance?.dark_theme_id).toBe("ink")
+    const paper = await db
+      .selectFrom("themes")
+      .select("id")
+      .where("id", "=", "paper")
+      .executeTakeFirst()
+    expect(paper?.id).toBe("paper")
     await db.destroy()
     sqlite.close()
   })

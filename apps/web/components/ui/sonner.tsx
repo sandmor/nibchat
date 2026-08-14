@@ -1,6 +1,6 @@
 "use client"
 
-import { useTheme } from "next-themes"
+import { useEffect, useState } from "react"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
@@ -11,12 +11,26 @@ import {
   Loading03Icon,
 } from "@hugeicons/core-free-icons"
 
+function useDocumentScheme(): "light" | "dark" {
+  const [scheme, setScheme] = useState<"light" | "dark">("light")
+  useEffect(() => {
+    const root = document.documentElement
+    const sync = () =>
+      setScheme(root.classList.contains("dark") ? "dark" : "light")
+    sync()
+    const obs = new MutationObserver(sync)
+    obs.observe(root, { attributes: true, attributeFilter: ["class"] })
+    return () => obs.disconnect()
+  }, [])
+  return scheme
+}
+
 const Toaster = ({ ...props }: ToasterProps) => {
-  const { theme = "system" } = useTheme()
+  const theme = useDocumentScheme()
 
   return (
     <Sonner
-      theme={theme as ToasterProps["theme"]}
+      theme={theme}
       className="toaster group"
       icons={{
         success: (

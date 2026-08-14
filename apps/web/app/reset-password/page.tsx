@@ -65,7 +65,7 @@ function ResetPasswordForm() {
             .
           </CardDescription>
         </CardHeader>
-        <form onSubmit={submit}>
+        <form onSubmit={submit} className="contents">
           <CardContent className="space-y-4">
             <div className="grid gap-2">
               <Label htmlFor="password">New password</Label>

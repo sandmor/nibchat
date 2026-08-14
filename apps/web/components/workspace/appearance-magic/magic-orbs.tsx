@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { AnimatePresence, animate, motion } from "motion/react"
 import { toast } from "sonner"
-import { useMutation } from "@tanstack/react-query"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
   Cancel01Icon,
@@ -12,17 +12,14 @@ import {
 } from "@hugeicons/core-free-icons"
 import { cn } from "@/lib/utils"
 import { useTRPC } from "@/lib/trpc-react"
-import {
-  isAppearanceDirty,
-  useAppearanceStore,
-} from "@/lib/appearance-store"
+import { isAppearanceDirty, useAppearanceStore } from "@/lib/appearance-store"
 import {
   DEFAULT_ORB_LAYOUT,
   orbitClusterPadding,
   placeSatellitesOnArc,
 } from "@/lib/appearance-orb-layout"
 import { AppearancePickLayer } from "./pick-layer"
-import { SurfaceColorPicker } from "./surface-color-picker"
+import { ThemeEditorPopover } from "./theme-editor-popover"
 
 const LAYOUT = DEFAULT_ORB_LAYOUT
 const pads = orbitClusterPadding(LAYOUT)
@@ -80,7 +77,7 @@ function useRightEdgeInset() {
 
 const smallOrbClass = cn(
   "absolute flex items-center justify-center rounded-full border border-border bg-card text-foreground shadow-md",
-  "hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+  "hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
 )
 
 const orbMotion = {
@@ -99,6 +96,7 @@ export function AppearanceMagicChrome() {
   const draft = useAppearanceStore((s) => s.draft)
   const saved = useAppearanceStore((s) => s.saved)
   const closeMagic = useAppearanceStore((s) => s.closeMagic)
+  const themeId = useAppearanceStore((s) => s.themeId)
   const markSaved = useAppearanceStore((s) => s.markSaved)
   const togglePickArmed = useAppearanceStore((s) => s.togglePickArmed)
   const rightInset = useRightEdgeInset()
@@ -109,34 +107,38 @@ export function AppearanceMagicChrome() {
   const [busy, setBusy] = useState(false)
 
   const trpc = useTRPC()
+  const queryClient = useQueryClient()
   const [saving, setSaving] = useState(false)
-  const saveMutation = useMutation(
-    trpc.workspace.setAppearance.mutationOptions()
-  )
+  const saveMutation = useMutation(trpc.workspace.updateTheme.mutationOptions())
 
   const dirty = isAppearanceDirty(draft, saved)
   const savePlace = satellites.find((s) => s.id === "save")!
   const closePlace = satellites.find((s) => s.id === "close")!
 
   async function onSave() {
-    if (!draft || saving || busy || !dirty) return
+    if (!draft || !themeId || saving || busy || !dirty) return
     const gen = ++actionGenRef.current
     setBusy(true)
     try {
       await playTapPulse(saveRef.current)
       if (gen !== actionGenRef.current) return
       setSaving(true)
-      const next = await saveMutation.mutateAsync(draft)
+      const next = await saveMutation.mutateAsync({
+        id: themeId,
+        document: draft,
+      })
       if (gen !== actionGenRef.current) return
       if (next) {
-        markSaved(next)
-        closeMagic()
-        toast.success("Appearance saved")
+        markSaved(themeId, next.document)
+        await queryClient.invalidateQueries(
+          trpc.workspace.getSettings.queryFilter()
+        )
+        toast.success("Theme saved")
       }
     } catch (error) {
       if (gen === actionGenRef.current) {
         toast.error(
-          error instanceof Error ? error.message : "Could not save appearance"
+          error instanceof Error ? error.message : "Could not save theme"
         )
       }
     } finally {
@@ -165,7 +167,7 @@ export function AppearanceMagicChrome() {
   return (
     <>
       {open && <AppearancePickLayer />}
-      {open && <SurfaceColorPicker />}
+      {open && <ThemeEditorPopover />}
       <div
         data-magic-chrome
         className="pointer-events-none fixed z-[90]"
@@ -220,8 +222,8 @@ export function AppearanceMagicChrome() {
                 type="button"
                 onClick={() => void onClose()}
                 disabled={busy || saving}
-                aria-label="Close magic editor"
-                title="Close"
+                aria-label="Done picking"
+                title="Done"
                 className={smallOrbClass}
                 style={{
                   width: LAYOUT.smallSize,
@@ -245,17 +247,17 @@ export function AppearanceMagicChrome() {
                 type="button"
                 onClick={() => togglePickArmed()}
                 aria-label={
-                  pickArmed
-                    ? "Stop picking surfaces"
-                    : "Pick a surface to recolor"
+                  pickArmed ? "Pause picking" : "Pick a surface to recolor"
                 }
                 aria-pressed={pickArmed}
                 title={
-                  pickArmed ? "Pick mode on — tap again to stop" : "Pick mode"
+                  pickArmed
+                    ? "Picking on — tap to pause and use the app"
+                    : "Pick a surface"
                 }
                 className={cn(
                   "absolute flex items-center justify-center rounded-full border shadow-lg",
-                  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  "focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
                   pickArmed
                     ? "border-primary bg-primary text-primary-foreground"
                     : "border-border bg-card text-foreground hover:bg-muted"

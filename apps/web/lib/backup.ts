@@ -6,7 +6,7 @@ const chatRowSchema = z
   .object({
     id: z.string(),
     user_id: z.string().optional(),
-    title: z.string(),
+    title: z.string().nullable(),
     selected_root_node_id: z.string().nullable(),
     model_config_json: z.string(),
     prompt_stack_id: z.string().nullable().optional(),
@@ -126,6 +126,13 @@ export const backupSchema = z.object({
       default_prompt_stack_id: z.string().optional(),
       lightThemeId: z.string().optional(),
       darkThemeId: z.string().optional(),
+      titleModelConfig: z
+        .object({
+          providerId: z.string().min(1),
+          model: z.string().min(1),
+        })
+        .nullable()
+        .optional(),
     })
     .optional(),
   createdAt: z.string().optional(),

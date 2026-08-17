@@ -35,6 +35,7 @@ import {
   updateTheme,
   setChatPromptStack,
   setInstanceDefaultPromptStack,
+  setInstanceTitleModel,
   updateChat,
   updatePromptStack,
   updateProvider,
@@ -220,7 +221,7 @@ export const appRouter = t.router({
       .input(
         z
           .object({
-            title: z.string().max(200).optional(),
+            title: z.string().trim().min(1).max(200).optional(),
             config: modelConfigSchema.optional(),
             promptStackId: z.string().nullable().optional(),
           })
@@ -238,7 +239,7 @@ export const appRouter = t.router({
       .input(
         z.object({
           chatId: z.string(),
-          title: z.string().max(200).optional(),
+          title: z.string().trim().min(1).max(200).optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -591,6 +592,22 @@ export const appRouter = t.router({
       .mutation(async ({ input }) => {
         try {
           return await setInstanceDefaultPromptStack(input.stackId)
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    setInstanceTitleModel: ownerProcedure
+      .input(
+        z
+          .object({
+            providerId: z.string().min(1),
+            model: z.string().min(1),
+          })
+          .nullable()
+      )
+      .mutation(async ({ input }) => {
+        try {
+          return await setInstanceTitleModel(input)
         } catch (error) {
           mapError(error)
         }

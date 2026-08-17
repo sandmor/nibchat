@@ -50,6 +50,31 @@ describe("parseBackup", () => {
     expect(backup.promptStacks).toHaveLength(1)
   })
 
+  it("parses a null chat title and optional title model", () => {
+    const backup = parseBackup({
+      version: 1,
+      chats: [
+        {
+          id: "c1",
+          title: null,
+          selected_root_node_id: null,
+          model_config_json: "{}",
+          created_at: "t",
+          updated_at: "t",
+        },
+      ],
+      nodes: [],
+      instance: {
+        titleModelConfig: { providerId: "p1", model: "fast" },
+      },
+    })
+    expect(backup.chats[0]?.title).toBeNull()
+    expect(backup.instance?.titleModelConfig).toEqual({
+      providerId: "p1",
+      model: "fast",
+    })
+  })
+
   it("requires a context-exclusion flag for every message node", () => {
     const node = {
       id: "n1",

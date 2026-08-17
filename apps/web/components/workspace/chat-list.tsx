@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button"
 import { WithTooltip } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import type { ChatRow } from "@/lib/types"
+import { displayChatTitle } from "@/lib/chat-title"
 
 export function ChatListItem({
   chat,
@@ -19,6 +20,7 @@ export function ChatListItem({
   compact?: boolean
   onDelete: (chatId: string) => void
 }) {
+  const title = displayChatTitle(chat.title)
   const selectLink = (
     <Link
       href={`/chat/${chat.id}`}
@@ -28,16 +30,16 @@ export function ChatListItem({
         "focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset",
         compact ? "px-2" : "px-3"
       )}
-      aria-label={compact ? chat.title : undefined}
+      aria-label={compact ? title : undefined}
       aria-current={active ? "page" : undefined}
     >
       {compact ? (
         <span className="block w-full truncate text-center text-xs" aria-hidden>
-          {chat.title.slice(0, 2)}
+          {title.slice(0, 2)}
         </span>
       ) : (
         <span className="flex min-w-0 flex-col gap-0.5">
-          <span className="truncate text-sm font-medium">{chat.title}</span>
+          <span className="truncate text-sm font-medium">{title}</span>
           <span className="text-xs text-muted-foreground">
             {new Date(chat.updated_at).toLocaleDateString()}
           </span>
@@ -56,7 +58,7 @@ export function ChatListItem({
         "hover:bg-sidebar hover:text-destructive",
         "opacity-70 group-hover/row:opacity-100"
       )}
-      aria-label={`Delete ${chat.title}`}
+      aria-label={`Delete ${title}`}
       onClick={(event) => {
         event.preventDefault()
         event.stopPropagation()
@@ -81,7 +83,7 @@ export function ChatListItem({
       )}
     >
       {compact ? (
-        <WithTooltip label={chat.title} side="right">
+        <WithTooltip label={title} side="right">
           {selectLink}
         </WithTooltip>
       ) : (

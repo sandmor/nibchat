@@ -90,7 +90,8 @@ export type Parts = Part[]
 export interface ChatsTable {
   id: string
   user_id: string
-  title: string
+  /** Null means unnamed; UI shows "New conversation". */
+  title: string | null
   selected_root_node_id: string | null
   model_config_json: string
   /** Library stack ref; null = use instance default. */
@@ -150,6 +151,8 @@ export interface InstanceTable {
   default_prompt_stack_id: string
   light_theme_id: string
   dark_theme_id: string
+  /** `{ providerId, model }` JSON; null means title LLM is off. */
+  title_model_config_json: string | null
   created_at: string
 }
 export interface ProviderProfilesTable {

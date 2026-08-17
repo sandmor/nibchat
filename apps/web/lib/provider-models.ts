@@ -101,6 +101,10 @@ export function firstEnabledModelId(models: ProviderModel[]) {
   return models.find((model) => model.enabled)?.id
 }
 
+export function isEnabledModelId(models: ProviderModel[], modelId: string) {
+  return models.some((model) => model.enabled && model.id === modelId)
+}
+
 export function resolveModelLabel(models: ProviderModel[], modelId?: string) {
   if (!modelId) return undefined
   return models.find((model) => model.id === modelId)?.label ?? modelId

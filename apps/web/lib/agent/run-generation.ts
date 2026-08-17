@@ -65,6 +65,14 @@ export type GenerationSetup = {
   resumeClaim?: {
     originalParts: Parts
   }
+  /**
+   * Started after the assistant row is persisted. Not awaited, so extra work
+   * (chat titles) cannot stall the stream.
+   */
+  afterFinalize?: (input: {
+    outcome: "complete" | "awaiting_input" | "aborted" | "error"
+    parts: Parts
+  }) => Promise<void>
 }
 
 /**
@@ -87,6 +95,7 @@ export async function createGenerationResponse(
     allNodes,
     previousMetadata,
     resumeClaim,
+    afterFinalize,
   } = setup
 
   const generation = new AbortController()
@@ -197,6 +206,11 @@ export async function createGenerationResponse(
           ...(previousMetadata ?? {}),
         },
       })
+      if (afterFinalize) {
+        void afterFinalize({ outcome: resolved, parts }).catch((error) => {
+          console.warn("[nibchat/generation]", error)
+        })
+      }
     }
 
     const result = streamText({

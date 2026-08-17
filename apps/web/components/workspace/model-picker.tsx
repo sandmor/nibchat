@@ -47,7 +47,9 @@ function modelsForProvider(
 }
 
 function joinLabel(parts: Array<string | null | undefined>) {
-  return parts.filter((part): part is string => Boolean(part?.trim())).join(" / ")
+  return parts
+    .filter((part): part is string => Boolean(part?.trim()))
+    .join(" / ")
 }
 
 export function ModelPicker({
@@ -55,12 +57,14 @@ export function ModelPicker({
   chatId,
   providers,
   showIds = false,
+  successToast,
   onChange,
 }: {
   config: ModelConfigLocal
   chatId?: string
   providers: ProviderSummary[]
   showIds?: boolean
+  successToast?: string
   onChange: (config: ModelConfigLocal) => void | Promise<void>
 }) {
   const router = useRouter()
@@ -119,7 +123,8 @@ export function ModelPicker({
       setOpen(false)
       setQuery("")
       toast.success(
-        chatId ? "Model applied" : "Model set for this conversation"
+        successToast ??
+          (chatId ? "Model applied" : "Model set for this conversation")
       )
     } catch (error) {
       toast.error(

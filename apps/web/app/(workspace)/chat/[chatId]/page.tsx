@@ -3,6 +3,7 @@ import { redirect } from "next/navigation"
 import { getRequestGate, requireWorkspaceUser } from "@/lib/app-session"
 import { getWorkspace } from "@/lib/chat-service"
 import { db } from "@/lib/db"
+import { displayChatTitle } from "@/lib/chat-title"
 import { ChatView } from "@/components/workspace/chat-view"
 
 export const dynamic = "force-dynamic"
@@ -22,7 +23,7 @@ export async function generateMetadata({
     .where("user_id", "=", gate.user.id)
     .executeTakeFirst()
   if (!chat) return { title: "New conversation" }
-  return { title: chat.title }
+  return { title: displayChatTitle(chat.title) }
 }
 
 export default async function ChatPage({

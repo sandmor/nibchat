@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   catalogNameMap,
   firstEnabledModelId,
+  isEnabledModelId,
   mergeCatalogWithSaved,
   modelsToPersist,
   parseProviderModelsJson,
@@ -89,5 +90,7 @@ describe("catalog synchronization", () => {
       { id: "local", label: "local", enabled: true, source: "custom" },
     ])
     expect(firstEnabledModelId(added.models)).toBe("local")
+    expect(isEnabledModelId(added.models, "local")).toBe(true)
+    expect(isEnabledModelId(added.models, "missing")).toBe(false)
   })
 })

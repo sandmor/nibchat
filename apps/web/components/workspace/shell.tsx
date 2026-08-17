@@ -43,6 +43,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { cn } from "@/lib/utils"
 import type { ChatRow } from "@/lib/types"
+import { displayChatTitle } from "@/lib/chat-title"
 import type { Appearance, ThemeRecord } from "@/lib/appearance"
 import { defaultAppearance, motionTransition } from "@/lib/appearance"
 import { useAppearanceStore } from "@/lib/appearance-store"
@@ -128,6 +129,7 @@ export function WorkspaceShell({
       darkThemeId,
       defaultPromptStackId: "",
       promptStacks: [],
+      titleModelConfig: null,
     },
   })
   const themes = settingsQuery.data?.themes?.length
@@ -457,7 +459,9 @@ export function WorkspaceShell({
                         "h-auto w-full flex-col items-start gap-0.5 px-2 py-2 text-left"
                       )}
                     >
-                      <span className="font-medium">{result.title}</span>
+                      <span className="font-medium">
+                        {displayChatTitle(result.title)}
+                      </span>
                       <span className="w-full truncate text-xs text-muted-foreground">
                         {result.search_text}
                       </span>
@@ -533,7 +537,9 @@ export function WorkspaceShell({
                         "h-auto w-full flex-col items-start gap-0.5 px-2 py-2 text-left"
                       )}
                     >
-                      <span className="font-medium">{result.title}</span>
+                      <span className="font-medium">
+                        {displayChatTitle(result.title)}
+                      </span>
                       <span className="w-full truncate text-xs text-muted-foreground">
                         {result.search_text}
                       </span>
@@ -560,7 +566,9 @@ export function WorkspaceShell({
                       )}
                     >
                       <span className="flex min-w-0 flex-col gap-0.5">
-                        <span className="truncate">{chat.title}</span>
+                        <span className="truncate">
+                          {displayChatTitle(chat.title)}
+                        </span>
                         <span className="text-xs text-muted-foreground">
                           {new Date(chat.updated_at).toLocaleDateString()}
                         </span>
@@ -571,7 +579,7 @@ export function WorkspaceShell({
                         variant="ghost"
                         size="icon-sm"
                         className="shrink-0 text-muted-foreground hover:text-destructive"
-                        aria-label={`Delete ${chat.title}`}
+                        aria-label={`Delete ${displayChatTitle(chat.title)}`}
                         onClick={() => setChatIdToDelete(chat.id)}
                       >
                         <HugeiconsIcon

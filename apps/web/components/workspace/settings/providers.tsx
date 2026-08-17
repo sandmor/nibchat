@@ -2,7 +2,7 @@
 
 import { useCallback, useState } from "react"
 import { toast } from "sonner"
-import { useMutation } from "@tanstack/react-query"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -62,6 +62,7 @@ export function ProviderSettings({
   onSaved: () => void
 }) {
   const trpc = useTRPC()
+  const queryClient = useQueryClient()
   const [form, setForm] = useState(emptyForm)
   const [models, setModels] = useState<ProviderModel[]>([])
   const [catalog, setCatalog] = useState<CatalogModel[]>([])
@@ -78,6 +79,11 @@ export function ProviderSettings({
     setCatalog([])
     setEditingId(null)
   }
+
+  const invalidateTitleModel = () =>
+    queryClient.invalidateQueries({
+      queryKey: trpc.workspace.getSettings.queryKey(),
+    })
 
   const createProvider = useMutation(
     trpc.workspace.createProvider.mutationOptions({
@@ -99,6 +105,7 @@ export function ProviderSettings({
           "Provider saved. Secrets remain server-only and are excluded from exports."
         )
         setForm((current) => ({ ...current, apiKey: "" }))
+        void invalidateTitleModel()
         onSaved()
       },
       onError: (error) => toast.error(error.message || "Could not save"),
@@ -108,6 +115,7 @@ export function ProviderSettings({
     trpc.workspace.deleteProvider.mutationOptions({
       onSuccess: () => {
         toast.success("Provider deleted")
+        void invalidateTitleModel()
         onSaved()
       },
       onError: (error) => toast.error(error.message || "Could not delete"),
@@ -197,7 +205,9 @@ export function ProviderSettings({
             />
           </div>
           <div className="grid gap-1.5">
-            <Label htmlFor="provider-api-key-env">Or environment variable</Label>
+            <Label htmlFor="provider-api-key-env">
+              Or environment variable
+            </Label>
             <Input
               id="provider-api-key-env"
               value={form.apiKeyEnv}

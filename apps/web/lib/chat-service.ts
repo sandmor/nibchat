@@ -25,6 +25,8 @@ import type {
   PromptStackRow,
   ThemeRow,
 } from "@/lib/types"
+import { generateChatTitle } from "@/lib/agent/generate-title"
+import { seedChatTitle } from "@/lib/chat-title"
 import {
   canReplayReasoning,
   defaultModelConfig,
@@ -32,7 +34,9 @@ import {
 } from "@/lib/providers"
 import { orderNodesForInsert, parseBackup } from "@/lib/backup"
 import {
+  isEnabledModelId,
   parseProviderModels,
+  parseProviderModelsJson,
   providerModelsToJson,
 } from "@/lib/provider-models"
 import { mcpProfileForBackup, profileFromRow } from "@/lib/mcp"
@@ -154,7 +158,7 @@ export async function getWorkspace(
 
 export async function createChat(
   userId: string,
-  title = "New conversation",
+  title: string | null = null,
   config?: ModelConfig,
   promptStackId?: string | null
 ) {
@@ -398,6 +402,121 @@ export async function updateChat(
     })
     .where("id", "=", chatId)
     .execute()
+}
+
+export type TitleModelConfig = {
+  providerId: string
+  model: string
+}
+
+function readTitleModelConfig(
+  raw: string | null | undefined
+): TitleModelConfig | null {
+  if (!raw) return null
+  const parsed = parseJson<{ providerId?: string; model?: string }>(raw, {})
+  const providerId = parsed.providerId?.trim()
+  const model = parsed.model?.trim()
+  if (!providerId || !model) return null
+  return { providerId, model }
+}
+
+async function readStoredTitleModelConfig() {
+  const row = await db
+    .selectFrom("instance")
+    .select("title_model_config_json")
+    .where("id", "=", 1)
+    .executeTakeFirst()
+  return readTitleModelConfig(row?.title_model_config_json)
+}
+
+/** Effective title model. Does not persist when the stored model is unavailable. */
+export async function getTitleModelConfig() {
+  const config = await readStoredTitleModelConfig()
+  if (!config) return null
+  if (await titleModelIsAvailable(config)) return config
+  return null
+}
+
+async function clearTitleModelIfUnavailable() {
+  const config = await readStoredTitleModelConfig()
+  if (!config) return
+  if (await titleModelIsAvailable(config)) return
+  await db
+    .updateTable("instance")
+    .set({ title_model_config_json: null })
+    .where("id", "=", 1)
+    .where("title_model_config_json", "is not", null)
+    .execute()
+}
+
+async function titleModelIsAvailable(config: TitleModelConfig) {
+  const profile = await db
+    .selectFrom("provider_profiles")
+    .select("models_json")
+    .where("id", "=", config.providerId)
+    .executeTakeFirst()
+  if (!profile) return false
+  return isEnabledModelId(
+    parseProviderModelsJson(profile.models_json),
+    config.model
+  )
+}
+
+/** Write a title only while the chat is still unnamed. */
+export async function assignChatTitleIfUnnamed(chatId: string, title: string) {
+  const trimmed = title.trim()
+  if (!trimmed) return
+  await db
+    .updateTable("chats")
+    .set({ title: trimmed, updated_at: now() })
+    .where("id", "=", chatId)
+    .where("title", "is", null)
+    .execute()
+}
+
+export async function maybeAssignChatTitle(input: {
+  chatId: string
+  userId: string
+  userText: string
+  attachmentNames: string[]
+  assistantText?: string
+  allowLlm: boolean
+}) {
+  const seed = seedChatTitle(input.userText, input.attachmentNames)
+  if (input.allowLlm) {
+    const config = await getTitleModelConfig()
+    if (config) {
+      try {
+        const generated = await generateChatTitle({
+          userId: input.userId,
+          config,
+          userText: input.userText.trim() || seed,
+          assistantText: input.assistantText,
+        })
+        await assignChatTitleIfUnnamed(input.chatId, generated)
+        return
+      } catch (error) {
+        console.warn("[nibchat/title]", error)
+      }
+    }
+  }
+  await assignChatTitleIfUnnamed(input.chatId, seed)
+}
+
+export async function setInstanceTitleModel(config: TitleModelConfig | null) {
+  await db
+    .updateTable("instance")
+    .set({
+      title_model_config_json: config
+        ? JSON.stringify({
+            providerId: config.providerId,
+            model: config.model,
+          })
+        : null,
+    })
+    .where("id", "=", 1)
+    .execute()
+  return { ok: true as const, titleModelConfig: config }
 }
 
 export async function searchChats(userId: string, query: string) {
@@ -1143,6 +1262,7 @@ export async function updateProvider(
     .where("id", "=", providerId)
     .where("user_id", "=", userId)
     .execute()
+  await clearTitleModelIfUnavailable()
 }
 
 export async function deleteProvider(userId: string, providerId: string) {
@@ -1151,6 +1271,7 @@ export async function deleteProvider(userId: string, providerId: string) {
     .where("id", "=", providerId)
     .where("user_id", "=", userId)
     .execute()
+  await clearTitleModelIfUnavailable()
 }
 
 function themeRowToRecord(row: ThemeRow): ThemeRecord {
@@ -1479,6 +1600,7 @@ export async function getInstanceSettings() {
     themes,
     lightThemeId: row.light_theme_id || PAPER_THEME_ID,
     darkThemeId: row.dark_theme_id || INK_THEME_ID,
+    titleModelConfig: await getTitleModelConfig(),
   }
 }
 
@@ -1776,13 +1898,29 @@ export async function restoreBackup(
           .executeTakeFirstOrThrow()
       ).default_prompt_stack_id
 
-    if (backup.instance || backup.themes?.length || backup.promptStacks?.length) {
+    if (
+      backup.instance ||
+      backup.themes?.length ||
+      backup.promptStacks?.length
+    ) {
+      const titleModelJson =
+        backup.instance && "titleModelConfig" in backup.instance
+          ? backup.instance.titleModelConfig
+            ? JSON.stringify({
+                providerId: backup.instance.titleModelConfig.providerId,
+                model: backup.instance.titleModelConfig.model,
+              })
+            : null
+          : undefined
       await trx
         .updateTable("instance")
         .set({
           default_prompt_stack_id: defaultStackId,
           light_theme_id: lightThemeId,
           dark_theme_id: darkThemeId,
+          ...(titleModelJson !== undefined
+            ? { title_model_config_json: titleModelJson }
+            : {}),
         })
         .where("id", "=", 1)
         .execute()
@@ -1883,6 +2021,7 @@ export async function createBackup(userId: string) {
     .select(["default_prompt_stack_id", "light_theme_id", "dark_theme_id"])
     .where("id", "=", 1)
     .executeTakeFirst()
+  const titleModelConfig = await getTitleModelConfig()
   return {
     version: 1 as const,
     createdAt: new Date().toISOString(),
@@ -1891,6 +2030,7 @@ export async function createBackup(userId: string) {
           default_prompt_stack_id: instance.default_prompt_stack_id,
           lightThemeId: instance.light_theme_id,
           darkThemeId: instance.dark_theme_id,
+          titleModelConfig,
         }
       : undefined,
     promptStacks: normalizedStacks,

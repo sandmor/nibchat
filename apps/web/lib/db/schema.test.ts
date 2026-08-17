@@ -14,7 +14,9 @@ describe("applySchema", () => {
     await applySchema(db, "sqlite")
     await db.selectFrom("chats").select("id").limit(1).execute()
     await db.selectFrom("message_nodes").select("id").limit(1).execute()
-    const columns = sqlite.prepare("pragma table_info(message_nodes)").all() as Array<{
+    const columns = sqlite
+      .prepare("pragma table_info(message_nodes)")
+      .all() as Array<{
       name: string
       notnull: number
       dflt_value: string | null
@@ -44,12 +46,34 @@ describe("applySchema", () => {
     expect(defaultStack?.id).toBe("default")
     const instance = await db
       .selectFrom("instance")
-      .select(["id", "default_prompt_stack_id", "light_theme_id", "dark_theme_id"])
+      .select([
+        "id",
+        "default_prompt_stack_id",
+        "light_theme_id",
+        "dark_theme_id",
+        "title_model_config_json",
+      ])
       .where("id", "=", 1)
       .executeTakeFirst()
     expect(instance?.default_prompt_stack_id).toBe("default")
     expect(instance?.light_theme_id).toBe("paper")
     expect(instance?.dark_theme_id).toBe("ink")
+    expect(instance?.title_model_config_json).toBeNull()
+    const chatColumns = sqlite
+      .prepare("pragma table_info(chats)")
+      .all() as Array<{
+      name: string
+      notnull: number
+    }>
+    expect(chatColumns).toContainEqual(
+      expect.objectContaining({ name: "title", notnull: 0 })
+    )
+    const instanceColumns = sqlite
+      .prepare("pragma table_info(instance)")
+      .all() as Array<{ name: string }>
+    expect(instanceColumns.map((column) => column.name)).toContain(
+      "title_model_config_json"
+    )
     const paper = await db
       .selectFrom("themes")
       .select("id")

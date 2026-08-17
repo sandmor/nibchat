@@ -2,6 +2,7 @@
 
 import type { ProviderSummary } from "../types"
 import { ProviderSettings } from "./providers"
+import { TitleModelSettings } from "./title-model"
 import { PromptStackSettings } from "./prompt-stacks"
 import { BackupSettings } from "./backup"
 import { AppearanceSettings } from "./appearance"
@@ -30,6 +31,7 @@ export function SettingsPanel({
           className="mx-auto grid max-w-4xl gap-7 p-5 sm:p-8"
         >
           <ProviderSettings providers={providers} onSaved={onProvidersChange} />
+          <TitleModelSettings providers={providers} />
           <McpSettings />
           <PromptStackSettings />
           <BackupSettings />

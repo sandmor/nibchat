@@ -7,6 +7,7 @@ import { db } from "@/lib/db"
 import { parseJson } from "@/lib/domain"
 import {
   firstEnabledModelId,
+  isEnabledModelId,
   parseProviderModelsJson,
 } from "@/lib/provider-models"
 
@@ -80,7 +81,8 @@ export async function defaultModelConfig(userId: string): Promise<ModelConfig> {
 
 export async function modelFor(
   userId: string,
-  config: ModelConfig
+  config: ModelConfig,
+  options?: { requireConfiguredModel?: boolean }
 ): Promise<LanguageModel> {
   const profile = config.providerId
     ? await db
@@ -93,10 +95,11 @@ export async function modelFor(
   const enabledModels = parseProviderModelsJson(profile?.models_json ?? "[]")
   const configuredModel = config.model
   const model =
-    configuredModel &&
-    enabledModels.some((entry) => entry.enabled && entry.id === configuredModel)
+    configuredModel && isEnabledModelId(enabledModels, configuredModel)
       ? configuredModel
-      : firstEnabledModelId(enabledModels)
+      : options?.requireConfiguredModel
+        ? undefined
+        : firstEnabledModelId(enabledModels)
   if (!profile || !model)
     throw new Error(
       "Choose a provider and model in Settings before sending a message."

@@ -3,7 +3,11 @@ import {
   createGenerationResponse,
   ResumeClaimError,
 } from "@/lib/agent/run-generation"
-import { applyToolOutputs, pendingToolInvocations } from "@/lib/agent/parts"
+import {
+  applyToolOutputs,
+  pendingToolInvocations,
+  textFromParts,
+} from "@/lib/agent/parts"
 import {
   answersFromResumeOutput,
   formatQuestionResult,
@@ -12,6 +16,8 @@ import {
 import { requireOwner } from "@/lib/app-session"
 import {
   createTurn,
+  getTitleModelConfig,
+  maybeAssignChatTitle,
   nodeParts,
   resolveStackForChat,
   startGenerate,
@@ -25,6 +31,7 @@ import { modelFor, resolveModelConfig, type ModelConfig } from "@/lib/providers"
 import { resolveMcpResourceAttachment } from "@/lib/mcp"
 import { resolveUploadedAttachments } from "@/lib/attachments"
 import { streamBodySchema } from "@/lib/stream-body"
+import { firstTurnTitleAction } from "@/lib/chat-title"
 import type { AttachmentReference, NodeRow, Parts } from "@/lib/types"
 
 export const runtime = "nodejs"
@@ -79,6 +86,12 @@ export async function POST(request: Request) {
     let contextLeafId: string | null
     let seedParts: Parts = []
     let headers: Record<string, string> = {}
+    let afterFinalize:
+      | ((input: {
+          outcome: "complete" | "awaiting_input" | "aborted" | "error"
+          parts: Parts
+        }) => Promise<void>)
+      | undefined
 
     if (body.intent === "continue") {
       const message = body.content.trim()
@@ -113,19 +126,29 @@ export async function POST(request: Request) {
           : {}),
         "X-Nibchat-User-Node": turn.user.id,
       }
-      if (chat.title === "New conversation") {
-        const titleSeed =
-          message ||
-          attachments.map((part) => part.name).join(", ") ||
-          "New conversation"
-        await db
-          .updateTable("chats")
-          .set({
-            title: titleSeed.slice(0, 72),
-            updated_at: new Date().toISOString(),
+      const attachmentNames = attachments.map((part) => part.name)
+      const titleModelConfigured =
+        chat.title == null ? Boolean(await getTitleModelConfig()) : false
+      const titleAction = firstTurnTitleAction(chat.title, titleModelConfigured)
+      if (titleAction === "seed") {
+        await maybeAssignChatTitle({
+          chatId: chat.id,
+          userId: user.id,
+          userText: message,
+          attachmentNames,
+          allowLlm: false,
+        })
+      } else if (titleAction === "generate") {
+        afterFinalize = async ({ outcome, parts }) => {
+          await maybeAssignChatTitle({
+            chatId: chat.id,
+            userId: user.id,
+            userText: message,
+            attachmentNames,
+            assistantText: textFromParts(parts),
+            allowLlm: outcome === "complete",
           })
-          .where("id", "=", chat.id)
-          .execute()
+        }
       }
     } else if (body.intent === "regenerate") {
       const result = await startRegenerate(
@@ -296,6 +319,7 @@ export async function POST(request: Request) {
         requestSignal: request.signal,
         allNodes,
         previousMetadata: assistantMeta,
+        afterFinalize,
       },
       headers
     )

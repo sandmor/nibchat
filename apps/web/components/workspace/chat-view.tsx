@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
 import { parseJson, resolveActivePath } from "@/lib/domain"
+import { displayChatTitle } from "@/lib/chat-title"
 import { chatStreamEntries, useStreamStore } from "@/lib/stream-store"
 import { useTRPC } from "@/lib/trpc-react"
 import {
@@ -949,7 +950,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       data-theme-target="chat"
       className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-chat"
     >
-      <DocumentTitle title={data.chat?.title ?? "New conversation"} />
+      <DocumentTitle title={displayChatTitle(data.chat?.title)} />
       <header
         className={cn(
           "flex shrink-0 flex-col gap-1.5 border-b sm:flex-row sm:items-center sm:gap-2",
@@ -962,13 +963,13 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
           <h1
             onDoubleClick={() => {
               if (!data.chat) return
-              setRenameTitle(data.chat.title)
+              setRenameTitle(data.chat.title ?? "")
               setRenameOpen(true)
             }}
             className={cn("truncate font-medium", data.chat && "cursor-text")}
             title={data.chat ? "Double-click to rename" : undefined}
           >
-            {data.chat?.title ?? "New conversation"}
+            {displayChatTitle(data.chat?.title)}
           </h1>
           <p className="hidden truncate text-xs text-muted-foreground sm:block">
             Each reply can become its own direction.

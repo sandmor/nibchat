@@ -341,8 +341,7 @@ export function Message({
       displayParts.some((part) => part.type === "tool-invocation") ? (
         <MessageParts
           parts={displayParts}
-          role={node.role}
-          streamingPlaceholder={node.status === "streaming"}
+          streaming={node.status === "streaming"}
           interactiveTools={interactiveTools && !resumeInFlight}
           onAnswerTool={
             onAnswerTools
@@ -371,15 +370,9 @@ export function Message({
           }
         />
       ) : (
-        <div className="prose prose-sm dark:prose-invert max-w-none">
-          {node.role === "assistant" ? (
-            <Markdown>
-              {text || (node.status === "streaming" ? "Thinking…" : "")}
-            </Markdown>
-          ) : (
-            <p className="whitespace-pre-wrap">{text}</p>
-          )}
-        </div>
+        <Markdown streaming={node.status === "streaming"}>
+          {text || (node.status === "streaming" ? "Thinking…" : "")}
+        </Markdown>
       )}
       <div className="mt-3 flex flex-wrap items-center gap-0.5">
         <TooltipProvider delay={400}>

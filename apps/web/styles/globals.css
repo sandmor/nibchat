@@ -251,6 +251,59 @@
   --motion-effective-duration: 0ms;
 }
 
+/* KaTeX keeps display formulas on one line by default. Let ordinary equations
+   use its semantic break points, then scroll the genuinely indivisible cases. */
+.markdown-content .katex-display {
+  max-width: 100%;
+  overflow: auto hidden;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+}
+
+.markdown-content .katex-display:not(:has(.katex-tag)) > .katex {
+  white-space: normal;
+}
+
+.markdown-content
+  .katex-display:not(:has(.katex-tag))
+  > .katex
+  > .katex-html
+  > .katex-base {
+  margin-block: 0.2em;
+}
+
+.markdown-content .katex-display[data-math-overflow],
+.markdown-content .katex[data-math-overflow] {
+  scrollbar-color: color-mix(in oklab, var(--palette-muted) 65%, transparent)
+    transparent;
+}
+
+/* Only inline math proven wider than its message gets a scroller; normal
+   formulas retain KaTeX's natural operator-level wrapping. */
+.markdown-content .katex[data-math-overflow] {
+  display: inline-block;
+  max-width: 100%;
+  overflow: auto hidden;
+  overscroll-behavior-inline: contain;
+  vertical-align: text-bottom;
+  white-space: nowrap;
+}
+
+.markdown-content-reasoning [data-streamdown="heading-1"] {
+  font-size: 1rem;
+}
+
+.markdown-content-reasoning [data-streamdown="heading-2"] {
+  font-size: 0.9375rem;
+}
+
+.markdown-content-reasoning [data-streamdown="heading-3"],
+.markdown-content-reasoning [data-streamdown="heading-4"],
+.markdown-content-reasoning [data-streamdown="heading-5"],
+.markdown-content-reasoning [data-streamdown="heading-6"] {
+  font-size: 0.875rem;
+}
+
 /* Magic pick: portal SVG path aura (paint only; holes carve nested surfaces) */
 .theme-pick-ghost-path {
   fill: color-mix(in oklch, var(--palette-accent) 12%, transparent);

@@ -28,12 +28,7 @@ export function StreamingBubble({
       <div className="mb-2 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
         assistant · streaming
       </div>
-      <MessageParts
-        parts={parts}
-        role="assistant"
-        streamingPlaceholder
-        interactiveTools={false}
-      />
+      <MessageParts parts={parts} streaming interactiveTools={false} />
     </>
   )
 

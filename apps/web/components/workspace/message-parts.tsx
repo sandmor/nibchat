@@ -5,18 +5,32 @@ import { Markdown } from "@/components/markdown"
 import { QuestionToolView } from "@/components/workspace/tools/question-tool"
 import { ImageViewer } from "@/components/workspace/image-viewer"
 import type { QuestionAnswers } from "@/lib/agent/tools/question-shared"
-import type { Parts, ToolInvocationPart } from "@/lib/types"
+import type { Part, Parts, ToolInvocationPart } from "@/lib/types"
+
+type RenderPart = { part: Part; index: number }
+
+/** Text deltas belong to one Markdown document until another part intervenes. */
+function coalesceAdjacentTextParts(parts: Parts): RenderPart[] {
+  const result: RenderPart[] = []
+  for (const [index, part] of parts.entries()) {
+    const previous = result.at(-1)
+    if (part.type === "text" && previous?.part.type === "text") {
+      previous.part = { type: "text", text: previous.part.text + part.text }
+      continue
+    }
+    result.push({ part, index })
+  }
+  return result
+}
 
 export function MessageParts({
   parts,
-  role,
-  streamingPlaceholder,
+  streaming = false,
   interactiveTools,
   onAnswerTool,
 }: {
   parts: Parts
-  role: string
-  streamingPlaceholder?: boolean
+  streaming?: boolean
   /** Whether pending client tools may be answered on this message. */
   interactiveTools?: boolean
   onAnswerTool?: (
@@ -29,12 +43,8 @@ export function MessageParts({
     null
   )
   if (parts.length === 0) {
-    if (streamingPlaceholder) {
-      return (
-        <div className="prose prose-sm dark:prose-invert max-w-none">
-          <Markdown>Thinking…</Markdown>
-        </div>
-      )
+    if (streaming) {
+      return <Markdown streaming>Thinking…</Markdown>
     }
     return null
   }
@@ -42,7 +52,7 @@ export function MessageParts({
   return (
     <>
       <div className="flex flex-col gap-3">
-        {parts.map((part, index) => {
+        {coalesceAdjacentTextParts(parts).map(({ part, index }) => {
           if (part.type === "reasoning") {
             return (
               <details
@@ -50,27 +60,21 @@ export function MessageParts({
                 className="rounded-lg bg-muted p-3 text-xs text-muted-foreground"
               >
                 <summary className="cursor-pointer">Reasoning</summary>
-                <p className="mt-2 whitespace-pre-wrap">{part.text}</p>
+                <Markdown
+                  className="mt-2 text-xs"
+                  streaming={streaming}
+                  variant="reasoning"
+                >
+                  {part.text}
+                </Markdown>
               </details>
             )
           }
           if (part.type === "text") {
-            if (role === "assistant") {
-              return (
-                <div
-                  key={`text-${index}`}
-                  className="prose prose-sm dark:prose-invert max-w-none"
-                >
-                  <Markdown>
-                    {part.text || (streamingPlaceholder ? "Thinking…" : "")}
-                  </Markdown>
-                </div>
-              )
-            }
             return (
-              <p key={`text-${index}`} className="whitespace-pre-wrap">
-                {part.text}
-              </p>
+              <Markdown key={`text-${index}`} streaming={streaming}>
+                {part.text || (streaming ? "Thinking…" : "")}
+              </Markdown>
             )
           }
           if (part.type === "attachment") {

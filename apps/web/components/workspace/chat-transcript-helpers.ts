@@ -1,5 +1,4 @@
 import type { NodeRow } from "@/lib/types"
-import type { ActiveStream } from "@/lib/stream-store"
 
 /**
  * Dual identity for path rows (do not collapse these):
@@ -8,6 +7,7 @@ import type { ActiveStream } from "@/lib/stream-store"
  * - messageId = node (or stream) id for MessageScroller scroll / jump.
  *
  * Never use node id as the React list key for path rows.
+ * Live rows carry a stream id only — token text stays in the stream buffer.
  */
 
 export function pathSlotKey(slotIndex: number): string {
@@ -38,8 +38,6 @@ export function chatRouteIdentity(selectedChatId: string | null): string {
 export const LIVE_ROW_CLASS =
   "[content-visibility:visible] [contain-intrinsic-size:none]"
 
-export type LiveStreamEntry = [streamId: string, stream: ActiveStream]
-
 export type EmptyTranscriptRow = {
   kind: "empty"
   reactKey: "empty"
@@ -55,7 +53,8 @@ export type PathTranscriptRow = {
   messageId: string
   scrollAnchor: boolean
   node: NodeRow
-  live: LiveStreamEntry | null
+  /** Live generation for this node, if any. Payload is read in StreamingBubble. */
+  liveStreamId: string | null
 }
 
 export type AfterTipTranscriptRow = {
@@ -64,7 +63,6 @@ export type AfterTipTranscriptRow = {
   messageId: string
   scrollAnchor: false
   streamId: string
-  stream: ActiveStream
 }
 
 export type TranscriptRow =
@@ -81,8 +79,8 @@ export function afterTipMessageId(
 
 export function buildTranscriptRows(input: {
   activePath: NodeRow[]
-  streamByNodeId: Map<string, LiveStreamEntry>
-  afterTipStreams: LiveStreamEntry[]
+  streamIdByNodeId: ReadonlyMap<string, string>
+  afterTipStreams: Array<{ streamId: string; nodeId: string }>
   showEmpty: boolean
 }): TranscriptRow[] {
   const rows: TranscriptRow[] = []
@@ -104,18 +102,17 @@ export function buildTranscriptRows(input: {
       messageId: node.id,
       scrollAnchor: isScrollAnchorRole(node.role),
       node,
-      live: input.streamByNodeId.get(node.id) ?? null,
+      liveStreamId: input.streamIdByNodeId.get(node.id) ?? null,
     })
   })
 
-  for (const [streamId, stream] of input.afterTipStreams) {
+  for (const stream of input.afterTipStreams) {
     rows.push({
       kind: "after-tip",
-      reactKey: streamId,
-      messageId: afterTipMessageId(streamId, stream),
+      reactKey: stream.streamId,
+      messageId: afterTipMessageId(stream.streamId, stream),
       scrollAnchor: false,
-      streamId,
-      stream,
+      streamId: stream.streamId,
     })
   }
 

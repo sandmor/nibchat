@@ -1,6 +1,6 @@
 "use client"
 
-import { useRef, useState } from "react"
+import { memo, useCallback, useMemo, useRef, useState } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
   ImageAdd02Icon,
@@ -17,10 +17,125 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { TooltipProvider, WithTooltip } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
-import type {
-  ComposerAttachment,
-  ComposerDraft,
+import {
+  useComposerDraft,
+  useConversationSessionStore,
+  type ComposerAttachment,
+  type ComposerDraft,
 } from "./conversation-session-store"
+
+export type ConversationComposerProps = {
+  draft: ComposerDraft
+  placeholder: string
+  autoFocus?: boolean
+  variant?: "docked" | "inline"
+  mcpAvailable: boolean
+  streaming?: boolean
+  submitting?: boolean
+  animate?: boolean
+  onTextChange: (text: string) => void
+  onSend: () => void
+  onCancel?: () => void
+  onFiles: (files: File[] | FileList) => void
+  onRemoveAttachment: (part: ComposerAttachment) => void
+  onPreview: (src: string, name: string) => void
+  onOpenResources: () => void
+  onOpenPrompts: () => void
+  onStop?: () => void
+}
+
+export type SessionComposerProps = Omit<
+  ConversationComposerProps,
+  "draft" | "onTextChange"
+> & { slot: string }
+
+/**
+ * Session-bound composer. The wrapper always runs with the parent so action
+ * refs stay current; the leaf subscribes to one slot and ignores parent
+ * re-renders that only change callback identity (stream tokens, queries).
+ */
+export function SessionComposer(props: SessionComposerProps) {
+  const latestRef = useRef(props)
+  latestRef.current = props
+  return (
+    <SessionComposerLeaf
+      slot={props.slot}
+      placeholder={props.placeholder}
+      autoFocus={props.autoFocus}
+      variant={props.variant}
+      mcpAvailable={props.mcpAvailable}
+      streaming={props.streaming}
+      submitting={props.submitting}
+      animate={props.animate}
+      latestRef={latestRef}
+    />
+  )
+}
+
+const SessionComposerLeaf = memo(function SessionComposerLeaf({
+  slot,
+  placeholder,
+  autoFocus,
+  variant,
+  mcpAvailable,
+  streaming,
+  submitting,
+  animate,
+  latestRef,
+}: {
+  slot: string
+  placeholder: string
+  autoFocus?: boolean
+  variant?: ConversationComposerProps["variant"]
+  mcpAvailable: boolean
+  streaming?: boolean
+  submitting?: boolean
+  animate?: boolean
+  latestRef: { current: SessionComposerProps }
+}) {
+  const draft = useComposerDraft(slot)
+  const update = useConversationSessionStore((state) => state.update)
+  const onTextChange = useCallback(
+    (text: string) => update(slot, { text }),
+    [slot, update]
+  )
+  const actions = useMemo(
+    () => ({
+      onSend: () => latestRef.current.onSend(),
+      onCancel: () => latestRef.current.onCancel?.(),
+      onFiles: (files: File[] | FileList) => latestRef.current.onFiles(files),
+      onRemoveAttachment: (part: ComposerAttachment) =>
+        latestRef.current.onRemoveAttachment(part),
+      onPreview: (src: string, name: string) =>
+        latestRef.current.onPreview(src, name),
+      onOpenResources: () => latestRef.current.onOpenResources(),
+      onOpenPrompts: () => latestRef.current.onOpenPrompts(),
+      onStop: () => latestRef.current.onStop?.(),
+    }),
+    [latestRef]
+  )
+  return (
+    <ConversationComposer
+      draft={draft}
+      placeholder={placeholder}
+      autoFocus={autoFocus}
+      variant={variant}
+      mcpAvailable={mcpAvailable}
+      streaming={streaming}
+      submitting={submitting}
+      animate={animate}
+      onTextChange={onTextChange}
+      onSend={actions.onSend}
+      onCancel={actions.onCancel}
+      onFiles={actions.onFiles}
+      onRemoveAttachment={actions.onRemoveAttachment}
+      onPreview={actions.onPreview}
+      onOpenResources={actions.onOpenResources}
+      onOpenPrompts={actions.onOpenPrompts}
+      onStop={actions.onStop}
+    />
+  )
+})
 
 /**
  * Shared composer chrome. Linear docks one instance; Tree mounts one per
@@ -45,25 +160,7 @@ export function ConversationComposer({
   onOpenResources,
   onOpenPrompts,
   onStop,
-}: {
-  draft: ComposerDraft
-  placeholder: string
-  autoFocus?: boolean
-  variant?: "docked" | "inline"
-  mcpAvailable: boolean
-  streaming?: boolean
-  submitting?: boolean
-  animate?: boolean
-  onTextChange: (text: string) => void
-  onSend: () => void
-  onCancel?: () => void
-  onFiles: (files: File[] | FileList) => void
-  onRemoveAttachment: (part: ComposerAttachment) => void
-  onPreview: (src: string, name: string) => void
-  onOpenResources: () => void
-  onOpenPrompts: () => void
-  onStop?: () => void
-}) {
+}: ConversationComposerProps) {
   const imageInputRef = useRef<HTMLInputElement>(null)
   const [mcpMenuOpen, setMcpMenuOpen] = useState(false)
   const [dropActive, setDropActive] = useState(false)

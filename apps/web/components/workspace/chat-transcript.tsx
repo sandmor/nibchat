@@ -23,7 +23,6 @@ import {
   LIVE_ROW_CLASS,
   mountedTranscriptMessageIds,
   transcriptPeekPx,
-  type LiveStreamEntry,
 } from "./chat-transcript-helpers"
 
 export {
@@ -80,8 +79,8 @@ export type ChatTranscriptProps = {
   activePath: NodeRow[]
   nodes: NodeRow[]
   providers: ProviderSummary[]
-  streamByNodeId: Map<string, LiveStreamEntry>
-  afterTipStreams: LiveStreamEntry[]
+  streamIdByNodeId: ReadonlyMap<string, string>
+  afterTipStreams: Array<{ streamId: string; nodeId: string }>
   showEmpty: boolean
   ariaBusy: boolean
   animate: boolean
@@ -109,7 +108,7 @@ export function ChatTranscript({
   activePath,
   nodes,
   providers,
-  streamByNodeId,
+  streamIdByNodeId,
   afterTipStreams,
   showEmpty,
   ariaBusy,
@@ -135,16 +134,13 @@ export function ChatTranscript({
     () =>
       buildTranscriptRows({
         activePath,
-        streamByNodeId,
+        streamIdByNodeId,
         afterTipStreams,
         showEmpty,
       }),
-    [activePath, streamByNodeId, afterTipStreams, showEmpty]
+    [activePath, streamIdByNodeId, afterTipStreams, showEmpty]
   )
-  const mountedIds = useMemo(
-    () => mountedTranscriptMessageIds(rows),
-    [rows]
-  )
+  const mountedIds = useMemo(() => mountedTranscriptMessageIds(rows), [rows])
   const targetMounted = isScrollTargetMounted(scrollTargetId, mountedIds)
 
   return (
@@ -164,7 +160,7 @@ export function ChatTranscript({
         <MessageScrollerViewport data-testid="chat-transcript-viewport">
           <MessageScrollerContent
             aria-busy={ariaBusy}
-            className={cn("mx-auto min-w-0 w-full max-w-none", contentPad)}
+            className={cn("mx-auto w-full max-w-none min-w-0", contentPad)}
             style={{
               maxWidth: "var(--message-width, 48rem)",
             }}
@@ -198,7 +194,7 @@ export function ChatTranscript({
                     className={LIVE_ROW_CLASS}
                   >
                     <StreamingBubble
-                      stream={row.stream}
+                      streamId={row.streamId}
                       animate={animate}
                       transition={transition}
                     />

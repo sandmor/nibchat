@@ -47,24 +47,24 @@ export function PathSlot({
     toolResults: Array<{ toolCallId: string; output: unknown }>
   ) => void | Promise<void>
 }) {
-  const live = row.live
-  const contentKey = live ? `stream:${live[0]}` : `node:${row.node.id}`
+  const liveStreamId = row.liveStreamId
+  const contentKey = liveStreamId
+    ? `stream:${liveStreamId}`
+    : `node:${row.node.id}`
 
   return (
     <MessageScrollerItem
       messageId={row.messageId}
       scrollAnchor={row.scrollAnchor}
-      className={live ? LIVE_ROW_CLASS : undefined}
+      className={liveStreamId ? LIVE_ROW_CLASS : undefined}
     >
       <SlotCrossfade
         contentKey={contentKey}
         animate={animate}
         transition={transition}
       >
-        {live ? (
-          <StreamingBubble
-            stream={live[1]}
-          />
+        {liveStreamId ? (
+          <StreamingBubble streamId={liveStreamId} />
         ) : (
           <Message
             node={row.node}

@@ -2,19 +2,20 @@
 
 import { motion } from "motion/react"
 import { MessageParts } from "@/components/workspace/message-parts"
-import type { ActiveStream } from "@/lib/stream-store"
+import { useStreamBuffer } from "@/lib/stream-store"
 import type { Parts } from "@/lib/types"
 
 export function StreamingBubble({
-  stream,
+  streamId,
   animate = false,
   transition,
 }: {
-  stream: ActiveStream
+  streamId: string
   /** When true (after-tip rows), fade the bubble in. PathSlot owns its own crossfade. */
   animate?: boolean
   transition?: { duration: number; ease: [number, number, number, number] }
 }) {
+  const stream = useStreamBuffer(streamId)
   const parts: Parts = [
     ...(stream.reasoning
       ? [{ type: "reasoning" as const, text: stream.reasoning }]

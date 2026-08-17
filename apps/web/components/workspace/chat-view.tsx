@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
 import { parseJson, resolveActivePath } from "@/lib/domain"
-import { useStreamStore } from "@/lib/stream-store"
+import { chatStreamEntries, useStreamStore } from "@/lib/stream-store"
 import { useTRPC } from "@/lib/trpc-react"
 import {
   patchChatTitle,
@@ -34,20 +34,22 @@ import { PromptStackPicker } from "./prompt-stack-picker"
 import { ChatTranscript } from "./chat-transcript"
 import { ChatTree } from "./chat-tree"
 import { composeLayoutAnchor, composeLayoutId } from "./tree-layout"
-import { ConversationComposer } from "./conversation-composer"
+import { SessionComposer } from "./conversation-composer"
 import {
   composerSlotId,
-  emptyComposerDraft,
+  hasComposerDraft,
+  readComposerDraft,
   shouldDeleteUploadedAttachment,
+  treeDraftAnchorsForChat,
   type ComposerAttachment,
   useConversationSessionStore,
+  useTreeDraftSlotSignature,
 } from "./conversation-session-store"
 import { ImageViewer } from "./image-viewer"
 import { chatRouteIdentity } from "./chat-transcript-helpers"
 import { useWorkspaceChrome } from "./shell"
 import { DocumentTitle } from "@/components/document-title"
 import { MAX_IMAGE_ATTACHMENTS, type NodeRow } from "@/lib/types"
-import type { ActiveStream } from "@/lib/stream-store"
 import {
   readStreamEvents,
   shouldSoftFollow,
@@ -72,7 +74,6 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   /** URL-derived selection: null when drafting, string when on /chat/[id] */
   const selectedChatId = mode === "draft" ? null : chatId
   const linearComposerSlot = composerSlotId(selectedChatId, "linear", null)
-  const sessionDrafts = useConversationSessionStore((state) => state.drafts)
   const updateSessionDraft = useConversationSessionStore(
     (state) => state.update
   )
@@ -80,13 +81,8 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const clearSessionChat = useConversationSessionStore(
     (state) => state.clearChat
   )
-  const linearDraft = sessionDrafts[linearComposerSlot] ?? emptyComposerDraft()
-  const composer = linearDraft.text
-  const attachments = linearDraft.attachments
   const restoreLinearDraft = (text: string, pending: ComposerAttachment[]) => {
-    const current =
-      useConversationSessionStore.getState().drafts[linearComposerSlot] ??
-      emptyComposerDraft()
+    const current = readComposerDraft(linearComposerSlot)
     updateSessionDraft(linearComposerSlot, {
       text: current.text || text,
       attachments: current.attachments.length ? current.attachments : pending,
@@ -201,7 +197,8 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const attachController = useStreamStore((state) => state.attachController)
   const stopStream = useStreamStore((state) => state.stop)
   const finishStream = useStreamStore((state) => state.finish)
-  const activeStreams = useStreamStore((state) => state.active)
+  /** Placement only. Token text lives in buffers; StreamingBubble reads those. */
+  const streamMetas = useStreamStore((state) => state.streams)
 
   const workspaceKeyInput = workspaceInput(selectedChatId)
   const workspaceQuery = useQuery({
@@ -557,7 +554,8 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   }, [activePath])
 
   async function streamContinue() {
-    const content = composer.trim()
+    const { text, attachments } = readComposerDraft(linearComposerSlot)
+    const content = text.trim()
     if (!content && attachments.length === 0) return
     if (attachments.some((attachment) => attachment.uploading)) return
     if (!ensureModelReady(activeModelConfig)) return
@@ -615,9 +613,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   }
 
   async function uploadImages(slot: string, files: FileList | File[]) {
-    const read = () =>
-      useConversationSessionStore.getState().drafts[slot] ??
-      emptyComposerDraft()
+    const read = () => readComposerDraft(slot)
     const writeAttachments = (next: ComposerAttachment[]) => {
       updateSessionDraft(slot, { attachments: next })
     }
@@ -708,9 +704,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     if (part.uploading && part.reference.kind === "uploaded-file")
       cancelledUploadIds.current.add(part.reference.id)
     if (part.previewUrl && viewer?.src === part.previewUrl) setViewer(null)
-    const current =
-      useConversationSessionStore.getState().drafts[slot] ??
-      emptyComposerDraft()
+    const current = readComposerDraft(slot)
     const next = current.attachments.filter((item) => item !== part)
     updateSessionDraft(slot, { attachments: next })
     if (part.previewUrl) URL.revokeObjectURL(part.previewUrl)
@@ -746,7 +740,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   function openTreeDraft(anchor: string | null) {
     if (!data.chat) return
     const slot = treeSlot(anchor)
-    if (!sessionDrafts[slot]) updateSessionDraft(slot, { text: "" })
+    if (!hasComposerDraft(slot)) updateSessionDraft(slot, { text: "" })
   }
 
   function closeTreeDraft(
@@ -755,9 +749,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   ) {
     if (!data.chat) return
     const slot = treeSlot(anchor)
-    const draft =
-      useConversationSessionStore.getState().drafts[slot] ??
-      emptyComposerDraft()
+    const draft = readComposerDraft(slot)
     for (const attachment of draft.attachments) {
       if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl)
       if (mode === "sent") continue
@@ -781,9 +773,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   async function streamTreeSend(parentNodeId: string | null) {
     if (!data.chat || !ensureModelReady(activeModelConfig)) return false
     const slot = treeSlot(parentNodeId)
-    const draft =
-      useConversationSessionStore.getState().drafts[slot] ??
-      emptyComposerDraft()
+    const draft = readComposerDraft(slot)
     const content = draft.text.trim()
     if (!content && draft.attachments.length === 0) return false
     if (draft.attachments.some((attachment) => attachment.uploading))
@@ -833,9 +823,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
         }
       ).then(() => {
         if (!started) {
-          const current =
-            useConversationSessionStore.getState().drafts[slot] ??
-            emptyComposerDraft()
+          const current = readComposerDraft(slot)
           updateSessionDraft(slot, {
             attachments: current.attachments.map((item) => ({
               ...item,
@@ -908,31 +896,29 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     setDraftModelConfig(next)
   }
 
-  const streamsForActiveChat = Object.entries(activeStreams).filter(
-    ([, stream]) => {
-      // On /chat/new after first create, selectedChatId is still null but
-      // pendingChatId holds the new id until replace remounts this tree.
-      const viewId = selectedChatId ?? pendingChatId
-      return (
-        stream.chatId === viewId ||
-        (data.chat !== null && stream.chatId === data.chat.id)
-      )
-    }
-  )
+  const streamsForActiveChat = chatStreamEntries(streamMetas, [
+    selectedChatId,
+    // On /chat/new after first create, selectedChatId is still null.
+    pendingChatId,
+    data.chat?.id,
+  ])
 
   const pathVisibleStreams = streamsForActiveChat.filter(([, stream]) => {
     const place = streamPlacement(stream, activePath, data.nodes)
     return place === "inline" || place === "after-tip"
   })
 
-  const streamByNodeId = new Map<string, [string, ActiveStream]>()
-  for (const entry of streamsForActiveChat) {
-    streamByNodeId.set(entry[1].nodeId, entry)
+  const streamIdByNodeId = new Map<string, string>()
+  for (const [streamId, stream] of streamsForActiveChat) {
+    streamIdByNodeId.set(stream.nodeId, streamId)
   }
 
-  const afterTipStreams = streamsForActiveChat.filter(([, stream]) => {
-    return streamPlacement(stream, activePath, data.nodes) === "after-tip"
-  })
+  const afterTipStreams = streamsForActiveChat
+    .filter(
+      ([, stream]) =>
+        streamPlacement(stream, activePath, data.nodes) === "after-tip"
+    )
+    .map(([streamId, stream]) => ({ streamId, nodeId: stream.nodeId }))
 
   const showEmpty =
     activePath.length === 0 &&
@@ -941,15 +927,13 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
 
   const chatKey = selectedChatId ?? pendingChatId ?? "draft"
   const ariaBusy = inFlightCount > 0 || pathVisibleStreams.length > 0
+  const treeSlotSignature = useTreeDraftSlotSignature(data.chat?.id)
   const treeDraftAnchors = useMemo(() => {
     if (!data.chat) return new Set<string | null>()
-    const prefix = `${data.chat.id}:tree:`
-    const anchors = new Set<string | null>()
-    for (const slot of Object.keys(sessionDrafts)) {
-      if (!slot.startsWith(prefix)) continue
-      const rest = slot.slice(prefix.length)
-      anchors.add(rest === "root" ? null : rest)
-    }
+    const anchors = treeDraftAnchorsForChat(
+      useConversationSessionStore.getState().drafts,
+      data.chat.id
+    )
     // Hide the composer in the same render the user node appears, so layout
     // does not slide the open plus (composer) to the right of the new child.
     for (const [nodeId, layoutId] of Object.entries(composeMorphs)) {
@@ -957,7 +941,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       anchors.delete(composeLayoutAnchor(layoutId))
     }
     return anchors
-  }, [data.chat, data.nodes, sessionDrafts, composeMorphs])
+  }, [data.chat, data.nodes, treeSlotSignature, composeMorphs])
 
   return (
     <section
@@ -1041,7 +1025,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
           activePath={activePath}
           nodes={data.nodes}
           providers={providers}
-          streamByNodeId={streamByNodeId}
+          streamIdByNodeId={streamIdByNodeId}
           afterTipStreams={afterTipStreams}
           showEmpty={showEmpty}
           ariaBusy={ariaBusy}
@@ -1076,7 +1060,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
           activePath={activePath}
           draftAnchors={treeDraftAnchors}
           providers={providers}
-          streams={streamsForActiveChat}
+          streamIdByNodeId={streamIdByNodeId}
           animate={animate}
           transition={transition}
           messageActionCaptions={appearance.messageActions.captions}
@@ -1085,11 +1069,10 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
           onSendDraft={streamTreeSend}
           renderComposer={(anchor, options) => {
             const slot = treeSlot(anchor)
-            const draft = sessionDrafts[slot] ?? emptyComposerDraft()
             return (
-              <ConversationComposer
+              <SessionComposer
+                slot={slot}
                 variant="inline"
-                draft={draft}
                 autoFocus={options.autoFocus}
                 submitting={options.submitting}
                 animate={animate && transition.duration > 0}
@@ -1099,7 +1082,6 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
                     : "Start a new root…"
                 }
                 mcpAvailable={mcpAvailableForGeneration}
-                onTextChange={(text) => updateSessionDraft(slot, { text })}
                 onSend={options.onSend}
                 onCancel={() => closeTreeDraft(anchor)}
                 onFiles={(files) => void uploadImages(slot, files)}
@@ -1131,15 +1113,12 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
             className="mx-auto"
             style={{ maxWidth: "var(--composer-width, 48rem)" }}
           >
-            <ConversationComposer
-              draft={linearDraft}
+            <SessionComposer
+              slot={linearComposerSlot}
               animate={animate && transition.duration > 0}
               placeholder="Message Nibchat…"
               mcpAvailable={mcpAvailableForGeneration}
               streaming={streamsForActiveChat.length > 0}
-              onTextChange={(text) =>
-                updateSessionDraft(linearComposerSlot, { text })
-              }
               onSend={() => void streamContinue()}
               onFiles={(files) => void uploadImages(linearComposerSlot, files)}
               onRemoveAttachment={(part) =>
@@ -1192,10 +1171,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
                       variant="outline"
                       className="h-auto w-full justify-start px-3 py-2 text-left"
                       onClick={() => {
-                        const current =
-                          useConversationSessionStore.getState().drafts[
-                            pickerSlot
-                          ] ?? emptyComposerDraft()
+                        const current = readComposerDraft(pickerSlot)
                         if (
                           current.attachments.some(
                             (item) =>
@@ -1273,10 +1249,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
                             profileId: surface.profileId,
                             name: prompt.name,
                           })
-                          const current =
-                            useConversationSessionStore.getState().drafts[
-                              pickerSlot
-                            ] ?? emptyComposerDraft()
+                          const current = readComposerDraft(pickerSlot)
                           const next = current.text.trim()
                             ? `${current.text.trim()}\n\n${result.text}`
                             : result.text

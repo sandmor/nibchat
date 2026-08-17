@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest"
 import type { NodeRow } from "@/lib/types"
-import type { ActiveStream } from "@/lib/stream-store"
 import {
   afterTipMessageId,
   buildTranscriptRows,
@@ -10,7 +9,6 @@ import {
   mountedTranscriptMessageIds,
   pathSlotKey,
   transcriptPeekPx,
-  type LiveStreamEntry,
 } from "./chat-transcript-helpers"
 
 function node(
@@ -34,20 +32,9 @@ function node(
   }
 }
 
-function stream(
-  nodeId: string,
-  overrides?: Partial<ActiveStream>
-): ActiveStream {
-  return {
-    nodeId,
-    chatId: "c1",
-    parentNodeId: null,
-    startedAt: 0,
-    text: "",
-    reasoning: "",
-    tools: [],
-    ...overrides,
-  }
+const noStreams = {
+  streamIdByNodeId: new Map<string, string>(),
+  afterTipStreams: [] as Array<{ streamId: string; nodeId: string }>,
 }
 
 describe("pathSlotKey", () => {
@@ -86,14 +73,12 @@ describe("buildTranscriptRows dual identity", () => {
 
     const before = buildTranscriptRows({
       activePath: base,
-      streamByNodeId: new Map(),
-      afterTipStreams: [],
+      ...noStreams,
       showEmpty: false,
     })
     const after = buildTranscriptRows({
       activePath: swapped,
-      streamByNodeId: new Map(),
-      afterTipStreams: [],
+      ...noStreams,
       showEmpty: false,
     })
 
@@ -116,14 +101,12 @@ describe("buildTranscriptRows dual identity", () => {
   it("growing the path appends a new slot without renaming prior keys", () => {
     const short = buildTranscriptRows({
       activePath: [node("u1")],
-      streamByNodeId: new Map(),
-      afterTipStreams: [],
+      ...noStreams,
       showEmpty: false,
     })
     const longer = buildTranscriptRows({
       activePath: [node("u1"), node("a1", "assistant", "u1")],
-      streamByNodeId: new Map(),
-      afterTipStreams: [],
+      ...noStreams,
       showEmpty: false,
     })
 
@@ -135,34 +118,32 @@ describe("buildTranscriptRows dual identity", () => {
   it("marks user path rows as scroll anchors", () => {
     const rows = buildTranscriptRows({
       activePath: [node("u1"), node("a1", "assistant", "u1")],
-      streamByNodeId: new Map(),
-      afterTipStreams: [],
+      ...noStreams,
       showEmpty: false,
     })
     expect(rows.map((r) => r.scrollAnchor)).toEqual([true, false])
   })
 
-  it("wires live streams onto matching path slots", () => {
-    const live: LiveStreamEntry = ["s1", stream("a1")]
+  it("wires live stream ids onto matching path slots", () => {
     const rows = buildTranscriptRows({
       activePath: [node("u1"), node("a1", "assistant", "u1")],
-      streamByNodeId: new Map([["a1", live]]),
+      streamIdByNodeId: new Map([["a1", "s1"]]),
       afterTipStreams: [],
       showEmpty: false,
     })
     expect(rows[1]?.kind).toBe("path")
     if (rows[1]?.kind === "path") {
-      expect(rows[1].live).toBe(live)
+      expect(rows[1].liveStreamId).toBe("s1")
     }
   })
 
   it("after-tip rows use stream/node id for messageId", () => {
     const rows = buildTranscriptRows({
       activePath: [node("u1")],
-      streamByNodeId: new Map(),
+      streamIdByNodeId: new Map(),
       afterTipStreams: [
-        ["s-pending", stream("pending")],
-        ["s-known", stream("asst-new")],
+        { streamId: "s-pending", nodeId: "pending" },
+        { streamId: "s-known", nodeId: "asst-new" },
       ],
       showEmpty: false,
     })
@@ -176,8 +157,7 @@ describe("buildTranscriptRows dual identity", () => {
   it("includes empty row when requested", () => {
     const rows = buildTranscriptRows({
       activePath: [],
-      streamByNodeId: new Map(),
-      afterTipStreams: [],
+      ...noStreams,
       showEmpty: true,
     })
     expect(rows).toEqual([
@@ -193,8 +173,8 @@ describe("buildTranscriptRows dual identity", () => {
   it("mountedTranscriptMessageIds matches built rows", () => {
     const rows = buildTranscriptRows({
       activePath: [node("u1"), node("a1", "assistant", "u1")],
-      streamByNodeId: new Map(),
-      afterTipStreams: [["s", stream("a-tip")]],
+      streamIdByNodeId: new Map(),
+      afterTipStreams: [{ streamId: "s", nodeId: "a-tip" }],
       showEmpty: false,
     })
     expect(mountedTranscriptMessageIds(rows)).toEqual(["u1", "a1", "a-tip"])

@@ -22,7 +22,6 @@ import { Button } from "@/components/ui/button"
 import { motion } from "motion/react"
 import { cn } from "@/lib/utils"
 import type { NodeRow } from "@/lib/types"
-import type { ActiveStream } from "@/lib/stream-store"
 import type { ProviderSummary } from "./types"
 import { ComposeSlot, TreeHandoff } from "./tree-card"
 import { Message } from "./message"
@@ -60,7 +59,7 @@ export function ChatTree({
   activePath,
   draftAnchors,
   providers,
-  streams,
+  streamIdByNodeId,
   animate,
   transition,
   messageActionCaptions,
@@ -79,7 +78,7 @@ export function ChatTree({
   activePath: NodeRow[]
   draftAnchors: ReadonlySet<string | null>
   providers: ProviderSummary[]
-  streams: Array<[string, ActiveStream]>
+  streamIdByNodeId: ReadonlyMap<string, string>
   animate: boolean
   transition: { duration: number; ease: [number, number, number, number] }
   messageActionCaptions: boolean
@@ -156,10 +155,6 @@ export function ChatTree({
     handoffs.map((item) => [item.anchor, item] as const)
   )
   const handoffNodeIds = new Set(handoffs.map((item) => item.userNodeId))
-  const streamByNodeId = useMemo(
-    () => new Map(streams.map(([, stream]) => [stream.nodeId, stream])),
-    [streams]
-  )
 
   useEffect(() => {
     cameraRef.current = camera
@@ -502,13 +497,13 @@ export function ChatTree({
           if (handoffNodeIds.has(node.id)) return null
           const rect = layout.rects.get(node.id)
           if (!rect || !visible(rect)) return null
-          const stream = streamByNodeId.get(node.id)
+          const streamId = streamIdByNodeId.get(node.id)
           const focused = focusedId === node.id
           const paint = nodePaint({
             rect,
             scale: camera.scale,
             interactive:
-              Boolean(stream) ||
+              Boolean(streamId) ||
               node.status === "awaiting_input" ||
               node.status === "streaming",
           })
@@ -540,9 +535,9 @@ export function ChatTree({
               style={{ maxHeight }}
               transition={animate ? transition : { duration: 0 }}
             >
-              {stream ? (
+              {streamId ? (
                 <StreamingBubble
-                  stream={stream}
+                  streamId={streamId}
                   animate={animate}
                   transition={transition}
                 />
@@ -643,7 +638,7 @@ export function ChatTree({
         data-tree-chrome
         className="absolute right-3 bottom-3 z-20 flex gap-1 rounded-xl border bg-[var(--tree-chrome-background)] p-1 shadow-[var(--tree-shadow-sm)] backdrop-blur"
       >
-        {streams.length ? (
+        {streamIdByNodeId.size ? (
           <Button
             size="icon-xs"
             variant="destructive"

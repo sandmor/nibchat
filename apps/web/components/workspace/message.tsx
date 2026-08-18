@@ -7,9 +7,12 @@ import { HugeiconsIcon } from "@hugeicons/react"
 import {
   ArrowLeft01Icon,
   ArrowRight01Icon,
+  Copy01Icon,
   Delete02Icon,
   Edit02Icon,
+  GitBranchIcon,
   InformationCircleIcon,
+  MoreHorizontalIcon,
   RefreshIcon,
   ViewIcon,
   ViewOffIcon,
@@ -34,7 +37,15 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { TooltipProvider, WithTooltip } from "@/components/ui/tooltip"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
+import { copyText } from "@/lib/clipboard"
+import { partsToMarkdown, pathToMarkdown } from "@/lib/message-markdown"
 import type { NodeRow, Parts } from "@/lib/types"
 import { parseJson, textFromParts } from "@/lib/domain"
 import {
@@ -73,12 +84,7 @@ export function MessageAction({
       type="button"
       variant="ghost"
       size={captions ? "xs" : "icon-xs"}
-      className={cn(
-        captions
-          ? "h-7 gap-1 px-2 text-xs font-normal"
-          : "size-7 text-muted-foreground hover:text-foreground",
-        destructive && "text-destructive hover:text-destructive"
-      )}
+      className={messageActionClass(captions, destructive)}
       onClick={onClick}
       disabled={disabled}
       aria-label={children}
@@ -96,6 +102,41 @@ export function MessageAction({
   if (captions) return button
 
   return <WithTooltip label={children}>{button}</WithTooltip>
+}
+
+function messageActionClass(captions: boolean, destructive?: boolean) {
+  return cn(
+    captions
+      ? "h-7 gap-1 px-2 text-xs font-normal"
+      : "size-7 text-muted-foreground hover:text-foreground",
+    destructive && "text-destructive hover:text-destructive"
+  )
+}
+
+function MoreActionsTrigger({ captions }: { captions: boolean }) {
+  const trigger = (
+    <DropdownMenuTrigger
+      render={
+        <Button
+          type="button"
+          variant="ghost"
+          size={captions ? "xs" : "icon-xs"}
+          className={messageActionClass(captions)}
+          aria-label="More"
+        />
+      }
+    >
+      <HugeiconsIcon
+        icon={MoreHorizontalIcon}
+        strokeWidth={2}
+        className="size-3.5 shrink-0"
+        aria-hidden
+      />
+      {captions ? <span className="leading-none">More</span> : null}
+    </DropdownMenuTrigger>
+  )
+  if (captions) return trigger
+  return <WithTooltip label="More">{trigger}</WithTooltip>
 }
 
 export function Message({
@@ -255,6 +296,19 @@ export function Message({
     setContextExcludedMutation.isPending &&
     setContextExcludedMutation.variables?.nodeId === node.id
 
+  const copyMarkdown = async (kind: "message" | "path") => {
+    const text =
+      kind === "message"
+        ? partsToMarkdown(displayParts)
+        : pathToMarkdown(nodes, node.id)
+    try {
+      await copyText(text)
+      toast.success(kind === "path" ? "Copied path" : "Copied")
+    } catch {
+      toast.error("Could not copy")
+    }
+  }
+
   const usage = metadata.usage
   const usageEntries =
     usage && typeof usage === "object" && !Array.isArray(usage)
@@ -376,6 +430,13 @@ export function Message({
       )}
       <div className="mt-3 flex flex-wrap items-center gap-0.5">
         <TooltipProvider delay={400}>
+          <MessageAction
+            onClick={() => void copyMarkdown("message")}
+            icon={Copy01Icon}
+            captions={messageActionCaptions}
+          >
+            Copy
+          </MessageAction>
           {node.role === "assistant" && onRegenerate && (
             <MessageAction
               onClick={() => onRegenerate()}
@@ -429,6 +490,24 @@ export function Message({
           >
             Delete
           </MessageAction>
+          <DropdownMenu>
+            <MoreActionsTrigger captions={messageActionCaptions} />
+            <DropdownMenuContent
+              align="end"
+              side="top"
+              className="max-w-[min(20rem,calc(100vw-1.5rem))]"
+            >
+              <DropdownMenuItem onClick={() => void copyMarkdown("path")}>
+                <HugeiconsIcon
+                  icon={GitBranchIcon}
+                  strokeWidth={2}
+                  className="size-3.5 text-muted-foreground"
+                  aria-hidden
+                />
+                Copy path
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </TooltipProvider>
       </div>
       {node.status === "error" && (

@@ -36,6 +36,7 @@ import { ChatTranscript } from "./chat-transcript"
 import { ChatTree } from "./chat-tree"
 import { composeLayoutAnchor, composeLayoutId } from "./tree-layout"
 import { SessionComposer } from "./conversation-composer"
+import { ContextPreviewProvider } from "./context-preview"
 import {
   composerSlotId,
   hasComposerDraft,
@@ -928,6 +929,13 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
 
   const chatKey = selectedChatId ?? pendingChatId ?? "draft"
   const ariaBusy = inFlightCount > 0 || pathVisibleStreams.length > 0
+  const previewModelConfig = useMemo(
+    () => ({
+      providerId: activeModelConfig.providerId,
+      replayReasoning: activeModelConfig.replayReasoning,
+    }),
+    [activeModelConfig.providerId, activeModelConfig.replayReasoning]
+  )
   const treeSlotSignature = useTreeDraftSlotSignature(data.chat?.id)
   const treeDraftAnchors = useMemo(() => {
     if (!data.chat) return new Set<string | null>()
@@ -945,383 +953,409 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   }, [data.chat, data.nodes, treeSlotSignature, composeMorphs])
 
   return (
-    <section
-      data-theme-group="chat"
-      data-theme-target="chat"
-      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-chat"
+    <ContextPreviewProvider
+      nodes={data.nodes}
+      chatStackId={data.chat?.prompt_stack_id ?? null}
+      draftStackId={draftPromptStackId}
+      hasChat={Boolean(data.chat)}
+      modelConfig={previewModelConfig}
+      providers={providers}
     >
-      <DocumentTitle title={displayChatTitle(data.chat?.title)} />
-      <header
-        className={cn(
-          "flex shrink-0 flex-col gap-1.5 border-b sm:flex-row sm:items-center sm:gap-2",
-          density === "compact"
-            ? "px-3 py-2 sm:h-12 sm:py-0"
-            : "px-3 py-2.5 sm:h-14 sm:px-5 sm:py-0"
-        )}
+      <section
+        data-theme-group="chat"
+        data-theme-target="chat"
+        className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-chat"
       >
-        <div className="min-w-0 flex-1">
-          <h1
-            onDoubleClick={() => {
-              if (!data.chat) return
-              setRenameTitle(data.chat.title ?? "")
-              setRenameOpen(true)
-            }}
-            className={cn("truncate font-medium", data.chat && "cursor-text")}
-            title={data.chat ? "Double-click to rename" : undefined}
-          >
-            {displayChatTitle(data.chat?.title)}
-          </h1>
-          <p className="hidden truncate text-xs text-muted-foreground sm:block">
-            Each reply can become its own direction.
-          </p>
-        </div>
-        <div className="flex min-w-0 items-center gap-0.5 sm:max-w-[min(36rem,70%)] sm:shrink-0 sm:gap-1">
-          <Button
-            type="button"
-            variant={view === "tree" ? "secondary" : "ghost"}
-            size="sm"
-            className="gap-1.5"
-            aria-pressed={view === "tree"}
-            disabled={!data.chat}
-            onClick={() =>
-              setView((current) => (current === "tree" ? "linear" : "tree"))
-            }
-          >
-            <HugeiconsIcon
-              icon={LayoutTable01Icon}
-              strokeWidth={2}
-              className="size-3.5"
+        <DocumentTitle title={displayChatTitle(data.chat?.title)} />
+        <header
+          className={cn(
+            "flex shrink-0 flex-col gap-1.5 border-b sm:flex-row sm:items-center sm:gap-2",
+            density === "compact"
+              ? "px-3 py-2 sm:h-12 sm:py-0"
+              : "px-3 py-2.5 sm:h-14 sm:px-5 sm:py-0"
+          )}
+        >
+          <div className="min-w-0 flex-1">
+            <h1
+              onDoubleClick={() => {
+                if (!data.chat) return
+                setRenameTitle(data.chat.title ?? "")
+                setRenameOpen(true)
+              }}
+              className={cn("truncate font-medium", data.chat && "cursor-text")}
+              title={data.chat ? "Double-click to rename" : undefined}
+            >
+              {displayChatTitle(data.chat?.title)}
+            </h1>
+            <p className="hidden truncate text-xs text-muted-foreground sm:block">
+              Each reply can become its own direction.
+            </p>
+          </div>
+          <div className="flex min-w-0 items-center gap-0.5 sm:max-w-[min(36rem,70%)] sm:shrink-0 sm:gap-1">
+            <Button
+              type="button"
+              variant={view === "tree" ? "secondary" : "ghost"}
+              size="sm"
+              className="gap-1.5"
+              aria-pressed={view === "tree"}
+              disabled={!data.chat}
+              onClick={() =>
+                setView((current) => (current === "tree" ? "linear" : "tree"))
+              }
+            >
+              <HugeiconsIcon
+                icon={LayoutTable01Icon}
+                strokeWidth={2}
+                className="size-3.5"
+              />
+              <span className="hidden sm:inline">
+                {view === "tree" ? "Linear" : "Tree"}
+              </span>
+            </Button>
+            <PromptStackPicker
+              chatId={data.chat?.id}
+              promptStackId={data.chat?.prompt_stack_id ?? null}
+              draftStackId={draftPromptStackId}
+              onDraftChange={setDraftPromptStackId}
+              onChanged={invalidateWorkspace}
             />
-            <span className="hidden sm:inline">
-              {view === "tree" ? "Linear" : "Tree"}
-            </span>
-          </Button>
-          <PromptStackPicker
-            chatId={data.chat?.id}
-            promptStackId={data.chat?.prompt_stack_id ?? null}
-            draftStackId={draftPromptStackId}
-            onDraftChange={setDraftPromptStackId}
-            onChanged={invalidateWorkspace}
-          />
-          <ModelPicker
-            config={activeModelConfig}
-            chatId={data.chat?.id}
-            providers={providers}
-            showIds={appearance.modelPicker.showIds}
-            onChange={(config) => void commitModelConfig(config)}
-          />
-          <GenerationParameters
-            key={`${data.chat?.id ?? "draft"}:${activeModelConfig.providerId ?? ""}:${activeModelConfig.model ?? ""}`}
-            config={activeModelConfig}
-            chatId={data.chat?.id}
-            onChange={(config) => void commitModelConfig(config)}
-          />
-        </div>
-      </header>
+            <ModelPicker
+              config={activeModelConfig}
+              chatId={data.chat?.id}
+              providers={providers}
+              showIds={appearance.modelPicker.showIds}
+              onChange={(config) => void commitModelConfig(config)}
+            />
+            <GenerationParameters
+              key={`${data.chat?.id ?? "draft"}:${activeModelConfig.providerId ?? ""}:${activeModelConfig.model ?? ""}`}
+              config={activeModelConfig}
+              chatId={data.chat?.id}
+              onChange={(config) => void commitModelConfig(config)}
+            />
+          </div>
+        </header>
 
-      {view === "linear" ? (
-        <ChatTranscript
-          chatKey={chatKey}
-          density={density}
-          activePath={activePath}
-          nodes={data.nodes}
-          providers={providers}
-          streamIdByNodeId={streamIdByNodeId}
-          afterTipStreams={afterTipStreams}
-          showEmpty={showEmpty}
-          ariaBusy={ariaBusy}
-          animate={animate}
-          transition={transition}
-          messageActionCaptions={appearance.messageActions.captions}
-          scrollTargetId={scrollTargetId}
-          onScrollTargetConsumed={consumeScrollTarget}
-          onSelect={(parentId, childId) => {
-            if (parentId)
-              selectChildMutation.mutate({
-                nodeId: parentId,
-                childId,
-              })
-            else
-              selectRootMutation.mutate({
-                chatId: data.chat!.id,
-                nodeId: childId,
-              })
-            // User-driven branch navigation — bring the selected tip into view.
-            setScrollTargetId(childId)
-          }}
-          onChanged={() => invalidateWorkspace()}
-          onRegenerate={streamRegenerate}
-          onGenerateUnder={streamGenerate}
-          onAnswerTools={streamResume}
-        />
-      ) : (
-        <ChatTree
-          key={chatIdentity}
-          nodes={data.nodes}
-          activePath={activePath}
-          draftAnchors={treeDraftAnchors}
-          providers={providers}
-          streamIdByNodeId={streamIdByNodeId}
-          animate={animate}
-          transition={transition}
-          messageActionCaptions={appearance.messageActions.captions}
-          messageLayoutIds={composeMorphs}
-          onHandoffComplete={finishComposeHandoff}
-          onSendDraft={streamTreeSend}
-          renderComposer={(anchor, options) => {
-            const slot = treeSlot(anchor)
-            return (
+        {view === "linear" ? (
+          <ChatTranscript
+            chatKey={chatKey}
+            density={density}
+            activePath={activePath}
+            nodes={data.nodes}
+            providers={providers}
+            streamIdByNodeId={streamIdByNodeId}
+            afterTipStreams={afterTipStreams}
+            showEmpty={showEmpty}
+            ariaBusy={ariaBusy}
+            animate={animate}
+            transition={transition}
+            messageActionCaptions={appearance.messageActions.captions}
+            scrollTargetId={scrollTargetId}
+            onScrollTargetConsumed={consumeScrollTarget}
+            onSelect={(parentId, childId) => {
+              if (parentId)
+                selectChildMutation.mutate({
+                  nodeId: parentId,
+                  childId,
+                })
+              else
+                selectRootMutation.mutate({
+                  chatId: data.chat!.id,
+                  nodeId: childId,
+                })
+              // User-driven branch navigation — bring the selected tip into view.
+              setScrollTargetId(childId)
+            }}
+            onChanged={() => invalidateWorkspace()}
+            onRegenerate={streamRegenerate}
+            onGenerateUnder={streamGenerate}
+            onAnswerTools={streamResume}
+          />
+        ) : (
+          <ChatTree
+            key={chatIdentity}
+            nodes={data.nodes}
+            activePath={activePath}
+            draftAnchors={treeDraftAnchors}
+            providers={providers}
+            streamIdByNodeId={streamIdByNodeId}
+            animate={animate}
+            transition={transition}
+            messageActionCaptions={appearance.messageActions.captions}
+            messageLayoutIds={composeMorphs}
+            focusTargetId={scrollTargetId}
+            onFocusTargetConsumed={consumeScrollTarget}
+            onHandoffComplete={finishComposeHandoff}
+            onSendDraft={streamTreeSend}
+            renderComposer={(anchor, options) => {
+              const slot = treeSlot(anchor)
+              return (
+                <SessionComposer
+                  slot={slot}
+                  variant="inline"
+                  autoFocus={options.autoFocus}
+                  submitting={options.submitting}
+                  animate={animate && transition.duration > 0}
+                  placeholder={
+                    anchor
+                      ? "Take this conversation somewhere new…"
+                      : "Start a new root…"
+                  }
+                  mcpAvailable={mcpAvailableForGeneration}
+                  streaming={options.submitting}
+                  showContextPreview
+                  contextParentId={anchor}
+                  onSend={options.onSend}
+                  onCancel={() => closeTreeDraft(anchor)}
+                  onFiles={(files) => void uploadImages(slot, files)}
+                  onRemoveAttachment={(part) => removeAttachment(slot, part)}
+                  onPreview={(src, name) => setViewer({ src, name })}
+                  onOpenResources={() => {
+                    setPickerSlot(slot)
+                    setResourcePickerOpen(true)
+                  }}
+                  onOpenPrompts={() => {
+                    setPickerSlot(slot)
+                    setPromptPickerOpen(true)
+                  }}
+                  onStop={() =>
+                    streamsForActiveChat.forEach(([id]) => stopStream(id))
+                  }
+                  onRevealContextMessage={setScrollTargetId}
+                />
+              )
+            }}
+            onOpenDraft={openTreeDraft}
+            onChanged={invalidateWorkspace}
+            onRegenerate={streamTreeRegenerate}
+            onGenerateUnder={streamTreeGenerate}
+            onAnswerTools={streamTreeResume}
+            onStop={() =>
+              streamsForActiveChat.forEach(([id]) => stopStream(id))
+            }
+          />
+        )}
+
+        {view === "linear" ? (
+          <div className="border-t border-border bg-background p-3 sm:px-6 sm:py-4">
+            <div
+              className="mx-auto"
+              style={{ maxWidth: "var(--composer-width, 48rem)" }}
+            >
               <SessionComposer
-                slot={slot}
-                variant="inline"
-                autoFocus={options.autoFocus}
-                submitting={options.submitting}
+                slot={linearComposerSlot}
                 animate={animate && transition.duration > 0}
-                placeholder={
-                  anchor
-                    ? "Take this conversation somewhere new…"
-                    : "Start a new root…"
-                }
+                placeholder="Message Nibchat…"
                 mcpAvailable={mcpAvailableForGeneration}
-                onSend={options.onSend}
-                onCancel={() => closeTreeDraft(anchor)}
-                onFiles={(files) => void uploadImages(slot, files)}
-                onRemoveAttachment={(part) => removeAttachment(slot, part)}
+                streaming={streamsForActiveChat.length > 0}
+                showContextPreview
+                contextParentId={composerParentId}
+                onSend={() => void streamContinue()}
+                onFiles={(files) =>
+                  void uploadImages(linearComposerSlot, files)
+                }
+                onRemoveAttachment={(part) =>
+                  removeAttachment(linearComposerSlot, part)
+                }
                 onPreview={(src, name) => setViewer({ src, name })}
                 onOpenResources={() => {
-                  setPickerSlot(slot)
+                  setPickerSlot(linearComposerSlot)
                   setResourcePickerOpen(true)
                 }}
                 onOpenPrompts={() => {
-                  setPickerSlot(slot)
+                  setPickerSlot(linearComposerSlot)
                   setPromptPickerOpen(true)
                 }}
+                onStop={() =>
+                  streamsForActiveChat.forEach(([id]) => stopStream(id))
+                }
+                onRevealContextMessage={setScrollTargetId}
               />
-            )
-          }}
-          onOpenDraft={openTreeDraft}
-          onChanged={invalidateWorkspace}
-          onRegenerate={streamTreeRegenerate}
-          onGenerateUnder={streamTreeGenerate}
-          onAnswerTools={streamTreeResume}
-          onStop={() => streamsForActiveChat.forEach(([id]) => stopStream(id))}
-        />
-      )}
-
-      {view === "linear" ? (
-        <div className="border-t border-border bg-background p-3 sm:px-6 sm:py-4">
-          <div
-            className="mx-auto"
-            style={{ maxWidth: "var(--composer-width, 48rem)" }}
-          >
-            <SessionComposer
-              slot={linearComposerSlot}
-              animate={animate && transition.duration > 0}
-              placeholder="Message Nibchat…"
-              mcpAvailable={mcpAvailableForGeneration}
-              streaming={streamsForActiveChat.length > 0}
-              onSend={() => void streamContinue()}
-              onFiles={(files) => void uploadImages(linearComposerSlot, files)}
-              onRemoveAttachment={(part) =>
-                removeAttachment(linearComposerSlot, part)
-              }
-              onPreview={(src, name) => setViewer({ src, name })}
-              onOpenResources={() => {
-                setPickerSlot(linearComposerSlot)
-                setResourcePickerOpen(true)
-              }}
-              onOpenPrompts={() => {
-                setPickerSlot(linearComposerSlot)
-                setPromptPickerOpen(true)
-              }}
-              onStop={() =>
-                streamsForActiveChat.forEach(([id]) => stopStream(id))
-              }
-            />
+            </div>
           </div>
-        </div>
-      ) : null}
+        ) : null}
 
-      <ImageViewer image={viewer} onClose={() => setViewer(null)} />
+        <ImageViewer image={viewer} onClose={() => setViewer(null)} />
 
-      <Dialog open={resourcePickerOpen} onOpenChange={setResourcePickerOpen}>
-        <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Attach MCP resource</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3">
-            {surfacesQuery.isLoading ? (
-              <p className="text-sm text-muted-foreground">Loading…</p>
-            ) : null}
-            {surfacesQuery.data?.every((s) => s.resources.length === 0) ? (
-              <p className="text-sm text-muted-foreground">
-                No resources in approved MCP catalogs. Refresh and approve a
-                server that exposes resources.
-              </p>
-            ) : null}
-            {surfacesQuery.data?.map((surface) =>
-              surface.resources.length === 0 ? null : (
-                <div key={surface.profileId} className="space-y-1">
-                  <p className="text-xs font-medium text-muted-foreground">
-                    {surface.profileName}
-                  </p>
-                  {surface.resources.map((resource) => (
-                    <Button
-                      key={resource.uri}
-                      type="button"
-                      variant="outline"
-                      className="h-auto w-full justify-start px-3 py-2 text-left"
-                      onClick={() => {
-                        const current = readComposerDraft(pickerSlot)
-                        if (
-                          current.attachments.some(
-                            (item) =>
-                              item.reference.kind === "mcp-resource" &&
-                              item.reference.profileId === surface.profileId &&
-                              item.reference.uri === resource.uri
-                          )
-                        ) {
-                          setResourcePickerOpen(false)
-                          return
-                        }
-                        const next = [
-                          ...current.attachments,
-                          {
-                            name: resource.name,
-                            reference: {
-                              kind: "mcp-resource" as const,
-                              profileId: surface.profileId,
-                              uri: resource.uri,
-                            },
-                          },
-                        ]
-                        updateSessionDraft(pickerSlot, { attachments: next })
-                        setResourcePickerOpen(false)
-                        toast.success(`Attached ${resource.name}`)
-                      }}
-                    >
-                      <span className="flex flex-col gap-0.5">
-                        <span className="text-sm font-medium">
-                          {resource.name}
-                        </span>
-                        <span className="text-xs text-muted-foreground">
-                          {resource.uri}
-                        </span>
-                      </span>
-                    </Button>
-                  ))}
-                </div>
-              )
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={promptPickerOpen} onOpenChange={setPromptPickerOpen}>
-        <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Insert MCP prompt</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3">
-            {surfacesQuery.isLoading ? (
-              <p className="text-sm text-muted-foreground">Loading…</p>
-            ) : null}
-            {surfacesQuery.data?.every((s) => s.prompts.length === 0) ? (
-              <p className="text-sm text-muted-foreground">
-                No prompts in approved MCP catalogs.
-              </p>
-            ) : null}
-            {surfacesQuery.data?.map((surface) =>
-              surface.prompts.length === 0 ? null : (
-                <div key={surface.profileId} className="space-y-1">
-                  <p className="text-xs font-medium text-muted-foreground">
-                    {surface.profileName}
-                  </p>
-                  {surface.prompts.map((prompt) => (
-                    <Button
-                      key={prompt.name}
-                      type="button"
-                      variant="outline"
-                      className="h-auto w-full justify-start px-3 py-2 text-left"
-                      disabled={getPromptMut.isPending}
-                      onClick={async () => {
-                        try {
-                          const result = await getPromptMut.mutateAsync({
-                            profileId: surface.profileId,
-                            name: prompt.name,
-                          })
+        <Dialog open={resourcePickerOpen} onOpenChange={setResourcePickerOpen}>
+          <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Attach MCP resource</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3">
+              {surfacesQuery.isLoading ? (
+                <p className="text-sm text-muted-foreground">Loading…</p>
+              ) : null}
+              {surfacesQuery.data?.every((s) => s.resources.length === 0) ? (
+                <p className="text-sm text-muted-foreground">
+                  No resources in approved MCP catalogs. Refresh and approve a
+                  server that exposes resources.
+                </p>
+              ) : null}
+              {surfacesQuery.data?.map((surface) =>
+                surface.resources.length === 0 ? null : (
+                  <div key={surface.profileId} className="space-y-1">
+                    <p className="text-xs font-medium text-muted-foreground">
+                      {surface.profileName}
+                    </p>
+                    {surface.resources.map((resource) => (
+                      <Button
+                        key={resource.uri}
+                        type="button"
+                        variant="outline"
+                        className="h-auto w-full justify-start px-3 py-2 text-left"
+                        onClick={() => {
                           const current = readComposerDraft(pickerSlot)
-                          const next = current.text.trim()
-                            ? `${current.text.trim()}\n\n${result.text}`
-                            : result.text
-                          updateSessionDraft(pickerSlot, { text: next })
-                          setPromptPickerOpen(false)
-                          toast.success("Prompt inserted into composer")
-                        } catch {
-                          /* toast in mutation */
-                        }
-                      }}
-                    >
-                      <span className="flex flex-col gap-0.5">
-                        <span className="text-sm font-medium">
-                          {prompt.title || prompt.name}
-                        </span>
-                        {prompt.description ? (
-                          <span className="text-xs text-muted-foreground">
-                            {prompt.description}
+                          if (
+                            current.attachments.some(
+                              (item) =>
+                                item.reference.kind === "mcp-resource" &&
+                                item.reference.profileId ===
+                                  surface.profileId &&
+                                item.reference.uri === resource.uri
+                            )
+                          ) {
+                            setResourcePickerOpen(false)
+                            return
+                          }
+                          const next = [
+                            ...current.attachments,
+                            {
+                              name: resource.name,
+                              reference: {
+                                kind: "mcp-resource" as const,
+                                profileId: surface.profileId,
+                                uri: resource.uri,
+                              },
+                            },
+                          ]
+                          updateSessionDraft(pickerSlot, { attachments: next })
+                          setResourcePickerOpen(false)
+                          toast.success(`Attached ${resource.name}`)
+                        }}
+                      >
+                        <span className="flex flex-col gap-0.5">
+                          <span className="text-sm font-medium">
+                            {resource.name}
                           </span>
-                        ) : null}
-                      </span>
-                    </Button>
-                  ))}
-                </div>
-              )
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
+                          <span className="text-xs text-muted-foreground">
+                            {resource.uri}
+                          </span>
+                        </span>
+                      </Button>
+                    ))}
+                  </div>
+                )
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
 
-      <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Rename conversation</DialogTitle>
-          </DialogHeader>
-          <Input
-            value={renameTitle}
-            onChange={(e) => setRenameTitle(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault()
-                void (async () => {
+        <Dialog open={promptPickerOpen} onOpenChange={setPromptPickerOpen}>
+          <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Insert MCP prompt</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3">
+              {surfacesQuery.isLoading ? (
+                <p className="text-sm text-muted-foreground">Loading…</p>
+              ) : null}
+              {surfacesQuery.data?.every((s) => s.prompts.length === 0) ? (
+                <p className="text-sm text-muted-foreground">
+                  No prompts in approved MCP catalogs.
+                </p>
+              ) : null}
+              {surfacesQuery.data?.map((surface) =>
+                surface.prompts.length === 0 ? null : (
+                  <div key={surface.profileId} className="space-y-1">
+                    <p className="text-xs font-medium text-muted-foreground">
+                      {surface.profileName}
+                    </p>
+                    {surface.prompts.map((prompt) => (
+                      <Button
+                        key={prompt.name}
+                        type="button"
+                        variant="outline"
+                        className="h-auto w-full justify-start px-3 py-2 text-left"
+                        disabled={getPromptMut.isPending}
+                        onClick={async () => {
+                          try {
+                            const result = await getPromptMut.mutateAsync({
+                              profileId: surface.profileId,
+                              name: prompt.name,
+                            })
+                            const current = readComposerDraft(pickerSlot)
+                            const next = current.text.trim()
+                              ? `${current.text.trim()}\n\n${result.text}`
+                              : result.text
+                            updateSessionDraft(pickerSlot, { text: next })
+                            setPromptPickerOpen(false)
+                            toast.success("Prompt inserted into composer")
+                          } catch {
+                            /* toast in mutation */
+                          }
+                        }}
+                      >
+                        <span className="flex flex-col gap-0.5">
+                          <span className="text-sm font-medium">
+                            {prompt.title || prompt.name}
+                          </span>
+                          {prompt.description ? (
+                            <span className="text-xs text-muted-foreground">
+                              {prompt.description}
+                            </span>
+                          ) : null}
+                        </span>
+                      </Button>
+                    ))}
+                  </div>
+                )
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Rename conversation</DialogTitle>
+            </DialogHeader>
+            <Input
+              value={renameTitle}
+              onChange={(e) => setRenameTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault()
+                  void (async () => {
+                    if (!data.chat || !renameTitle.trim()) return
+                    await updateChatMutation.mutateAsync({
+                      chatId: data.chat.id,
+                      title: renameTitle.trim(),
+                    })
+                    setRenameOpen(false)
+                  })()
+                }
+              }}
+            />
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setRenameOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={async () => {
                   if (!data.chat || !renameTitle.trim()) return
                   await updateChatMutation.mutateAsync({
                     chatId: data.chat.id,
                     title: renameTitle.trim(),
                   })
                   setRenameOpen(false)
-                })()
-              }
-            }}
-          />
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setRenameOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={async () => {
-                if (!data.chat || !renameTitle.trim()) return
-                await updateChatMutation.mutateAsync({
-                  chatId: data.chat.id,
-                  title: renameTitle.trim(),
-                })
-                setRenameOpen(false)
-              }}
-            >
-              Save
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </section>
+                }}
+              >
+                Save
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </section>
+    </ContextPreviewProvider>
   )
 }

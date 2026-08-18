@@ -3,37 +3,47 @@ import { parseJson } from "@/lib/domain"
 import {
   attachmentModelText,
   isToolInvocationPart,
+  type AttachmentPart,
   type Parts,
 } from "@/lib/agent/parts"
 import type { NodeRow, ToolInvocationPart } from "@/lib/types"
-import { getAttachedAttachment, readAttachment } from "@/lib/attachments"
 
 function nodePartsLocal(node: NodeRow): Parts {
   return parseJson<Parts>(node.parts_json, [])
 }
 
+export type EmbeddedBinaryAttachment = {
+  type: "file"
+  filename: string
+  mediaType: string
+  data: { type: "data"; data: Uint8Array }
+}
+
+/** Return file bytes, or `"placeholder"` to send `[Image attachment: name]`. */
+export type ResolveBinaryAttachment = (
+  part: AttachmentPart
+) => EmbeddedBinaryAttachment | "placeholder"
+
 export type BuildMessagesOptions = {
   nodes: NodeRow[]
   replayReasoning: boolean
-  /** Previews should not load or serialize image bytes. */
-  binaryAttachments?: "embed" | "placeholder"
+  resolveBinaryAttachment?: ResolveBinaryAttachment
 }
 
 /**
  * Convert tree context nodes into AI SDK model messages, expanding
  * tool-invocation parts into assistant tool-call + tool-result turns.
+ * Binary attachments default to placeholders (safe for client preview).
  */
-export async function buildModelMessages(
+export function buildModelMessages(
   options: BuildMessagesOptions
-): Promise<ModelMessage[]> {
+): ModelMessage[] {
   const messages: ModelMessage[] = []
+  const resolveBinary =
+    options.resolveBinaryAttachment ?? (() => "placeholder" as const)
 
   for (const node of options.nodes) {
-    if (
-      node.excluded_from_context === true ||
-      (node.excluded_from_context as unknown) === 1
-    )
-      continue
+    if (node.excluded_from_context) continue
     if (node.status === "error" && !node.search_text) continue
     const metadata = parseJson<Record<string, unknown>>(node.metadata_json, {})
     const parts = filterPartsForModel(node, nodePartsLocal(node), {
@@ -53,13 +63,7 @@ export async function buildModelMessages(
 
     if (node.role === "user") {
       const content: Array<
-        | { type: "text"; text: string }
-        | {
-            type: "file"
-            filename: string
-            mediaType: string
-            data: { type: "data"; data: Uint8Array }
-          }
+        { type: "text"; text: string } | EmbeddedBinaryAttachment
       > = []
       for (const part of parts) {
         if (part.type === "text" && part.text) {
@@ -67,19 +71,16 @@ export async function buildModelMessages(
         } else if (part.type === "attachment") {
           if (part.content.kind === "text") {
             content.push({ type: "text", text: attachmentModelText(part) })
-          } else if (options.binaryAttachments === "placeholder") {
-            content.push({
-              type: "text",
-              text: attachmentModelText(part),
-            })
           } else {
-            const row = await getAttachedAttachment(part.content.attachmentId)
-            content.push({
-              type: "file",
-              filename: row.filename,
-              mediaType: row.media_type,
-              data: { type: "data", data: await readAttachment(row) },
-            })
+            const resolved = resolveBinary(part)
+            if (resolved === "placeholder") {
+              content.push({
+                type: "text",
+                text: attachmentModelText(part),
+              })
+            } else {
+              content.push(resolved)
+            }
           }
         }
       }
@@ -90,7 +91,6 @@ export async function buildModelMessages(
     if (node.role === "assistant") {
       appendAssistantWithTools(messages, parts)
     }
-    // tool role reserved; not used for path storage in v1
   }
 
   return messages

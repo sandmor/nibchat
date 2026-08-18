@@ -10,6 +10,7 @@ import {
   isEnabledModelId,
   parseProviderModelsJson,
 } from "@/lib/provider-models"
+import { replayReasoningEnabled } from "@/lib/reasoning-replay"
 
 export type ModelConfig = {
   providerId?: string
@@ -164,7 +165,5 @@ export async function canReplayReasoning(userId: string, config: ModelConfig) {
     .where("user_id", "=", userId)
     .executeTakeFirst()
   if (!profile) return false
-  return profile.kind === "openai" || profile.kind === "anthropic"
-    ? config.replayReasoning !== false
-    : config.replayReasoning === true
+  return replayReasoningEnabled(profile.kind, config.replayReasoning)
 }

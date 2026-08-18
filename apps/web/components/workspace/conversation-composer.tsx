@@ -23,6 +23,7 @@ import {
   type ComposerAttachment,
   type ComposerDraft,
 } from "./conversation-session-store"
+import { ContextPreviewStrip } from "./context-preview"
 
 export type ConversationComposerProps = {
   draft: ComposerDraft
@@ -33,6 +34,8 @@ export type ConversationComposerProps = {
   streaming?: boolean
   submitting?: boolean
   animate?: boolean
+  showContextPreview?: boolean
+  contextParentId?: string | null
   onTextChange: (text: string) => void
   onSend: () => void
   onCancel?: () => void
@@ -42,6 +45,7 @@ export type ConversationComposerProps = {
   onOpenResources: () => void
   onOpenPrompts: () => void
   onStop?: () => void
+  onRevealContextMessage?: (nodeId: string) => void
 }
 
 export type SessionComposerProps = Omit<
@@ -67,6 +71,8 @@ export function SessionComposer(props: SessionComposerProps) {
       streaming={props.streaming}
       submitting={props.submitting}
       animate={props.animate}
+      showContextPreview={props.showContextPreview}
+      contextParentId={props.contextParentId}
       latestRef={latestRef}
     />
   )
@@ -81,6 +87,8 @@ const SessionComposerLeaf = memo(function SessionComposerLeaf({
   streaming,
   submitting,
   animate,
+  showContextPreview,
+  contextParentId,
   latestRef,
 }: {
   slot: string
@@ -91,6 +99,8 @@ const SessionComposerLeaf = memo(function SessionComposerLeaf({
   streaming?: boolean
   submitting?: boolean
   animate?: boolean
+  showContextPreview?: boolean
+  contextParentId?: string | null
   latestRef: { current: SessionComposerProps }
 }) {
   const draft = useComposerDraft(slot)
@@ -111,6 +121,8 @@ const SessionComposerLeaf = memo(function SessionComposerLeaf({
       onOpenResources: () => latestRef.current.onOpenResources(),
       onOpenPrompts: () => latestRef.current.onOpenPrompts(),
       onStop: () => latestRef.current.onStop?.(),
+      onRevealContextMessage: (nodeId: string) =>
+        latestRef.current.onRevealContextMessage?.(nodeId),
     }),
     [latestRef]
   )
@@ -124,6 +136,8 @@ const SessionComposerLeaf = memo(function SessionComposerLeaf({
       streaming={streaming}
       submitting={submitting}
       animate={animate}
+      showContextPreview={showContextPreview}
+      contextParentId={contextParentId}
       onTextChange={onTextChange}
       onSend={actions.onSend}
       onCancel={actions.onCancel}
@@ -133,6 +147,7 @@ const SessionComposerLeaf = memo(function SessionComposerLeaf({
       onOpenResources={actions.onOpenResources}
       onOpenPrompts={actions.onOpenPrompts}
       onStop={actions.onStop}
+      onRevealContextMessage={actions.onRevealContextMessage}
     />
   )
 })
@@ -151,6 +166,8 @@ export function ConversationComposer({
   streaming,
   submitting = false,
   animate = true,
+  showContextPreview = false,
+  contextParentId = null,
   onTextChange,
   onSend,
   onCancel,
@@ -160,6 +177,7 @@ export function ConversationComposer({
   onOpenResources,
   onOpenPrompts,
   onStop,
+  onRevealContextMessage,
 }: ConversationComposerProps) {
   const imageInputRef = useRef<HTMLInputElement>(null)
   const [mcpMenuOpen, setMcpMenuOpen] = useState(false)
@@ -308,6 +326,14 @@ export function ConversationComposer({
         rows={3}
         className="min-h-[4.5rem] resize-none border-0 bg-transparent px-2 py-1 shadow-none focus-visible:ring-0"
       />
+      {showContextPreview ? (
+        <ContextPreviewStrip
+          contextParentId={contextParentId}
+          draft={draft}
+          streaming={Boolean(streaming && onStop)}
+          onRevealMessage={onRevealContextMessage}
+        />
+      ) : null}
       <div className="flex items-center justify-between gap-2 px-2 pb-1">
         <div className="flex flex-wrap items-center gap-1">
           <TooltipProvider delay={400}>

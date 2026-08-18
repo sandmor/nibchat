@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useState } from "react"
 import { useRouter } from "next/navigation"
 import { useMutation, useQuery } from "@tanstack/react-query"
 import { toast } from "sonner"
@@ -39,7 +39,6 @@ export function PromptStackPicker({
   const router = useRouter()
   const mdUp = useMediaMdUp()
   const [open, setOpen] = useState(false)
-  const [inspectorOpen, setInspectorOpen] = useState(false)
 
   const settingsQuery = useQuery(trpc.workspace.getSettings.queryOptions())
   const stacks = settingsQuery.data?.promptStacks ?? []
@@ -80,14 +79,6 @@ export function PromptStackPicker({
     }
     await setMut.mutateAsync({ chatId, stackId })
   }
-
-  const previewQuery = useQuery({
-    ...trpc.workspace.previewAssembledContext.queryOptions({
-      chatId: chatId ?? undefined,
-      stackId: activeRef ?? undefined,
-    }),
-    enabled: inspectorOpen,
-  })
 
   const listBody = (
     <div className="flex flex-col gap-3">
@@ -147,15 +138,6 @@ export function PromptStackPicker({
           size="sm"
           variant="ghost"
           className="text-xs"
-          onClick={() => setInspectorOpen(true)}
-        >
-          Resolved context
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="ghost"
-          className="text-xs"
           onClick={() => {
             setOpen(false)
             router.push("/settings")
@@ -167,171 +149,57 @@ export function PromptStackPicker({
     </div>
   )
 
+  if (mdUp) {
+    return (
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger
+          render={
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className={cn(
+                "max-w-[min(12rem,30vw)] min-w-0 truncate",
+                isOrphan && "text-destructive"
+              )}
+              title={label}
+              aria-label={`Prompt stack: ${label}`}
+            />
+          }
+        >
+          <span className="truncate">{label}</span>
+        </PopoverTrigger>
+        <PopoverContent align="end" className="w-80 p-3">
+          {listBody}
+        </PopoverContent>
+      </Popover>
+    )
+  }
+
   return (
     <>
-      {mdUp ? (
-        <Popover open={open} onOpenChange={setOpen}>
-          <PopoverTrigger
-            render={
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className={cn(
-                  "max-w-[min(12rem,30vw)] min-w-0 truncate",
-                  isOrphan && "text-destructive"
-                )}
-                title={label}
-                aria-label={`Prompt stack: ${label}`}
-              />
-            }
-          >
-            <span className="truncate">{label}</span>
-          </PopoverTrigger>
-          <PopoverContent align="end" className="w-80 p-3">
-            {listBody}
-          </PopoverContent>
-        </Popover>
-      ) : (
-        <>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className={cn(
-              "min-w-0 max-w-[9rem] truncate px-2",
-              isOrphan && "text-destructive"
-            )}
-            onClick={() => setOpen(true)}
-            title={label}
-            aria-label={`Prompt stack: ${label}`}
-          >
-            <span className="truncate">{label}</span>
-          </Button>
-          <Dialog open={open} onOpenChange={setOpen}>
-            <DialogContent className="max-w-md">
-              <DialogHeader>
-                <DialogTitle>Prompt stack</DialogTitle>
-              </DialogHeader>
-              {listBody}
-            </DialogContent>
-          </Dialog>
-        </>
-      )}
-
-      <Dialog open={inspectorOpen} onOpenChange={setInspectorOpen}>
-        <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className={cn(
+          "max-w-[9rem] min-w-0 truncate px-2",
+          isOrphan && "text-destructive"
+        )}
+        onClick={() => setOpen(true)}
+        title={label}
+        aria-label={`Prompt stack: ${label}`}
+      >
+        <span className="truncate">{label}</span>
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Resolved context</DialogTitle>
+            <DialogTitle>Prompt stack</DialogTitle>
           </DialogHeader>
-          {previewQuery.isLoading ? (
-            <p className="text-sm text-muted-foreground">Loading…</p>
-          ) : previewQuery.isError ? (
-            <p className="text-sm text-destructive">
-              {previewQuery.error.message || "Could not load preview"}
-            </p>
-          ) : previewQuery.data ? (
-            <ResolvedContextView data={previewQuery.data} />
-          ) : (
-            <p className="text-sm text-muted-foreground">No preview available.</p>
-          )}
+          {listBody}
         </DialogContent>
       </Dialog>
     </>
   )
-}
-
-function ResolvedContextView({
-  data,
-}: {
-  data: {
-    source: string
-    stackId: string | null
-    missingStackId?: string
-    system: string
-    messages: Array<{ role: string; content: unknown }>
-    demotedModuleIds?: string[]
-    warnings?: Array<{ moduleId: string; message: string }>
-  }
-}) {
-  const messageSummaries = useMemo(
-    () =>
-      data.messages.map((msg, i) => ({
-        i,
-        role: msg.role,
-        text: contentPreview(msg.content),
-      })),
-    [data.messages]
-  )
-
-  return (
-    <div className="space-y-3 text-sm">
-      <p className="text-xs text-muted-foreground">
-        Source: {data.source}
-        {data.missingStackId ? " · previous stack missing" : ""}
-      </p>
-      {data.warnings && data.warnings.length > 0 ? (
-        <ul className="space-y-1 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-          {data.warnings.map((w) => (
-            <li key={w.moduleId}>{w.message}</li>
-          ))}
-        </ul>
-      ) : null}
-      {data.system ? (
-        <div className="space-y-1">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            System
-          </p>
-          <pre className="max-h-40 overflow-auto rounded-lg border bg-muted/40 p-2 whitespace-pre-wrap text-xs">
-            {data.system}
-          </pre>
-        </div>
-      ) : (
-        <p className="text-xs text-muted-foreground">No system string.</p>
-      )}
-      <div className="space-y-1">
-        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Messages ({messageSummaries.length})
-        </p>
-        <ul className="space-y-2">
-          {messageSummaries.map((m) => (
-            <li key={m.i} className="rounded-lg border p-2">
-              <p className="text-xs font-medium text-muted-foreground">
-                {m.role}
-              </p>
-              <p className="mt-0.5 line-clamp-4 text-xs whitespace-pre-wrap">
-                {m.text || "—"}
-              </p>
-            </li>
-          ))}
-          {messageSummaries.length === 0 ? (
-            <li className="text-xs text-muted-foreground">No path messages.</li>
-          ) : null}
-        </ul>
-      </div>
-    </div>
-  )
-}
-
-function contentPreview(content: unknown): string {
-  if (typeof content === "string") return content
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        if (typeof part === "string") return part
-        if (part && typeof part === "object" && "text" in part)
-          return String((part as { text: string }).text)
-        if (part && typeof part === "object" && "type" in part)
-          return `[${String((part as { type: string }).type)}]`
-        return ""
-      })
-      .filter(Boolean)
-      .join("\n")
-  }
-  if (content == null) return ""
-  try {
-    return JSON.stringify(content)
-  } catch {
-    return String(content)
-  }
 }

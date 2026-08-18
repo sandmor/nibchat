@@ -304,9 +304,17 @@ function messageFromPrompt(mod: PromptModule): ModelMessage | null {
   return { role: "assistant", content: text }
 }
 
+export type AssembledTurnSource = "stack" | "path"
+
+export type AssembledTurn = {
+  message: ModelMessage
+  source: AssembledTurnSource
+}
+
 /** Track which module ids contribute which messages for warnings. */
 type TaggedMessage = {
   message: ModelMessage
+  source: AssembledTurnSource
   moduleId?: string
   /** Synthetic boundary: enabled history (even if inject empty). */
   historyBoundary?: boolean
@@ -331,12 +339,15 @@ function injectInChatTagged(
     if (!msg) continue
     const depth = mod.depth ?? 0
     const idx = clamp(n - depth, 0, n)
-    buckets[idx]!.push({ message: msg, moduleId: mod.id })
+    buckets[idx]!.push({ message: msg, source: "stack", moduleId: mod.id })
   }
 
   const working: TaggedMessage[] = []
   for (let i = 0; i < n; i++) {
-    working.push(...buckets[i]!, { message: pathMessages[i]! })
+    working.push(...buckets[i]!, {
+      message: pathMessages[i]!,
+      source: "path",
+    })
   }
   working.push(...buckets[n]!)
   return working
@@ -361,6 +372,7 @@ function assembleTagged(options: {
       // Boundary even when inject is empty (settings empty-path case).
       out.push({
         message: { role: "user", content: "" },
+        source: "stack",
         historyBoundary: true,
       })
       for (const t of injectedHistory) {
@@ -373,6 +385,7 @@ function assembleTagged(options: {
       if (text)
         out.push({
           message: { role: "system", content: text },
+          source: "stack",
           moduleId: mod.id,
         })
       continue
@@ -380,7 +393,7 @@ function assembleTagged(options: {
     if (mod.placement === "in_chat") continue
     const msg = messageFromPrompt(mod)
     if (!msg) continue
-    out.push({ message: msg, moduleId: mod.id })
+    out.push({ message: msg, source: "stack", moduleId: mod.id })
   }
   return out
 }
@@ -412,7 +425,7 @@ function collectWarnings(tagged: TaggedMessage[]): AssemblyWarning[] {
 
 function peelAndDemote(tagged: TaggedMessage[]): {
   system: string
-  messages: ModelMessage[]
+  turns: AssembledTurn[]
   demotedModuleIds: string[]
 } {
   // Skip synthetic history boundaries when peeling content.
@@ -433,19 +446,22 @@ function peelAndDemote(tagged: TaggedMessage[]): {
 
   const rest = contentTagged.slice(i)
   const demotedModuleIds: string[] = []
-  const messages: ModelMessage[] = rest.map((t) => {
+  const turns: AssembledTurn[] = rest.map((t) => {
     if (t.message.role === "system") {
       if (t.moduleId) demotedModuleIds.push(t.moduleId)
       const content =
         typeof t.message.content === "string" ? t.message.content : ""
-      return { role: "assistant" as const, content }
+      return {
+        message: { role: "assistant" as const, content },
+        source: t.source,
+      }
     }
-    return t.message
+    return { message: t.message, source: t.source }
   })
 
   return {
     system: systemParts.join("\n\n"),
-    messages,
+    turns,
     demotedModuleIds,
   }
 }
@@ -458,6 +474,10 @@ export type AssemblyWarning = {
 export type AssemblePromptContextResult = {
   system: string
   messages: ModelMessage[]
+  /** Same turns as `messages`, tagged as stack vs surviving path history. */
+  turns: AssembledTurn[]
+  /** False when the history module is disabled; path turns will be empty. */
+  historyEnabled: boolean
   /** Modules whose system role would sit after non-system content (pre-demote). */
   demotedModuleIds: string[]
   warnings: AssemblyWarning[]
@@ -474,8 +494,15 @@ export function assemblePromptContext(options: {
 }): AssemblePromptContextResult {
   const tagged = assembleTagged(options)
   const warnings = collectWarnings(tagged)
-  const { system, messages, demotedModuleIds } = peelAndDemote(tagged)
-  return { system, messages, demotedModuleIds, warnings }
+  const { system, turns, demotedModuleIds } = peelAndDemote(tagged)
+  return {
+    system,
+    messages: turns.map((turn) => turn.message),
+    turns,
+    historyEnabled: tagged.some((item) => item.historyBoundary),
+    demotedModuleIds,
+    warnings,
+  }
 }
 
 /**

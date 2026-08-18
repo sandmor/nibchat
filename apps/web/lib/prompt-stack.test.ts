@@ -322,6 +322,8 @@ describe("assemblePromptContext", () => {
     })
     expect(result.system).toBe("sys")
     expect(result.messages.map(contentOf)).toEqual(["tail"])
+    expect(result.turns.map((turn) => turn.source)).toEqual(["stack"])
+    expect(result.historyEnabled).toBe(false)
   })
 
   it("inserts in_chat by depth from the end of history", () => {
@@ -370,6 +372,14 @@ describe("assemblePromptContext", () => {
       "user",
       "assistant",
     ])
+    expect(result.turns.map((turn) => turn.source)).toEqual([
+      "path",
+      "path",
+      "stack",
+      "path",
+      "stack",
+    ])
+    expect(result.historyEnabled).toBe(true)
     expect(result.demotedModuleIds).toEqual(
       expect.arrayContaining(["r0", "r1"])
     )

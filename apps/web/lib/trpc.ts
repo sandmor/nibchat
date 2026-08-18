@@ -21,7 +21,6 @@ import {
   getInstanceSettings,
   getWorkspace,
   listPromptStacks,
-  previewAssembledContext,
   searchChats,
   selectChild,
   setNodeContextExcluded,
@@ -626,20 +625,6 @@ export const appRouter = t.router({
             input.chatId,
             input.stackId
           )
-        } catch (error) {
-          mapError(error)
-        }
-      }),
-    previewAssembledContext: ownerProcedure
-      .input(
-        z.object({
-          chatId: z.string().optional(),
-          stackId: z.string().optional(),
-        })
-      )
-      .query(async ({ ctx, input }) => {
-        try {
-          return await previewAssembledContext(ctx.user.id, input)
         } catch (error) {
           mapError(error)
         }

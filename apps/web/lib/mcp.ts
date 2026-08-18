@@ -14,6 +14,9 @@ import {
   type AttachmentPart,
   type AttachmentReference,
 } from "@/lib/types"
+import { buildMcpInstructionsText } from "@/lib/mcp-instructions"
+
+export { buildMcpInstructionsText }
 
 /** SQLite drivers reject JS booleans; Postgres wants real booleans. */
 function toDbBool(value: boolean): boolean {
@@ -385,22 +388,6 @@ function metadataList(
     const picked = pick(item as Record<string, unknown>)
     return picked ? [picked] : []
   })
-}
-
-/**
- * Optional system prose from MCP initialize instructions only.
- * Resources/prompts are not ambient context — open them via chat attach/insert.
- */
-export function buildMcpInstructionsText(
-  profiles: Array<{ name: string; instructions?: string | null }>
-): string {
-  const blocks: string[] = []
-  for (const profile of profiles) {
-    const instructions = profile.instructions?.trim()
-    if (!instructions) continue
-    blocks.push(`MCP server “${profile.name}”:\n${instructions}`)
-  }
-  return blocks.join("\n\n")
 }
 
 export const MCP_RESOURCE_TEXT_MAX = MAX_ATTACHMENT_TEXT_CHARS
@@ -1002,6 +989,8 @@ export type McpApprovedSurface = {
   namespace: string
   resources: McpSurfaceResource[]
   prompts: McpSurfacePrompt[]
+  /** Last initialize instructions; same catalog text generation injects. */
+  instructions: string | null
 }
 
 /** Approved catalog resources/prompts for chat pickers (no ambient system dump). */
@@ -1050,6 +1039,7 @@ export async function listApprovedMcpSurfaces(
       namespace: profile.namespace,
       resources,
       prompts,
+      instructions: profile.catalog.instructions?.trim() || null,
     }
   })
 }

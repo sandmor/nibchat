@@ -4,6 +4,7 @@ import {
   createBackup,
   createBackupArchive,
   createChat,
+  createPromptStack,
   createProvider,
   createTurn,
   deleteChat,
@@ -1104,19 +1105,5 @@ describe("prompt stacks", () => {
     await expect(deletePromptStack("default")).rejects.toThrow(
       /instance default/i
     )
-  })
-
-  it("previewAssembledContext includes system from default stack", async () => {
-    const { previewAssembledContext } = await import("@/lib/chat-service")
-    const chat = await createChat(userId, "Preview")
-    await insertNode({
-      chatId: chat.id,
-      parentId: null,
-      role: "user",
-      parts: [{ type: "text", text: "hi" }],
-    })
-    const preview = await previewAssembledContext(userId, { chatId: chat.id })
-    expect(preview.system).toContain("helpful assistant")
-    expect(preview.source).toBe("instance")
   })
 })

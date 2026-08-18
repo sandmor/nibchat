@@ -27,11 +27,7 @@ import type {
 } from "@/lib/types"
 import { generateChatTitle } from "@/lib/agent/generate-title"
 import { seedChatTitle } from "@/lib/chat-title"
-import {
-  canReplayReasoning,
-  defaultModelConfig,
-  type ModelConfig,
-} from "@/lib/providers"
+import { defaultModelConfig, type ModelConfig } from "@/lib/providers"
 import { orderNodesForInsert, parseBackup } from "@/lib/backup"
 import {
   isEnabledModelId,
@@ -48,9 +44,7 @@ import {
   type Appearance,
   type ThemeRecord,
 } from "@/lib/appearance"
-import { buildModelMessages } from "@/lib/agent/build-messages"
 import {
-  assemblePromptContext,
   defaultPromptStack,
   promptStackToJson,
   readStackJson,
@@ -1601,85 +1595,6 @@ export async function getInstanceSettings() {
     lightThemeId: row.light_theme_id || PAPER_THEME_ID,
     darkThemeId: row.dark_theme_id || INK_THEME_ID,
     titleModelConfig: await getTitleModelConfig(),
-  }
-}
-
-export async function previewAssembledContext(
-  userId: string,
-  input: { chatId?: string; stackId?: string }
-) {
-  let chatStackId: string | null = null
-  let nodes: NodeRow[] = []
-  let rootId: string | null = null
-
-  if (input.chatId) {
-    await assertChatOwner(input.chatId, userId)
-    const chat = await db
-      .selectFrom("chats")
-      .selectAll()
-      .where("id", "=", input.chatId)
-      .executeTakeFirstOrThrow()
-    chatStackId = chat.prompt_stack_id
-    rootId = chat.selected_root_node_id
-    nodes = await db
-      .selectFrom("message_nodes")
-      .selectAll()
-      .where("chat_id", "=", input.chatId)
-      .orderBy("created_at")
-      .execute()
-  }
-
-  const instance = await db
-    .selectFrom("instance")
-    .select("default_prompt_stack_id")
-    .where("id", "=", 1)
-    .executeTakeFirstOrThrow()
-  const stacksById = await loadStacksById()
-
-  const resolved = input.stackId
-    ? stacksById.has(input.stackId)
-      ? {
-          stack: stacksById.get(input.stackId)!,
-          source: "stack" as const,
-          stackId: input.stackId,
-          missingStackId: undefined as string | undefined,
-        }
-      : resolvePromptStack({
-          chatStackId: input.stackId,
-          defaultStackId: instance.default_prompt_stack_id,
-          stacksById,
-        })
-    : resolvePromptStack({
-        chatStackId,
-        defaultStackId: instance.default_prompt_stack_id,
-        stacksById,
-      })
-
-  const path = resolveActivePath(nodes, rootId)
-  const leafId = path.at(-1)?.id ?? null
-  const contextNodes = leafId ? ancestorPath(nodes, leafId) : []
-  const config = {} as ModelConfig
-  const replayReasoning = input.chatId
-    ? await canReplayReasoning(userId, config)
-    : false
-  const pathMessages = await buildModelMessages({
-    nodes: contextNodes,
-    replayReasoning,
-    binaryAttachments: "placeholder",
-  })
-  const assembled = assemblePromptContext({
-    stack: resolved.stack,
-    pathMessages,
-  })
-
-  return {
-    source: resolved.source,
-    stackId: resolved.stackId,
-    missingStackId: resolved.missingStackId,
-    system: assembled.system,
-    messages: assembled.messages,
-    demotedModuleIds: assembled.demotedModuleIds,
-    warnings: assembled.warnings,
   }
 }
 

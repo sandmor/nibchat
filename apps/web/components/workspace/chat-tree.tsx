@@ -67,6 +67,8 @@ export function ChatTree({
   onOpenDraft,
   onSendDraft,
   messageLayoutIds = {},
+  focusTargetId,
+  onFocusTargetConsumed,
   onHandoffComplete,
   onChanged,
   onRegenerate,
@@ -93,6 +95,8 @@ export function ChatTree({
   onOpenDraft: (anchor: string | null) => void
   onSendDraft: (anchor: string | null) => Promise<boolean>
   messageLayoutIds?: Readonly<Record<string, string>>
+  focusTargetId?: string | null
+  onFocusTargetConsumed?: () => void
   onHandoffComplete?: (anchor: string | null) => void
   onChanged: () => void | Promise<void>
   onRegenerate: (id: string) => void
@@ -287,6 +291,19 @@ export function ChatTree({
     // One-shot camera: tree focus is independent from later linear selection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layout, activePath])
+
+  useLayoutEffect(() => {
+    if (
+      !focusTargetId ||
+      !layout.rects.has(focusTargetId) ||
+      !viewportRef.current
+    )
+      return
+    didCenter.current = true
+    setFocusedId(focusTargetId)
+    centerOn(focusTargetId)
+    onFocusTargetConsumed?.()
+  }, [focusTargetId, layout, centerOn, onFocusTargetConsumed])
 
   useLayoutEffect(() => {
     const world = worldRef.current

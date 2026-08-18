@@ -5,7 +5,7 @@ import {
   toUIMessageStream,
   type LanguageModel,
 } from "ai"
-import { buildModelMessages } from "@/lib/agent/build-messages"
+import { buildEmbeddedModelMessages } from "@/lib/agent/build-messages-embed"
 import {
   partsHavePendingClientTools,
   resolveStreamTerminalOutcome,
@@ -140,7 +140,7 @@ export async function createGenerationResponse(
       ? ancestorPath(nodesForContext, contextLeafId)
       : []
     const replayReasoning = await canReplayReasoning(userId, config)
-    const pathMessages = await buildModelMessages({
+    const pathMessages = await buildEmbeddedModelMessages({
       nodes: contextNodes,
       replayReasoning,
     })

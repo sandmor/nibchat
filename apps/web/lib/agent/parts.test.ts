@@ -284,7 +284,7 @@ describe("buildModelMessages", () => {
   }
 
   it("expands completed tool rounds into assistant + tool messages", async () => {
-    const messages = await buildModelMessages({
+    const messages = buildModelMessages({
       nodes: [
         node("u1", "user", [{ type: "text", text: "hi" }]),
         node("a1", "assistant", [
@@ -320,7 +320,7 @@ describe("buildModelMessages", () => {
   })
 
   it("omits an excluded node without omitting later descendants", async () => {
-    const messages = await buildModelMessages({
+    const messages = buildModelMessages({
       nodes: [
         node("u1", "user", [{ type: "text", text: "keep this" }]),
         node(
@@ -345,7 +345,7 @@ describe("buildModelMessages", () => {
   })
 
   it("emits pending tool calls without tool results", async () => {
-    const messages = await buildModelMessages({
+    const messages = buildModelMessages({
       nodes: [
         node("a1", "assistant", [
           {
@@ -364,7 +364,7 @@ describe("buildModelMessages", () => {
   })
 
   it("expands user attachment parts ahead of text for the model", async () => {
-    const messages = await buildModelMessages({
+    const messages = buildModelMessages({
       nodes: [
         node("u1", "user", [
           {
@@ -403,7 +403,7 @@ describe("buildModelMessages", () => {
   })
 
   it("renders image attachments as placeholders when bytes are omitted", async () => {
-    const messages = await buildModelMessages({
+    const messages = buildModelMessages({
       nodes: [
         node("u1", "user", [
           {
@@ -423,7 +423,6 @@ describe("buildModelMessages", () => {
         ]),
       ],
       replayReasoning: false,
-      binaryAttachments: "placeholder",
     })
     expect(messages).toHaveLength(1)
     const user = messages[0]

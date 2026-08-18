@@ -504,4 +504,17 @@ describe("assembleContextPreview", () => {
     expect(preview.source).toBe("chat")
     expect(preview.system).toContain("picked body")
   })
+
+  it("reports a missing stack once the catalog is loaded", () => {
+    const preview = assembleContextPreview({
+      nodes: [],
+      contextParentId: null,
+      chatStackId: "gone",
+      defaultStackId: "def",
+      stacks: [{ id: "def", stack: defaultPromptStack() }],
+      replayReasoning: false,
+    })
+    expect(preview.missingStackId).toBe("gone")
+    expect(preview.source).toBe("fallback")
+  })
 })

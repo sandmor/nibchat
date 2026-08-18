@@ -16,6 +16,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
+import { isOrphanPromptStackRef } from "@/lib/prompt-stack"
 import { cn } from "@/lib/utils"
 import { useTRPC } from "@/lib/trpc-react"
 import { useMediaMdUp } from "./hooks"
@@ -49,7 +50,7 @@ export function PromptStackPicker({
   const selectedStack = activeRef
     ? stacks.find((s) => s.id === activeRef)
     : null
-  const isOrphan = Boolean(activeRef && !selectedStack)
+  const isOrphan = isOrphanPromptStackRef(activeRef, stacks)
   const inherits = activeRef === null
 
   const label = inherits
@@ -58,7 +59,7 @@ export function PromptStackPicker({
       : "Prompt stack"
     : isOrphan
       ? "Missing stack"
-      : selectedStack!.name
+      : (selectedStack?.name ?? "Prompt stack")
 
   const setMut = useMutation(
     trpc.workspace.setChatPromptStack.mutationOptions({

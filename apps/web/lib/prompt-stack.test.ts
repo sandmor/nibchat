@@ -5,6 +5,7 @@ import {
   defaultPromptStack,
   findSystemAfterNonSystemWarnings,
   HISTORY_MODULE_NAME,
+  isOrphanPromptStackRef,
   normalizePromptStack,
   promptStackToJson,
   readStackJson,
@@ -656,5 +657,25 @@ describe("resolvePromptStack", () => {
     })
     expect(r.source).toBe("code")
     expect(r.stack).toEqual(defaultPromptStack())
+  })
+})
+
+describe("isOrphanPromptStackRef", () => {
+  it("is false while the catalog is empty", () => {
+    expect(isOrphanPromptStackRef("gone", [])).toBe(false)
+  })
+
+  it("is false when inheriting", () => {
+    expect(isOrphanPromptStackRef(null, [{ id: "def" }])).toBe(false)
+  })
+
+  it("is false when the catalog contains the ref", () => {
+    expect(
+      isOrphanPromptStackRef("chat", [{ id: "def" }, { id: "chat" }])
+    ).toBe(false)
+  })
+
+  it("is true only after the catalog loads without the ref", () => {
+    expect(isOrphanPromptStackRef("gone", [{ id: "def" }])).toBe(true)
   })
 })

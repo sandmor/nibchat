@@ -46,6 +46,7 @@ import type { ChatRow } from "@/lib/types"
 import { displayChatTitle } from "@/lib/chat-title"
 import type { Appearance, ThemeRecord } from "@/lib/appearance"
 import { defaultAppearance, motionTransition } from "@/lib/appearance"
+import type { PromptStackDocument } from "@/lib/prompt-stack"
 import { useAppearanceStore } from "@/lib/appearance-store"
 import { activeThemeId } from "@/lib/theme-slot"
 import { useThemeSlot } from "@/components/theme-provider"
@@ -76,19 +77,30 @@ export function useWorkspaceChrome() {
   return value
 }
 
+type InstanceSettings = {
+  themes: ThemeRecord[]
+  lightThemeId: string
+  darkThemeId: string
+  defaultPromptStackId: string
+  promptStacks: Array<{
+    id: string
+    name: string
+    stack: PromptStackDocument
+    created_at: string
+    updated_at: string
+  }>
+  titleModelConfig: { providerId: string; model: string } | null
+}
+
 export function WorkspaceShell({
   initialChats,
   providers: initialProviders,
-  themes: initialThemes,
-  lightThemeId,
-  darkThemeId,
+  initialSettings,
   children,
 }: {
   initialChats: ChatRow[]
   providers: ProviderSummary[]
-  themes: ThemeRecord[]
-  lightThemeId: string
-  darkThemeId: string
+  initialSettings: InstanceSettings
   children: ReactNode
 }) {
   const trpc = useTRPC()
@@ -121,22 +133,18 @@ export function WorkspaceShell({
     } satisfies WorkspaceData,
   })
 
+  // Seed the shared getSettings cache with the full SSR payload. Partial
+  // stubs (empty promptStacks) are treated as fresh for staleTime and make
+  // every consumer think stacks are missing.
   const settingsQuery = useQuery({
     ...trpc.workspace.getSettings.queryOptions(),
-    initialData: {
-      themes: initialThemes,
-      lightThemeId,
-      darkThemeId,
-      defaultPromptStackId: "",
-      promptStacks: [],
-      titleModelConfig: null,
-    },
+    initialData: initialSettings,
   })
-  const themes = settingsQuery.data?.themes?.length
+  const themes = settingsQuery.data.themes.length
     ? settingsQuery.data.themes
-    : initialThemes
-  const lightId = settingsQuery.data?.lightThemeId ?? lightThemeId
-  const darkId = settingsQuery.data?.darkThemeId ?? darkThemeId
+    : initialSettings.themes
+  const lightId = settingsQuery.data.lightThemeId || initialSettings.lightThemeId
+  const darkId = settingsQuery.data.darkThemeId || initialSettings.darkThemeId
 
   const providersQuery = useQuery({
     ...trpc.workspace.listProviders.queryOptions(),

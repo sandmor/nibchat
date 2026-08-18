@@ -2,6 +2,7 @@ import { buildModelMessages } from "@/lib/agent/build-messages"
 import { ancestorPath, parseJson } from "@/lib/domain"
 import {
   assemblePromptContext,
+  isOrphanPromptStackRef,
   resolvePromptStack,
   type AssembledTurn,
   type PromptStackDocument,
@@ -299,7 +300,9 @@ export function assembleContextPreview(
   return {
     source: resolved.source,
     stackId: resolved.stackId,
-    missingStackId: resolved.missingStackId,
+    missingStackId: isOrphanPromptStackRef(input.chatStackId, input.stacks)
+      ? resolved.missingStackId
+      : undefined,
     system: assembled.system,
     demotedModuleIds: assembled.demotedModuleIds,
     warnings: [...assembled.warnings, ...preview.extraWarnings],

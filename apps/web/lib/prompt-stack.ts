@@ -239,6 +239,19 @@ export type ResolvePromptStackResult = {
 }
 
 /**
+ * A chat ref is orphaned only when a loaded catalog does not contain it.
+ * An empty catalog is unknown (still loading / unhydrated), not proof of deletion.
+ */
+export function isOrphanPromptStackRef(
+  stackId: string | null | undefined,
+  catalog: ReadonlyArray<{ id: string }>
+): boolean {
+  if (!stackId) return false
+  if (catalog.length === 0) return false
+  return catalog.every((entry) => entry.id !== stackId)
+}
+
+/**
  * Resolve which stack document applies for a chat (reference-only).
  * Soft code default only when an id is missing from the map — not on parse failure.
  */

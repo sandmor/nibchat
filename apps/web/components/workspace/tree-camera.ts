@@ -5,6 +5,8 @@ export type Camera = { x: number; y: number; scale: number }
 export const MIN_SCALE = 0.2
 export const MAX_SCALE = 1.2
 export const PAN_THRESHOLD = 6
+/** Floor used by centerOn when the caller does not pass a scale. */
+export const CENTER_SCALE = 0.78
 /** On-screen height below which a card is a filled rect, not readable text. */
 export const STUB_SCREEN_PX = 32
 
@@ -94,6 +96,16 @@ export function nodePaint(options: {
   if (options.interactive) return "live"
   if (options.rect.height * options.scale < STUB_SCREEN_PX) return "stub"
   return "live"
+}
+
+/**
+ * Scale that keeps a card live (readable markdown) when locating a Find hit.
+ * Floors at CENTER_SCALE so zoomed-out locates still paint text, then raises
+ * further if that would remain a stub.
+ */
+export function scaleForLivePaint(rect: TreeRect, currentScale: number) {
+  const liveMin = STUB_SCREEN_PX / Math.max(rect.height, 1) + 1e-6
+  return clampScale(Math.max(currentScale, CENTER_SCALE, liveMin))
 }
 
 export type ScrollMetrics = {

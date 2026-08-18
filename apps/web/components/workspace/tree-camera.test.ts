@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest"
 import {
+  CENTER_SCALE,
   centerOnRect,
   clampScale,
   elementCanScroll,
   nodePaint,
   panBy,
   rectFullyVisible,
+  scaleForLivePaint,
   worldViewRect,
   zoomToward,
 } from "./tree-camera"
@@ -67,6 +69,12 @@ describe("nodePaint", () => {
 
   it("renders the real message once a card is large enough to read", () => {
     expect(nodePaint({ rect, scale: 0.8, interactive: false })).toBe("live")
+  })
+
+  it("bumps a stub-scale camera until the card paints live", () => {
+    const scale = scaleForLivePaint(rect, 0.15)
+    expect(nodePaint({ rect, scale, interactive: false })).toBe("live")
+    expect(scale).toBeGreaterThanOrEqual(CENTER_SCALE)
   })
 })
 

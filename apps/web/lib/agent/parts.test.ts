@@ -8,6 +8,7 @@ import {
   partsHavePendingClientTools,
   pendingToolInvocations,
   resolveStreamTerminalOutcome,
+  conversationFindTextFromParts,
   searchTextFromParts,
   textFromParts,
   upsertToolInvocation,
@@ -140,6 +141,114 @@ describe("parts helpers", () => {
       "mcp-resource:help://usage-guide"
     )
     expect(searchTextFromParts(parts)).toContain("Call tools carefully.")
+  })
+
+  it("builds in-conversation find text from visible parts, not search prefixes", () => {
+    const parts: Parts = [
+      { type: "reasoning", text: "secret" },
+      { type: "text", text: "hello" },
+      {
+        type: "attachment",
+        id: "a1",
+        name: "Usage Guide",
+        content: { kind: "text", text: "Call tools carefully." },
+        source: {
+          kind: "mcp-resource",
+          profileId: "p1",
+          profileName: "Docs",
+          uri: "help://usage-guide",
+        },
+      },
+      {
+        type: "tool-invocation",
+        toolCallId: "t1",
+        toolName: "web_search",
+        state: "output-available",
+        input: {},
+        output: "result blob",
+      },
+      {
+        type: "tool-invocation",
+        toolCallId: "t2",
+        toolName: "question",
+        state: "input-available",
+        input: {
+          questions: [
+            {
+              header: "Scope",
+              question: "What is the scope?",
+              options: [{ label: "Repo", description: "This repository" }],
+            },
+          ],
+        },
+      },
+    ]
+    const findText = conversationFindTextFromParts(parts)
+    expect(findText).toContain("hello")
+    expect(findText).toContain("Attached: Usage Guide")
+    expect(findText).toContain("help://usage-guide")
+    expect(findText).toContain("Call tools carefully.")
+    expect(findText).toContain("Tool · web_search")
+    expect(findText).toContain("result blob")
+    expect(findText).toContain("Scope")
+    expect(findText).toContain("What is the scope?")
+    expect(findText).toContain("Repo")
+    expect(findText).toContain("This repository")
+    expect(findText).not.toContain("secret")
+    expect(findText).not.toContain("attachment:")
+    expect(findText).not.toContain("mcp-resource:")
+    expect(findText).not.toContain("tool:")
+    expect(findText).not.toContain("question:")
+  })
+
+  it("indexes answered question summaries, not prompts or unselected options", () => {
+    const parts: Parts = [
+      {
+        type: "tool-invocation",
+        toolCallId: "t1",
+        toolName: "question",
+        state: "output-available",
+        input: {
+          questions: [
+            {
+              header: "Scope",
+              question: "What is the scope?",
+              options: [{ label: "Repo", description: "This repository" }],
+            },
+            {
+              header: "Extras",
+              question: "Anything else?",
+              options: [{ label: "Docs" }],
+            },
+          ],
+        },
+        output: [["Repo"], []],
+      },
+    ]
+    const findText = conversationFindTextFromParts(parts)
+    expect(findText).toContain("Scope")
+    expect(findText).toContain("Repo")
+    expect(findText).toContain("Extras")
+    expect(findText).toContain("Unanswered")
+    expect(findText).not.toContain("What is the scope?")
+    expect(findText).not.toContain("This repository")
+    expect(findText).not.toContain("Anything else?")
+    expect(findText).not.toContain("Docs")
+  })
+
+  it("skips question bodies while the tool is still streaming in", () => {
+    const parts: Parts = [
+      {
+        type: "tool-invocation",
+        toolCallId: "t1",
+        toolName: "question",
+        state: "input-streaming",
+        input: {
+          questions: [{ header: "Scope", question: "What is the scope?" }],
+        },
+      },
+    ]
+    expect(conversationFindTextFromParts(parts)).not.toContain("Scope")
   })
 
   it("requires resolved text attachment content", () => {

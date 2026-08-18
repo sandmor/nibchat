@@ -43,11 +43,13 @@ function ScrollTargetEffect({
   onScrollTargetConsumed,
   /** When the path settles (deep link / branch), retry pending jumps. */
   pathSignature,
+  findLocateKey,
 }: {
   scrollTargetId: string | null
   targetMounted: boolean
   onScrollTargetConsumed: () => void
   pathSignature: string
+  findLocateKey: number
 }) {
   const { scrollToMessage } = useMessageScroller()
 
@@ -65,6 +67,7 @@ function ScrollTargetEffect({
     scrollTargetId,
     targetMounted,
     pathSignature,
+    findLocateKey,
     scrollToMessage,
     onScrollTargetConsumed,
   ])
@@ -92,6 +95,7 @@ export type ChatTranscriptProps = {
    */
   scrollTargetId: string | null
   onScrollTargetConsumed: () => void
+  findLocateKey?: number
   onSelect: (parentId: string, childId: string) => void
   onChanged: () => void | Promise<void>
   onRegenerate: (assistantNodeId: string) => void
@@ -117,6 +121,7 @@ export function ChatTranscript({
   messageActionCaptions,
   scrollTargetId,
   onScrollTargetConsumed,
+  findLocateKey = 0,
   onSelect,
   onChanged,
   onRegenerate,
@@ -156,6 +161,7 @@ export function ChatTranscript({
           targetMounted={targetMounted}
           onScrollTargetConsumed={onScrollTargetConsumed}
           pathSignature={pathSignature}
+          findLocateKey={findLocateKey}
         />
         <MessageScrollerViewport data-testid="chat-transcript-viewport">
           <MessageScrollerContent

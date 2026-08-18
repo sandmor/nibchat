@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { AnimatePresence } from "motion/react"
 import { useRouter } from "next/navigation"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
@@ -15,6 +16,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { cn } from "@/lib/utils"
 import { parseJson, resolveActivePath } from "@/lib/domain"
 import { displayChatTitle } from "@/lib/chat-title"
@@ -35,6 +46,9 @@ import { PromptStackPicker } from "./prompt-stack-picker"
 import { ChatTranscript } from "./chat-transcript"
 import { ChatTree } from "./chat-tree"
 import { composeLayoutAnchor, composeLayoutId } from "./tree-layout"
+import { ConversationFindLayer } from "./conversation-find"
+import { ConversationFindBar } from "./conversation-find-bar"
+import { useConversationFindSession } from "./conversation-find-session"
 import { SessionComposer } from "./conversation-composer"
 import { ContextPreviewProvider } from "./context-preview"
 import {
@@ -117,6 +131,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
    * soft-follow — that only changes selection; viewport follow is autoScroll.
    */
   const [scrollTargetId, setScrollTargetId] = useState<string | null>(null)
+  const paneRef = useRef<HTMLElement>(null)
   const createChatLock = useRef<Promise<string> | null>(null)
   const selectedChatIdRef = useRef(selectedChatId)
   const nodeDeepLinkDone = useRef(false)
@@ -322,6 +337,9 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       onSuccess: async () => {
         await invalidateWorkspace()
       },
+      onError: (error) => {
+        toast.error(error.message || "Could not switch path")
+      },
     })
   )
 
@@ -346,6 +364,20 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
         : [],
     [data]
   )
+  const pathIds = useMemo(() => activePath.map((node) => node.id), [activePath])
+  const find = useConversationFindSession({
+    chatIdentity,
+    view,
+    setView,
+    nodes: data.nodes,
+    pathIds,
+    pathChatId: data.chat?.id ?? chatId,
+    renameOpen,
+    paneRef,
+    selectPath: (input, options) => selectPathMutation.mutate(input, options),
+    selectPathPending: selectPathMutation.isPending,
+    setScrollTargetId,
+  })
 
   function ensureModelReady(config: ModelConfigLocal) {
     if (!config.providerId || !config.model) {
@@ -962,6 +994,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       providers={providers}
     >
       <section
+        ref={paneRef}
         data-theme-group="chat"
         data-theme-target="chat"
         className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-chat"
@@ -1035,105 +1068,138 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
           </div>
         </header>
 
-        {view === "linear" ? (
-          <ChatTranscript
-            chatKey={chatKey}
-            density={density}
-            activePath={activePath}
-            nodes={data.nodes}
-            providers={providers}
-            streamIdByNodeId={streamIdByNodeId}
-            afterTipStreams={afterTipStreams}
-            showEmpty={showEmpty}
-            ariaBusy={ariaBusy}
-            animate={animate}
-            transition={transition}
-            messageActionCaptions={appearance.messageActions.captions}
-            scrollTargetId={scrollTargetId}
-            onScrollTargetConsumed={consumeScrollTarget}
-            onSelect={(parentId, childId) => {
-              if (parentId)
-                selectChildMutation.mutate({
-                  nodeId: parentId,
-                  childId,
-                })
-              else
-                selectRootMutation.mutate({
-                  chatId: data.chat!.id,
-                  nodeId: childId,
-                })
-              // User-driven branch navigation — bring the selected tip into view.
-              setScrollTargetId(childId)
-            }}
-            onChanged={() => invalidateWorkspace()}
-            onRegenerate={streamRegenerate}
-            onGenerateUnder={streamGenerate}
-            onAnswerTools={streamResume}
-          />
-        ) : (
-          <ChatTree
-            key={chatIdentity}
-            nodes={data.nodes}
-            activePath={activePath}
-            draftAnchors={treeDraftAnchors}
-            providers={providers}
-            streamIdByNodeId={streamIdByNodeId}
-            animate={animate}
-            transition={transition}
-            messageActionCaptions={appearance.messageActions.captions}
-            messageLayoutIds={composeMorphs}
-            focusTargetId={scrollTargetId}
-            onFocusTargetConsumed={consumeScrollTarget}
-            onHandoffComplete={finishComposeHandoff}
-            onSendDraft={streamTreeSend}
-            renderComposer={(anchor, options) => {
-              const slot = treeSlot(anchor)
-              return (
-                <SessionComposer
-                  slot={slot}
-                  variant="inline"
-                  autoFocus={options.autoFocus}
-                  submitting={options.submitting}
-                  animate={animate && transition.duration > 0}
-                  placeholder={
-                    anchor
-                      ? "Take this conversation somewhere new…"
-                      : "Start a new root…"
-                  }
-                  mcpAvailable={mcpAvailableForGeneration}
-                  streaming={options.submitting}
-                  showContextPreview
-                  contextParentId={anchor}
-                  onSend={options.onSend}
-                  onCancel={() => closeTreeDraft(anchor)}
-                  onFiles={(files) => void uploadImages(slot, files)}
-                  onRemoveAttachment={(part) => removeAttachment(slot, part)}
-                  onPreview={(src, name) => setViewer({ src, name })}
-                  onOpenResources={() => {
-                    setPickerSlot(slot)
-                    setResourcePickerOpen(true)
-                  }}
-                  onOpenPrompts={() => {
-                    setPickerSlot(slot)
-                    setPromptPickerOpen(true)
-                  }}
-                  onStop={() =>
-                    streamsForActiveChat.forEach(([id]) => stopStream(id))
-                  }
-                  onRevealContextMessage={setScrollTargetId}
-                />
-              )
-            }}
-            onOpenDraft={openTreeDraft}
-            onChanged={invalidateWorkspace}
-            onRegenerate={streamTreeRegenerate}
-            onGenerateUnder={streamTreeGenerate}
-            onAnswerTools={streamTreeResume}
-            onStop={() =>
-              streamsForActiveChat.forEach(([id]) => stopStream(id))
-            }
-          />
-        )}
+        <ConversationFindLayer value={find.layerValue}>
+          {view === "linear" ? (
+            <ChatTranscript
+              chatKey={chatKey}
+              density={density}
+              activePath={activePath}
+              nodes={data.nodes}
+              providers={providers}
+              streamIdByNodeId={streamIdByNodeId}
+              afterTipStreams={afterTipStreams}
+              showEmpty={showEmpty}
+              ariaBusy={ariaBusy}
+              animate={animate}
+              transition={transition}
+              messageActionCaptions={appearance.messageActions.captions}
+              scrollTargetId={scrollTargetId}
+              onScrollTargetConsumed={consumeScrollTarget}
+              findLocateKey={find.locateKey}
+              onSelect={(parentId, childId) => {
+                if (parentId)
+                  selectChildMutation.mutate({
+                    nodeId: parentId,
+                    childId,
+                  })
+                else
+                  selectRootMutation.mutate({
+                    chatId: data.chat!.id,
+                    nodeId: childId,
+                  })
+                // User-driven branch navigation — bring the selected tip into view.
+                setScrollTargetId(childId)
+              }}
+              onChanged={() => invalidateWorkspace()}
+              onRegenerate={streamRegenerate}
+              onGenerateUnder={streamGenerate}
+              onAnswerTools={streamResume}
+            />
+          ) : (
+            <ChatTree
+              key={chatIdentity}
+              nodes={data.nodes}
+              activePath={activePath}
+              draftAnchors={treeDraftAnchors}
+              providers={providers}
+              streamIdByNodeId={streamIdByNodeId}
+              animate={animate}
+              transition={transition}
+              messageActionCaptions={appearance.messageActions.captions}
+              messageLayoutIds={composeMorphs}
+              focusTargetId={scrollTargetId}
+              onFocusTargetConsumed={consumeScrollTarget}
+              findQuery={find.findOpen ? find.findNeedle : ""}
+              searchHitIds={find.searchHitIds}
+              findLocate={find.findOpen ? find.findLocate : null}
+              onLocateHit={find.locateNode}
+              onHandoffComplete={finishComposeHandoff}
+              onSendDraft={streamTreeSend}
+              renderComposer={(anchor, options) => {
+                const slot = treeSlot(anchor)
+                return (
+                  <SessionComposer
+                    slot={slot}
+                    variant="inline"
+                    autoFocus={options.autoFocus}
+                    submitting={options.submitting}
+                    animate={animate && transition.duration > 0}
+                    placeholder={
+                      anchor
+                        ? "Take this conversation somewhere new…"
+                        : "Start a new root…"
+                    }
+                    mcpAvailable={mcpAvailableForGeneration}
+                    streaming={options.submitting}
+                    showContextPreview
+                    contextParentId={anchor}
+                    onSend={options.onSend}
+                    onCancel={() => closeTreeDraft(anchor)}
+                    onFiles={(files) => void uploadImages(slot, files)}
+                    onRemoveAttachment={(part) => removeAttachment(slot, part)}
+                    onPreview={(src, name) => setViewer({ src, name })}
+                    onOpenResources={() => {
+                      setPickerSlot(slot)
+                      setResourcePickerOpen(true)
+                    }}
+                    onOpenPrompts={() => {
+                      setPickerSlot(slot)
+                      setPromptPickerOpen(true)
+                    }}
+                    onStop={() =>
+                      streamsForActiveChat.forEach(([id]) => stopStream(id))
+                    }
+                    onRevealContextMessage={setScrollTargetId}
+                  />
+                )
+              }}
+              onOpenDraft={openTreeDraft}
+              onChanged={invalidateWorkspace}
+              onRegenerate={streamTreeRegenerate}
+              onGenerateUnder={streamTreeGenerate}
+              onAnswerTools={streamTreeResume}
+              onStop={() =>
+                streamsForActiveChat.forEach(([id]) => stopStream(id))
+              }
+            />
+          )}
+          <AnimatePresence>
+            {find.findOpen ? (
+              <ConversationFindBar
+                view={view}
+                query={find.findQuery}
+                onQueryChange={find.onQueryChange}
+                focusNonce={find.focusNonce}
+                current={find.current}
+                total={find.total}
+                onPrev={() => find.stepFind(-1)}
+                onNext={() => find.stepFind(1)}
+                onClose={find.closeFind}
+                pathCount={find.pathCount}
+                offPathCount={find.offPathCount}
+                onShowInTree={find.showOffPathInTree}
+                onJump={find.jumpToFirstOffPath}
+                showUseThisPath={find.showUseThisPath}
+                onUseThisPath={find.useThisPath}
+                results={find.results}
+                activeNodeId={find.activeNodeId}
+                onSelectResult={find.locateNode}
+                animate={animate}
+                transition={transition}
+              />
+            ) : null}
+          </AnimatePresence>
+        </ConversationFindLayer>
 
         {view === "linear" ? (
           <div className="border-t border-border bg-background p-3 sm:px-6 sm:py-4">
@@ -1313,6 +1379,36 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
             </div>
           </DialogContent>
         </Dialog>
+
+        <AlertDialog
+          open={find.pendingPathNodeId !== null}
+          onOpenChange={(open) => {
+            if (!open) find.dismissPathSwitch()
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Switch branch?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Jumping to this message changes the selected path. That updates
+                the conversation root and the selected child of each ancestor so
+                Linear can show this branch. This is not undoable from Find.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={find.pathSwitchPending}>
+                Cancel
+              </AlertDialogCancel>
+              <AlertDialogAction
+                variant="destructive"
+                disabled={find.pathSwitchPending}
+                onClick={find.confirmPathSwitch}
+              >
+                Switch path
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
           <DialogContent>

@@ -39,12 +39,14 @@ import {
   type TreeRect,
 } from "./tree-layout"
 import {
+  CENTER_SCALE,
   PAN_THRESHOLD,
   centerOnRect,
   nodePaint,
   panBy,
   rectFullyVisible,
   rectsOverlap,
+  scaleForLivePaint,
   wheelTargetScrolls,
   worldViewRect,
   zoomToward,
@@ -53,6 +55,8 @@ import {
 
 const CHROME_SELECTOR =
   "button,a,input,textarea,select,[role=dialog],[data-tree-chrome]"
+
+const EMPTY_HIT_IDS: ReadonlySet<string> = new Set()
 
 export function ChatTree({
   nodes,
@@ -70,6 +74,10 @@ export function ChatTree({
   focusTargetId,
   onFocusTargetConsumed,
   onHandoffComplete,
+  findQuery = "",
+  searchHitIds,
+  findLocate = null,
+  onLocateHit,
   onChanged,
   onRegenerate,
   onGenerateUnder,
@@ -97,6 +105,10 @@ export function ChatTree({
   messageLayoutIds?: Readonly<Record<string, string>>
   focusTargetId?: string | null
   onFocusTargetConsumed?: () => void
+  findQuery?: string
+  searchHitIds?: ReadonlySet<string>
+  findLocate?: { nodeId: string; key: number } | null
+  onLocateHit?: (nodeId: string) => void
   onHandoffComplete?: (anchor: string | null) => void
   onChanged: () => void | Promise<void>
   onRegenerate: (id: string) => void
@@ -125,6 +137,8 @@ export function ChatTree({
   )
   const didCenter = useRef(false)
   const cameraRef = useRef(camera)
+  const focusedIdRef = useRef(focusedId)
+  const findLocateAppliedKeyRef = useRef(0)
   const draftHeightsRef = useRef(new Map<string, number>())
   const [composeSources, setComposeSources] = useState<
     ReadonlyMap<string, TreeRect>
@@ -145,6 +159,8 @@ export function ChatTree({
     () => new Set(activePath.map((node) => node.id)),
     [activePath]
   )
+  const searching = findQuery.trim().length > 0
+  const hitIds = searchHitIds ?? EMPTY_HIT_IDS
   const nodesById = useMemo(
     () => new Map(nodes.map((node) => [node.id, node])),
     [nodes]
@@ -163,6 +179,9 @@ export function ChatTree({
   useEffect(() => {
     cameraRef.current = camera
   }, [camera])
+  useEffect(() => {
+    focusedIdRef.current = focusedId
+  }, [focusedId])
 
   const releaseCompose = (layoutId: string) => {
     submittingLayoutsRef.current.delete(layoutId)
@@ -259,11 +278,20 @@ export function ChatTree({
         current,
         rect,
         viewportSizeNow,
-        scale ?? Math.max(current.scale, 0.78)
+        scale ?? Math.max(current.scale, CENTER_SCALE)
       )
       moveCamera(next, immediate)
     },
     [layout, moveCamera]
+  )
+
+  const centerOnLive = useCallback(
+    (id: string, immediate = false) => {
+      const rect = layout.rects.get(id)
+      if (!rect) return
+      centerOn(id, scaleForLivePaint(rect, cameraRef.current.scale), immediate)
+    },
+    [layout, centerOn]
   )
 
   const frameRectIfNeeded = useCallback(
@@ -283,6 +311,7 @@ export function ChatTree({
 
   useLayoutEffect(() => {
     if (didCenter.current) return
+    if (findLocate) return
     const tip = activePath.at(-1)?.id
     if (!tip || !layout.rects.has(tip) || !viewportRef.current) return
     didCenter.current = true
@@ -290,7 +319,7 @@ export function ChatTree({
     centerOn(tip, undefined, true)
     // One-shot camera: tree focus is independent from later linear selection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layout, activePath])
+  }, [layout, activePath, findLocate])
 
   useLayoutEffect(() => {
     if (
@@ -304,6 +333,36 @@ export function ChatTree({
     centerOn(focusTargetId)
     onFocusTargetConsumed?.()
   }, [focusTargetId, layout, centerOn, onFocusTargetConsumed])
+
+  useLayoutEffect(() => {
+    if (!findLocate) {
+      findLocateAppliedKeyRef.current = 0
+      return
+    }
+    if (findLocateAppliedKeyRef.current === findLocate.key) return
+    if (!layout.rects.has(findLocate.nodeId) || !viewportRef.current) return
+    findLocateAppliedKeyRef.current = findLocate.key
+    didCenter.current = true
+    const id = findLocate.nodeId
+    const rect = layout.rects.get(id)
+    if (!rect) return
+    const viewport = viewportRef.current
+    const viewportSizeNow = {
+      width: viewport.clientWidth,
+      height: viewport.clientHeight,
+    }
+    const paint = nodePaint({
+      rect,
+      scale: cameraRef.current.scale,
+      interactive: false,
+    })
+    const alreadyOnCard =
+      focusedIdRef.current === id &&
+      paint === "live" &&
+      rectFullyVisible(rect, cameraRef.current, viewportSizeNow)
+    setFocusedId(id)
+    if (!alreadyOnCard) centerOnLive(id)
+  }, [findLocate, layout, centerOnLive])
 
   useLayoutEffect(() => {
     const world = worldRef.current
@@ -443,6 +502,10 @@ export function ChatTree({
         const hit = target.closest("[data-tree-hit]")
         const hitId = hit?.getAttribute("data-tree-hit")
         if (!hitId || isAddId(hitId)) return
+        if (searching && hitIds.has(hitId) && onLocateHit) {
+          onLocateHit(hitId)
+          return
+        }
         focusNode(hitId)
       }}
       onPointerCancel={(event) => {
@@ -516,6 +579,7 @@ export function ChatTree({
           if (!rect || !visible(rect)) return null
           const streamId = streamIdByNodeId.get(node.id)
           const focused = focusedId === node.id
+          const isHit = hitIds.has(node.id)
           const paint = nodePaint({
             rect,
             scale: camera.scale,
@@ -538,6 +602,11 @@ export function ChatTree({
                   ? "[touch-action:pan-x_pan-y] overflow-auto overscroll-contain select-text"
                   : "cursor-pointer overflow-hidden",
                 focused && "z-10 ring-2 ring-[var(--tree-focus-color)]",
+                searching &&
+                  isHit &&
+                  !focused &&
+                  "z-10 ring-2 ring-[var(--tree-find-color)]",
+                searching && !isHit && "opacity-50",
                 pathIds.has(node.id) &&
                   !focused &&
                   "shadow-[0_0_0_1px_var(--tree-path-color)]"
@@ -552,6 +621,14 @@ export function ChatTree({
               style={{ maxHeight }}
               transition={animate ? transition : { duration: 0 }}
             >
+              {searching && isHit && !pathIds.has(node.id) ? (
+                <span
+                  data-find-skip
+                  className="pointer-events-none absolute top-1.5 right-1.5 z-20 rounded-full bg-secondary px-1.5 py-px text-[10px] font-medium tracking-wide text-secondary-foreground uppercase"
+                >
+                  Off path
+                </span>
+              ) : null}
               {streamId ? (
                 <StreamingBubble
                   streamId={streamId}
@@ -728,7 +805,12 @@ export function ChatTree({
         viewportSize={viewportSize}
         focusedId={focusedId}
         pathIds={pathIds}
+        searchHitIds={searching ? hitIds : undefined}
         onJump={(id) => {
+          if (searching && hitIds.has(id) && onLocateHit) {
+            onLocateHit(id)
+            return
+          }
           setFocusedId(id)
           centerOn(id)
         }}
@@ -746,7 +828,13 @@ export function ChatTree({
             viewportSize={viewportSize}
             focusedId={focusedId}
             pathIds={pathIds}
+            searchHitIds={searching ? hitIds : undefined}
             onJump={(id) => {
+              if (searching && hitIds.has(id) && onLocateHit) {
+                onLocateHit(id)
+                setMapOpen(false)
+                return
+              }
               setFocusedId(id)
               centerOn(id)
               setMapOpen(false)
@@ -765,6 +853,7 @@ function TreeMinimap({
   viewportSize,
   focusedId,
   pathIds,
+  searchHitIds,
   onJump,
   className,
 }: {
@@ -773,6 +862,7 @@ function TreeMinimap({
   viewportSize: { width: number; height: number }
   focusedId: string | null
   pathIds: Set<string>
+  searchHitIds?: ReadonlySet<string>
   onJump: (id: string) => void
   className: string
 }) {
@@ -810,12 +900,15 @@ function TreeMinimap({
         {[...layout.rects.entries()]
           .filter(([id]) => !isAddId(id))
           .map(([id, rect]) => {
+            const isHit = searchHitIds?.has(id)
             const target =
               focusedId === id
                 ? "tree-minimap-focus"
-                : pathIds.has(id)
-                  ? "tree-minimap-path"
-                  : "tree-minimap-node"
+                : isHit
+                  ? "tree-minimap-find"
+                  : pathIds.has(id)
+                    ? "tree-minimap-path"
+                    : "tree-minimap-node"
             return (
               <rect
                 key={id}
@@ -828,13 +921,17 @@ function TreeMinimap({
                 className={cn(
                   "cursor-pointer fill-[var(--tree-minimap-node)]",
                   pathIds.has(id) && "fill-[var(--tree-minimap-path)]",
+                  isHit && "fill-[var(--tree-minimap-find)]",
                   focusedId === id &&
-                    "fill-[var(--tree-minimap-focus)] stroke-[var(--tree-viewport-color)]"
+                    "fill-[var(--tree-minimap-focus)] stroke-[var(--tree-viewport-color)]",
+                  isHit &&
+                    focusedId !== id &&
+                    "stroke-[var(--tree-minimap-find-stroke)]"
                 )}
                 vectorEffect={
-                  focusedId === id ? "non-scaling-stroke" : undefined
+                  focusedId === id || isHit ? "non-scaling-stroke" : undefined
                 }
-                strokeWidth={focusedId === id ? 1.5 : undefined}
+                strokeWidth={focusedId === id ? 1.5 : isHit ? 1.25 : undefined}
                 onClick={() => onJump(id)}
               />
             )

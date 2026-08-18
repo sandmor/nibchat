@@ -11,6 +11,7 @@ import {
   composeLayoutId,
   isAddId,
   layoutChatTree,
+  layoutNodeIds,
 } from "./tree-layout"
 
 const node = (
@@ -185,6 +186,19 @@ describe("layoutChatTree", () => {
       sizes: new Map([[plus, 140]]),
     })
     expect(grown.rects.get(plus)!.height).toBe(140)
+  })
+
+  it("exports preorder node ids matching sibling sort, excluding plus nodes", () => {
+    const nodes = [
+      node("root", null, "1"),
+      node("later", "root", "3"),
+      node("first", "root", "2"),
+      node("deep", "first", "4"),
+    ]
+    expect(layoutNodeIds(nodes)).toEqual(["root", "first", "deep", "later"])
+    const layout = layoutChatTree(nodes)
+    expect([...layout.rects.keys()].some((id) => isAddId(id))).toBe(true)
+    expect(layoutNodeIds(nodes).every((id) => !isAddId(id))).toBe(true)
   })
 
   it("does not treat the root add control as a parent-prefixed add id", () => {

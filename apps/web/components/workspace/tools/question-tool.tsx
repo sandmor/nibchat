@@ -28,7 +28,8 @@ import type { ToolInvocationPart } from "@/lib/types"
 function answersFromOutput(output: unknown): QuestionAnswers | null {
   if (output && typeof output === "object" && "metadata" in output) {
     const meta = (output as { metadata?: { answers?: unknown } }).metadata
-    if (meta && Array.isArray(meta.answers)) return meta.answers as QuestionAnswers
+    if (meta && Array.isArray(meta.answers))
+      return meta.answers as QuestionAnswers
   }
   if (Array.isArray(output)) return output as QuestionAnswers
   return null
@@ -41,7 +42,10 @@ function parseInput(input: unknown): QuestionInput | null {
 
 function PreparingQuestions() {
   return (
-    <div className="rounded-lg border bg-muted/40 p-3 text-sm text-muted-foreground">
+    <div
+      data-find-skip
+      className="rounded-lg border bg-muted/40 p-3 text-sm text-muted-foreground"
+    >
       Preparing questions…
     </div>
   )
@@ -61,13 +65,19 @@ export function QuestionToolView({
   const [submitting, setSubmitting] = React.useState(false)
 
   // Arguments stream in over multiple chunks; empty/partial input is expected.
-  if (part.state === "input-streaming" || (!data && part.state !== "input-available")) {
+  if (
+    part.state === "input-streaming" ||
+    (!data && part.state !== "input-available")
+  ) {
     return <PreparingQuestions />
   }
 
   if (!data) {
     return (
-      <div className="rounded-lg border bg-muted/40 p-3 text-sm text-muted-foreground">
+      <div
+        data-find-skip
+        className="rounded-lg border bg-muted/40 p-3 text-sm text-muted-foreground"
+      >
         Invalid question tool input.
       </div>
     )
@@ -89,7 +99,10 @@ export function QuestionToolView({
 
   if (!interactive) {
     return (
-      <div className="rounded-lg border bg-muted/40 p-3 text-sm text-muted-foreground">
+      <div
+        data-find-skip
+        className="rounded-lg border bg-muted/40 p-3 text-sm text-muted-foreground"
+      >
         Waiting for answers…
       </div>
     )
@@ -137,7 +150,9 @@ export function QuestionToolView({
   return (
     <div className="rounded-xl border bg-muted/20 p-4">
       <Questionnaire items={items} onSubmit={handleSubmit}>
-        <QuestionnaireProgress />
+        <div data-find-skip>
+          <QuestionnaireProgress />
+        </div>
         {items.map((question, index) => {
           return (
             <QuestionnaireItem
@@ -162,17 +177,21 @@ export function QuestionToolView({
                   </QuestionnaireChoice>
                 ))}
                 {question.custom ? (
-                  <QuestionnaireInput
-                    aria-label="Another answer"
-                    placeholder="Type another answer…"
-                  />
+                  <div data-find-skip>
+                    <QuestionnaireInput
+                      aria-label="Another answer"
+                      placeholder="Type another answer…"
+                    />
+                  </div>
                 ) : null}
               </QuestionnaireChoices>
-              <QuestionnaireError />
+              <div data-find-skip>
+                <QuestionnaireError />
+              </div>
             </QuestionnaireItem>
           )
         })}
-        <QuestionnaireActions>
+        <QuestionnaireActions data-find-skip>
           <QuestionnairePrevious />
           <QuestionnaireSkip />
           <QuestionnaireNext />
@@ -196,7 +215,10 @@ function QuestionAnswersSummary({
 }) {
   return (
     <div className="space-y-2 rounded-xl border bg-muted/20 p-4 text-sm">
-      <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+      <p
+        data-find-skip
+        className="text-xs font-medium tracking-wide text-muted-foreground uppercase"
+      >
         Questions answered
       </p>
       {error ? <p className="text-destructive">{error}</p> : null}

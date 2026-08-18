@@ -4,6 +4,8 @@
 
 @custom-variant dark (&:is(.dark *));
 @source "../**/*.{ts,tsx}";
+@source not "../components/workspace/find-highlight.ts";
+@source not "../components/workspace/find-highlight.test.ts";
 @source "../node_modules/streamdown/dist/**/*.{js,mjs}";
 @source "../node_modules/@streamdown/code/dist/**/*.{js,mjs}";
 @source "../node_modules/@streamdown/math/dist/**/*.{js,mjs}";
@@ -93,7 +95,11 @@
   --sidebar-border: color-mix(in oklab, var(--palette-ink) 8%, var(--sidebar));
   --sidebar-hover: color-mix(in oklab, var(--palette-ink) 6%, var(--sidebar));
   --chat-background: var(--palette-paper);
-  --message-user: color-mix(in oklab, var(--palette-ink) 4%, var(--palette-paper));
+  --message-user: color-mix(
+    in oklab,
+    var(--palette-ink) 4%,
+    var(--palette-paper)
+  );
   --message-user-foreground: var(--palette-ink);
   --message-user-border: color-mix(
     in oklab,
@@ -109,7 +115,11 @@
   );
   --composer: var(--palette-paper);
   --composer-foreground: var(--palette-ink);
-  --composer-border: color-mix(in oklab, var(--palette-ink) 8%, var(--composer));
+  --composer-border: color-mix(
+    in oklab,
+    var(--palette-ink) 8%,
+    var(--composer)
+  );
   --settings-card: var(--palette-paper);
   --settings-card-foreground: var(--palette-ink);
   --settings-card-border: color-mix(
@@ -121,7 +131,11 @@
   --popover-foreground: var(--palette-ink);
   --popover-border: color-mix(in oklab, var(--palette-ink) 8%, var(--popover));
   --input: color-mix(in oklab, var(--palette-ink) 8%, var(--palette-paper));
-  --input-border: color-mix(in oklab, var(--palette-ink) 8%, var(--palette-paper));
+  --input-border: color-mix(
+    in oklab,
+    var(--palette-ink) 8%,
+    var(--palette-paper)
+  );
   --ring: var(--palette-accent);
   --button: var(--palette-accent);
   --button-foreground: var(--palette-paper);
@@ -154,16 +168,32 @@
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
   --radius: 0.625rem;
-  --tree-grid-color: color-mix(
+  --tree-grid-color: color-mix(in oklab, var(--palette-muted) 18%, transparent);
+  --tree-edge-color: color-mix(
     in oklab,
-    var(--palette-muted) 18%,
+    var(--palette-ink) 8%,
+    var(--palette-paper)
+  );
+  --tree-active-color: color-mix(
+    in oklab,
+    var(--palette-accent) 70%,
     transparent
   );
-  --tree-edge-color: color-mix(in oklab, var(--palette-ink) 8%, var(--palette-paper));
-  --tree-active-color: color-mix(in oklab, var(--palette-accent) 70%, transparent);
-  --tree-focus-color: color-mix(in oklab, var(--palette-accent) 70%, transparent);
-  --tree-path-color: color-mix(in oklab, var(--palette-accent) 35%, transparent);
-  --tree-active-surface: color-mix(in oklab, var(--palette-accent) 20%, transparent);
+  --tree-focus-color: color-mix(
+    in oklab,
+    var(--palette-accent) 70%,
+    transparent
+  );
+  --tree-path-color: color-mix(
+    in oklab,
+    var(--palette-accent) 35%,
+    transparent
+  );
+  --tree-active-surface: color-mix(
+    in oklab,
+    var(--palette-accent) 20%,
+    transparent
+  );
   --tree-chrome-background: color-mix(
     in oklab,
     var(--palette-paper) 90%,
@@ -191,6 +221,27 @@
     var(--palette-muted)
   );
   --tree-minimap-focus: var(--palette-accent);
+  --tree-minimap-find: color-mix(
+    in oklab,
+    var(--palette-accent) 55%,
+    var(--palette-muted)
+  );
+  --tree-minimap-find-stroke: var(--palette-accent);
+  --tree-find-color: color-mix(
+    in oklab,
+    var(--palette-accent) 55%,
+    transparent
+  );
+  --conversation-find-match: color-mix(
+    in oklab,
+    var(--palette-accent) 28%,
+    transparent
+  );
+  --conversation-find-current: color-mix(
+    in oklab,
+    var(--palette-accent) 55%,
+    transparent
+  );
   --tree-viewport-color: var(--palette-ink);
   --tree-shadow-sm: 0 1px 3px
     color-mix(in oklab, var(--palette-ink) 12%, transparent);
@@ -310,4 +361,19 @@
   stroke: color-mix(in oklch, var(--palette-accent) 75%, var(--palette-paper));
   stroke-width: 2;
   pointer-events: none;
+}
+
+@keyframes find-flash {
+  0%,
+  100% {
+    box-shadow: none;
+  }
+  35% {
+    box-shadow: 0 0 0 2px
+      color-mix(in oklab, var(--palette-accent) 55%, transparent);
+  }
+}
+
+[data-find-flash] {
+  animation: find-flash 0.8s ease;
 }

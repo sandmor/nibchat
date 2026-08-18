@@ -101,6 +101,42 @@ export function searchTextFromParts(parts: Parts): string {
   return chunks.join("\n")
 }
 
+/**
+ * In-conversation Find corpus. Visible MessageParts chrome and bodies:
+ * prose (markdown source), attachment labels/body, tool chrome/output,
+ * pending question header/prompt/options, answered question summary
+ * (header + answers / Unanswered). Skips reasoning. Occurrence index (not
+ * source offset) maps onto concatenated DOM text. Not the SQL search_text
+ * index (that keeps attachment:/tool: prefixes).
+ */
+export function conversationFindTextFromParts(parts: Parts): string {
+  const chunks: string[] = []
+  for (const part of parts) {
+    if (part.type === "reasoning") continue
+    if (part.type === "text" && part.text) chunks.push(part.text)
+    else if (part.type === "attachment") {
+      if (part.content.kind === "binary") {
+        chunks.push(part.name)
+        continue
+      }
+      chunks.push(`Attached: ${part.name}`)
+      if (part.source.kind === "mcp-resource") {
+        chunks.push(part.source.profileName)
+        chunks.push(part.source.uri)
+      }
+      chunks.push(part.content.text)
+      if (part.content.truncated) {
+        chunks.push(
+          `Truncated from ${part.content.truncated.originalCharacters} characters.`
+        )
+      }
+    } else if (part.type === "tool-invocation") {
+      chunks.push(toolFindText(part))
+    }
+  }
+  return chunks.join("\n")
+}
+
 /** How attachment content is presented to the model. */
 export function attachmentModelText(part: AttachmentPart): string {
   if (part.content.kind !== "text") return `[Image attachment: ${part.name}]`
@@ -120,19 +156,106 @@ function toolSearchSnippet(part: ToolInvocationPart): string {
   return `tool:${part.toolName}`
 }
 
+function toolFindText(part: ToolInvocationPart): string {
+  if (part.toolName === "question") return questionFindText(part)
+  const chunks = [`Tool · ${part.toolName} · ${part.state}`]
+  if (part.state === "output-available" && part.output != null) {
+    chunks.push(stringifyToolOutput(part.output))
+  }
+  return chunks.join("\n")
+}
+
+function stringifyToolOutput(output: unknown) {
+  return typeof output === "string" ? output : JSON.stringify(output, null, 2)
+}
+
 function questionHeaders(input: unknown): string[] {
+  return questionFields(input, "header")
+}
+
+function questionFindText(part: ToolInvocationPart): string {
+  if (part.state === "input-streaming") return ""
+  const answered =
+    part.state === "output-available" ||
+    part.state === "output-error" ||
+    answersFromQuestionOutput(part.output)
+  if (answered) return questionSummaryFindText(part)
+  if (part.state !== "input-available") return ""
+  return [
+    ...questionFields(part.input, "header"),
+    ...questionFields(part.input, "question"),
+    ...questionOptionText(part.input),
+  ].join("\n")
+}
+
+function questionSummaryFindText(part: ToolInvocationPart): string {
+  const chunks = [...questionFields(part.input, "header")]
+  const answers = answersFromQuestionOutput(part.output)
+  const count = questionCount(part.input)
+  for (let index = 0; index < count; index++) {
+    const group = answers?.[index] ?? []
+    const labels = group.filter(
+      (label): label is string => typeof label === "string" && Boolean(label)
+    )
+    chunks.push(labels.length === 0 ? "Unanswered" : labels.join(", "))
+  }
+  if (part.state === "output-error" && part.errorText) {
+    chunks.push(part.errorText)
+  }
+  return chunks.join("\n")
+}
+
+function questionCount(input: unknown) {
+  if (!input || typeof input !== "object") return 0
+  const questions = (input as { questions?: unknown }).questions
+  return Array.isArray(questions) ? questions.length : 0
+}
+
+function questionFields(input: unknown, key: "header" | "question"): string[] {
   if (!input || typeof input !== "object") return []
   const questions = (input as { questions?: unknown }).questions
   if (!Array.isArray(questions)) return []
   return questions
-    .map((q) =>
-      q &&
-      typeof q === "object" &&
-      typeof (q as { header?: unknown }).header === "string"
-        ? (q as { header: string }).header
-        : null
-    )
-    .filter((h): h is string => Boolean(h))
+    .map((q) => {
+      if (!q || typeof q !== "object") return null
+      const value = (q as Record<string, unknown>)[key]
+      return typeof value === "string" ? value : null
+    })
+    .filter((value): value is string => Boolean(value))
+}
+
+function questionOptionText(input: unknown): string[] {
+  if (!input || typeof input !== "object") return []
+  const questions = (input as { questions?: unknown }).questions
+  if (!Array.isArray(questions)) return []
+  const chunks: string[] = []
+  for (const q of questions) {
+    if (!q || typeof q !== "object") continue
+    const options = (q as { options?: unknown }).options
+    if (!Array.isArray(options)) continue
+    for (const option of options) {
+      if (!option || typeof option !== "object") continue
+      const rec = option as { label?: unknown; description?: unknown }
+      if (typeof rec.label === "string") chunks.push(rec.label)
+      if (typeof rec.description === "string") chunks.push(rec.description)
+    }
+  }
+  return chunks
+}
+
+function answersFromQuestionOutput(output: unknown): string[][] | null {
+  if (output && typeof output === "object" && "metadata" in output) {
+    const meta = (output as { metadata?: { answers?: unknown } }).metadata
+    if (meta && Array.isArray(meta.answers)) {
+      return meta.answers.filter((group): group is string[] =>
+        Array.isArray(group)
+      )
+    }
+  }
+  if (Array.isArray(output) && output.every((group) => Array.isArray(group))) {
+    return output as string[][]
+  }
+  return null
 }
 
 export function isToolInvocationPart(part: Part): part is ToolInvocationPart {

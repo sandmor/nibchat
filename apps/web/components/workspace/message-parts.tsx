@@ -57,6 +57,7 @@ export function MessageParts({
             return (
               <details
                 key={`reasoning-${index}`}
+                data-find-skip
                 className="rounded-lg bg-muted p-3 text-xs text-muted-foreground"
               >
                 <summary className="cursor-pointer">Reasoning</summary>

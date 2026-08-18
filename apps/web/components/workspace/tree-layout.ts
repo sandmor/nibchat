@@ -52,15 +52,10 @@ type LayoutOptions = {
   sizes?: ReadonlyMap<string, number>
 }
 
-/**
- * Ordered tidy forest. Each item reserves its own width so siblings cannot
- * overlap. Synthetic plus nodes keep collision space and an edge, but are not
- * structural children for centering.
- */
-export function layoutChatTree(
-  nodes: NodeRow[],
-  options: LayoutOptions = {}
-): TreeLayout {
+/** Same sibling grouping layoutChatTree uses: created_at, then id. */
+function groupedTreeChildren(
+  nodes: readonly NodeRow[]
+): Map<string | null, NodeRow[]> {
   const children = new Map<string | null, NodeRow[]>()
   for (const node of nodes) {
     const list = children.get(node.parent_id) ?? []
@@ -72,6 +67,36 @@ export function layoutChatTree(
       (a, b) =>
         a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)
     )
+  return children
+}
+
+/**
+ * Message node ids in preorder: parent, then children left-to-right by
+ * created_at then id. Uses the same sibling/root grouping as layoutChatTree.
+ * Plus-node controls are excluded. Preorder is the Find hit order for
+ * off-path nodes.
+ */
+export function layoutNodeIds(nodes: readonly NodeRow[]): string[] {
+  const children = groupedTreeChildren(nodes)
+  const ids: string[] = []
+  const visit = (node: NodeRow) => {
+    ids.push(node.id)
+    for (const child of children.get(node.id) ?? []) visit(child)
+  }
+  for (const root of children.get(null) ?? []) visit(root)
+  return ids
+}
+
+/**
+ * Ordered tidy forest. Each item reserves its own width so siblings cannot
+ * overlap. Synthetic plus nodes keep collision space and an edge, but are not
+ * structural children for centering.
+ */
+export function layoutChatTree(
+  nodes: NodeRow[],
+  options: LayoutOptions = {}
+): TreeLayout {
+  const children = groupedTreeChildren(nodes)
 
   const rects = new Map<string, TreeRect>()
   const depths = new Map<string, number>()

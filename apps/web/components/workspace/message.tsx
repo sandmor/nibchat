@@ -317,6 +317,8 @@ export function Message({
 
   return (
     <article
+      data-find-node={node.id}
+      {...(node.status === "streaming" ? { "data-find-skip": "" } : {})}
       data-theme-group={
         node.role === "user" ? "message-user" : "message-assistant"
       }
@@ -332,7 +334,10 @@ export function Message({
             : "border-message-assistant-border bg-message-assistant text-message-assistant-foreground"
       )}
     >
-      <div className="mb-2 flex items-center justify-between text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+      <div
+        data-find-skip
+        className="mb-2 flex items-center justify-between text-[11px] font-medium tracking-wide text-muted-foreground uppercase"
+      >
         <span>
           {node.role}
           {node.status === "awaiting_input"
@@ -428,7 +433,7 @@ export function Message({
           {text || (node.status === "streaming" ? "Thinking…" : "")}
         </Markdown>
       )}
-      <div className="mt-3 flex flex-wrap items-center gap-0.5">
+      <div data-find-skip className="mt-3 flex flex-wrap items-center gap-0.5">
         <TooltipProvider delay={400}>
           <MessageAction
             onClick={() => void copyMarkdown("message")}

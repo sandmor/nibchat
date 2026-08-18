@@ -5,6 +5,8 @@ import { HugeiconsIcon } from "@hugeicons/react"
 import { Add01Icon } from "@hugeicons/core-free-icons"
 import { AnimatePresence, motion } from "motion/react"
 import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
+import type { NodeRow } from "@/lib/types"
 import type { TreeRect } from "./tree-layout"
 
 type Motion = { duration: number; ease: [number, number, number, number] }
@@ -22,6 +24,32 @@ type Motion = { duration: number; ease: [number, number, number, number] }
  * layout are already their own coordinate system. Geometry is explicit and
  * the content transition stays local to that geometry shell.
  */
+
+/** Map-tier card: search_text only. Role is fill and border, not a header. */
+export function TreePlaque({
+  node,
+  onPath,
+}: {
+  node: NodeRow
+  onPath: boolean
+}) {
+  const user = node.role === "user"
+  return (
+    <div
+      className={cn(
+        "flex h-full min-h-0 flex-col justify-center overflow-hidden rounded-xl border px-3 py-2",
+        user
+          ? "border-message-user-border bg-message-user text-message-user-foreground"
+          : "border-message-assistant-border bg-message-assistant text-message-assistant-foreground",
+        onPath && "border-[var(--tree-path-color)]"
+      )}
+    >
+      <p className="line-clamp-3 text-sm leading-snug">
+        {node.search_text.trim() || "…"}
+      </p>
+    </div>
+  )
+}
 
 export function ComposeSlot({
   id,
@@ -183,7 +211,7 @@ export function TreeHandoff({
         {composer}
       </motion.div>
       <motion.div
-        className="absolute inset-0 overflow-auto overscroll-contain [touch-action:pan-x_pan-y] select-text"
+        className="absolute inset-0 [touch-action:pan-x_pan-y] overflow-auto overscroll-contain select-text"
         data-tree-hit={hitId}
         data-tree-scroll=""
         aria-hidden={!live}

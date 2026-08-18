@@ -2,13 +2,25 @@ import type { TreeRect } from "./tree-layout"
 
 export type Camera = { x: number; y: number; scale: number }
 
-export const MIN_SCALE = 0.2
+export const MIN_SCALE = 0.08
 export const MAX_SCALE = 1.2
 export const PAN_THRESHOLD = 6
 /** Floor used by centerOn when the caller does not pass a scale. */
 export const CENTER_SCALE = 0.78
 /** On-screen height below which a card is a filled rect, not readable text. */
 export const STUB_SCREEN_PX = 32
+/** Map → work. Default camera (0.82) and CENTER_SCALE sit here. */
+export const WORK_ENTER = 0.78
+/** Work → map. */
+export const WORK_LEAVE = 0.68
+export const DEFAULT_CAMERA: Camera = { x: 48, y: 36, scale: 0.82 }
+export const VIEW_CULL_PAD = 240
+/** Recull after the view has moved this far. Stays inside VIEW_CULL_PAD. */
+export const VIEW_CULL_STEP = VIEW_CULL_PAD / 3
+
+/** Canvas zoom language. Stub is decided per card from on-screen height. */
+export type ZoomTier = "work" | "map"
+export type NodePaint = "live" | "map" | "stub"
 
 export function clampScale(scale: number) {
   return Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale))
@@ -82,30 +94,213 @@ export function rectsOverlap(a: TreeRect, b: TreeRect, pad = 0) {
   )
 }
 
-export type NodePaint = "stub" | "live"
+export function cameraEqual(a: Camera, b: Camera) {
+  return a.x === b.x && a.y === b.y && a.scale === b.scale
+}
+
+export function cameraTransform(camera: Camera) {
+  return `translate(${camera.x}px, ${camera.y}px) scale(${camera.scale})`
+}
+
+export function applyCameraTransform(
+  element: { style: { transform: string } } | null,
+  camera: Camera
+) {
+  if (!element) return
+  element.style.transform = cameraTransform(camera)
+}
 
 /**
- * Geometry stubs are only for cards too small to read. Anything large enough
- * on screen mounts the real message (markdown, reasoning, tools).
+ * Keep connector strokes readable once scale drops below WORK_LEAVE.
+ * Not tied to map-tier hysteresis: the 0.68–0.78 band is still near work size.
+ */
+export function edgeStrokeFactor(scale: number) {
+  return scale < WORK_LEAVE ? WORK_LEAVE / scale : 1
+}
+
+export function applyZoomCssVars(
+  element: {
+    style: { setProperty: (name: string, value: string) => void }
+  } | null,
+  scale: number
+) {
+  if (!element) return
+  const factor = edgeStrokeFactor(scale)
+  element.style.setProperty("--tree-edge-width", `${1.5 * factor}px`)
+  element.style.setProperty("--tree-edge-lit-width", `${3 * factor}px`)
+}
+
+export function applyMinimapView(
+  elements: ArrayLike<{ setAttribute: (name: string, value: string) => void }>,
+  camera: Camera,
+  viewport: { width: number; height: number }
+) {
+  if (viewport.width <= 0 || viewport.height <= 0) return
+  const view = worldViewRect(camera, viewport)
+  for (let i = 0; i < elements.length; i++) {
+    const el = elements[i]
+    if (!el) continue
+    el.setAttribute("x", String(view.x))
+    el.setAttribute("y", String(view.y))
+    el.setAttribute("width", String(view.width))
+    el.setAttribute("height", String(view.height))
+  }
+}
+
+export function visibleIds(
+  rects: ReadonlyMap<string, TreeRect>,
+  view: TreeRect,
+  pad = VIEW_CULL_PAD
+) {
+  const ids: string[] = []
+  for (const [id, rect] of rects) {
+    if (rectsOverlap(rect, view, pad)) ids.push(id)
+  }
+  ids.sort()
+  return ids
+}
+
+export function visibleSignature(ids: readonly string[]) {
+  return ids.join("\0")
+}
+
+export type TreeViewSnapshot = {
+  sig: string
+  ids: ReadonlySet<string>
+  scale: number
+  tier: ZoomTier
+  paintSig: string
+}
+
+export function viewNeedsRecull(
+  last: TreeRect | null,
+  next: TreeRect,
+  scaleChanged: boolean
+) {
+  if (scaleChanged || !last) return true
+  return (
+    Math.abs(next.x - last.x) >= VIEW_CULL_STEP ||
+    Math.abs(next.y - last.y) >= VIEW_CULL_STEP ||
+    Math.abs(next.width - last.width) >= VIEW_CULL_STEP ||
+    Math.abs(next.height - last.height) >= VIEW_CULL_STEP
+  )
+}
+
+export function treeViewSnapshot(
+  rects: ReadonlyMap<string, TreeRect>,
+  camera: Camera,
+  viewport: { width: number; height: number },
+  tier: ZoomTier,
+  previous?: TreeViewSnapshot
+): TreeViewSnapshot {
+  const nextTier = stepZoomTier(tier, camera.scale)
+  const ids = visibleIds(rects, worldViewRect(camera, viewport))
+  const sig = visibleSignature(ids)
+  if (
+    previous &&
+    sig === previous.sig &&
+    nextTier === previous.tier &&
+    camera.scale === previous.scale
+  )
+    return previous
+  return {
+    sig,
+    ids: new Set(ids),
+    scale: camera.scale,
+    tier: nextTier,
+    paintSig: ids
+      .map((id) => {
+        const rect = rects.get(id)
+        if (!rect) return id
+        return `${id}:${nodePaint({
+          rect,
+          scale: camera.scale,
+          tier: nextTier,
+          interactive: false,
+        })}`
+      })
+      .join("|"),
+  }
+}
+
+export function createTreeViewStore(initial: TreeViewSnapshot) {
+  let snapshot = initial
+  const listeners = new Set<() => void>()
+  return {
+    subscribe(onStoreChange: () => void) {
+      listeners.add(onStoreChange)
+      return () => {
+        listeners.delete(onStoreChange)
+      }
+    },
+    getSnapshot() {
+      return snapshot
+    },
+    commit(next: TreeViewSnapshot) {
+      if (
+        next.sig === snapshot.sig &&
+        next.paintSig === snapshot.paintSig &&
+        next.tier === snapshot.tier
+      )
+        return false
+      snapshot = next
+      for (const listener of listeners) listener()
+      return true
+    },
+  }
+}
+
+/**
+ * Dual thresholds so work/map does not flap around the boundary.
+ * Stub is not a canvas tier — it is per-card paint.
+ */
+export function stepZoomTier(current: ZoomTier, scale: number): ZoomTier {
+  if (current === "work") return scale <= WORK_LEAVE ? "map" : "work"
+  return scale >= WORK_ENTER ? "work" : "map"
+}
+
+/**
+ * Geometry stubs are only for cards too small to read. Map plaques replace
+ * markdown once the canvas leaves work zoom. Interactive cards stay live.
  */
 export function nodePaint(options: {
   rect: TreeRect
   scale: number
+  tier: ZoomTier
   interactive: boolean
 }): NodePaint {
   if (options.interactive) return "live"
   if (options.rect.height * options.scale < STUB_SCREEN_PX) return "stub"
+  if (options.tier === "map") return "map"
   return "live"
 }
 
 /**
- * Scale that keeps a card live (readable markdown) when locating a Find hit.
- * Floors at CENTER_SCALE so zoomed-out locates still paint text, then raises
+ * Scale that keeps a card live (readable markdown).
+ * Floors at work-enter so zoomed-out reveals leave map/stub, then raises
  * further if that would remain a stub.
  */
 export function scaleForLivePaint(rect: TreeRect, currentScale: number) {
   const liveMin = STUB_SCREEN_PX / Math.max(rect.height, 1) + 1e-6
-  return clampScale(Math.max(currentScale, CENTER_SCALE, liveMin))
+  return clampScale(Math.max(currentScale, CENTER_SCALE, WORK_ENTER, liveMin))
+}
+
+/** Current scale when the card already paints live; otherwise a readable one. */
+export function scaleToReadCard(
+  rect: TreeRect,
+  camera: Camera,
+  tier: ZoomTier
+): number {
+  if (
+    nodePaint({
+      rect,
+      scale: camera.scale,
+      tier,
+      interactive: false,
+    }) === "live"
+  )
+    return camera.scale
+  return scaleForLivePaint(rect, camera.scale)
 }
 
 export type ScrollMetrics = {

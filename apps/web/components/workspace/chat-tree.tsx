@@ -1,12 +1,14 @@
 "use client"
 
 import {
+  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type CSSProperties,
   type ReactNode,
 } from "react"
@@ -23,7 +25,7 @@ import { motion } from "motion/react"
 import { cn } from "@/lib/utils"
 import type { NodeRow } from "@/lib/types"
 import type { ProviderSummary } from "./types"
-import { ComposeSlot, TreeHandoff } from "./tree-card"
+import { ComposeSlot, TreeHandoff, TreePlaque } from "./tree-card"
 import { Message } from "./message"
 import { StreamingBubble } from "./streaming-bubble"
 import { collectHandoffs, uniqueHandoffAnchors } from "./tree-handoff"
@@ -40,13 +42,20 @@ import {
 } from "./tree-layout"
 import {
   CENTER_SCALE,
+  DEFAULT_CAMERA,
   PAN_THRESHOLD,
+  applyCameraTransform,
+  applyMinimapView,
+  applyZoomCssVars,
+  cameraEqual,
   centerOnRect,
+  createTreeViewStore,
   nodePaint,
   panBy,
   rectFullyVisible,
-  rectsOverlap,
-  scaleForLivePaint,
+  scaleToReadCard,
+  treeViewSnapshot,
+  viewNeedsRecull,
   wheelTargetScrolls,
   worldViewRect,
   zoomToward,
@@ -57,6 +66,7 @@ const CHROME_SELECTOR =
   "button,a,input,textarea,select,[role=dialog],[data-tree-chrome]"
 
 const EMPTY_HIT_IDS: ReadonlySet<string> = new Set()
+const EMPTY_VISIBLE: ReadonlySet<string> = new Set()
 
 export function ChatTree({
   nodes,
@@ -127,16 +137,41 @@ export function ChatTree({
     y: number
     mode: "pending" | "pan"
   } | null>(null)
-  const [camera, setCamera] = useState<Camera>({ x: 48, y: 36, scale: 0.82 })
-  const [smoothCamera, setSmoothCamera] = useState(false)
+  const cameraRef = useRef<Camera>(DEFAULT_CAMERA)
+  const viewStoreRef = useRef<ReturnType<typeof createTreeViewStore> | null>(
+    null
+  )
+  if (viewStoreRef.current === null) {
+    viewStoreRef.current = createTreeViewStore({
+      sig: "",
+      ids: EMPTY_VISIBLE,
+      scale: DEFAULT_CAMERA.scale,
+      tier: "work",
+      paintSig: "",
+    })
+  }
+  const viewStore = viewStoreRef.current
+  const view = useSyncExternalStore(
+    viewStore.subscribe,
+    viewStore.getSnapshot,
+    viewStore.getSnapshot
+  )
   const [focusedId, setFocusedId] = useState<string | null>(null)
   const [mapOpen, setMapOpen] = useState(false)
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 })
+  const viewportSizeRef = useRef(viewportSize)
+  const minimapViewsRef = useRef<
+    ArrayLike<{ setAttribute: (name: string, value: string) => void }>
+  >([])
+  const viewRafRef = useRef(0)
+  const lastCullViewRef = useRef<TreeRect | null>(null)
+  const lastCullScaleRef = useRef(DEFAULT_CAMERA.scale)
+  const zoomCssScaleRef = useRef(Number.NaN)
   const [sizes, setSizes] = useState<ReadonlyMap<string, number>>(
     () => new Map()
   )
   const didCenter = useRef(false)
-  const cameraRef = useRef(camera)
+  const zoomTierRef = useRef(view.tier)
   const focusedIdRef = useRef(focusedId)
   const findLocateAppliedKeyRef = useRef(0)
   const draftHeightsRef = useRef(new Map<string, number>())
@@ -155,6 +190,10 @@ export function ChatTree({
     () => layoutChatTree(nodes, { draftAnchors, sizes }),
     [nodes, draftAnchors, sizes]
   )
+  const layoutRef = useRef(layout)
+  const moveCameraRef = useRef<(next: Camera, immediate?: boolean) => void>(
+    () => {}
+  )
   const pathIds = useMemo(
     () => new Set(activePath.map((node) => node.id)),
     [activePath]
@@ -165,20 +204,34 @@ export function ChatTree({
     () => new Map(nodes.map((node) => [node.id, node])),
     [nodes]
   )
-  const handoffs = collectHandoffs(
-    messageLayoutIds,
-    new Set(nodesById.keys()),
-    composeSources,
-    layout.rects
+  const handoffs = useMemo(
+    () =>
+      collectHandoffs(
+        messageLayoutIds,
+        new Set(nodesById.keys()),
+        composeSources,
+        layout.rects
+      ),
+    [messageLayoutIds, nodesById, composeSources, layout]
   )
-  const handoffByAnchor = new Map(
-    handoffs.map((item) => [item.anchor, item] as const)
+  const handoffByAnchor = useMemo(
+    () => new Map(handoffs.map((item) => [item.anchor, item] as const)),
+    [handoffs]
   )
-  const handoffNodeIds = new Set(handoffs.map((item) => item.userNodeId))
+  const handoffNodeIds = useMemo(
+    () => new Set(handoffs.map((item) => item.userNodeId)),
+    [handoffs]
+  )
+  const litIds = useMemo(() => {
+    const lit = new Set(pathIds)
+    let id: string | null = focusedId
+    while (id) {
+      lit.add(id)
+      id = nodesById.get(id)?.parent_id ?? null
+    }
+    return lit
+  }, [pathIds, focusedId, nodesById])
 
-  useEffect(() => {
-    cameraRef.current = camera
-  }, [camera])
   useEffect(() => {
     focusedIdRef.current = focusedId
   }, [focusedId])
@@ -226,22 +279,26 @@ export function ChatTree({
       for (const anchor of uniqueHandoffAnchors(morphsRef.current))
         onHandoffCompleteRef.current?.(anchor)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const viewport = viewportRef.current
     if (!viewport) return
-    const update = () =>
-      setViewportSize({
+    const update = () => {
+      const next = {
         width: viewport.clientWidth,
         height: viewport.clientHeight,
-      })
+      }
+      viewportSizeRef.current = next
+      setViewportSize(next)
+    }
     update()
     const observer = new ResizeObserver(update)
     observer.observe(viewport)
     return () => observer.disconnect()
   }, [])
+
+  const viewportMetrics = () => viewportSizeRef.current
 
   const viewportPoint = (clientX: number, clientY: number) => {
     const box = viewportRef.current?.getBoundingClientRect()
@@ -249,20 +306,80 @@ export function ChatTree({
     return { x: clientX - box.left, y: clientY - box.top }
   }
 
-  const moveCamera = useCallback(
-    (next: Camera, immediate = false) => {
-      const current = cameraRef.current
-      if (
-        current.x === next.x &&
-        current.y === next.y &&
-        current.scale === next.scale
-      )
-        return
-      setSmoothCamera(Boolean(animate && !immediate))
-      setCamera(next)
-    },
-    [animate, setCamera, setSmoothCamera]
-  )
+  const paintCamera = (next: Camera, smooth?: boolean) => {
+    cameraRef.current = next
+    const world = worldRef.current
+    if (world) {
+      if (smooth === true) world.dataset.smooth = ""
+      else if (smooth === false) delete world.dataset.smooth
+      applyCameraTransform(world, next)
+      if (zoomCssScaleRef.current !== next.scale) {
+        zoomCssScaleRef.current = next.scale
+        applyZoomCssVars(world, next.scale)
+      }
+    }
+    applyMinimapView(minimapViewsRef.current, next, viewportMetrics())
+  }
+
+  const commitView = (force = false) => {
+    const viewport = viewportMetrics()
+    if (viewport.width <= 0 || viewport.height <= 0) return
+    const camera = cameraRef.current
+    const view = worldViewRect(camera, viewport)
+    const scaleChanged = camera.scale !== lastCullScaleRef.current
+    if (!force && !viewNeedsRecull(lastCullViewRef.current, view, scaleChanged))
+      return
+    const next = treeViewSnapshot(
+      layoutRef.current.rects,
+      camera,
+      viewport,
+      zoomTierRef.current,
+      viewStore.getSnapshot()
+    )
+    zoomTierRef.current = next.tier
+    lastCullViewRef.current = view
+    lastCullScaleRef.current = camera.scale
+    viewStore.commit(next)
+  }
+
+  const scheduleView = () => {
+    if (viewRafRef.current) return
+    viewRafRef.current = requestAnimationFrame(() => {
+      viewRafRef.current = 0
+      commitView()
+    })
+  }
+
+  const moveCamera = (next: Camera, immediate = false) => {
+    if (cameraEqual(cameraRef.current, next)) return
+    paintCamera(next, Boolean(animate && !immediate))
+    scheduleView()
+  }
+
+  useLayoutEffect(() => {
+    layoutRef.current = layout
+    moveCameraRef.current = moveCamera
+    const viewport = viewportRef.current
+    minimapViewsRef.current = viewport
+      ? viewport.querySelectorAll("[data-tree-minimap-view]")
+      : []
+  })
+
+  useLayoutEffect(() => {
+    paintCamera(cameraRef.current)
+    commitView(true)
+    // Re-apply the current camera without toggling data-smooth, so layout
+    // measurement and minimap overlay mounts cannot cancel an in-flight ease.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layout, viewportSize, mapOpen])
+
+  useEffect(() => {
+    return () => {
+      if (!viewRafRef.current) return
+      cancelAnimationFrame(viewRafRef.current)
+      viewRafRef.current = 0
+    }
+  }, [])
 
   const centerOn = useCallback(
     (id: string, scale?: number, immediate = false) => {
@@ -280,16 +397,21 @@ export function ChatTree({
         viewportSizeNow,
         scale ?? Math.max(current.scale, CENTER_SCALE)
       )
-      moveCamera(next, immediate)
+      moveCameraRef.current(next, immediate)
     },
-    [layout, moveCamera]
+    [layout]
   )
 
   const centerOnLive = useCallback(
     (id: string, immediate = false) => {
       const rect = layout.rects.get(id)
       if (!rect) return
-      centerOn(id, scaleForLivePaint(rect, cameraRef.current.scale), immediate)
+      const camera = cameraRef.current
+      centerOn(
+        id,
+        scaleToReadCard(rect, camera, zoomTierRef.current),
+        immediate
+      )
     },
     [layout, centerOn]
   )
@@ -354,6 +476,7 @@ export function ChatTree({
     const paint = nodePaint({
       rect,
       scale: cameraRef.current.scale,
+      tier: zoomTierRef.current,
       interactive: false,
     })
     const alreadyOnCard =
@@ -409,7 +532,23 @@ export function ChatTree({
 
   const focusNode = (id: string) => {
     setFocusedId(id)
+    const rect = layout.rects.get(id)
+    if (!rect) return
+    const camera = cameraRef.current
+    const scale = scaleToReadCard(rect, camera, zoomTierRef.current)
+    if (scale !== camera.scale) {
+      centerOn(id, scale)
+      return
+    }
     frameRectIfNeeded(id)
+  }
+
+  const jumpToNode = (id: string) => {
+    if (searching && hitIds.has(id) && onLocateHit) {
+      onLocateHit(id)
+      return
+    }
+    focusNode(id)
   }
 
   useEffect(() => {
@@ -418,23 +557,22 @@ export function ChatTree({
     const onWheel = (event: WheelEvent) => {
       if (wheelTargetScrolls(event.target, event.deltaX, event.deltaY)) return
       event.preventDefault()
-      setSmoothCamera(false)
-      const point = viewportPoint(event.clientX, event.clientY)
-      if (event.ctrlKey || event.metaKey) {
-        setCamera((current) =>
-          zoomToward(current, event.deltaY > 0 ? 0.9 : 1.1, point)
-        )
-        return
-      }
-      setCamera((current) => panBy(current, -event.deltaX, -event.deltaY))
+      const current = cameraRef.current
+      const next =
+        event.ctrlKey || event.metaKey
+          ? zoomToward(
+              current,
+              event.deltaY > 0 ? 0.9 : 1.1,
+              viewportPoint(event.clientX, event.clientY)
+            )
+          : panBy(current, -event.deltaX, -event.deltaY)
+      moveCameraRef.current(next, true)
     }
     viewport.addEventListener("wheel", onWheel, { passive: false })
     return () => viewport.removeEventListener("wheel", onWheel)
   }, [])
 
-  const transform = `translate(${camera.x}px, ${camera.y}px) scale(${camera.scale})`
-  const viewRect = worldViewRect(camera, viewportSize)
-  const visible = (rect: TreeRect) => rectsOverlap(rect, viewRect, 240)
+  const inView = (id: string) => view.ids.has(id)
 
   return (
     <div
@@ -483,12 +621,11 @@ export function ChatTree({
           event.currentTarget.setPointerCapture(event.pointerId)
           event.currentTarget.dataset.panning = ""
           window.getSelection()?.removeAllRanges()
-          setSmoothCamera(false)
-          setCamera((current) => panBy(current, dx, dy))
+          moveCamera(panBy(cameraRef.current, dx, dy), true)
           return
         }
         drag.current = { ...state, x: event.clientX, y: event.clientY }
-        setCamera((current) => panBy(current, dx, dy))
+        moveCamera(panBy(cameraRef.current, dx, dy), true)
       }}
       onPointerUp={(event) => {
         const state = drag.current
@@ -515,21 +652,20 @@ export function ChatTree({
     >
       <div
         ref={worldRef}
+        data-tree-world
         className="absolute origin-top-left will-change-transform"
         style={{
           width: layout.bounds.width,
           height: layout.bounds.height,
-          transform,
-          transition:
-            smoothCamera && animate
-              ? `transform ${transition.duration}s cubic-bezier(${transition.ease.join(",")})`
-              : undefined,
         }}
         onTransitionEnd={(event) => {
-          if (event.propertyName === "transform") setSmoothCamera(false)
+          if (event.target !== event.currentTarget) return
+          if (event.propertyName === "transform")
+            delete event.currentTarget.dataset.smooth
         }}
       >
         <svg
+          data-tree-edges
           className="pointer-events-none absolute inset-0 overflow-visible"
           width={layout.bounds.width}
           height={layout.bounds.height}
@@ -544,6 +680,10 @@ export function ChatTree({
             const x2 = to.x + to.width / 2
             const y2 = to.y
             const d = `M ${x1} ${y1} C ${x1} ${y1 + 28}, ${x2} ${y2 - 28}, ${x2} ${y2}`
+            const lit = litIds.has(edge.from) && litIds.has(edge.to)
+            const className = lit
+              ? "stroke-[var(--tree-active-color)]"
+              : "stroke-[var(--tree-edge-color)]"
             return animate ? (
               <motion.path
                 key={`${edge.from}:${edge.to}`}
@@ -551,24 +691,16 @@ export function ChatTree({
                 animate={{ d }}
                 transition={transition}
                 fill="none"
-                className={cn(
-                  "stroke-[var(--tree-edge-color)] stroke-2",
-                  pathIds.has(edge.from) &&
-                    pathIds.has(edge.to) &&
-                    "stroke-[var(--tree-active-color)]"
-                )}
+                data-tree-edge-lit={lit ? "" : undefined}
+                className={className}
               />
             ) : (
               <path
                 key={`${edge.from}:${edge.to}`}
                 d={d}
                 fill="none"
-                className={cn(
-                  "stroke-[var(--tree-edge-color)] stroke-2",
-                  pathIds.has(edge.from) &&
-                    pathIds.has(edge.to) &&
-                    "stroke-[var(--tree-active-color)]"
-                )}
+                data-tree-edge-lit={lit ? "" : undefined}
+                className={className}
               />
             )
           })}
@@ -576,20 +708,24 @@ export function ChatTree({
         {nodes.map((node) => {
           if (handoffNodeIds.has(node.id)) return null
           const rect = layout.rects.get(node.id)
-          if (!rect || !visible(rect)) return null
+          if (!rect) return null
           const streamId = streamIdByNodeId.get(node.id)
           const focused = focusedId === node.id
+          const liveWork =
+            Boolean(streamId) ||
+            node.status === "awaiting_input" ||
+            node.status === "streaming"
+          if (!liveWork && !focused && !inView(node.id)) return null
           const isHit = hitIds.has(node.id)
+          const onPath = pathIds.has(node.id)
           const paint = nodePaint({
             rect,
-            scale: camera.scale,
-            interactive:
-              Boolean(streamId) ||
-              node.status === "awaiting_input" ||
-              node.status === "streaming",
+            scale: view.scale,
+            tier: view.tier,
+            interactive: liveWork,
           })
           const maxHeight = cardMaxHeight(node)
-          const live = paint !== "stub"
+          const live = paint === "live"
           return (
             <motion.div
               key={node.id}
@@ -599,7 +735,7 @@ export function ChatTree({
               className={cn(
                 "absolute rounded-xl",
                 live
-                  ? "[touch-action:pan-x_pan-y] overflow-auto overscroll-contain select-text"
+                  ? "[touch-action:pan-x_pan-y] [scrollbar-width:thin] overflow-auto overscroll-contain select-text"
                   : "cursor-pointer overflow-hidden",
                 focused && "z-10 ring-2 ring-[var(--tree-focus-color)]",
                 searching &&
@@ -607,9 +743,13 @@ export function ChatTree({
                   !focused &&
                   "z-10 ring-2 ring-[var(--tree-find-color)]",
                 searching && !isHit && "opacity-50",
-                pathIds.has(node.id) &&
+                !searching && !onPath && !focused && "opacity-55",
+                // Find hits already use ring-*; a path ring here would win in
+                // tailwind-merge and hide the highlight.
+                onPath &&
                   !focused &&
-                  "shadow-[0_0_0_1px_var(--tree-path-color)]"
+                  !(searching && isHit) &&
+                  "ring-1 ring-[var(--tree-path-color)]"
               )}
               initial={false}
               animate={{
@@ -621,7 +761,7 @@ export function ChatTree({
               style={{ maxHeight }}
               transition={animate ? transition : { duration: 0 }}
             >
-              {searching && isHit && !pathIds.has(node.id) ? (
+              {searching && isHit && !onPath ? (
                 <span
                   data-find-skip
                   className="pointer-events-none absolute top-1.5 right-1.5 z-20 rounded-full bg-secondary px-1.5 py-px text-[10px] font-medium tracking-wide text-secondary-foreground uppercase"
@@ -629,21 +769,25 @@ export function ChatTree({
                   Off path
                 </span>
               ) : null}
-              {streamId ? (
+              {streamId && live ? (
                 <StreamingBubble
                   streamId={streamId}
                   animate={animate}
                   transition={transition}
+                  presentation="tree"
                 />
               ) : paint === "stub" ? (
                 <div
                   className={cn(
                     "h-full w-full rounded-xl border",
-                    pathIds.has(node.id)
-                      ? "border-[var(--tree-active-color)] bg-[var(--tree-active-surface)]"
-                      : "border-message-assistant-border bg-message-assistant"
+                    node.role === "user"
+                      ? "border-message-user-border bg-message-user"
+                      : "border-message-assistant-border bg-message-assistant",
+                    onPath && "border-[var(--tree-path-color)]"
                   )}
                 />
+              ) : paint === "map" ? (
+                <TreePlaque node={node} onPath={onPath} />
               ) : (
                 <TreeMessage
                   node={node}
@@ -670,7 +814,7 @@ export function ChatTree({
             const open = draftAnchors.has(anchor)
             const layoutId = composeLayoutId(anchor)
             const submitting = submittingLayouts.has(layoutId)
-            if (!open && !visible(rect)) return null
+            if (!open && !inView(id)) return null
             return (
               <ComposeSlot
                 key={id}
@@ -753,8 +897,7 @@ export function ChatTree({
               x: viewport.clientWidth / 2,
               y: viewport.clientHeight / 2,
             }
-            setSmoothCamera(false)
-            setCamera((current) => zoomToward(current, 1.15, point))
+            moveCamera(zoomToward(cameraRef.current, 1.15, point), true)
           }}
         >
           <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
@@ -770,8 +913,7 @@ export function ChatTree({
               x: viewport.clientWidth / 2,
               y: viewport.clientHeight / 2,
             }
-            setSmoothCamera(false)
-            setCamera((current) => zoomToward(current, 1 / 1.15, point))
+            moveCamera(zoomToward(cameraRef.current, 1 / 1.15, point), true)
           }}
         >
           <HugeiconsIcon icon={MinusSignIcon} className="size-3.5" />
@@ -801,19 +943,11 @@ export function ChatTree({
       </Button>
       <TreeMinimap
         layout={layout}
-        camera={camera}
         viewportSize={viewportSize}
         focusedId={focusedId}
         pathIds={pathIds}
         searchHitIds={searching ? hitIds : undefined}
-        onJump={(id) => {
-          if (searching && hitIds.has(id) && onLocateHit) {
-            onLocateHit(id)
-            return
-          }
-          setFocusedId(id)
-          centerOn(id)
-        }}
+        onJump={jumpToNode}
         className="absolute top-3 right-3 z-20 hidden w-44 rounded-xl border bg-[var(--tree-chrome-background)] p-2 shadow-[var(--tree-shadow-sm)] backdrop-blur sm:block"
       />
       {mapOpen ? (
@@ -824,19 +958,12 @@ export function ChatTree({
         >
           <TreeMinimap
             layout={layout}
-            camera={camera}
             viewportSize={viewportSize}
             focusedId={focusedId}
             pathIds={pathIds}
             searchHitIds={searching ? hitIds : undefined}
             onJump={(id) => {
-              if (searching && hitIds.has(id) && onLocateHit) {
-                onLocateHit(id)
-                setMapOpen(false)
-                return
-              }
-              setFocusedId(id)
-              centerOn(id)
+              jumpToNode(id)
               setMapOpen(false)
             }}
             className="w-full max-w-sm rounded-2xl border bg-background p-3 shadow-[var(--tree-shadow-xl)]"
@@ -849,7 +976,6 @@ export function ChatTree({
 
 function TreeMinimap({
   layout,
-  camera,
   viewportSize,
   focusedId,
   pathIds,
@@ -858,7 +984,6 @@ function TreeMinimap({
   className,
 }: {
   layout: TreeLayout
-  camera: Camera
   viewportSize: { width: number; height: number }
   focusedId: string | null
   pathIds: Set<string>
@@ -868,8 +993,6 @@ function TreeMinimap({
 }) {
   const width = Math.max(1, layout.bounds.width)
   const height = Math.max(1, layout.bounds.height)
-  const view =
-    viewportSize.width > 0 ? worldViewRect(camera, viewportSize) : null
   return (
     <div data-tree-chrome className={className}>
       <svg
@@ -936,12 +1059,13 @@ function TreeMinimap({
               />
             )
           })}
-        {view ? (
+        {viewportSize.width > 0 ? (
           <rect
-            x={view.x}
-            y={view.y}
-            width={view.width}
-            height={view.height}
+            data-tree-minimap-view
+            x={0}
+            y={0}
+            width={0}
+            height={0}
             fill="none"
             data-theme-target="tree-viewport"
             className="stroke-[var(--tree-viewport-color)]"
@@ -955,7 +1079,7 @@ function TreeMinimap({
   )
 }
 
-function TreeMessage({
+const TreeMessage = memo(function TreeMessage({
   node,
   nodes,
   providers,
@@ -993,4 +1117,4 @@ function TreeMessage({
       onAnswerTools={onAnswerTools}
     />
   )
-}
+})

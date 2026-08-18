@@ -289,17 +289,66 @@
     transition-duration: var(--tree-motion-duration);
     transition-timing-function: var(--tree-motion-ease);
   }
+  [data-tree-world] {
+    --tree-edge-width: 1.5px;
+    --tree-edge-lit-width: 3px;
+  }
+  [data-tree-world][data-smooth] {
+    transition: transform var(--tree-motion-duration) var(--tree-motion-ease);
+  }
+  [data-tree-edges] path {
+    stroke-width: var(--tree-edge-width);
+  }
+  [data-tree-edges] path[data-tree-edge-lit] {
+    stroke-width: var(--tree-edge-lit-width);
+  }
+  [data-tree-streaming] {
+    animation: tree-stream-pulse 1.5s ease-in-out infinite;
+    transition: none;
+  }
+  [data-tree-scroll]::-webkit-scrollbar {
+    width: 5px;
+  }
+  [data-tree-scroll]::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  [data-tree-scroll]::-webkit-scrollbar-thumb {
+    background: var(--tree-minimap-edge);
+    border-radius: 3px;
+  }
+}
+
+@keyframes tree-stream-pulse {
+  0%,
+  100% {
+    border-color: var(--tree-active-color);
+  }
+  50% {
+    border-color: color-mix(
+      in oklab,
+      var(--tree-active-color) 35%,
+      var(--message-assistant-border, transparent)
+    );
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   :root:not([data-motion-reduced="never"]) {
     --motion-effective-duration: 0ms;
   }
+  :root:not([data-motion-reduced="never"]) [data-tree-streaming] {
+    animation: none;
+  }
 }
 
 :root[data-motion-enabled="false"],
 :root[data-motion-reduced="always"] {
   --motion-effective-duration: 0ms;
+}
+
+:root[data-motion-enabled="false"] [data-tree-streaming],
+:root[data-motion-reduced="always"] [data-tree-streaming] {
+  animation: none;
 }
 
 /* KaTeX keeps display formulas on one line by default. Let ordinary equations

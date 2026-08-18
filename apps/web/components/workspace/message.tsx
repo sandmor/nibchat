@@ -331,69 +331,79 @@ export function Message({
           ? "ml-auto max-w-[88%] border-message-user-border bg-message-user text-message-user-foreground"
           : node.role === "user"
             ? "border-message-user-border bg-message-user text-message-user-foreground"
-            : "border-message-assistant-border bg-message-assistant text-message-assistant-foreground"
+            : "border-message-assistant-border bg-message-assistant text-message-assistant-foreground",
+        presentation === "tree" && "hover:border-foreground/30"
       )}
     >
-      <div
-        data-find-skip
-        className="mb-2 flex items-center justify-between text-[11px] font-medium tracking-wide text-muted-foreground uppercase"
-      >
-        <span>
-          {node.role}
-          {node.status === "awaiting_input"
-            ? " · waiting for input"
-            : node.status === "stopped"
-              ? " · stopped"
-              : node.status === "error"
-                ? " · error"
-                : null}
-        </span>
-        {presentation === "linear" && siblings.length > 1 && (
-          <span className="flex items-center gap-1">
-            <WithTooltip label="Previous branch">
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                disabled={index === 0}
-                aria-label="Previous branch"
-                onClick={() => {
-                  const previous = siblings[index - 1]
-                  if (previous) onSelect?.(node.parent_id ?? "", previous.id)
-                }}
-              >
-                <HugeiconsIcon
-                  icon={ArrowLeft01Icon}
-                  strokeWidth={2}
-                  className="size-3.5"
-                  aria-hidden
-                />
-              </Button>
-            </WithTooltip>
-            <span aria-live="polite">
-              {index + 1}/{siblings.length}
-            </span>
-            <WithTooltip label="Next branch">
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                disabled={index === siblings.length - 1}
-                aria-label="Next branch"
-                onClick={() => {
-                  const next = siblings[index + 1]
-                  if (next) onSelect?.(node.parent_id ?? "", next.id)
-                }}
-              >
-                <HugeiconsIcon
-                  icon={ArrowRight01Icon}
-                  strokeWidth={2}
-                  className="size-3.5"
-                  aria-hidden
-                />
-              </Button>
-            </WithTooltip>
+      {presentation === "linear" ? (
+        <div
+          data-find-skip
+          className="mb-2 flex items-center justify-between text-[11px] font-medium tracking-wide text-muted-foreground uppercase"
+        >
+          <span>
+            {node.role}
+            {node.status === "awaiting_input"
+              ? " · waiting for input"
+              : node.status === "stopped"
+                ? " · stopped"
+                : node.status === "error"
+                  ? " · error"
+                  : null}
           </span>
-        )}
-      </div>
+          {siblings.length > 1 && (
+            <span className="flex items-center gap-1">
+              <WithTooltip label="Previous branch">
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  disabled={index === 0}
+                  aria-label="Previous branch"
+                  onClick={() => {
+                    const previous = siblings[index - 1]
+                    if (previous) onSelect?.(node.parent_id ?? "", previous.id)
+                  }}
+                >
+                  <HugeiconsIcon
+                    icon={ArrowLeft01Icon}
+                    strokeWidth={2}
+                    className="size-3.5"
+                    aria-hidden
+                  />
+                </Button>
+              </WithTooltip>
+              <span aria-live="polite">
+                {index + 1}/{siblings.length}
+              </span>
+              <WithTooltip label="Next branch">
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  disabled={index === siblings.length - 1}
+                  aria-label="Next branch"
+                  onClick={() => {
+                    const next = siblings[index + 1]
+                    if (next) onSelect?.(node.parent_id ?? "", next.id)
+                  }}
+                >
+                  <HugeiconsIcon
+                    icon={ArrowRight01Icon}
+                    strokeWidth={2}
+                    className="size-3.5"
+                    aria-hidden
+                  />
+                </Button>
+              </WithTooltip>
+            </span>
+          )}
+        </div>
+      ) : node.status !== "complete" && node.status !== "streaming" ? (
+        <p
+          data-find-skip
+          className="mb-2 text-[11px] font-medium tracking-wide text-muted-foreground"
+        >
+          {node.status === "awaiting_input" ? "waiting for input" : node.status}
+        </p>
+      ) : null}
       {displayParts.some((part) => part.type === "reasoning") ||
       displayParts.some((part) => part.type === "text") ||
       displayParts.some((part) => part.type === "attachment") ||

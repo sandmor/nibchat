@@ -52,7 +52,7 @@ test.describe("tree canvas", () => {
     await expect(
       tree.getByRole("paragraph").filter({ hasText: "tree branch" })
     ).toBeVisible({ timeout: 15_000 })
-    await expect(tree.getByText("assistant · streaming")).toBeVisible({
+    await expect(tree.locator("[data-tree-streaming]")).toBeVisible({
       timeout: 15_000,
     })
     await expect(

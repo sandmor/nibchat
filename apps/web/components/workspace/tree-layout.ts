@@ -13,6 +13,15 @@ export const ROOT_ADD_ID = "tree:add-root"
 export const addId = (parentId: string) => `tree:add:${parentId}`
 export const isAddId = (id: string) =>
   id === ROOT_ADD_ID || id.startsWith("tree:add:")
+
+/** Cubic drop from a parent's bottom-center to a child's top-center. */
+export function treeConnectorPath(from: TreeRect, to: TreeRect) {
+  const x1 = from.x + from.width / 2
+  const y1 = from.y + from.height
+  const x2 = to.x + to.width / 2
+  const y2 = to.y
+  return `M ${x1} ${y1} C ${x1} ${y1 + 28}, ${x2} ${y2 - 28}, ${x2} ${y2}`
+}
 export const addAnchor = (id: string): string | null =>
   id === ROOT_ADD_ID ? null : id.slice("tree:add:".length)
 export const composeLayoutId = (anchor: string | null) =>
@@ -23,13 +32,14 @@ export const composeLayoutAnchor = (layoutId: string): string | null => {
   return rest === "root" ? null : rest
 }
 
-export const CARD_WIDTH = 360
+export const CARD_WIDTH = 400
 export const ADD_SIZE = 48
-const GAP_X = 48
-const GAP_Y = 56
-const PREVIEW_LINES = 5
-const LINE_HEIGHT = 20
-const CARD_CHROME = 64
+const GAP_X = 56
+const GAP_Y = 64
+const PREVIEW_LINES = 8
+const LINE_HEIGHT = 22
+/** Padding, sticky action row, and status line. Content sits above this. */
+const CARD_CHROME = 96
 
 /**
  * Cap for a message card. Paint may be shorter; it must not be taller, or

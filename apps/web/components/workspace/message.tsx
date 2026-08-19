@@ -314,6 +314,7 @@ export function Message({
     usage && typeof usage === "object" && !Array.isArray(usage)
       ? Object.entries(usage as Record<string, unknown>)
       : null
+  const tree = presentation === "tree"
 
   return (
     <article
@@ -326,124 +327,150 @@ export function Message({
         node.role === "user" ? "message-user" : "message-assistant"
       }
       className={cn(
-        "group relative min-w-0 overflow-hidden rounded-xl border p-4",
+        "group relative min-w-0 overflow-hidden rounded-xl border",
+        tree ? "flex h-full min-h-0 flex-col" : "p-4",
         node.role === "user" && presentation === "linear"
           ? "ml-auto max-w-[88%] border-message-user-border bg-message-user text-message-user-foreground"
           : node.role === "user"
             ? "border-message-user-border bg-message-user text-message-user-foreground"
             : "border-message-assistant-border bg-message-assistant text-message-assistant-foreground",
-        presentation === "tree" && "hover:border-foreground/30"
+        tree && "hover:border-foreground/30"
       )}
     >
-      {presentation === "linear" ? (
-        <div
-          data-find-skip
-          className="mb-2 flex items-center justify-between text-[11px] font-medium tracking-wide text-muted-foreground uppercase"
-        >
-          <span>
-            {node.role}
-            {node.status === "awaiting_input"
-              ? " · waiting for input"
-              : node.status === "stopped"
-                ? " · stopped"
-                : node.status === "error"
-                  ? " · error"
-                  : null}
-          </span>
-          {siblings.length > 1 && (
-            <span className="flex items-center gap-1">
-              <WithTooltip label="Previous branch">
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  disabled={index === 0}
-                  aria-label="Previous branch"
-                  onClick={() => {
-                    const previous = siblings[index - 1]
-                    if (previous) onSelect?.(node.parent_id ?? "", previous.id)
-                  }}
-                >
-                  <HugeiconsIcon
-                    icon={ArrowLeft01Icon}
-                    strokeWidth={2}
-                    className="size-3.5"
-                    aria-hidden
-                  />
-                </Button>
-              </WithTooltip>
-              <span aria-live="polite">
-                {index + 1}/{siblings.length}
-              </span>
-              <WithTooltip label="Next branch">
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  disabled={index === siblings.length - 1}
-                  aria-label="Next branch"
-                  onClick={() => {
-                    const next = siblings[index + 1]
-                    if (next) onSelect?.(node.parent_id ?? "", next.id)
-                  }}
-                >
-                  <HugeiconsIcon
-                    icon={ArrowRight01Icon}
-                    strokeWidth={2}
-                    className="size-3.5"
-                    aria-hidden
-                  />
-                </Button>
-              </WithTooltip>
+      <div
+        className={
+          tree
+            ? "min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-3.5 pb-2"
+            : undefined
+        }
+        data-tree-scroll={tree ? "" : undefined}
+      >
+        {presentation === "linear" ? (
+          <div
+            data-find-skip
+            className="mb-2 flex items-center justify-between text-[11px] font-medium tracking-wide text-muted-foreground uppercase"
+          >
+            <span>
+              {node.role}
+              {node.status === "awaiting_input"
+                ? " · waiting for input"
+                : node.status === "stopped"
+                  ? " · stopped"
+                  : node.status === "error"
+                    ? " · error"
+                    : null}
             </span>
-          )}
-        </div>
-      ) : node.status !== "complete" && node.status !== "streaming" ? (
-        <p
-          data-find-skip
-          className="mb-2 text-[11px] font-medium tracking-wide text-muted-foreground"
-        >
-          {node.status === "awaiting_input" ? "waiting for input" : node.status}
-        </p>
-      ) : null}
-      {displayParts.some((part) => part.type === "reasoning") ||
-      displayParts.some((part) => part.type === "text") ||
-      displayParts.some((part) => part.type === "attachment") ||
-      displayParts.some((part) => part.type === "tool-invocation") ? (
-        <MessageParts
-          parts={displayParts}
-          streaming={node.status === "streaming"}
-          interactiveTools={interactiveTools && !resumeInFlight}
-          onAnswerTool={
-            onAnswerTools
-              ? async (toolCallId, _toolName, output) => {
-                  if (resumeInFlight) return
-                  const next = {
-                    ...localToolResults,
-                    [toolCallId]: output,
+            {siblings.length > 1 && (
+              <span className="flex items-center gap-1">
+                <WithTooltip label="Previous branch">
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    disabled={index === 0}
+                    aria-label="Previous branch"
+                    onClick={() => {
+                      const previous = siblings[index - 1]
+                      if (previous)
+                        onSelect?.(node.parent_id ?? "", previous.id)
+                    }}
+                  >
+                    <HugeiconsIcon
+                      icon={ArrowLeft01Icon}
+                      strokeWidth={2}
+                      className="size-3.5"
+                      aria-hidden
+                    />
+                  </Button>
+                </WithTooltip>
+                <span aria-live="polite">
+                  {index + 1}/{siblings.length}
+                </span>
+                <WithTooltip label="Next branch">
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    disabled={index === siblings.length - 1}
+                    aria-label="Next branch"
+                    onClick={() => {
+                      const next = siblings[index + 1]
+                      if (next) onSelect?.(node.parent_id ?? "", next.id)
+                    }}
+                  >
+                    <HugeiconsIcon
+                      icon={ArrowRight01Icon}
+                      strokeWidth={2}
+                      className="size-3.5"
+                      aria-hidden
+                    />
+                  </Button>
+                </WithTooltip>
+              </span>
+            )}
+          </div>
+        ) : node.status !== "complete" && node.status !== "streaming" ? (
+          <p
+            data-find-skip
+            className="mb-2 text-[11px] font-medium tracking-wide text-muted-foreground"
+          >
+            {node.status === "awaiting_input"
+              ? "waiting for input"
+              : node.status}
+          </p>
+        ) : null}
+        {displayParts.some((part) => part.type === "reasoning") ||
+        displayParts.some((part) => part.type === "text") ||
+        displayParts.some((part) => part.type === "attachment") ||
+        displayParts.some((part) => part.type === "tool-invocation") ? (
+          <MessageParts
+            parts={displayParts}
+            streaming={node.status === "streaming"}
+            interactiveTools={interactiveTools && !resumeInFlight}
+            onAnswerTool={
+              onAnswerTools
+                ? async (toolCallId, _toolName, output) => {
+                    if (resumeInFlight) return
+                    const next = {
+                      ...localToolResults,
+                      [toolCallId]: output,
+                    }
+                    setLocalToolResults(next)
+                    if (!allPendingResultsReady(pendingIds, next)) return
+                    setResumeInFlight(true)
+                    try {
+                      await onAnswerTools(
+                        node.id,
+                        pendingIds.map((id) => ({
+                          toolCallId: id,
+                          output: next[id],
+                        }))
+                      )
+                    } catch {
+                      setResumeInFlight(false)
+                    }
                   }
-                  setLocalToolResults(next)
-                  if (!allPendingResultsReady(pendingIds, next)) return
-                  setResumeInFlight(true)
-                  try {
-                    await onAnswerTools(
-                      node.id,
-                      pendingIds.map((id) => ({
-                        toolCallId: id,
-                        output: next[id],
-                      }))
-                    )
-                  } catch {
-                    setResumeInFlight(false)
-                  }
-                }
-              : undefined
-          }
-        />
-      ) : (
-        <Markdown streaming={node.status === "streaming"}>
-          {text || (node.status === "streaming" ? "Thinking…" : "")}
-        </Markdown>
-      )}
-      <div data-find-skip className="mt-3 flex flex-wrap items-center gap-0.5">
+                : undefined
+            }
+          />
+        ) : (
+          <Markdown streaming={node.status === "streaming"}>
+            {text || (node.status === "streaming" ? "Thinking…" : "")}
+          </Markdown>
+        )}
+        {tree && node.status === "error" ? (
+          <p className="mt-2 text-xs break-words text-destructive">
+            {typeof metadata.error === "string" && metadata.error
+              ? metadata.error
+              : "This response did not complete."}
+          </p>
+        ) : null}
+      </div>
+      <div
+        data-find-skip
+        className={cn(
+          "flex flex-wrap items-center gap-0.5",
+          tree ? "shrink-0 border-t border-foreground/8 px-2 py-1" : "mt-3"
+        )}
+      >
         <TooltipProvider delay={400}>
           <MessageAction
             onClick={() => void copyMarkdown("message")}
@@ -525,7 +552,7 @@ export function Message({
           </DropdownMenu>
         </TooltipProvider>
       </div>
-      {node.status === "error" && (
+      {!tree && node.status === "error" && (
         <p className="mt-3 text-xs break-words text-destructive">
           {typeof metadata.error === "string" && metadata.error
             ? metadata.error

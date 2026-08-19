@@ -4,9 +4,10 @@ import { motion } from "motion/react"
 import { MessageParts } from "@/components/workspace/message-parts"
 import { useStreamBuffer } from "@/lib/stream-store"
 import type { Parts } from "@/lib/types"
+import { cn } from "@/lib/utils"
 
 const BUBBLE_CLASS =
-  "min-w-0 overflow-hidden rounded-xl border border-message-assistant-border bg-message-assistant p-4 text-message-assistant-foreground"
+  "min-w-0 overflow-hidden rounded-xl border border-message-assistant-border bg-message-assistant text-message-assistant-foreground"
 
 export function StreamingBubble({
   streamId,
@@ -31,14 +32,26 @@ export function StreamingBubble({
   const tree = presentation === "tree"
 
   const body = (
-    <>
+    <div
+      className={
+        tree
+          ? "min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3.5"
+          : "p-4"
+      }
+      data-tree-scroll={tree ? "" : undefined}
+    >
       {tree ? null : (
         <div className="mb-2 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
           assistant · streaming
         </div>
       )}
       <MessageParts parts={parts} streaming interactiveTools={false} />
-    </>
+    </div>
+  )
+
+  const articleClass = cn(
+    BUBBLE_CLASS,
+    tree && "flex h-full min-h-0 flex-col"
   )
 
   if (animate && transition) {
@@ -47,7 +60,7 @@ export function StreamingBubble({
         data-theme-group="message-assistant"
         data-theme-target="message-assistant"
         data-tree-streaming={tree ? "" : undefined}
-        className={BUBBLE_CLASS}
+        className={articleClass}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={transition}
@@ -62,7 +75,7 @@ export function StreamingBubble({
       data-theme-group="message-assistant"
       data-theme-target="message-assistant"
       data-tree-streaming={tree ? "" : undefined}
-      className={BUBBLE_CLASS}
+      className={articleClass}
     >
       {body}
     </article>

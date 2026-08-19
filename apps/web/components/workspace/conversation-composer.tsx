@@ -197,6 +197,7 @@ export function ConversationComposer({
       data-theme-group="composer"
       data-theme-target="composer"
       data-tree-chrome={inline ? true : undefined}
+      data-tree-scroll={inline ? "" : undefined}
       className={cn(
         "relative rounded-xl border border-composer-border bg-composer p-2 text-composer-foreground",
         inline &&

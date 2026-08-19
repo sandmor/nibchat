@@ -37,9 +37,11 @@ import {
   composeLayoutId,
   isAddId,
   layoutChatTree,
+  treeConnectorPath,
   type TreeLayout,
   type TreeRect,
 } from "./tree-layout"
+import { minimapCardSketch, minimapEdges, minimapViewBox } from "./tree-minimap"
 import {
   CENTER_SCALE,
   DEFAULT_CAMERA,
@@ -49,9 +51,11 @@ import {
   applyZoomCssVars,
   cameraEqual,
   centerOnRect,
+  consumeTreeWheel,
   createTreeViewStore,
   nodePaint,
   panBy,
+  pointerOnFocusedSelectable,
   rectFullyVisible,
   scaleToReadCard,
   treeViewSnapshot,
@@ -67,6 +71,25 @@ const CHROME_SELECTOR =
 
 const EMPTY_HIT_IDS: ReadonlySet<string> = new Set()
 const EMPTY_VISIBLE: ReadonlySet<string> = new Set()
+
+function readTreeCardSizes(
+  current: ReadonlyMap<string, number>,
+  elements: Iterable<Element>
+) {
+  let changed = false
+  const next = new Map(current)
+  for (const node of elements) {
+    const el = node as HTMLElement
+    const id = el.dataset.treeSize
+    if (!id) continue
+    const height = Math.round(el.offsetHeight)
+    if (next.get(id) !== height) {
+      next.set(id, height)
+      changed = true
+    }
+  }
+  return changed ? next : current
+}
 
 export function ChatTree({
   nodes,
@@ -170,6 +193,7 @@ export function ChatTree({
   const [sizes, setSizes] = useState<ReadonlyMap<string, number>>(
     () => new Map()
   )
+  const [forestMotion, setForestMotion] = useState(false)
   const didCenter = useRef(false)
   const zoomTierRef = useRef(view.tier)
   const focusedIdRef = useRef(focusedId)
@@ -190,6 +214,8 @@ export function ChatTree({
     () => layoutChatTree(nodes, { draftAnchors, sizes }),
     [nodes, draftAnchors, sizes]
   )
+  const forestTransition =
+    animate && forestMotion ? transition : { ...transition, duration: 0 }
   const layoutRef = useRef(layout)
   const moveCameraRef = useRef<(next: Camera, immediate?: boolean) => void>(
     () => {}
@@ -491,20 +517,12 @@ export function ChatTree({
     const world = worldRef.current
     if (!world) return
     const observer = new ResizeObserver((entries) => {
-      setSizes((current) => {
-        let changed = false
-        const next = new Map(current)
-        for (const entry of entries) {
-          const id = (entry.target as HTMLElement).dataset.treeSize
-          if (!id) continue
-          const height = Math.round((entry.target as HTMLElement).offsetHeight)
-          if (next.get(id) !== height) {
-            next.set(id, height)
-            changed = true
-          }
-        }
-        return changed ? next : current
-      })
+      setSizes((current) =>
+        readTreeCardSizes(
+          current,
+          entries.map((entry) => entry.target)
+        )
+      )
     })
     const watch = () => {
       for (const el of world.querySelectorAll("[data-tree-size]"))
@@ -518,6 +536,29 @@ export function ChatTree({
       mutations.disconnect()
     }
   }, [])
+
+  // Layout reserves cardMaxHeight until paint can be measured. Reading
+  // offsetHeight here (before first paint) collapses that, and forestMotion
+  // stays off for that commit so Motion does not tween the correction.
+  useLayoutEffect(() => {
+    const world = worldRef.current
+    if (!world) return
+    setSizes((current) =>
+      readTreeCardSizes(current, world.querySelectorAll("[data-tree-size]"))
+    )
+  }, [nodes, view.sig])
+
+  useLayoutEffect(() => {
+    if (forestMotion) return
+    if (sizes.size > 0) {
+      setForestMotion(true)
+      return
+    }
+    if (nodes.length > 0 && view.ids.size === 0) return
+    const world = worldRef.current
+    if (world?.querySelector("[data-tree-size]")) return
+    setForestMotion(true)
+  }, [forestMotion, sizes, nodes.length, view.ids])
 
   useLayoutEffect(() => {
     if (!didCenter.current) return
@@ -555,7 +596,7 @@ export function ChatTree({
     const viewport = viewportRef.current
     if (!viewport) return
     const onWheel = (event: WheelEvent) => {
-      if (wheelTargetScrolls(event.target, event.deltaX, event.deltaY)) return
+      if (consumeTreeWheel(event)) return
       event.preventDefault()
       const current = cameraRef.current
       const next =
@@ -594,6 +635,7 @@ export function ChatTree({
         if (event.button !== 0) return
         const target = event.target
         if (target instanceof Element && target.closest(CHROME_SELECTOR)) return
+        if (pointerOnFocusedSelectable(target, focusedId)) return
         drag.current = {
           pointerId: event.pointerId,
           x: event.clientX,
@@ -675,11 +717,7 @@ export function ChatTree({
             const from = layout.rects.get(edge.from)
             const to = layout.rects.get(edge.to)
             if (!from || !to) return null
-            const x1 = from.x + from.width / 2
-            const y1 = from.y + from.height
-            const x2 = to.x + to.width / 2
-            const y2 = to.y
-            const d = `M ${x1} ${y1} C ${x1} ${y1 + 28}, ${x2} ${y2 - 28}, ${x2} ${y2}`
+            const d = treeConnectorPath(from, to)
             const lit = litIds.has(edge.from) && litIds.has(edge.to)
             const className = lit
               ? "stroke-[var(--tree-active-color)]"
@@ -689,7 +727,7 @@ export function ChatTree({
                 key={`${edge.from}:${edge.to}`}
                 initial={false}
                 animate={{ d }}
-                transition={transition}
+                transition={forestTransition}
                 fill="none"
                 data-tree-edge-lit={lit ? "" : undefined}
                 className={className}
@@ -731,13 +769,17 @@ export function ChatTree({
               key={node.id}
               data-tree-hit={node.id}
               data-tree-size={live ? node.id : undefined}
-              data-tree-scroll={live ? "" : undefined}
+              data-tree-live={live ? "" : undefined}
               className={cn(
-                "absolute rounded-xl",
+                "absolute flex min-h-0 flex-col overflow-hidden rounded-xl",
                 live
-                  ? "[touch-action:pan-x_pan-y] [scrollbar-width:thin] overflow-auto overscroll-contain select-text"
-                  : "cursor-pointer overflow-hidden",
-                focused && "z-10 ring-2 ring-[var(--tree-focus-color)]",
+                  ? cn(
+                      "[touch-action:pan-x_pan-y] shadow-[var(--tree-shadow-sm)]",
+                      focused ? "cursor-auto select-text" : "select-none"
+                    )
+                  : "cursor-pointer",
+                focused &&
+                  "z-10 shadow-[var(--tree-shadow-lg)] ring-2 ring-[var(--tree-focus-color)]",
                 searching &&
                   isHit &&
                   !focused &&
@@ -759,7 +801,7 @@ export function ChatTree({
                 height: live ? "auto" : rect.height,
               }}
               style={{ maxHeight }}
-              transition={animate ? transition : { duration: 0 }}
+              transition={forestTransition}
             >
               {searching && isHit && !onPath ? (
                 <span
@@ -773,7 +815,7 @@ export function ChatTree({
                 <StreamingBubble
                   streamId={streamId}
                   animate={animate}
-                  transition={transition}
+                  transition={forestTransition}
                   presentation="tree"
                 />
               ) : paint === "stub" ? (
@@ -822,7 +864,7 @@ export function ChatTree({
                 open={open}
                 rect={rect}
                 animate={animate}
-                transition={transition}
+                transition={forestTransition}
                 plusDisabled={disabled}
                 plusLabel={anchor ? "Add branch" : "Add root branch"}
                 onPlus={() => onOpenDraft(anchor)}
@@ -943,6 +985,7 @@ export function ChatTree({
       </Button>
       <TreeMinimap
         layout={layout}
+        nodesById={nodesById}
         viewportSize={viewportSize}
         focusedId={focusedId}
         pathIds={pathIds}
@@ -958,6 +1001,7 @@ export function ChatTree({
         >
           <TreeMinimap
             layout={layout}
+            nodesById={nodesById}
             viewportSize={viewportSize}
             focusedId={focusedId}
             pathIds={pathIds}
@@ -976,6 +1020,7 @@ export function ChatTree({
 
 function TreeMinimap({
   layout,
+  nodesById,
   viewportSize,
   focusedId,
   pathIds,
@@ -984,6 +1029,7 @@ function TreeMinimap({
   className,
 }: {
   layout: TreeLayout
+  nodesById: ReadonlyMap<string, NodeRow>
   viewportSize: { width: number; height: number }
   focusedId: string | null
   pathIds: Set<string>
@@ -991,72 +1037,119 @@ function TreeMinimap({
   onJump: (id: string) => void
   className: string
 }) {
-  const width = Math.max(1, layout.bounds.width)
-  const height = Math.max(1, layout.bounds.height)
+  const box = minimapViewBox(layout)
+  const width = Math.max(1, box.width)
+  const height = Math.max(1, box.height)
   return (
     <div data-tree-chrome className={className}>
       <svg
-        viewBox={`0 0 ${width} ${height}`}
+        viewBox={`${box.x} ${box.y} ${width} ${height}`}
         preserveAspectRatio="xMidYMid meet"
         className="block h-28 w-full overflow-hidden rounded-md bg-[var(--tree-minimap-background)]"
         data-theme-target="tree-minimap-background"
         role="img"
         aria-label="Conversation minimap"
       >
-        {layout.edges.map((edge) => {
+        {minimapEdges(layout).map((edge) => {
           const a = layout.rects.get(edge.from)
           const b = layout.rects.get(edge.to)
           return a && b ? (
-            <line
+            <path
               key={`${edge.from}:${edge.to}`}
-              x1={a.x + a.width / 2}
-              y1={a.y + a.height}
-              x2={b.x + b.width / 2}
-              y2={b.y}
+              d={treeConnectorPath(a, b)}
+              fill="none"
               className="stroke-[var(--tree-minimap-edge)]"
               data-theme-target="tree-minimap-edge"
               vectorEffect="non-scaling-stroke"
               strokeWidth={1.25}
+              strokeLinecap="round"
             />
           ) : null
         })}
         {[...layout.rects.entries()]
           .filter(([id]) => !isAddId(id))
           .map(([id, rect]) => {
+            const node = nodesById.get(id)
+            if (!node) return null
             const isHit = searchHitIds?.has(id)
-            const target =
-              focusedId === id
-                ? "tree-minimap-focus"
-                : isHit
-                  ? "tree-minimap-find"
-                  : pathIds.has(id)
-                    ? "tree-minimap-path"
+            const onPath = pathIds.has(id)
+            const focused = focusedId === id
+            const sketch = minimapCardSketch(node, rect)
+            const target = focused
+              ? "tree-minimap-focus"
+              : isHit
+                ? "tree-minimap-find"
+                : onPath
+                  ? "tree-minimap-path"
+                  : sketch.user
+                    ? "tree-minimap-user"
                     : "tree-minimap-node"
+            const label = node.search_text.trim()
             return (
-              <rect
+              <g
                 key={id}
-                x={rect.x}
-                y={rect.y}
-                width={rect.width}
-                height={rect.height}
-                rx={10}
-                data-theme-target={target}
-                className={cn(
-                  "cursor-pointer fill-[var(--tree-minimap-node)]",
-                  pathIds.has(id) && "fill-[var(--tree-minimap-path)]",
-                  isHit && "fill-[var(--tree-minimap-find)]",
-                  focusedId === id &&
-                    "fill-[var(--tree-minimap-focus)] stroke-[var(--tree-viewport-color)]",
-                  isHit &&
-                    focusedId !== id &&
-                    "stroke-[var(--tree-minimap-find-stroke)]"
-                )}
-                vectorEffect={
-                  focusedId === id || isHit ? "non-scaling-stroke" : undefined
-                }
-                strokeWidth={focusedId === id ? 1.5 : isHit ? 1.25 : undefined}
+                className="cursor-pointer"
+                opacity={onPath || focused || isHit ? 1 : 0.55}
                 onClick={() => onJump(id)}
-              />
+              >
+                {label ? <title>{label}</title> : null}
+                <rect
+                  x={rect.x}
+                  y={rect.y}
+                  width={rect.width}
+                  height={rect.height}
+                  rx={10}
+                  data-theme-target={target}
+                  className={cn(
+                    sketch.user
+                      ? "fill-[var(--tree-minimap-user)]"
+                      : "fill-[var(--tree-minimap-node)]",
+                    "stroke-[var(--tree-minimap-edge)]",
+                    onPath && "stroke-[var(--tree-minimap-path)]",
+                    isHit &&
+                      !focused &&
+                      "stroke-[var(--tree-minimap-find-stroke)]",
+                    focused && "stroke-[var(--tree-minimap-focus)]"
+                  )}
+                  vectorEffect="non-scaling-stroke"
+                  strokeWidth={focused || isHit ? 1.75 : onPath ? 1.5 : 1.15}
+                />
+                <rect
+                  x={sketch.rail.x}
+                  y={sketch.rail.y}
+                  width={sketch.rail.width}
+                  height={sketch.rail.height}
+                  rx={sketch.rail.width / 2}
+                  data-theme-target={
+                    sketch.error
+                      ? undefined
+                      : sketch.user
+                        ? "tree-minimap-user-rail"
+                        : "tree-minimap-glyph"
+                  }
+                  className={
+                    sketch.error
+                      ? "fill-[var(--danger)]"
+                      : sketch.user
+                        ? "fill-[var(--tree-minimap-user-rail)]"
+                        : "fill-[var(--tree-minimap-glyph)]"
+                  }
+                  pointerEvents="none"
+                />
+                {sketch.glyphs.map((glyph, index) => (
+                  <rect
+                    key={index}
+                    x={glyph.x}
+                    y={glyph.y}
+                    width={glyph.width}
+                    height={glyph.height}
+                    rx={glyph.height / 2}
+                    data-theme-target="tree-minimap-glyph"
+                    className="fill-[var(--tree-minimap-glyph)]"
+                    pointerEvents="none"
+                  />
+                ))}
+              </g>
             )
           })}
         {viewportSize.width > 0 ? (

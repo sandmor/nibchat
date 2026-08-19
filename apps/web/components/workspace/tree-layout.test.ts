@@ -76,7 +76,7 @@ describe("layoutChatTree", () => {
     ])
     const right = layout.rects.get("right")!
     const plus = layout.rects.get(addId("root"))!
-    expect(plus.x).toBe(right.x + right.width + 48)
+    expect(plus.x).toBe(right.x + right.width + 56)
   })
 
   it("does not overlap independent root subtrees", () => {

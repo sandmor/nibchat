@@ -37,7 +37,7 @@ export function TreePlaque({
   return (
     <div
       className={cn(
-        "flex h-full min-h-0 flex-col justify-center overflow-hidden rounded-xl border px-3 py-2",
+        "flex h-full min-h-0 flex-col justify-center overflow-hidden rounded-xl border px-3.5 py-2.5",
         user
           ? "border-message-user-border bg-message-user text-message-user-foreground"
           : "border-message-assistant-border bg-message-assistant text-message-assistant-foreground",
@@ -185,7 +185,7 @@ export function TreeHandoff({
   return (
     <motion.div
       data-tree-handoff={hitId}
-      className="absolute z-10 overflow-hidden rounded-xl"
+      className="absolute z-10 overflow-hidden rounded-xl shadow-[var(--tree-shadow-sm)]"
       initial={false}
       animate={{
         left: rect.x,
@@ -211,9 +211,9 @@ export function TreeHandoff({
         {composer}
       </motion.div>
       <motion.div
-        className="absolute inset-0 [touch-action:pan-x_pan-y] overflow-auto overscroll-contain select-text"
+        className="absolute inset-0 flex min-h-0 [touch-action:pan-x_pan-y] flex-col overflow-hidden select-text"
         data-tree-hit={hitId}
-        data-tree-scroll=""
+        data-tree-live=""
         aria-hidden={!live}
         inert={live ? undefined : true}
         initial={false}

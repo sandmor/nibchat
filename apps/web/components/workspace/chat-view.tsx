@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { LayoutTable01Icon } from "@hugeicons/core-free-icons"
+import { HierarchySquare02Icon, ListViewIcon } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import {
@@ -1027,17 +1027,16 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
           <div className="flex min-w-0 items-center gap-0.5 sm:max-w-[min(36rem,70%)] sm:shrink-0 sm:gap-1">
             <Button
               type="button"
-              variant={view === "tree" ? "secondary" : "ghost"}
+              variant="ghost"
               size="sm"
               className="gap-1.5"
-              aria-pressed={view === "tree"}
               disabled={!data.chat}
               onClick={() =>
                 setView((current) => (current === "tree" ? "linear" : "tree"))
               }
             >
               <HugeiconsIcon
-                icon={LayoutTable01Icon}
+                icon={view === "tree" ? ListViewIcon : HierarchySquare02Icon}
                 strokeWidth={2}
                 className="size-3.5"
               />

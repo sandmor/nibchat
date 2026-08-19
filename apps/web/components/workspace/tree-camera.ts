@@ -337,6 +337,66 @@ function eventElement(target: EventTarget | null): Element | null {
   return null
 }
 
+/**
+ * Canvas cards tag three roles:
+ * - `[data-tree-hit]` clickable id
+ * - `[data-tree-live]` readable card (text select when focused). Map plaques omit this.
+ * - `[data-tree-scroll]` the overflow port. Sticky action rows sit beside it, not in it.
+ * `[data-tree-chrome]` is overlays (minimap, composer). Chrome that is itself a
+ * scrollport also carries `[data-tree-scroll]`.
+ */
+function firstScrollable(
+  elements: Iterable<Element>,
+  deltaX: number,
+  deltaY: number
+) {
+  for (const el of elements) {
+    if (el instanceof HTMLElement && elementCanScroll(el, deltaX, deltaY))
+      return el
+  }
+  return null
+}
+
+/** Overflow port that can still consume this delta, or null to pan the canvas. */
+export function treeWheelScroller(
+  target: EventTarget | null,
+  deltaX: number,
+  deltaY: number
+) {
+  const start = eventElement(target)
+  if (!start) return null
+  const live = start.closest("[data-tree-live]")
+  const labeled = start.closest("[data-tree-scroll]")
+  const scope =
+    live instanceof HTMLElement && labeled && live.contains(labeled)
+      ? live
+      : labeled instanceof HTMLElement
+        ? labeled
+        : live instanceof HTMLElement
+          ? live
+          : null
+  if (!scope) return null
+  let current: HTMLElement | null =
+    start instanceof HTMLElement ? start : start.parentElement
+  while (current) {
+    if (elementCanScroll(current, deltaX, deltaY)) return current
+    if (current === scope) break
+    current = current.parentElement
+  }
+  if (!scope.hasAttribute("data-tree-live")) return null
+  return firstScrollable(
+    scope.querySelectorAll("[data-tree-scroll]"),
+    deltaX,
+    deltaY
+  )
+}
+
+function isUnscrolledChrome(start: Element) {
+  return Boolean(
+    start.closest("[data-tree-chrome]") && !start.closest("[data-tree-scroll]")
+  )
+}
+
 /** Let composers and overflowing cards keep wheel / drag; otherwise the canvas pans. */
 export function wheelTargetScrolls(
   target: EventTarget | null,
@@ -345,15 +405,44 @@ export function wheelTargetScrolls(
 ) {
   const start = eventElement(target)
   if (!start) return false
-  if (start.closest("[data-tree-chrome]:not([data-tree-scroll])")) return true
-  const card = start.closest("[data-tree-scroll]")
-  if (!(card instanceof HTMLElement)) return false
-  let current: HTMLElement | null =
-    start instanceof HTMLElement ? start : start.parentElement
-  while (current) {
-    if (elementCanScroll(current, deltaX, deltaY)) return true
-    if (current === card) break
-    current = current.parentElement
+  if (isUnscrolledChrome(start)) return true
+  return treeWheelScroller(start, deltaX, deltaY) != null
+}
+
+/**
+ * Consume a wheel that belongs to a tree card or overlay.
+ * Action-row wheels are not inside the scrollport, so this applies the delta
+ * there; wheels over the port itself stay native.
+ */
+export function consumeTreeWheel(event: {
+  target: EventTarget | null
+  deltaX: number
+  deltaY: number
+  preventDefault: () => void
+}) {
+  const start = eventElement(event.target)
+  if (!start) return false
+  if (isUnscrolledChrome(start)) return true
+  const scroller = treeWheelScroller(start, event.deltaX, event.deltaY)
+  if (!scroller) return false
+  if (!scroller.contains(start)) {
+    event.preventDefault()
+    scroller.scrollLeft += event.deltaX
+    scroller.scrollTop += event.deltaY
   }
-  return false
+  return true
+}
+
+/** Focused live cards keep the pointer so drag-select works; others pan. */
+export function pointerOnFocusedSelectable(
+  target: EventTarget | null,
+  focusedId: string | null
+) {
+  if (!focusedId) return false
+  const start = eventElement(target)
+  if (!start) return false
+  const hit = start.closest("[data-tree-hit]")
+  if (!(hit instanceof HTMLElement)) return false
+  if (hit.getAttribute("data-tree-hit") !== focusedId) return false
+  return hit.hasAttribute("data-tree-live")
 }

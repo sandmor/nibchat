@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="60 55 405 405" width="100%" height="100%">
+  <defs>
+    <linearGradient id="blueGradient" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#009BD6"/>
+      <stop offset="50%" stop-color="#0052A5"/>
+      <stop offset="100%" stop-color="#0A255C"/>
+    </linearGradient>
+  </defs>
+
+  <g fill="url(#blueGradient)">
+    <!-- Speech Bubble Ring & Tail -->
+    <path fill-rule="evenodd" d="
+      M 260,70
+      A 180,180 0 1,0 321.6,419.1
+      L 445,445
+      L 407.4,353.2
+      A 180,180 0 0,0 260,70
+      Z
+      M 260,120
+      A 130,130 0 1,1 259.9,120
+      Z
+    " />
+
+    <!-- Fountain Pen Nib -->
+    <path fill-rule="evenodd" d="
+      M 258.5,153
+      H 261.5
+      L 310,250
+      L 294,290
+      L 294,315
+      L 226,315
+      L 226,290
+      L 210,250
+      Z
+      M 258.5,153
+      H 261.5
+      V 230
+      A 10,10 0 1,1 258.5,230
+      Z
+    " />
+
+    <!-- Pen Nib Base Bar -->
+    <rect x="222" y="327" width="76" height="14" rx="7" />
+  </g>
+</svg>

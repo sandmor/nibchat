@@ -1,12 +1,14 @@
 "use client"
 
+import { Logo } from "@/components/logo"
 import type { ProviderSummary } from "./types"
 
 export function Empty({ providers }: { providers: ProviderSummary[] }) {
   return (
     <div className="grid min-h-[40vh] place-items-center text-center">
       <div className="max-w-sm">
-        <h2 className="text-xl font-semibold tracking-tight">
+        <Logo className="mx-auto size-14" alt="" />
+        <h2 className="mt-4 text-xl font-semibold tracking-tight">
           Write anything to begin
         </h2>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">

@@ -13,6 +13,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { Logo } from "@/components/logo"
 
 export default function ResetPasswordPage() {
   return (
@@ -51,6 +52,7 @@ function ResetPasswordForm() {
     <main className="grid min-h-svh place-items-center p-5">
       <Card className="w-full max-w-md shadow-xl">
         <CardHeader>
+          <Logo className="size-10" alt="" />
           <p className="text-xs font-semibold tracking-[.2em] text-primary uppercase">
             Nibchat recovery
           </p>

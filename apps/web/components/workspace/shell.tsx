@@ -54,6 +54,7 @@ import { useTRPC } from "@/lib/trpc-react"
 import { omitChat, type WorkspaceData } from "@/lib/workspace-cache"
 import type { ProviderSummary } from "./types"
 import { ChatListItem } from "./chat-list"
+import { BrandMark } from "@/components/logo"
 import { AppearanceMagicChrome } from "./appearance-magic"
 import { AppearanceRuntime } from "./appearance-runtime"
 
@@ -301,7 +302,7 @@ export function WorkspaceShell({
               />
               <span className="ml-1.5">Chats</span>
             </Button>
-            <span className="font-semibold tracking-tight">nibchat</span>
+            <BrandMark logoClassName="size-6" />
           </div>
           <WithTooltip label={onSettings ? "Back to chat" : "Settings"}>
             <Link
@@ -331,21 +332,22 @@ export function WorkspaceShell({
             animate={{ width: sidebarWidth }}
             transition={transition}
           >
-            <div
-              className={cn(
-                "mb-3 flex min-w-0 items-center",
-                collapsed ? "flex-col gap-2" : "justify-between px-1"
-              )}
-            >
-              <span
+            <TooltipProvider delay={400}>
+              <div
                 className={cn(
-                  "font-semibold tracking-tight",
-                  collapsed && "text-sm"
+                  "mb-3 flex min-w-0 items-center",
+                  collapsed ? "flex-col gap-2" : "justify-between px-1"
                 )}
               >
-                {collapsed ? "n" : "nibchat"}
-              </span>
-              <TooltipProvider delay={400}>
+                {collapsed ? (
+                  <WithTooltip label="nibchat" side="right">
+                    <span className="inline-flex">
+                      <BrandMark wordmark={false} logoClassName="size-7" />
+                    </span>
+                  </WithTooltip>
+                ) : (
+                  <BrandMark logoClassName="size-6" />
+                )}
                 <div
                   className={cn(
                     "flex",
@@ -407,8 +409,8 @@ export function WorkspaceShell({
                     </WithTooltip>
                   )}
                 </div>
-              </TooltipProvider>
-            </div>
+              </div>
+            </TooltipProvider>
             {!collapsed ? (
               <>
                 <Link

@@ -12,6 +12,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { Logo } from "@/components/logo"
 
 export function AuthCard({
   setup,
@@ -55,6 +56,7 @@ export function AuthCard({
     <main className="grid min-h-svh place-items-center p-5">
       <Card className="w-full max-w-md shadow-[0_25px_80px_-35px_color-mix(in_oklab,var(--foreground),transparent_65%)]">
         <CardHeader>
+          <Logo className="size-10" alt="" />
           <p className="text-xs font-semibold tracking-[.2em] text-primary uppercase">
             Nibchat / private AI workspace
           </p>

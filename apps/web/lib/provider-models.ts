@@ -16,6 +16,31 @@ export type ProviderModelDocument = {
 export type CatalogModel = { id: string; name: string }
 export type ModelVisibilityFilter = "all" | "on" | "off"
 
+/** Normalize `/api/models` JSON. A failed payload with no rows is an error. */
+export function parseProviderCatalogPayload(payload: unknown): {
+  models: CatalogModel[]
+  error: string
+} {
+  const record =
+    payload && typeof payload === "object"
+      ? (payload as { models?: unknown; error?: unknown })
+      : {}
+  const models = Array.isArray(record.models)
+    ? record.models.flatMap((model) => {
+        if (!model || typeof model !== "object") return []
+        const entry = model as { id?: unknown; name?: unknown }
+        if (typeof entry.id !== "string" || !entry.id) return []
+        const name = typeof entry.name === "string" ? entry.name.trim() : ""
+        return [{ id: entry.id, name: name || entry.id }]
+      })
+    : []
+  const error =
+    typeof record.error === "string" && record.error && !models.length
+      ? record.error
+      : ""
+  return { models, error }
+}
+
 const MAX_MODEL_ID = 256
 const MAX_MODEL_LABEL = 120
 

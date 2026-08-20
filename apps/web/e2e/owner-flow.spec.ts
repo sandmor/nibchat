@@ -22,10 +22,43 @@ test.describe("owner flow", () => {
     await expect(page.getByText("private AI workspace")).toBeVisible()
     await expect(page.getByText("Make this yours.")).toBeVisible()
 
-    await page.getByLabel("Name").fill("Owner")
+    await page.getByLabel("Name", { exact: true }).fill("Owner")
     await page.getByLabel("Email").fill("owner@example.com")
     await page.getByLabel("Password").fill("password12345")
     await page.getByRole("button", { name: "Create owner account" }).click()
+
+    await expect(page.getByText("Connect a provider.")).toBeVisible({
+      timeout: 30_000,
+    })
+    await expect(
+      page.getByRole("button", { name: "Skip for now" })
+    ).toBeVisible()
+
+    await page.getByLabel("API key").fill("sk-e2e-owner")
+    await page.getByRole("button", { name: "Load models" }).click()
+    await expect(page.getByText("Choose models.")).toBeVisible({
+      timeout: 30_000,
+    })
+    await expect(page.getByText("Loading catalog…")).toBeHidden({
+      timeout: 30_000,
+    })
+
+    const catalogSwitch = page.getByRole("switch", {
+      name: /Show .+ in chats/,
+    })
+    if ((await catalogSwitch.count()) > 0) {
+      await catalogSwitch.first().click()
+    } else {
+      await page.getByLabel("Add model ID").fill("gpt-4o")
+      await page.getByRole("button", { name: "Add model" }).click()
+      await expect(
+        page.getByRole("switch", { name: /Show gpt-4o in chats/ })
+      ).toBeVisible()
+    }
+
+    await page.getByRole("switch", { name: "Name chats automatically" }).click()
+    await expect(page.getByLabel("Title model")).toBeVisible()
+    await page.getByRole("button", { name: "Save and continue" }).click()
 
     await expect(page).toHaveURL(/\/chat\/new$/, { timeout: 30_000 })
     await expect(page.getByText("Write anything to begin")).toBeVisible({

@@ -14,30 +14,20 @@ import {
 } from "@/components/ui/card"
 import { Logo } from "@/components/logo"
 
-export function AuthCard({
-  setup,
-  wrongAccount = false,
-}: {
-  setup: boolean
-  wrongAccount?: boolean
-}) {
+export function AuthCard({ wrongAccount = false }: { wrongAccount?: boolean }) {
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
   async function submit(form: FormData) {
     setLoading(true)
     setError("")
-    const response = await fetch(
-      `/api/auth/${setup ? "sign-up" : "sign-in"}/email`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          email: form.get("email"),
-          password: form.get("password"),
-          name: form.get("name") || "Owner",
-        }),
-      }
-    )
+    const response = await fetch("/api/auth/sign-in/email", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        email: form.get("email"),
+        password: form.get("password"),
+      }),
+    })
     setLoading(false)
     if (!response.ok) {
       const data = await response.json().catch(() => ({}))
@@ -61,18 +51,12 @@ export function AuthCard({
             Nibchat / private AI workspace
           </p>
           <CardTitle className="text-3xl font-semibold tracking-tight">
-            {wrongAccount
-              ? "Not the instance owner"
-              : setup
-                ? "Make this yours."
-                : "Welcome back."}
+            {wrongAccount ? "Not the instance owner" : "Welcome back."}
           </CardTitle>
           <CardDescription>
             {wrongAccount
               ? "This instance already has an owner. Sign out and sign in with that account, or contact whoever deployed Nibchat."
-              : setup
-                ? "The first account becomes this instance’s sole owner."
-                : "Sign in to your self-hosted workspace."}
+              : "Sign in to your self-hosted workspace."}
           </CardDescription>
         </CardHeader>
         {wrongAccount ? (
@@ -84,12 +68,6 @@ export function AuthCard({
         ) : (
           <form action={submit} className="contents">
             <CardContent className="space-y-4">
-              {setup && (
-                <div className="grid gap-2">
-                  <Label htmlFor="name">Name</Label>
-                  <Input id="name" name="name" required />
-                </div>
-              )}
               <div className="grid gap-2">
                 <Label htmlFor="email">Email</Label>
                 <Input id="email" name="email" type="email" required />
@@ -108,28 +86,22 @@ export function AuthCard({
             </CardContent>
             <CardFooter className="flex flex-col gap-3">
               <Button disabled={loading} className="w-full" type="submit">
-                {loading
-                  ? "Working…"
-                  : setup
-                    ? "Create owner account"
-                    : "Sign in"}
+                {loading ? "Working…" : "Sign in"}
               </Button>
-              {!setup && (
-                <p className="text-center text-xs text-muted-foreground">
-                  Forgot password? Open{" "}
-                  <Link
-                    href="/reset-password"
-                    className="text-primary underline-offset-4 hover:underline"
-                  >
-                    /reset-password
-                  </Link>{" "}
-                  with a token from{" "}
-                  <code className="rounded bg-muted px-1">
-                    pnpm --filter web reset-password
-                  </code>
-                  .
-                </p>
-              )}
+              <p className="text-center text-xs text-muted-foreground">
+                Forgot password? Open{" "}
+                <Link
+                  href="/reset-password"
+                  className="text-primary underline-offset-4 hover:underline"
+                >
+                  /reset-password
+                </Link>{" "}
+                with a token from{" "}
+                <code className="rounded bg-muted px-1">
+                  pnpm --filter web reset-password
+                </code>
+                .
+              </p>
             </CardFooter>
           </form>
         )}

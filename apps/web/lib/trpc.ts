@@ -12,6 +12,7 @@ import {
   createChat,
   createPromptStack,
   createProvider,
+  finishSetup,
   deleteChat,
   deleteNode,
   deletePromptStack,
@@ -56,7 +57,7 @@ import {
 
 export async function createContext({ req }: { req: Request }) {
   const gate = await resolveAppUser(req.headers)
-  if (gate.status === "ok") {
+  if (gate.status === "ok" || gate.status === "onboarding") {
     return {
       user: gate.user as SessionUser,
       authError: null as string | null,
@@ -436,6 +437,24 @@ export const appRouter = t.router({
       .mutation(async ({ ctx, input }) => {
         try {
           return await createProvider(ctx.user.id, input)
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    finishSetup: ownerProcedure
+      .input(
+        z
+          .object({
+            provider: providerInputSchema
+              .extend({ id: z.string().optional() })
+              .optional(),
+            titleModel: z.string().trim().min(1).max(256).optional(),
+          })
+          .nullable()
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await finishSetup(ctx.user.id, input)
         } catch (error) {
           mapError(error)
         }

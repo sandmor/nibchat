@@ -46,7 +46,8 @@ export async function workspaceHomePath(userId: string) {
  */
 export async function requireWorkspaceUser(): Promise<SessionUser> {
   const gate = await getRequestGate()
-  if (gate.status === "setup") redirect("/setup")
+  if (gate.status === "setup" || gate.status === "onboarding")
+    redirect("/setup")
   if (gate.status === "login") redirect("/login")
   if (gate.status === "wrong_account") redirect("/login")
   return gate.user

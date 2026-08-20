@@ -5,6 +5,7 @@ import {
   isEnabledModelId,
   mergeCatalogWithSaved,
   modelsToPersist,
+  parseProviderCatalogPayload,
   parseProviderModelsJson,
   providerModelsToJson,
   removeCustomModel,
@@ -92,5 +93,29 @@ describe("catalog synchronization", () => {
     expect(firstEnabledModelId(added.models)).toBe("local")
     expect(isEnabledModelId(added.models, "local")).toBe(true)
     expect(isEnabledModelId(added.models, "missing")).toBe(false)
+  })
+})
+
+describe("catalog payloads", () => {
+  it("keeps named rows and treats a failed empty payload as an error", () => {
+    expect(
+      parseProviderCatalogPayload({
+        models: [
+          { id: "gpt-4o", name: " GPT-4o " },
+          { id: "", name: "skip" },
+          { name: "no-id" },
+        ],
+      })
+    ).toEqual({
+      models: [{ id: "gpt-4o", name: "GPT-4o" }],
+      error: "",
+    })
+    expect(
+      parseProviderCatalogPayload({ error: "Unauthorized", models: [] })
+    ).toEqual({ models: [], error: "Unauthorized" })
+    expect(parseProviderCatalogPayload({ models: [] })).toEqual({
+      models: [],
+      error: "",
+    })
   })
 })

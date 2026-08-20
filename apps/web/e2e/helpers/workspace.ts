@@ -15,10 +15,16 @@ export async function ensureWorkspace(page: Page) {
   await page.waitForURL(/\/(setup|login|chat)/, { timeout: 30_000 })
 
   if (page.url().includes("/setup")) {
-    await page.getByLabel("Name").fill(OWNER.name)
-    await page.getByLabel("Email").fill(OWNER.email)
-    await page.getByLabel("Password").fill(OWNER.password)
-    await page.getByRole("button", { name: "Create owner account" }).click()
+    const name = page.getByLabel("Name", { exact: true })
+    if (await name.isVisible().catch(() => false)) {
+      await name.fill(OWNER.name)
+      await page.getByLabel("Email").fill(OWNER.email)
+      await page.getByLabel("Password").fill(OWNER.password)
+      await page.getByRole("button", { name: "Create owner account" }).click()
+    }
+    const skip = page.getByRole("button", { name: "Skip for now" })
+    await expect(skip).toBeVisible({ timeout: 30_000 })
+    await skip.click()
   } else if (page.url().includes("/login")) {
     await page.getByLabel("Email").fill(OWNER.email)
     await page.getByLabel("Password").fill(OWNER.password)
@@ -62,19 +68,20 @@ async function ensureMockProviderViaSettingsUi(page: Page, baseUrl: string) {
   await page
     .getByRole("button", { name: /^(Save provider|Update provider)$/ })
     .click()
-  await expect(page.getByText("Provider saved", { exact: false })).toBeVisible({
-    timeout: 15_000,
-  }).catch(async () => {
-    // Toast may already dismiss; accept a listed profile instead.
-    await expect(page.getByText("E2E Mock", { exact: true })).toBeVisible()
-  })
+  await expect(page.getByText("Provider saved", { exact: false }))
+    .toBeVisible({
+      timeout: 15_000,
+    })
+    .catch(async () => {
+      // Toast may already dismiss; accept a listed profile instead.
+      await expect(page.getByText("E2E Mock", { exact: true })).toBeVisible()
+    })
 
   await page.goto("/chat/new")
   await expect(page.getByText("Write anything to begin")).toBeVisible({
     timeout: 15_000,
   })
 }
-
 
 /**
  * Full document load into a draft chat. Fine for suite setup; does cancel
@@ -98,7 +105,10 @@ export async function openNewChatSoft(page: Page) {
 
 /** Soft navigation via sidebar title (auto-title from first user message). */
 export async function openChatByTitle(page: Page, title: string) {
-  await page.getByRole("link", { name: new RegExp(title) }).first().click()
+  await page
+    .getByRole("link", { name: new RegExp(title) })
+    .first()
+    .click()
   await expect(page).toHaveURL(/\/chat\//, { timeout: 15_000 })
   await expect(page.getByRole("heading", { name: title })).toBeVisible({
     timeout: 15_000,
@@ -164,7 +174,10 @@ export async function editUserAsBranch(page: Page, nextText: string) {
   const userArticles = page.locator("article").filter({
     has: page.getByText("user", { exact: true }),
   })
-  await userArticles.last().getByRole("button", { name: "Edit as branch" }).click()
+  await userArticles
+    .last()
+    .getByRole("button", { name: "Edit as branch" })
+    .click()
   const dialog = page.getByRole("dialog")
   await expect(dialog.getByText("Edit as branch")).toBeVisible()
   await dialog.locator("textarea").fill(nextText)
@@ -207,4 +220,3 @@ export function streamingMarkers(page: Page) {
 export async function expectStreamingCount(page: Page, n: number) {
   await expect(streamingMarkers(page)).toHaveCount(n)
 }
-

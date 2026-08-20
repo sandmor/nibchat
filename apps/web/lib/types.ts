@@ -153,6 +153,8 @@ export interface InstanceTable {
   dark_theme_id: string
   /** `{ providerId, model }` JSON; null means title LLM is off. */
   title_model_config_json: string | null
+  /** ISO timestamp; null means first-run setup is still in progress. */
+  onboarding_completed_at: string | null
   created_at: string
 }
 export interface ProviderProfilesTable {

@@ -63,6 +63,7 @@ import {
   packBackupArchive,
   unpackBackupArchive,
 } from "@/lib/backup-archive"
+import { completeOnboarding } from "@/lib/identity/adapters/kysely-instance"
 import { validateImageSignature } from "@/lib/file-signatures"
 
 /** SQLite drivers reject JS booleans; Postgres wants real booleans. */
@@ -1226,6 +1227,30 @@ export async function createProvider(
   }
   await db.insertInto("provider_profiles").values(row).execute()
   return { id: row.id }
+}
+
+/** First-run finish: optional provider + title model, then mark setup complete. */
+export async function finishSetup(
+  userId: string,
+  input: {
+    provider?: ProviderProfileInput & { id?: string }
+    titleModel?: string
+  } | null
+) {
+  if (input?.provider) {
+    const { id, ...profile } = input.provider
+    const providerId = id
+      ? (await updateProvider(userId, id, profile), id)
+      : (await createProvider(userId, profile)).id
+    if (input.titleModel) {
+      await setInstanceTitleModel({
+        providerId,
+        model: input.titleModel,
+      })
+    }
+  }
+  await completeOnboarding()
+  return { ok: true as const }
 }
 
 export async function updateProvider(

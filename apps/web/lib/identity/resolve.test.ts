@@ -17,6 +17,7 @@ function ports(
   partial: Partial<{
     owner: string | null
     session: SessionUser | null
+    onboardingComplete: boolean
   }>
 ): IdentityPorts & { tryClaim: ReturnType<typeof vi.fn> } {
   const tryClaim = vi.fn(async () => false)
@@ -31,6 +32,10 @@ function ports(
     instance: {
       getOwnerUserId: vi.fn(async () => partial.owner ?? null),
       tryClaimOwner: tryClaim,
+      isOnboardingComplete: vi.fn(
+        async () => partial.onboardingComplete ?? partial.owner != null
+      ),
+      completeOnboarding: vi.fn(async () => {}),
     },
   }
 }
@@ -63,6 +68,19 @@ describe("resolveAppUser (read-only gate)", () => {
   it("returns login when owned without session", async () => {
     const p = ports({ owner: "owner", session: null })
     expect(await resolveAppUser(p, new Headers())).toEqual({ status: "login" })
+  })
+
+  it("returns onboarding for owner session before setup is finished", async () => {
+    const session = user("owner")
+    const p = ports({
+      owner: "owner",
+      session,
+      onboardingComplete: false,
+    })
+    expect(await resolveAppUser(p, new Headers())).toEqual({
+      status: "onboarding",
+      user: session,
+    })
   })
 
   it("setup when unowned and no session", async () => {

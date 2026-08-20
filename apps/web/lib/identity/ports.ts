@@ -17,6 +17,8 @@ export interface InstanceOwnerPort {
   getOwnerUserId(): Promise<string | null>
   /** CAS: set owner only when currently null. Returns whether this caller won. */
   tryClaimOwner(userId: string): Promise<boolean>
+  isOnboardingComplete(): Promise<boolean>
+  completeOnboarding(): Promise<void>
 }
 
 export interface SchemaPort {

@@ -37,7 +37,7 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create table if not exists themes (id text primary key, name text not null, document_json text not null, created_at text not null, updated_at text not null)`.execute(
     db
   )
-  await sql`create table if not exists instance (id integer primary key, owner_user_id text unique, default_prompt_stack_id text not null, light_theme_id text not null, dark_theme_id text not null, title_model_config_json text, created_at text not null)`.execute(
+  await sql`create table if not exists instance (id integer primary key, owner_user_id text unique, default_prompt_stack_id text not null, light_theme_id text not null, dark_theme_id text not null, title_model_config_json text, onboarding_completed_at text, created_at text not null)`.execute(
     db
   )
   await sql`create table if not exists chats (id text primary key, user_id text not null references "user"(id) on delete cascade, title text, selected_root_node_id text, model_config_json text not null, prompt_stack_id text, created_at text not null, updated_at text not null)`.execute(

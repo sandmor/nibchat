@@ -11,9 +11,9 @@ export const metadata: Metadata = {
 
 export default async function LoginPage() {
   const gate = await getRequestGate()
-  if (gate.status === "setup") redirect("/setup")
+  if (gate.status === "setup" || gate.status === "onboarding")
+    redirect("/setup")
   if (gate.status === "ok") redirect(await workspaceHomePath(gate.user.id))
-  if (gate.status === "wrong_account")
-    return <AuthCard setup={false} wrongAccount />
-  return <AuthCard setup={false} />
+  if (gate.status === "wrong_account") return <AuthCard wrongAccount />
+  return <AuthCard />
 }

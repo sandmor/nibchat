@@ -17,6 +17,7 @@ import { Switch } from "@/components/ui/switch"
 import { cn } from "@/lib/utils"
 import {
   filterProviderModels,
+  parseProviderCatalogPayload,
   removeCustomModel,
   setModelsEnabled,
   upsertCustomModel,
@@ -37,12 +38,14 @@ const FALLBACK_ROW_HEIGHT = 74
 function ModelRow({
   model,
   custom,
+  disabled,
   onToggle,
   onAlias,
   onRemove,
 }: {
   model: ProviderModel
   custom: boolean
+  disabled: boolean
   onToggle: (enabled: boolean) => void
   onAlias: (label: string) => void
   onRemove: () => void
@@ -58,6 +61,7 @@ function ModelRow({
         size="sm"
         className="mt-1"
         checked={model.enabled}
+        disabled={disabled}
         onCheckedChange={onToggle}
         aria-label={`Show ${model.id} in chats`}
       />
@@ -75,6 +79,7 @@ function ModelRow({
           onChange={(event) => onAlias(event.target.value)}
           aria-label={`Alias for ${model.id}`}
           placeholder="Alias"
+          disabled={disabled}
           className="h-8 rounded-xl text-sm"
         />
       </div>
@@ -84,6 +89,7 @@ function ModelRow({
           size="xs"
           variant="ghost"
           className="mt-0.5 text-muted-foreground"
+          disabled={disabled}
           onClick={onRemove}
         >
           Remove
@@ -99,23 +105,31 @@ export function ProviderModelsEditor({
   catalog,
   onModelsChange,
   onCatalogChange,
+  onLoadingChange,
+  disabled = false,
+  refreshOnMount = false,
 }: {
   providerId: string | null
   models: ProviderModel[]
   catalog: CatalogModel[]
   onModelsChange: (models: ProviderModel[]) => void
   onCatalogChange: (catalog: CatalogModel[]) => void
+  onLoadingChange?: (loading: boolean) => void
+  disabled?: boolean
+  refreshOnMount?: boolean
 }) {
   const [query, setQuery] = useState("")
   const [visibility, setVisibility] = useState<ModelVisibilityFilter>("all")
   const [customId, setCustomId] = useState("")
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(() => Boolean(providerId))
   const modelsRef = useRef(models)
   const abortRef = useRef<AbortController | null>(null)
+  const refreshOnMountRef = useRef(refreshOnMount)
   const scrollRef = useRef<HTMLDivElement>(null)
   const sampleHeightRef = useRef<number | null>(null)
   const [sampleHeight, setSampleHeight] = useState<number | null>(null)
   modelsRef.current = models
+  refreshOnMountRef.current = refreshOnMount
 
   const enabledCount = models.filter((model) => model.enabled).length
   const filtered = useMemo(
@@ -153,8 +167,12 @@ export function ProviderModelsEditor({
     setSampleHeight(height)
   }, [virtualItems.length])
 
+  useEffect(() => {
+    onLoadingChange?.(loading)
+  }, [loading, onLoadingChange])
+
   const loadCatalog = useCallback(
-    async (refresh: boolean) => {
+    async (refresh: boolean, notify = refresh) => {
       if (!providerId) {
         toast.error("Save the provider first to load its catalog.")
         return
@@ -168,25 +186,17 @@ export function ProviderModelsEditor({
           refresh ? "&refresh=1" : ""
         }`
         const res = await fetch(url, { signal: abort.signal })
-        const payload = (await res.json().catch(() => ({}))) as {
-          models?: Array<{ id: string; name?: string }>
-          error?: string
-        }
+        const { models: next, error } = parseProviderCatalogPayload(
+          await res.json().catch(() => ({}))
+        )
         if (abort.signal.aborted) return
-        const next = Array.isArray(payload.models)
-          ? payload.models.flatMap((model) =>
-              model.id
-                ? [{ id: model.id, name: model.name?.trim() || model.id }]
-                : []
-            )
-          : []
-        if (payload.error && !next.length) {
-          toast.error(payload.error)
+        if (error) {
+          toast.error(error)
           return
         }
         // A successful empty response is authoritative; a failed response is not.
         onCatalogChange(next)
-        if (refresh) {
+        if (notify) {
           toast.success(
             next.length
               ? `Loaded ${next.length} catalog model${next.length === 1 ? "" : "s"}`
@@ -207,11 +217,12 @@ export function ProviderModelsEditor({
 
   useEffect(() => {
     if (!providerId) return
-    void loadCatalog(false)
+    void loadCatalog(refreshOnMountRef.current, false)
     return () => abortRef.current?.abort()
   }, [loadCatalog, providerId])
 
   function addCustom() {
+    if (disabled) return
     const result = upsertCustomModel(modelsRef.current, customId)
     if (!customId.trim()) return
     if (result.status === "exists") {
@@ -222,6 +233,8 @@ export function ProviderModelsEditor({
     setCustomId("")
     if (result.status === "enabled") toast.success("Model turned on")
   }
+
+  const controlsDisabled = disabled || loading
 
   return (
     <div className="space-y-3 sm:col-span-2">
@@ -247,6 +260,7 @@ export function ProviderModelsEditor({
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Filter by model id or alias…"
             aria-label="Filter models and aliases"
+            disabled={disabled}
             className="min-w-[12rem] flex-1"
           />
           <div className="flex rounded-4xl bg-background p-0.5 ring-1 ring-foreground/10">
@@ -257,6 +271,7 @@ export function ProviderModelsEditor({
                 size="xs"
                 variant={visibility === item.id ? "secondary" : "ghost"}
                 aria-pressed={visibility === item.id}
+                disabled={disabled}
                 onClick={() => setVisibility(item.id)}
               >
                 {item.label}
@@ -269,7 +284,11 @@ export function ProviderModelsEditor({
             type="button"
             size="sm"
             variant="outline"
-            disabled={filtered.length === 0 || filteredOn === filtered.length}
+            disabled={
+              controlsDisabled ||
+              filtered.length === 0 ||
+              filteredOn === filtered.length
+            }
             onClick={() =>
               onModelsChange(setModelsEnabled(models, filteredIds, true))
             }
@@ -280,7 +299,9 @@ export function ProviderModelsEditor({
             type="button"
             size="sm"
             variant="outline"
-            disabled={filtered.length === 0 || filteredOn === 0}
+            disabled={
+              controlsDisabled || filtered.length === 0 || filteredOn === 0
+            }
             onClick={() =>
               onModelsChange(setModelsEnabled(models, filteredIds, false))
             }
@@ -292,7 +313,7 @@ export function ProviderModelsEditor({
             size="sm"
             variant="ghost"
             className="ml-auto"
-            disabled={loading || !providerId}
+            disabled={controlsDisabled || !providerId}
             onClick={() => void loadCatalog(true)}
           >
             {loading ? "Loading catalog…" : "Refresh catalog"}
@@ -336,6 +357,7 @@ export function ProviderModelsEditor({
                     <ModelRow
                       model={model}
                       custom={custom}
+                      disabled={disabled}
                       onToggle={(enabled) =>
                         onModelsChange(
                           models.map((entry) =>
@@ -378,9 +400,15 @@ export function ProviderModelsEditor({
               }
             }}
             placeholder="provider/model-id"
+            disabled={disabled}
             className="min-w-[12rem] flex-1"
           />
-          <Button type="button" variant="secondary" onClick={addCustom}>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={addCustom}
+            disabled={disabled}
+          >
             Add model
           </Button>
         </div>

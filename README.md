@@ -28,7 +28,7 @@ cp .env.example .env
 pnpm --filter web dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The first signup becomes the sole owner of the instance.
+Open [http://localhost:3000](http://localhost:3000). The first signup becomes the sole owner of the instance, then you can connect a model provider.
 
 ### Password reset
 

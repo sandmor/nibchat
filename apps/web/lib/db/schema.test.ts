@@ -52,6 +52,7 @@ describe("applySchema", () => {
         "light_theme_id",
         "dark_theme_id",
         "title_model_config_json",
+        "onboarding_completed_at",
       ])
       .where("id", "=", 1)
       .executeTakeFirst()
@@ -59,6 +60,7 @@ describe("applySchema", () => {
     expect(instance?.light_theme_id).toBe("paper")
     expect(instance?.dark_theme_id).toBe("ink")
     expect(instance?.title_model_config_json).toBeNull()
+    expect(instance?.onboarding_completed_at).toBeNull()
     const chatColumns = sqlite
       .prepare("pragma table_info(chats)")
       .all() as Array<{
@@ -73,6 +75,9 @@ describe("applySchema", () => {
       .all() as Array<{ name: string }>
     expect(instanceColumns.map((column) => column.name)).toContain(
       "title_model_config_json"
+    )
+    expect(instanceColumns.map((column) => column.name)).toContain(
+      "onboarding_completed_at"
     )
     const paper = await db
       .selectFrom("themes")

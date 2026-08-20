@@ -6,6 +6,8 @@ import {
   createChat,
   createPromptStack,
   createProvider,
+  finishSetup,
+  getTitleModelConfig,
   createTurn,
   deleteChat,
   deleteNode,
@@ -521,6 +523,33 @@ describe("SQLite chat repository", () => {
     const config = parseJson<ModelConfig>(chat.model_config_json, {})
     expect(config.providerId).toBe(provider.id)
     expect(config.model).toBe("seed-model")
+  })
+
+  it("finishSetup saves a provider, optional title model, and completes onboarding", async () => {
+    const result = await finishSetup(userId, {
+      provider: {
+        name: `Setup provider ${Date.now()}`,
+        kind: "openai",
+        apiKey: "sk-test",
+        models: [
+          {
+            id: "gpt-4o",
+            enabled: true,
+            source: "custom",
+          },
+        ],
+      },
+      titleModel: "gpt-4o",
+    })
+    expect(result.ok).toBe(true)
+    const title = await getTitleModelConfig()
+    expect(title?.model).toBe("gpt-4o")
+    const instance = await db
+      .selectFrom("instance")
+      .select("onboarding_completed_at")
+      .where("id", "=", 1)
+      .executeTakeFirst()
+    expect(instance?.onboarding_completed_at).toBeTruthy()
   })
 })
 

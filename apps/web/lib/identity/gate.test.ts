@@ -36,4 +36,12 @@ describe("decideGate", () => {
       user: session,
     })
   })
+
+  it("returns onboarding when the owner session has not finished setup", () => {
+    const session = user("owner")
+    expect(decideGate("owner", session, false)).toEqual({
+      status: "onboarding",
+      user: session,
+    })
+  })
 })

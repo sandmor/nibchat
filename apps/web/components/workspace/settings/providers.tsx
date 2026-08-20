@@ -4,8 +4,6 @@ import { useCallback, useState } from "react"
 import { toast } from "sonner"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import {
   Card,
   CardContent,
@@ -13,16 +11,14 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
 import { Badge } from "@/components/ui/badge"
 import { useTRPC } from "@/lib/trpc-react"
+import {
+  asProviderKind,
+  providerKindLabel,
+  type ProviderKind,
+} from "@/lib/provider-kinds"
 import {
   catalogNameMap,
   mergeCatalogWithSaved,
@@ -32,19 +28,8 @@ import {
   type ProviderModel,
 } from "@/lib/provider-models"
 import type { ProviderSummary } from "../types"
+import { ProviderProfileFields } from "./provider-fields"
 import { ProviderModelsEditor } from "./provider-models"
-
-const PROVIDER_KIND_ITEMS = {
-  openai: "OpenAI",
-  anthropic: "Anthropic",
-  "openai-compatible": "OpenAI-compatible",
-} as const
-
-type ProviderKind = keyof typeof PROVIDER_KIND_ITEMS
-
-function kindLabel(kind: string) {
-  return PROVIDER_KIND_ITEMS[kind as ProviderKind] ?? kind
-}
 
 const emptyForm = {
   name: "",
@@ -147,73 +132,13 @@ export function ProviderSettings({
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <div className="grid gap-1.5">
-            <Label htmlFor="provider-name">Display name</Label>
-            <Input
-              id="provider-name"
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-            />
-          </div>
-          <div className="grid gap-1.5">
-            <Label>Kind</Label>
-            <Select
-              value={form.kind}
-              items={PROVIDER_KIND_ITEMS}
-              onValueChange={(value) => {
-                if (value == null) return
-                setForm({
-                  ...form,
-                  kind: value as ProviderKind,
-                })
-              }}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {(Object.keys(PROVIDER_KIND_ITEMS) as ProviderKind[]).map(
-                  (kind) => (
-                    <SelectItem key={kind} value={kind}>
-                      {PROVIDER_KIND_ITEMS[kind]}
-                    </SelectItem>
-                  )
-                )}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="grid gap-1.5 sm:col-span-2">
-            <Label htmlFor="provider-base-url">Base URL</Label>
-            <Input
-              id="provider-base-url"
-              value={form.baseUrl}
-              onChange={(e) => setForm({ ...form, baseUrl: e.target.value })}
-              placeholder="For compatible endpoints"
-            />
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="provider-api-key">Stored API key</Label>
-            <Input
-              id="provider-api-key"
-              type="password"
-              value={form.apiKey}
-              onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
-              placeholder={
-                editingId ? "Leave blank to keep existing" : undefined
-              }
-            />
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="provider-api-key-env">
-              Or environment variable
-            </Label>
-            <Input
-              id="provider-api-key-env"
-              value={form.apiKeyEnv}
-              onChange={(e) => setForm({ ...form, apiKeyEnv: e.target.value })}
-            />
-          </div>
+        <ProviderProfileFields
+          value={form}
+          onChange={setForm}
+          kindUi="select"
+          existing={Boolean(editingId)}
+          apiKeyLabel="Stored API key"
+        >
           <ProviderModelsEditor
             providerId={editingId}
             models={models}
@@ -221,7 +146,7 @@ export function ProviderSettings({
             onModelsChange={setModels}
             onCatalogChange={handleCatalogChange}
           />
-        </div>
+        </ProviderProfileFields>
         <div className="flex gap-2">
           <Button onClick={() => void save()}>
             {editingId ? "Update provider" : "Save provider"}
@@ -245,7 +170,7 @@ export function ProviderSettings({
                 <div className="min-w-0">
                   <span className="font-medium">{provider.name}</span>
                   <Badge variant="secondary" className="ml-2">
-                    {kindLabel(provider.kind)}
+                    {providerKindLabel(provider.kind)}
                   </Badge>
                   <p className="truncate text-xs text-muted-foreground">
                     {enabled.length
@@ -270,9 +195,7 @@ export function ProviderSettings({
                       setModels(parsed)
                       setForm({
                         name: provider.name,
-                        kind: (provider.kind in PROVIDER_KIND_ITEMS
-                          ? provider.kind
-                          : "openai-compatible") as ProviderKind,
+                        kind: asProviderKind(provider.kind),
                         baseUrl: provider.base_url ?? "",
                         apiKey: "",
                         apiKeyEnv: provider.api_key_env ?? "",

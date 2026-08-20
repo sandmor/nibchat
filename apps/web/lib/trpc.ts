@@ -54,6 +54,7 @@ import {
   refreshMcpCatalog,
   updateMcpProfile,
 } from "@/lib/mcp"
+import { messageEditSegmentSchema } from "@/lib/agent/parts"
 
 export async function createContext({ req }: { req: Request }) {
   const gate = await resolveAppUser(req.headers)
@@ -318,13 +319,13 @@ export const appRouter = t.router({
       .input(
         z.object({
           nodeId: z.string(),
-          text: z.string().min(1),
+          edits: z.array(messageEditSegmentSchema).min(1),
           attachSelection: z.boolean().optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
         try {
-          const node = await forkEdit(ctx.user.id, input.nodeId, input.text, {
+          const node = await forkEdit(ctx.user.id, input.nodeId, input.edits, {
             attachSelection: input.attachSelection,
           })
           return { ok: true, node }

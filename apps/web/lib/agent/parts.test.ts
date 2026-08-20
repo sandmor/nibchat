@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest"
 import {
   allPendingResultsReady,
+  applyMessageEdits,
   attachmentModelText,
   attachmentPartSchema,
   applyToolOutputs,
+  canEditMessageParts,
+  coalesceAdjacentTextParts,
+  editableSegmentsFromParts,
   hasToolInvocations,
   partsHavePendingClientTools,
   pendingToolInvocations,
@@ -343,6 +347,83 @@ describe("parts helpers", () => {
     })
     expect(parts).toHaveLength(1)
     expect(parts[0]).toMatchObject({ state: "input-available" })
+  })
+
+  it("coalesces adjacent text and applies interleaved edits", () => {
+    const original: Parts = [
+      { type: "reasoning", text: "plan" },
+      { type: "text", text: "Hel" },
+      { type: "text", text: "lo" },
+      {
+        type: "tool-invocation",
+        toolCallId: "c1",
+        toolName: "web_search",
+        state: "output-available",
+        input: {},
+        output: "ok",
+      },
+      { type: "text", text: "world" },
+    ]
+    expect(coalesceAdjacentTextParts(original)).toEqual([
+      { type: "reasoning", text: "plan" },
+      { type: "text", text: "Hello" },
+      original[3],
+      { type: "text", text: "world" },
+    ])
+    expect(editableSegmentsFromParts(original)).toEqual([
+      { type: "reasoning", text: "plan" },
+      { type: "text", text: "Hello" },
+      { type: "text", text: "world" },
+    ])
+    expect(
+      applyMessageEdits(original, [
+        { type: "reasoning", text: "  revised  " },
+        { type: "text", text: "Hi" },
+        { type: "text", text: "there" },
+      ])
+    ).toEqual([
+      { type: "reasoning", text: "  revised  " },
+      { type: "text", text: "Hi" },
+      original[3],
+      { type: "text", text: "there" },
+    ])
+    expect(
+      applyMessageEdits(original, [
+        { type: "reasoning", text: "\n  plan\n" },
+        { type: "text", text: "  ```ts\n  code\n  ```\n" },
+        { type: "text", text: "\n next\n" },
+      ])
+    ).toEqual([
+      { type: "reasoning", text: "\n  plan\n" },
+      { type: "text", text: "  ```ts\n  code\n  ```\n" },
+      original[3],
+      { type: "text", text: "\n next\n" },
+    ])
+    expect(() =>
+      applyMessageEdits(original, [{ type: "text", text: "only" }])
+    ).toThrow("Edit does not match this message")
+    expect(() =>
+      applyMessageEdits(original, [
+        { type: "reasoning", text: "plan" },
+        { type: "text", text: "   " },
+        { type: "text", text: "" },
+      ])
+    ).toThrow("Message is required")
+    expect(canEditMessageParts("complete", original)).toBe(true)
+    expect(canEditMessageParts("streaming", original)).toBe(false)
+    expect(canEditMessageParts("awaiting_input", original)).toBe(false)
+    expect(
+      canEditMessageParts("complete", [
+        {
+          type: "tool-invocation",
+          toolCallId: "c1",
+          toolName: "question",
+          state: "input-available",
+          input: { questions },
+        },
+        { type: "text", text: "hi" },
+      ])
+    ).toBe(false)
   })
 
   it("promotes aborted/complete to awaiting_input when client tools are pending", () => {

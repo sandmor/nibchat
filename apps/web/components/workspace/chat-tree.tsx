@@ -71,6 +71,7 @@ const CHROME_SELECTOR =
 
 const EMPTY_HIT_IDS: ReadonlySet<string> = new Set()
 const EMPTY_VISIBLE: ReadonlySet<string> = new Set()
+const EMPTY_EDITING_IDS: ReadonlySet<string> = new Set()
 
 function readTreeCardSizes(
   current: ReadonlyMap<string, number>,
@@ -95,6 +96,7 @@ export function ChatTree({
   nodes,
   activePath,
   draftAnchors,
+  editingNodeIds = EMPTY_EDITING_IDS,
   providers,
   streamIdByNodeId,
   animate,
@@ -120,6 +122,7 @@ export function ChatTree({
   nodes: NodeRow[]
   activePath: NodeRow[]
   draftAnchors: ReadonlySet<string | null>
+  editingNodeIds?: ReadonlySet<string>
   providers: ProviderSummary[]
   streamIdByNodeId: ReadonlyMap<string, string>
   animate: boolean
@@ -199,6 +202,7 @@ export function ChatTree({
   const focusedIdRef = useRef(focusedId)
   const findLocateAppliedKeyRef = useRef(0)
   const draftHeightsRef = useRef(new Map<string, number>())
+  const editHeightsRef = useRef(new Map<string, number>())
   const [composeSources, setComposeSources] = useState<
     ReadonlyMap<string, TreeRect>
   >(() => new Map())
@@ -211,8 +215,8 @@ export function ChatTree({
   const onHandoffCompleteRef = useRef(onHandoffComplete)
   onHandoffCompleteRef.current = onHandoffComplete
   const layout = useMemo(
-    () => layoutChatTree(nodes, { draftAnchors, sizes }),
-    [nodes, draftAnchors, sizes]
+    () => layoutChatTree(nodes, { draftAnchors, editingNodeIds, sizes }),
+    [nodes, draftAnchors, editingNodeIds, sizes]
   )
   const forestTransition =
     animate && forestMotion ? transition : { ...transition, duration: 0 }
@@ -546,7 +550,7 @@ export function ChatTree({
     setSizes((current) =>
       readTreeCardSizes(current, world.querySelectorAll("[data-tree-size]"))
     )
-  }, [nodes, view.sig])
+  }, [nodes, view.sig, editingNodeIds])
 
   useLayoutEffect(() => {
     if (forestMotion) return
@@ -570,6 +574,16 @@ export function ChatTree({
       draftHeightsRef.current.set(id, height)
     }
   }, [draftAnchors, layout, frameRectIfNeeded])
+
+  useLayoutEffect(() => {
+    if (!didCenter.current) return
+    for (const id of editingNodeIds) {
+      const height = layout.rects.get(id)?.height ?? 0
+      const previous = editHeightsRef.current.get(id) ?? 0
+      if (height > previous + 8) frameRectIfNeeded(id)
+      editHeightsRef.current.set(id, height)
+    }
+  }, [editingNodeIds, layout, frameRectIfNeeded])
 
   const focusNode = (id: string) => {
     setFocusedId(id)
@@ -752,7 +766,8 @@ export function ChatTree({
           const liveWork =
             Boolean(streamId) ||
             node.status === "awaiting_input" ||
-            node.status === "streaming"
+            node.status === "streaming" ||
+            editingNodeIds.has(node.id)
           if (!liveWork && !focused && !inView(node.id)) return null
           const isHit = hitIds.has(node.id)
           const onPath = pathIds.has(node.id)
@@ -762,7 +777,9 @@ export function ChatTree({
             tier: view.tier,
             interactive: liveWork,
           })
-          const maxHeight = cardMaxHeight(node)
+          const maxHeight = editingNodeIds.has(node.id)
+            ? undefined
+            : cardMaxHeight(node)
           const live = paint === "live"
           return (
             <motion.div

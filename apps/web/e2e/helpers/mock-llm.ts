@@ -58,11 +58,11 @@ export async function startMockLlm(): Promise<MockLlm> {
       /\/chat\/completions\/?$/.test(url.split("?")[0] ?? "")
     ) {
       const body = await readBody(req)
-      let streamed = true
+      let streamed = false
       try {
-        streamed = JSON.parse(body).stream !== false
+        streamed = JSON.parse(body).stream === true
       } catch {
-        /* default stream */
+        /* malformed requests use the non-streaming response */
       }
 
       requests += 1
@@ -223,7 +223,8 @@ function writeChunk(
 
 function chunkText(text: string, size: number) {
   const parts: string[] = []
-  for (let i = 0; i < text.length; i += size) parts.push(text.slice(i, i + size))
+  for (let i = 0; i < text.length; i += size)
+    parts.push(text.slice(i, i + size))
   return parts.length ? parts : [""]
 }
 

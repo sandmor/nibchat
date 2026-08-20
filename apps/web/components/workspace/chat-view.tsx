@@ -54,11 +54,13 @@ import { ContextPreviewProvider } from "./context-preview"
 import {
   composerSlotId,
   hasComposerDraft,
+  messageEditNodeIdsForChat,
   readComposerDraft,
   shouldDeleteUploadedAttachment,
   treeDraftAnchorsForChat,
   type ComposerAttachment,
   useConversationSessionStore,
+  useMessageEditSlotSignature,
   useTreeDraftSlotSignature,
 } from "./conversation-session-store"
 import { ImageViewer } from "./image-viewer"
@@ -983,6 +985,14 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     }
     return anchors
   }, [data.chat, data.nodes, treeSlotSignature, composeMorphs])
+  const editSlotSignature = useMessageEditSlotSignature(data.chat?.id)
+  const editingNodeIds = useMemo(() => {
+    if (!data.chat || !editSlotSignature) return new Set<string>()
+    return messageEditNodeIdsForChat(
+      useConversationSessionStore.getState().edits,
+      data.chat.id
+    )
+  }, [data.chat, editSlotSignature])
 
   return (
     <ContextPreviewProvider
@@ -1110,6 +1120,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
               nodes={data.nodes}
               activePath={activePath}
               draftAnchors={treeDraftAnchors}
+              editingNodeIds={editingNodeIds}
               providers={providers}
               streamIdByNodeId={streamIdByNodeId}
               animate={animate}

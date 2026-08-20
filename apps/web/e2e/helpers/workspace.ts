@@ -52,18 +52,38 @@ async function ensureMockProviderViaSettingsUi(page: Page, baseUrl: string) {
     .locator("div.flex.flex-wrap")
     .filter({ hasText: "E2E Mock" })
     .getByRole("button", { name: "Edit", exact: true })
+  const providerEditButtons = page.getByRole("button", {
+    name: "Edit",
+    exact: true,
+  })
 
   if ((await editInMockRow.count()) > 0) {
     await editInMockRow.first().click()
+  } else if ((await providerEditButtons.count()) > 0) {
+    // owner-flow creates the first provider, which new chats inherit. Reuse
+    // that profile so a later page load cannot fall back to its placeholder key.
+    await providerEditButtons.first().click()
+    await page.getByLabel("Display name").fill("E2E Mock")
+    await page.getByLabel("Kind").click()
+    await page
+      .getByRole("option", { name: "OpenAI-compatible", exact: true })
+      .click()
   } else {
     await page.getByLabel("Display name").fill("E2E Mock")
-    await page.getByLabel("Add model ID").fill("e2e-model")
-    await page.getByRole("button", { name: "Add model" }).click()
-    await expect(page.getByLabel("Alias for e2e-model")).toBeVisible()
   }
 
   await page.getByLabel("Base URL").fill(baseUrl)
   await page.getByLabel("Stored API key").fill("sk-e2e-test-key")
+  const disableAll = page.getByRole("button", {
+    name: "Disable all",
+    exact: true,
+  })
+  if (await disableAll.isEnabled()) await disableAll.click()
+  await page.getByLabel("Add model ID").fill("e2e-model")
+  await page.getByRole("button", { name: "Add model" }).click()
+  await expect(
+    page.getByRole("switch", { name: "Show e2e-model in chats" })
+  ).toBeChecked()
 
   await page
     .getByRole("button", { name: /^(Save provider|Update provider)$/ })
@@ -174,14 +194,12 @@ export async function editUserAsBranch(page: Page, nextText: string) {
   const userArticles = page.locator("article").filter({
     has: page.getByText("user", { exact: true }),
   })
-  await userArticles
-    .last()
-    .getByRole("button", { name: "Edit as branch" })
-    .click()
-  const dialog = page.getByRole("dialog")
-  await expect(dialog.getByText("Edit as branch")).toBeVisible()
-  await dialog.locator("textarea").fill(nextText)
-  await dialog.getByRole("button", { name: "Save & generate" }).click()
+  const article = userArticles.last()
+  await article.getByRole("button", { name: "Edit as branch" }).click()
+  const textarea = article.getByRole("textbox", { name: "Message text" })
+  await expect(textarea).toBeVisible()
+  await textarea.fill(nextText)
+  await article.getByRole("button", { name: "Save & generate" }).click()
 }
 
 export async function regenerateAssistant(page: Page) {

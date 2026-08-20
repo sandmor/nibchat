@@ -3,17 +3,18 @@ import { createHash } from "node:crypto"
 import { sql } from "kysely"
 import { db, databaseKind } from "@/lib/db"
 import {
-  ancestorPath,
   id,
   now,
   parseJson,
-  resolveActivePath,
   subtreeNodeIds,
 } from "@/lib/domain"
 import {
+  applyMessageEdits,
   isEmptyParts,
   partsFromTextReasoning,
+  partsHavePendingClientTools,
   searchTextFromParts,
+  type MessageEditSegment,
 } from "@/lib/agent/parts"
 import { abortGenerations } from "@/lib/active-generations"
 import type {
@@ -620,16 +621,19 @@ export async function selectPath(
 export async function forkEdit(
   userId: string,
   nodeId: string,
-  text: string,
+  edits: MessageEditSegment[],
   options: { attachSelection?: boolean } = {}
 ) {
   const original = await assertNodeOwner(nodeId, userId)
   const originalParts = nodeParts(original)
-  const parts: Parts = [
-    ...originalParts.filter((part) => part.type === "attachment"),
-    { type: "text", text: text.trim() },
-  ]
-  if (!text.trim()) throw new Error("Message is required")
+  if (
+    original.status === "streaming" ||
+    original.status === "awaiting_input" ||
+    partsHavePendingClientTools(originalParts)
+  ) {
+    throw new Error("Cannot edit a message that is still in progress.")
+  }
+  const parts = applyMessageEdits(originalParts, edits)
   const timestamp = now()
   const node = newNode(
     {

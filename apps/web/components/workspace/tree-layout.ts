@@ -58,6 +58,8 @@ export function cardMaxHeight(node: NodeRow) {
 type LayoutOptions = {
   /** Open plus-node composers. These occupy card width; height is measured. */
   draftAnchors?: ReadonlySet<string | null>
+  /** Message cards in edit mode. Height is measured, not capped. */
+  editingNodeIds?: ReadonlySet<string>
   /** Painted border-box heights, keyed by layout id. */
   sizes?: ReadonlyMap<string, number>
 }
@@ -120,6 +122,7 @@ export function layoutChatTree(
     const measured = options.sizes?.get(id)
     const usable = measured != null && measured >= 8 ? measured : undefined
     if (node) {
+      if (options.editingNodeIds?.has(id)) return usable ?? cardMaxHeight(node)
       const max = cardMaxHeight(node)
       return usable != null ? Math.min(usable, max) : max
     }

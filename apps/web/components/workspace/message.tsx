@@ -1,6 +1,6 @@
 "use client"
 
-import { Fragment, useState } from "react"
+import { Fragment, useEffect, useRef, useState } from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { HugeiconsIcon } from "@hugeicons/react"
@@ -18,7 +18,6 @@ import {
   ViewOffIcon,
 } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
-import { Textarea } from "@/components/ui/textarea"
 import {
   Dialog,
   DialogContent,
@@ -60,9 +59,17 @@ import { MessageParts } from "./message-parts"
 import { useWorkspaceChrome } from "./shell"
 import {
   allPendingResultsReady,
-  hasToolInvocations,
+  canEditMessageParts,
+  editableSegmentsFromParts,
   pendingToolInvocations,
 } from "@/lib/agent/parts"
+import {
+  hasMessageEdit,
+  messageEditSlotId,
+  useConversationSessionStore,
+  useHasMessageEdit,
+  useMessageEdit,
+} from "./conversation-session-store"
 
 export function MessageAction({
   icon,
@@ -174,15 +181,22 @@ export function Message({
   const parts = parseJson<Parts>(node.parts_json, [])
   const metadata = parseJson<Record<string, unknown>>(node.metadata_json, {})
   const text = textFromParts(parts)
-  const editableText = parts
-    .filter(
-      (part): part is Extract<Parts[number], { type: "text" }> =>
-        part.type === "text"
-    )
-    .map((part) => part.text)
-    .join("\n")
-  const toolful = hasToolInvocations(parts)
-  const canEditAsBranch = !toolful
+  const editSlot = messageEditSlotId(node.chat_id, node.id)
+  const editing = useHasMessageEdit(editSlot)
+  const edits = useMessageEdit(editSlot)
+  const setEdit = useConversationSessionStore((state) => state.setEdit)
+  const updateEditSegment = useConversationSessionStore(
+    (state) => state.updateEditSegment
+  )
+  const clearEdit = useConversationSessionStore((state) => state.clear)
+  const articleRef = useRef<HTMLElement>(null)
+  const wasEditingRef = useRef(editing)
+  useEffect(() => {
+    const wasEditing = wasEditingRef.current
+    wasEditingRef.current = editing
+    if (wasEditing && !editing) articleRef.current?.focus()
+  }, [editing])
+  const canEditAsBranch = canEditMessageParts(node.status, parts)
   const interactiveTools =
     node.role === "assistant" &&
     node.status === "awaiting_input" &&
@@ -193,9 +207,7 @@ export function Message({
       candidate.parent_id === node.parent_id && candidate.role === node.role
   )
   const index = siblings.findIndex((candidate) => candidate.id === node.id)
-  const [editOpen, setEditOpen] = useState(false)
   const [detailsOpen, setDetailsOpen] = useState(false)
-  const [editText, setEditText] = useState(editableText)
   const [deleteOpen, setDeleteOpen] = useState(false)
   /** Local answers for multi-pending tools before a single resume fires. */
   const [localToolResults, setLocalToolResults] = useState<
@@ -207,10 +219,8 @@ export function Message({
   const [boundNodeId, setBoundNodeId] = useState(node.id)
   if (node.id !== boundNodeId) {
     setBoundNodeId(node.id)
-    setEditOpen(false)
     setDetailsOpen(false)
     setDeleteOpen(false)
-    setEditText(editableText)
     setLocalToolResults({})
     setResumeInFlight(false)
   }
@@ -248,7 +258,7 @@ export function Message({
   const forkEditMutation = useMutation(
     trpc.workspace.forkEdit.mutationOptions({
       onSuccess: async (result) => {
-        setEditOpen(false)
+        clearEdit(editSlot)
         const forked = result.node
         // Wait for workspace refresh so soft-follow sees the forked tip
         // (server already attached selection to the new branch).
@@ -315,9 +325,32 @@ export function Message({
       ? Object.entries(usage as Record<string, unknown>)
       : null
   const tree = presentation === "tree"
+  const beginEdit = () => {
+    if (!hasMessageEdit(editSlot)) {
+      setEdit(editSlot, editableSegmentsFromParts(parts))
+    }
+  }
+  const cancelEdit = () => clearEdit(editSlot)
+  const saveEdit = () => {
+    if (forkEditMutation.isPending) return
+    if (
+      !edits.some((segment) => segment.type === "text" && segment.text.trim())
+    )
+      return
+    forkEditMutation.mutate({
+      nodeId: node.id,
+      edits,
+      attachSelection: attachSelectionOnEdit,
+    })
+  }
+  const canSaveEdit =
+    edits.some((segment) => segment.type === "text" && segment.text.trim()) &&
+    !forkEditMutation.isPending
 
   return (
     <article
+      ref={articleRef}
+      tabIndex={-1}
       data-find-node={node.id}
       {...(node.status === "streaming" ? { "data-find-skip": "" } : {})}
       data-theme-group={
@@ -326,9 +359,14 @@ export function Message({
       data-theme-target={
         node.role === "user" ? "message-user" : "message-assistant"
       }
+      data-tree-chrome={editing ? true : undefined}
       className={cn(
-        "group relative min-w-0 overflow-hidden rounded-xl border",
-        tree ? "flex h-full min-h-0 flex-col" : "p-4",
+        "group relative min-w-0 rounded-xl border",
+        tree
+          ? editing
+            ? "flex flex-col"
+            : "flex h-full min-h-0 flex-col overflow-hidden"
+          : "overflow-hidden p-4",
         node.role === "user" && presentation === "linear"
           ? "ml-auto max-w-[88%] border-message-user-border bg-message-user text-message-user-foreground"
           : node.role === "user"
@@ -336,11 +374,27 @@ export function Message({
             : "border-message-assistant-border bg-message-assistant text-message-assistant-foreground",
         tree && "hover:border-foreground/30"
       )}
+      onKeyDown={(event) => {
+        if (!editing) return
+        if (event.key === "Escape") {
+          event.preventDefault()
+          event.stopPropagation()
+          cancelEdit()
+          return
+        }
+        if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+          event.preventDefault()
+          saveEdit()
+        }
+      }}
     >
       <div
         className={
           tree
-            ? "min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-3.5 pb-2"
+            ? cn(
+                "overscroll-contain px-4 pt-3.5 pb-2",
+                editing ? "overflow-visible" : "min-h-0 flex-1 overflow-y-auto"
+              )
             : undefined
         }
         data-tree-scroll={tree ? "" : undefined}
@@ -417,10 +471,19 @@ export function Message({
               : node.status}
           </p>
         ) : null}
-        {displayParts.some((part) => part.type === "reasoning") ||
-        displayParts.some((part) => part.type === "text") ||
-        displayParts.some((part) => part.type === "attachment") ||
-        displayParts.some((part) => part.type === "tool-invocation") ? (
+        {editing ? (
+          <MessageParts
+            parts={parts}
+            editing
+            edits={edits}
+            onEditChange={(index, next) =>
+              updateEditSegment(editSlot, index, next)
+            }
+          />
+        ) : displayParts.some((part) => part.type === "reasoning") ||
+          displayParts.some((part) => part.type === "text") ||
+          displayParts.some((part) => part.type === "attachment") ||
+          displayParts.some((part) => part.type === "tool-invocation") ? (
           <MessageParts
             parts={displayParts}
             streaming={node.status === "streaming"}
@@ -471,86 +534,104 @@ export function Message({
           tree ? "shrink-0 border-t border-foreground/8 px-2 py-1" : "mt-3"
         )}
       >
-        <TooltipProvider delay={400}>
-          <MessageAction
-            onClick={() => void copyMarkdown("message")}
-            icon={Copy01Icon}
-            captions={messageActionCaptions}
-          >
-            Copy
-          </MessageAction>
-          {node.role === "assistant" && onRegenerate && (
+        {editing ? (
+          <div className="flex flex-wrap items-center justify-end gap-1">
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              onClick={cancelEdit}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              size="xs"
+              disabled={!canSaveEdit}
+              onClick={saveEdit}
+            >
+              {node.role === "user" ? "Save & generate" : "Save branch"}
+            </Button>
+          </div>
+        ) : (
+          <TooltipProvider delay={400}>
             <MessageAction
-              onClick={() => onRegenerate()}
-              icon={RefreshIcon}
+              onClick={() => void copyMarkdown("message")}
+              icon={Copy01Icon}
               captions={messageActionCaptions}
             >
-              Regenerate
+              Copy
             </MessageAction>
-          )}
-          {canEditAsBranch && (
+            {node.role === "assistant" && onRegenerate && (
+              <MessageAction
+                onClick={() => onRegenerate()}
+                icon={RefreshIcon}
+                captions={messageActionCaptions}
+              >
+                Regenerate
+              </MessageAction>
+            )}
+            {canEditAsBranch && (
+              <MessageAction
+                onClick={beginEdit}
+                icon={Edit02Icon}
+                captions={messageActionCaptions}
+              >
+                Edit as branch
+              </MessageAction>
+            )}
             <MessageAction
-              onClick={() => {
-                setEditText(editableText)
-                setEditOpen(true)
-              }}
-              icon={Edit02Icon}
+              onClick={() =>
+                setContextExcludedMutation.mutate({
+                  nodeId: node.id,
+                  excluded: !node.excluded_from_context,
+                })
+              }
+              icon={node.excluded_from_context ? ViewOffIcon : ViewIcon}
+              captions={messageActionCaptions}
+              disabled={contextExclusionPending}
+            >
+              {node.excluded_from_context
+                ? "Include in context"
+                : "Exclude from context"}
+            </MessageAction>
+            {node.role === "assistant" && Object.keys(metadata).length > 0 && (
+              <MessageAction
+                onClick={() => setDetailsOpen(true)}
+                icon={InformationCircleIcon}
+                captions={messageActionCaptions}
+              >
+                Details
+              </MessageAction>
+            )}
+            <MessageAction
+              onClick={() => setDeleteOpen(true)}
+              icon={Delete02Icon}
+              destructive
               captions={messageActionCaptions}
             >
-              Edit as branch
+              Delete
             </MessageAction>
-          )}
-          <MessageAction
-            onClick={() =>
-              setContextExcludedMutation.mutate({
-                nodeId: node.id,
-                excluded: !node.excluded_from_context,
-              })
-            }
-            icon={node.excluded_from_context ? ViewOffIcon : ViewIcon}
-            captions={messageActionCaptions}
-            disabled={contextExclusionPending}
-          >
-            {node.excluded_from_context
-              ? "Include in context"
-              : "Exclude from context"}
-          </MessageAction>
-          {node.role === "assistant" && Object.keys(metadata).length > 0 && (
-            <MessageAction
-              onClick={() => setDetailsOpen(true)}
-              icon={InformationCircleIcon}
-              captions={messageActionCaptions}
-            >
-              Details
-            </MessageAction>
-          )}
-          <MessageAction
-            onClick={() => setDeleteOpen(true)}
-            icon={Delete02Icon}
-            destructive
-            captions={messageActionCaptions}
-          >
-            Delete
-          </MessageAction>
-          <DropdownMenu>
-            <MoreActionsTrigger captions={messageActionCaptions} />
-            <DropdownMenuContent
-              align="end"
-              side="top"
-              className="max-w-[min(20rem,calc(100vw-1.5rem))]"
-            >
-              <DropdownMenuItem onClick={() => void copyMarkdown("path")}>
-                <HugeiconsIcon
-                  icon={GitBranchIcon}
-                  strokeWidth={2}
-                  className="size-3.5 text-muted-foreground"
-                  aria-hidden
-                />
-                Copy path
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </TooltipProvider>
+            <DropdownMenu>
+              <MoreActionsTrigger captions={messageActionCaptions} />
+              <DropdownMenuContent
+                align="end"
+                side="top"
+                className="max-w-[min(20rem,calc(100vw-1.5rem))]"
+              >
+                <DropdownMenuItem onClick={() => void copyMarkdown("path")}>
+                  <HugeiconsIcon
+                    icon={GitBranchIcon}
+                    strokeWidth={2}
+                    className="size-3.5 text-muted-foreground"
+                    aria-hidden
+                  />
+                  Copy path
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </TooltipProvider>
+        )}
       </div>
       {!tree && node.status === "error" && (
         <p className="mt-3 text-xs break-words text-destructive">
@@ -626,36 +707,6 @@ export function Message({
           <DialogFooter>
             <Button variant="outline" onClick={() => setDetailsOpen(false)}>
               Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={editOpen} onOpenChange={setEditOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Edit as branch</DialogTitle>
-          </DialogHeader>
-          <Textarea
-            value={editText}
-            onChange={(e) => setEditText(e.target.value)}
-            rows={6}
-          />
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setEditOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              disabled={!editText.trim()}
-              onClick={() =>
-                forkEditMutation.mutate({
-                  nodeId: node.id,
-                  text: editText,
-                  attachSelection: attachSelectionOnEdit,
-                })
-              }
-            >
-              {node.role === "user" ? "Save & generate" : "Save branch"}
             </Button>
           </DialogFooter>
         </DialogContent>

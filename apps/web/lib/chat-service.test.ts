@@ -4,7 +4,6 @@ import {
   createBackup,
   createBackupArchive,
   createChat,
-  createPromptStack,
   createProvider,
   finishSetup,
   getTitleModelConfig,
@@ -177,9 +176,14 @@ describe("SQLite chat repository", () => {
       role: "assistant",
       parts: [{ type: "text", text: "selected" }],
     })
-    const edited = await forkEdit(userId, selected.id, "tree edit", {
-      attachSelection: false,
-    })
+    const edited = await forkEdit(
+      userId,
+      selected.id,
+      [{ type: "text", text: "tree edit" }],
+      {
+        attachSelection: false,
+      }
+    )
     const workspace = await getWorkspace(userId, { chatId: chat.id })
     expect(edited.parent_id).toBe(root.id)
     expect(
@@ -188,6 +192,46 @@ describe("SQLite chat repository", () => {
         workspace.chat?.selected_root_node_id ?? null
       ).at(-1)?.id
     ).toBe(selected.id)
+  })
+
+  it("forks an edit while keeping interleaved reasoning and tools", async () => {
+    const chat = await createChat(userId, "Interleaved edit")
+    const original = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "assistant",
+      parts: [
+        { type: "reasoning", text: "think first" },
+        { type: "text", text: "before" },
+        {
+          type: "tool-invocation",
+          toolCallId: "c1",
+          toolName: "web_search",
+          state: "output-available",
+          input: { q: "nib" },
+          output: "hits",
+        },
+        { type: "text", text: "after" },
+      ],
+    })
+    const edited = await forkEdit(userId, original.id, [
+      { type: "reasoning", text: "think again" },
+      { type: "text", text: "hello" },
+      { type: "text", text: "world" },
+    ])
+    expect(nodeParts(edited)).toEqual([
+      { type: "reasoning", text: "think again" },
+      { type: "text", text: "hello" },
+      {
+        type: "tool-invocation",
+        toolCallId: "c1",
+        toolName: "web_search",
+        state: "output-available",
+        input: { q: "nib" },
+        output: "hits",
+      },
+      { type: "text", text: "world" },
+    ])
   })
 
   it("createTurn persists attachment-only user turns", async () => {
@@ -315,7 +359,9 @@ describe("SQLite chat repository", () => {
       .insertInto("message_attachments")
       .values({ message_node_id: original.id, attachment_id: "image-branch" })
       .execute()
-    const edited = await forkEdit(userId, original.id, "edited")
+    const edited = await forkEdit(userId, original.id, [
+      { type: "text", text: "edited" },
+    ])
     await deleteNode(userId, original.id, "subtree")
     const reference = await db
       .selectFrom("message_attachments")

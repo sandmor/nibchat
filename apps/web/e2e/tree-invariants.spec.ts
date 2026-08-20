@@ -90,7 +90,6 @@ test.describe("chat tree invariants", () => {
     // Start a slow follow-up generation on branch B.
     await sendMessage(page, "continue on B")
     await expect(streamingMarkers(page)).toBeVisible({ timeout: 15_000 })
-    await expect(page.getByText("assistant · streaming")).toBeVisible()
 
     // Switch to branch A while B is still streaming — B's stream must vanish.
     await openBranchPrev(page)
@@ -130,7 +129,10 @@ test.describe("chat tree invariants", () => {
 
   test("delete subtree cancels an in-flight generation under it", async () => {
     await openNewChat(page)
-    llm.enqueue({ text: "DELETE_ME_PARENT" }, { text: "NEVER_SEEN", hold: true })
+    llm.enqueue(
+      { text: "DELETE_ME_PARENT" },
+      { text: "NEVER_SEEN", hold: true }
+    )
 
     await sendMessage(page, "to be deleted")
     await expectAssistantText(page, "DELETE_ME_PARENT")

@@ -8,6 +8,8 @@ import type {
   MessageStatus,
   Part,
   Parts,
+  ReasoningPart,
+  TextPart,
   ToolInvocationPart,
 } from "@/lib/types"
 
@@ -302,6 +304,88 @@ export function isEmptyParts(parts: Parts): boolean {
       return part.text.trim().length > 0
     return true
   })
+}
+
+export const messageEditSegmentSchema = z.object({
+  type: z.enum(["text", "reasoning"]),
+  text: z.string(),
+})
+export type MessageEditSegment = z.infer<typeof messageEditSegmentSchema>
+
+/** Merge streamed text deltas so adjacent prose is one document. */
+export function coalesceAdjacentTextParts(parts: Parts): Parts {
+  const result: Parts = []
+  for (const part of parts) {
+    const previous = result.at(-1)
+    if (part.type === "text" && previous?.type === "text") {
+      result[result.length - 1] = {
+        type: "text",
+        text: previous.text + part.text,
+      }
+      continue
+    }
+    result.push(part)
+  }
+  return result
+}
+
+export function editableSegmentsFromParts(parts: Parts): MessageEditSegment[] {
+  return coalesceAdjacentTextParts(parts).flatMap((part) =>
+    part.type === "text" || part.type === "reasoning"
+      ? [{ type: part.type, text: part.text }]
+      : []
+  )
+}
+
+/**
+ * Rebuild parts from a coalesced walk: text/reasoning take the matching edit,
+ * tools and attachments are cloned in place. Adjacent original text parts
+ * become one text part.
+ */
+export function applyMessageEdits(
+  original: Parts,
+  edits: readonly MessageEditSegment[]
+): Parts {
+  const coalesced = coalesceAdjacentTextParts(original)
+  const expected = coalesced.filter(
+    (part): part is TextPart | ReasoningPart =>
+      part.type === "text" || part.type === "reasoning"
+  )
+  if (edits.length !== expected.length) {
+    throw new Error("Edit does not match this message")
+  }
+  for (const [index, part] of expected.entries()) {
+    if (edits[index]?.type !== part.type) {
+      throw new Error("Edit does not match this message")
+    }
+  }
+  if (
+    !edits.some((segment) => segment.type === "text" && segment.text.trim())
+  ) {
+    throw new Error("Message is required")
+  }
+  const next: Parts = []
+  let editIndex = 0
+  for (const part of coalesced) {
+    if (part.type === "text" || part.type === "reasoning") {
+      const text = edits[editIndex++]!.text
+      if (text) next.push({ type: part.type, text })
+      continue
+    }
+    next.push(part)
+  }
+  return next
+}
+
+export function canEditMessageParts(
+  status: MessageStatus,
+  parts: Parts
+): boolean {
+  if (status === "streaming" || status === "awaiting_input") return false
+  if (partsHavePendingClientTools(parts)) return false
+  return editableSegmentsFromParts(parts).some(
+    (segment) => segment.type === "text"
+  )
 }
 
 /** Build text/reasoning-only parts from stream partials (tool-free path). */

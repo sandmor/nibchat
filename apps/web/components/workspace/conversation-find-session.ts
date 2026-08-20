@@ -372,7 +372,10 @@ export function useConversationFindSession({
           renameOpen,
           view,
           canUseThisPath,
-          inPane: Boolean(element && paneRef.current?.contains(element)),
+          inPane: Boolean(
+            element &&
+            (element === document.body || paneRef.current?.contains(element))
+          ),
           inFindInput: Boolean(element?.closest("[data-find-input]")),
           inDialog: Boolean(
             element?.closest('[role="dialog"], [role="alertdialog"]')

@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it } from "vitest"
 import {
   composerSlotId,
   hasComposerDraft,
+  hasMessageEdit,
+  messageEditNodeIdsForChat,
+  messageEditSlotId,
+  messageEditSlotSignature,
   readComposerDraft,
   shouldDeleteUploadedAttachment,
   treeDraftAnchorsForChat,
@@ -25,7 +29,7 @@ describe("shouldDeleteUploadedAttachment", () => {
 
 describe("composer session selectors", () => {
   beforeEach(() => {
-    useConversationSessionStore.setState({ drafts: {} })
+    useConversationSessionStore.setState({ drafts: {}, edits: {} })
   })
 
   it("returns the shared empty draft until a slot is written", () => {
@@ -113,5 +117,73 @@ describe("composer session selectors", () => {
         "chat-1"
       )
     ).toEqual(new Set([null, "node-1"]))
+  })
+})
+
+describe("message edit session selectors", () => {
+  beforeEach(() => {
+    useConversationSessionStore.setState({ drafts: {}, edits: {} })
+  })
+
+  it("keeps the edit slot signature stable when only segment text changes", () => {
+    const { setEdit, updateEditSegment } =
+      useConversationSessionStore.getState()
+    const slot = messageEditSlotId("chat-1", "node-1")
+    setEdit(slot, [{ type: "text", text: "a" }])
+    const before = messageEditSlotSignature(
+      useConversationSessionStore.getState().edits,
+      "chat-1"
+    )
+    updateEditSegment(slot, 0, "ab")
+    const after = messageEditSlotSignature(
+      useConversationSessionStore.getState().edits,
+      "chat-1"
+    )
+    expect(after).toBe(before)
+    expect(after).toBe(slot)
+  })
+
+  it("changes the edit slot signature when an edit is opened or closed", () => {
+    const { setEdit, clear } = useConversationSessionStore.getState()
+    const slot = messageEditSlotId("chat-1", "node-1")
+    expect(
+      messageEditSlotSignature(
+        useConversationSessionStore.getState().edits,
+        "chat-1"
+      )
+    ).toBe("")
+    setEdit(slot, [{ type: "text", text: "hi" }])
+    expect(hasMessageEdit(slot)).toBe(true)
+    expect(
+      messageEditNodeIdsForChat(
+        useConversationSessionStore.getState().edits,
+        "chat-1"
+      )
+    ).toEqual(new Set(["node-1"]))
+    clear(slot)
+    expect(hasMessageEdit(slot)).toBe(false)
+    expect(
+      messageEditSlotSignature(
+        useConversationSessionStore.getState().edits,
+        "chat-1"
+      )
+    ).toBe("")
+  })
+
+  it("clears message edits with the chat", () => {
+    const { setEdit, update, clearChat } =
+      useConversationSessionStore.getState()
+    const keep = messageEditSlotId("chat-2", "node-9")
+    setEdit(messageEditSlotId("chat-1", "node-1"), [
+      { type: "text", text: "gone" },
+    ])
+    setEdit(keep, [{ type: "text", text: "stay" }])
+    update(composerSlotId("chat-1", "linear", null), { text: "dock" })
+    clearChat("chat-1")
+    expect(hasMessageEdit(keep)).toBe(true)
+    expect(hasMessageEdit(messageEditSlotId("chat-1", "node-1"))).toBe(false)
+    expect(hasComposerDraft(composerSlotId("chat-1", "linear", null))).toBe(
+      false
+    )
   })
 })

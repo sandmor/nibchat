@@ -188,6 +188,20 @@ describe("layoutChatTree", () => {
     expect(grown.rects.get(plus)!.height).toBe(140)
   })
 
+  it("uses measured height for an editing card without the view cap", () => {
+    const n = node("root", null, "1", "word ".repeat(80))
+    const max = cardMaxHeight(n)
+    const editing = layoutChatTree([n], {
+      editingNodeIds: new Set(["root"]),
+      sizes: new Map([["root", max + 80]]),
+    })
+    const viewing = layoutChatTree([n], {
+      sizes: new Map([["root", max + 80]]),
+    })
+    expect(editing.rects.get("root")!.height).toBe(max + 80)
+    expect(viewing.rects.get("root")!.height).toBe(max)
+  })
+
   it("exports preorder node ids matching sibling sort, excluding plus nodes", () => {
     const nodes = [
       node("root", null, "1"),

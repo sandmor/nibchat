@@ -2,6 +2,7 @@
 
 import { create } from "zustand"
 import type { AttachmentReference } from "@/lib/types"
+import type { MessageEditSegment } from "@/lib/agent/parts"
 
 export type ComposerSurface = "linear" | "tree"
 
@@ -19,6 +20,8 @@ export type ComposerDraft = {
   attachments: ComposerAttachment[]
 }
 
+export type MessageEditDraft = MessageEditSegment[]
+
 const emptyDraft = (): ComposerDraft => ({ text: "", attachments: [] })
 
 /**
@@ -26,6 +29,7 @@ const emptyDraft = (): ComposerDraft => ({ text: "", attachments: [] })
  * this same reference so missing slots do not look like updates.
  */
 export const EMPTY_COMPOSER_DRAFT: ComposerDraft = emptyDraft()
+const EMPTY_MESSAGE_EDIT: MessageEditDraft = []
 
 /**
  * Stable session identity for a composer. The graph stays in React Query; this
@@ -44,9 +48,16 @@ export function composerSlotId(
   return `${chatId ?? "draft"}:${surface}:${parentNodeId ?? "root"}`
 }
 
+export function messageEditSlotId(chatId: string, nodeId: string) {
+  return `${chatId}:edit:${nodeId}`
+}
+
 type ConversationSessionState = {
   drafts: Record<string, ComposerDraft>
+  edits: Record<string, MessageEditDraft>
   update: (slot: string, update: Partial<ComposerDraft>) => void
+  setEdit: (slot: string, edits: MessageEditDraft) => void
+  updateEditSegment: (slot: string, index: number, text: string) => void
   clear: (slot: string) => void
   clearChat: (chatId: string | null) => void
 }
@@ -58,6 +69,7 @@ type ConversationSessionState = {
 export const useConversationSessionStore = create<ConversationSessionState>(
   (set) => ({
     drafts: {},
+    edits: {},
     update: (slot, update) =>
       set((state) => ({
         drafts: {
@@ -65,20 +77,46 @@ export const useConversationSessionStore = create<ConversationSessionState>(
           [slot]: { ...(state.drafts[slot] ?? emptyDraft()), ...update },
         },
       })),
+    setEdit: (slot, edits) =>
+      set((state) => ({
+        edits: { ...state.edits, [slot]: edits },
+      })),
+    updateEditSegment: (slot, index, text) =>
+      set((state) => {
+        const current = state.edits[slot]
+        if (!current) return state
+        return {
+          edits: {
+            ...state.edits,
+            [slot]: current.map((segment, i) =>
+              i === index ? { ...segment, text } : segment
+            ),
+          },
+        }
+      }),
     clear: (slot) =>
       set((state) => {
         const drafts = { ...state.drafts }
+        const edits = { ...state.edits }
         delete drafts[slot]
-        return { drafts }
+        delete edits[slot]
+        return { drafts, edits }
       }),
-    clearChat: (chatId) =>
-      set((state) => ({
+    clearChat: (chatId) => {
+      const prefix = `${chatId ?? "draft"}:`
+      return set((state) => ({
         drafts: Object.fromEntries(
           Object.entries(state.drafts).filter(
-            ([slot]) => !slot.startsWith(`${chatId ?? "draft"}:`)
+            ([slot]) => !slot.startsWith(prefix)
           )
         ),
-      })),
+        edits: Object.fromEntries(
+          Object.entries(state.edits).filter(
+            ([slot]) => !slot.startsWith(prefix)
+          )
+        ),
+      }))
+    },
   })
 )
 
@@ -133,6 +171,58 @@ export function treeDraftAnchorsForChat(
     anchors.add(rest === "root" ? null : rest)
   }
   return anchors
+}
+
+export function hasMessageEdit(slot: string) {
+  return Object.hasOwn(useConversationSessionStore.getState().edits, slot)
+}
+
+/** One message's in-progress edit. Typing re-renders only this subscriber. */
+export function useMessageEdit(slot: string): MessageEditDraft {
+  return useConversationSessionStore(
+    (state) => state.edits[slot] ?? EMPTY_MESSAGE_EDIT
+  )
+}
+
+export function useHasMessageEdit(slot: string) {
+  return useConversationSessionStore((state) =>
+    Object.hasOwn(state.edits, slot)
+  )
+}
+
+/**
+ * Identity of in-progress message edits for a chat. Stable across keystrokes
+ * so the tree canvas can keep those cards live without re-rendering on type.
+ */
+export function messageEditSlotSignature(
+  edits: Record<string, MessageEditDraft>,
+  chatId: string | null | undefined
+): string {
+  if (!chatId) return ""
+  const prefix = `${chatId}:edit:`
+  return Object.keys(edits)
+    .filter((slot) => slot.startsWith(prefix))
+    .sort()
+    .join("\0")
+}
+
+export function useMessageEditSlotSignature(chatId: string | null | undefined) {
+  return useConversationSessionStore((state) =>
+    messageEditSlotSignature(state.edits, chatId)
+  )
+}
+
+export function messageEditNodeIdsForChat(
+  edits: Record<string, MessageEditDraft>,
+  chatId: string
+): Set<string> {
+  const prefix = `${chatId}:edit:`
+  const ids = new Set<string>()
+  for (const slot of Object.keys(edits)) {
+    if (!slot.startsWith(prefix)) continue
+    ids.add(slot.slice(prefix.length))
+  }
+  return ids
 }
 
 /** Abandoned drafts delete uploads; in-flight tree sends must not. */

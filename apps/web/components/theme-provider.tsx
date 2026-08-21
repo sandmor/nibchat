@@ -6,12 +6,15 @@ import {
   THEME_SLOT_LS_KEY,
   type ResolvedThemeSlot,
   type ThemeSlotMode,
+  userScopedStorageKey,
 } from "@/lib/theme-slot"
 
 type ThemeSlotContextValue = {
   mode: ThemeSlotMode
   resolved: ResolvedThemeSlot
   toggle: () => void
+  /** False until next-themes has a real selected mode (not the SSR placeholder). */
+  ready: boolean
 }
 
 const ThemeSlotContext = React.createContext<ThemeSlotContextValue | null>(null)
@@ -34,21 +37,34 @@ function useMounted() {
   )
 }
 
-function ThemeSlotBridge({ children }: { children: React.ReactNode }) {
+function ThemeSlotBridge({
+  children,
+  userId,
+}: {
+  children: React.ReactNode
+  userId?: string
+}) {
   const { theme, resolvedTheme, setTheme } = useTheme()
   const mounted = useMounted()
   // The server and hydrating render intentionally use light. next-themes has
   // already painted the correct CSS slot before this becomes interactive.
+  const selectedMode: ThemeSlotMode | null =
+    theme === "light" || theme === "dark" || theme === "system" ? theme : null
+  const ready = mounted && selectedMode != null
   const resolved: ResolvedThemeSlot =
     mounted && resolvedTheme === "dark" ? "dark" : "light"
-  const mode: ThemeSlotMode =
-    mounted && (theme === "light" || theme === "dark" || theme === "system")
-      ? theme
-      : "system"
+  const mode: ThemeSlotMode = selectedMode ?? "system"
 
   const toggle = React.useCallback(() => {
     setTheme(resolved === "dark" ? "light" : "dark")
   }, [resolved, setTheme])
+
+  React.useEffect(() => {
+    document.documentElement.dataset.nibchatUserId = userId ?? ""
+    return () => {
+      delete document.documentElement.dataset.nibchatUserId
+    }
+  }, [userId])
 
   React.useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -63,8 +79,8 @@ function ThemeSlotBridge({ children }: { children: React.ReactNode }) {
   }, [toggle])
 
   const value = React.useMemo(
-    () => ({ mode, resolved, toggle }),
-    [mode, resolved, toggle]
+    () => ({ mode, resolved, toggle, ready }),
+    [mode, ready, resolved, toggle]
   )
 
   return (
@@ -75,18 +91,26 @@ function ThemeSlotBridge({ children }: { children: React.ReactNode }) {
 }
 
 /** Workspace-only slot provider. Its inline script selects the slot pre-paint. */
-function ThemeProvider({ children }: { children: React.ReactNode }) {
+function ThemeProvider({
+  children,
+  userId,
+  initialMode = "system",
+}: {
+  children: React.ReactNode
+  userId?: string
+  initialMode?: ThemeSlotMode
+}) {
   return (
     <NextThemesProvider
       attribute="data-theme-slot"
-      storageKey={THEME_SLOT_LS_KEY}
-      defaultTheme="system"
+      storageKey={userScopedStorageKey(THEME_SLOT_LS_KEY, userId)}
+      defaultTheme={initialMode}
       enableSystem
       enableColorScheme={false}
       disableTransitionOnChange
       themes={["light", "dark"]}
     >
-      <ThemeSlotBridge>{children}</ThemeSlotBridge>
+      <ThemeSlotBridge userId={userId}>{children}</ThemeSlotBridge>
     </NextThemesProvider>
   )
 }

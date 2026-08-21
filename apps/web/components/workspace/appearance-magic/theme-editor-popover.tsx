@@ -27,7 +27,7 @@ import {
   type ColorValue,
   type ThemeGroupId,
 } from "@/lib/appearance-registry"
-import { MAGIC_RECENT_LS_KEY } from "@/lib/theme-slot"
+import { MAGIC_RECENT_LS_KEY, userScopedStorageKey } from "@/lib/theme-slot"
 import { useAppearanceStore, type ThemeSelection } from "@/lib/appearance-store"
 import { useAppearanceColorPreview } from "@/hooks/use-appearance-color-preview"
 
@@ -82,7 +82,12 @@ function useViewportMetrics() {
 function readRecent(): string[] {
   if (typeof window === "undefined") return []
   try {
-    const raw = localStorage.getItem(MAGIC_RECENT_LS_KEY)
+    const raw = localStorage.getItem(
+      userScopedStorageKey(
+        MAGIC_RECENT_LS_KEY,
+        document.documentElement.dataset.nibchatUserId || undefined
+      )
+    )
     if (!raw) return []
     const parsed = JSON.parse(raw) as unknown
     if (!Array.isArray(parsed)) return []
@@ -96,7 +101,13 @@ function pushRecent(css: string) {
   if (typeof window === "undefined") return
   const next = [css, ...readRecent().filter((item) => item !== css)].slice(0, 8)
   try {
-    localStorage.setItem(MAGIC_RECENT_LS_KEY, JSON.stringify(next))
+    localStorage.setItem(
+      userScopedStorageKey(
+        MAGIC_RECENT_LS_KEY,
+        document.documentElement.dataset.nibchatUserId || undefined
+      ),
+      JSON.stringify(next)
+    )
   } catch {
     /* ignore */
   }

@@ -38,27 +38,15 @@ describe("applySchema", () => {
       .select("attachment_id")
       .limit(1)
       .execute()
-    const defaultStack = await db
-      .selectFrom("prompt_stacks")
-      .select("id")
-      .where("id", "=", "default")
-      .executeTakeFirst()
-    expect(defaultStack?.id).toBe("default")
     const instance = await db
       .selectFrom("instance")
       .select([
         "id",
-        "default_prompt_stack_id",
-        "light_theme_id",
-        "dark_theme_id",
         "title_model_config_json",
         "onboarding_completed_at",
       ])
       .where("id", "=", 1)
       .executeTakeFirst()
-    expect(instance?.default_prompt_stack_id).toBe("default")
-    expect(instance?.light_theme_id).toBe("paper")
-    expect(instance?.dark_theme_id).toBe("ink")
     expect(instance?.title_model_config_json).toBeNull()
     expect(instance?.onboarding_completed_at).toBeNull()
     const chatColumns = sqlite
@@ -79,12 +67,6 @@ describe("applySchema", () => {
     expect(instanceColumns.map((column) => column.name)).toContain(
       "onboarding_completed_at"
     )
-    const paper = await db
-      .selectFrom("themes")
-      .select("id")
-      .where("id", "=", "paper")
-      .executeTakeFirst()
-    expect(paper?.id).toBe("paper")
     await db.destroy()
     sqlite.close()
   })

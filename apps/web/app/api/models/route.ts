@@ -2,7 +2,7 @@ import { db } from "@/lib/db"
 import {
   OWNER_FORBIDDEN_MESSAGE,
   UNAUTHORIZED_MESSAGE,
-  requireOwner,
+  requireUser,
 } from "@/lib/app-session"
 import { parseJson } from "@/lib/domain"
 import { jsonError } from "@/lib/http-error"
@@ -11,7 +11,7 @@ export const runtime = "nodejs"
 
 export async function GET(request: Request) {
   try {
-    const user = await requireOwner(request.headers)
+    const user = await requireUser(request.headers)
     const url = new URL(request.url)
     const providerId = url.searchParams.get("providerId")
     const profile = providerId
@@ -19,10 +19,17 @@ export async function GET(request: Request) {
           .selectFrom("provider_profiles")
           .selectAll()
           .where("id", "=", providerId)
-          .where("user_id", "=", user.id)
           .executeTakeFirst()
       : undefined
     if (!profile) return Response.json({ models: [] })
+    const owner = await db
+      .selectFrom("instance")
+      .select("owner_user_id")
+      .where("id", "=", 1)
+      .executeTakeFirst()
+    const isOwner = owner?.owner_user_id === user.id
+    if (url.searchParams.has("refresh") && !isOwner)
+      return Response.json({ error: "Only the owner can refresh catalogs" }, { status: 403 })
     const cached = await db
       .selectFrom("model_catalog_cache")
       .selectAll()
@@ -38,6 +45,9 @@ export async function GET(request: Request) {
         cachedAt: cached.refreshed_at,
       })
     }
+    // Discovery performs an authenticated server-side request to the provider.
+    // Regular users may read an existing catalog, but must never cause one.
+    if (!isOwner) return Response.json({ models: [] })
     let discovered: Array<{ id: string; name: string }> = []
     let discoverySucceeded = false
     if (profile.kind === "openai-compatible" && profile.base_url) {

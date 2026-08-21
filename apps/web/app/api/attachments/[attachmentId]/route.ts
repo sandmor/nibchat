@@ -1,4 +1,4 @@
-import { requireOwner } from "@/lib/app-session"
+import { requireUser } from "@/lib/app-session"
 import {
   deletePendingAttachment,
   getAttachmentForOwner,
@@ -14,7 +14,7 @@ export async function GET(
   { params }: { params: Promise<{ attachmentId: string }> }
 ) {
   try {
-    const user = await requireOwner(request.headers)
+    const user = await requireUser(request.headers)
     const { attachmentId } = await params
     const attachment = await getAttachmentForOwner(user.id, attachmentId)
     const data = await readAttachment(attachment)
@@ -40,7 +40,7 @@ export async function DELETE(
   { params }: { params: Promise<{ attachmentId: string }> }
 ) {
   try {
-    const user = await requireOwner(request.headers)
+    const user = await requireUser(request.headers)
     const { attachmentId } = await params
     await deletePendingAttachment(user.id, attachmentId)
     return Response.json({ ok: true })

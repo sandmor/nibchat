@@ -5,7 +5,7 @@ import { isProviderModelsJson } from "@/lib/provider-models"
 const chatRowSchema = z
   .object({
     id: z.string(),
-    user_id: z.string().optional(),
+    user_id: z.string(),
     title: z.string().nullable(),
     selected_root_node_id: z.string().nullable(),
     model_config_json: z.string(),
@@ -41,7 +41,7 @@ const nodeRowSchema = z
 const providerProfileSchema = z
   .object({
     id: z.string(),
-    user_id: z.string().optional(),
+    user_id: z.string(),
     name: z.string(),
     kind: z.string(),
     base_url: z.string().nullable().optional(),
@@ -57,6 +57,7 @@ const providerProfileSchema = z
 const promptStackRowSchema = z
   .object({
     id: z.string(),
+    user_id: z.string(),
     name: z.string(),
     stack_json: z.string(),
     created_at: z.string(),
@@ -67,7 +68,7 @@ const promptStackRowSchema = z
 const mcpServerProfileSchema = z
   .object({
     id: z.string(),
-    user_id: z.string().optional(),
+    user_id: z.string(),
     name: z.string(),
     namespace: z.string(),
     enabled: z.boolean(),
@@ -83,6 +84,7 @@ const mcpServerProfileSchema = z
 
 const attachmentBackupSchema = z.object({
   id: z.string(),
+  user_id: z.string(),
   filename: z.string(),
   media_type: z.string(),
   byte_size: z.number().int().nonnegative(),
@@ -100,13 +102,37 @@ const messageAttachmentBackupSchema = z.object({
 
 const themeBackupSchema = z.object({
   id: z.string(),
+  user_id: z.string(),
   name: z.string(),
   document: appearanceSchema,
   created_at: z.string(),
   updated_at: z.string(),
 })
 
-/** Full-instance portable snapshot (no API keys or attachment bytes).
+const userBackupSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  email: z.string(),
+  emailVerified: z.union([z.boolean(), z.number().transform(Boolean)]),
+  role: z.string().nullable().optional(),
+  banned: z.union([z.boolean(), z.number().transform(Boolean)]).nullable().optional(),
+  banReason: z.string().nullable().optional(),
+  banExpires: z.string().nullable().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+})
+
+const userPreferencesSchema = z.object({
+  user_id: z.string(),
+  light_theme_id: z.string(),
+  dark_theme_id: z.string(),
+  default_prompt_stack_id: z.string(),
+  theme_mode: z.enum(["system", "light", "dark"]),
+  created_at: z.string(),
+  updated_at: z.string(),
+})
+
+/** Portable snapshot (no API keys, credentials, sessions, or attachment bytes).
  * Bytes live next to this manifest in the backup zip. */
 export const backupSchema = z.object({
   version: z.literal(1),
@@ -123,9 +149,6 @@ export const backupSchema = z.object({
     .default([]),
   instance: z
     .object({
-      default_prompt_stack_id: z.string().optional(),
-      lightThemeId: z.string().optional(),
-      darkThemeId: z.string().optional(),
       titleModelConfig: z
         .object({
           providerId: z.string().min(1),
@@ -135,6 +158,8 @@ export const backupSchema = z.object({
         .optional(),
     })
     .optional(),
+  users: z.array(userBackupSchema).optional().default([]),
+  userPreferences: z.array(userPreferencesSchema).optional().default([]),
   createdAt: z.string().optional(),
 })
 

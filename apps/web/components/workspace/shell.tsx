@@ -3,7 +3,9 @@
 import {
   createContext,
   useContext,
+  useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react"
@@ -53,6 +55,7 @@ import { useThemeSlot } from "@/components/theme-provider"
 import { useTRPC } from "@/lib/trpc-react"
 import { omitChat, type WorkspaceData } from "@/lib/workspace-cache"
 import type { ProviderSummary } from "./types"
+import { AccountMenu } from "./account-menu"
 import { ChatListItem } from "./chat-list"
 import { BrandMark } from "@/components/logo"
 import { AppearanceMagicChrome } from "./appearance-magic"
@@ -63,8 +66,10 @@ type ChromeContextValue = {
   themes: ThemeRecord[]
   lightThemeId: string
   darkThemeId: string
+  themeMode: "system" | "light" | "dark"
   activeThemeId: string
   providers: ProviderSummary[]
+  isOwner: boolean
   refreshProviders: () => Promise<void>
 }
 
@@ -82,6 +87,7 @@ type InstanceSettings = {
   themes: ThemeRecord[]
   lightThemeId: string
   darkThemeId: string
+  themeMode: "system" | "light" | "dark"
   defaultPromptStackId: string
   promptStacks: Array<{
     id: string
@@ -97,18 +103,26 @@ export function WorkspaceShell({
   initialChats,
   providers: initialProviders,
   initialSettings,
+  user,
+  isOwner,
   children,
 }: {
   initialChats: ChatRow[]
   providers: ProviderSummary[]
   initialSettings: InstanceSettings
+  user: { id: string; name: string; email: string }
+  isOwner: boolean
   children: ReactNode
 }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const pathname = usePathname()
   const router = useRouter()
-  const { resolved: resolvedSlot } = useThemeSlot()
+  const {
+    resolved: resolvedSlot,
+    mode: themeMode,
+    ready: themeReady,
+  } = useThemeSlot()
   const [search, setSearch] = useState("")
   const [chatsOpen, setChatsOpen] = useState(false)
   const [chatIdToDelete, setChatIdToDelete] = useState<string | null>(null)
@@ -119,7 +133,7 @@ export function WorkspaceShell({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window === "undefined") return false
     try {
-      return localStorage.getItem("nibchat.sidebarCollapsed") === "1"
+      return localStorage.getItem(`nibchat.sidebarCollapsed.${user.id}`) === "1"
     } catch {
       return false
     }
@@ -144,13 +158,26 @@ export function WorkspaceShell({
   const themes = settingsQuery.data.themes.length
     ? settingsQuery.data.themes
     : initialSettings.themes
-  const lightId = settingsQuery.data.lightThemeId || initialSettings.lightThemeId
+  const lightId =
+    settingsQuery.data.lightThemeId || initialSettings.lightThemeId
   const darkId = settingsQuery.data.darkThemeId || initialSettings.darkThemeId
 
   const providersQuery = useQuery({
     ...trpc.workspace.listProviders.queryOptions(),
     initialData: initialProviders,
   })
+
+  const persistThemeMode = useMutation(
+    trpc.workspace.setThemeMode.mutationOptions()
+  )
+  const persistedThemeMode = useRef(initialSettings.themeMode)
+  useEffect(() => {
+    if (!themeReady) return
+    if (themeMode === persistedThemeMode.current) return
+    persistedThemeMode.current = themeMode
+    persistThemeMode.mutate({ themeMode })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [themeMode, themeReady])
 
   const currentThemeId = activeThemeId({
     slot: resolvedSlot,
@@ -183,7 +210,10 @@ export function WorkspaceShell({
   function setSidebarCollapsedPersist(next: boolean) {
     setSidebarCollapsed(next)
     try {
-      localStorage.setItem("nibchat.sidebarCollapsed", next ? "1" : "0")
+      localStorage.setItem(
+        `nibchat.sidebarCollapsed.${user.id}`,
+        next ? "1" : "0"
+      )
     } catch {
       /* ignore */
     }
@@ -226,8 +256,10 @@ export function WorkspaceShell({
       themes,
       lightThemeId: lightId,
       darkThemeId: darkId,
+      themeMode: settingsQuery.data.themeMode,
       activeThemeId: activeTheme?.id ?? currentThemeId,
       providers,
+      isOwner,
       refreshProviders: async () => {
         await queryClient.invalidateQueries(
           trpc.workspace.listProviders.queryFilter()
@@ -239,9 +271,11 @@ export function WorkspaceShell({
       themes,
       lightId,
       darkId,
+      settingsQuery.data.themeMode,
       activeTheme?.id,
       currentThemeId,
       providers,
+      isOwner,
       queryClient,
       trpc,
     ]
@@ -285,6 +319,7 @@ export function WorkspaceShell({
         themes={themes}
         activeThemeId={currentThemeId}
         fallback={activeAppearance}
+        userId={user.id}
       />
       <div className="flex h-svh flex-col bg-background text-foreground">
         <div className="flex h-12 shrink-0 items-center justify-between border-b px-3 md:hidden">
@@ -304,20 +339,32 @@ export function WorkspaceShell({
             </Button>
             <BrandMark logoClassName="size-6" />
           </div>
-          <WithTooltip label={onSettings ? "Back to chat" : "Settings"}>
-            <Link
-              href={settingsHref}
-              className={buttonVariants({ variant: "ghost", size: "sm" })}
-              aria-label={onSettings ? "Back to chat" : "Settings"}
-            >
-              <HugeiconsIcon
-                icon={onSettings ? MessageMultiple01Icon : Settings01Icon}
-                strokeWidth={2}
-                className="size-4"
-                aria-hidden
+          <TooltipProvider delay={400}>
+            <div className="flex items-center gap-1">
+              <AccountMenu
+                user={user}
+                isOwner={isOwner}
+                compact
+                menuSide="bottom"
+                menuAlign="end"
+                tooltipSide="bottom"
               />
-            </Link>
-          </WithTooltip>
+              <WithTooltip label={onSettings ? "Back to chat" : "Settings"}>
+                <Link
+                  href={settingsHref}
+                  className={buttonVariants({ variant: "ghost", size: "sm" })}
+                  aria-label={onSettings ? "Back to chat" : "Settings"}
+                >
+                  <HugeiconsIcon
+                    icon={onSettings ? MessageMultiple01Icon : Settings01Icon}
+                    strokeWidth={2}
+                    className="size-4"
+                    aria-hidden
+                  />
+                </Link>
+              </WithTooltip>
+            </div>
+          </TooltipProvider>
         </div>
 
         <div className="flex min-h-0 flex-1">
@@ -495,6 +542,21 @@ export function WorkspaceShell({
                 </div>
               </TooltipProvider>
             </ScrollArea>
+            <div
+              className={cn(
+                "mt-2 shrink-0 border-t pt-2",
+                collapsed && "flex justify-center"
+              )}
+            >
+              <TooltipProvider delay={400}>
+                <AccountMenu
+                  user={user}
+                  isOwner={isOwner}
+                  compact={collapsed}
+                  tooltipSide="right"
+                />
+              </TooltipProvider>
+            </div>
           </motion.aside>
 
           <div

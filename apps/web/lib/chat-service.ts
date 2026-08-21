@@ -1,7 +1,7 @@
 import "server-only"
 import { createHash } from "node:crypto"
-import { sql } from "kysely"
-import { db, databaseKind } from "@/lib/db"
+import { sql, type Transaction } from "kysely"
+import { db, fromDbBool, toDbBool } from "@/lib/db"
 import {
   id,
   now,
@@ -18,6 +18,7 @@ import {
 } from "@/lib/agent/parts"
 import { abortGenerations } from "@/lib/active-generations"
 import type {
+  DB,
   MessageRole,
   MessageStatus,
   AttachmentPart,
@@ -29,7 +30,7 @@ import type {
 import { generateChatTitle } from "@/lib/agent/generate-title"
 import { seedChatTitle } from "@/lib/chat-title"
 import { defaultModelConfig, type ModelConfig } from "@/lib/providers"
-import { orderNodesForInsert, parseBackup } from "@/lib/backup"
+import { orderNodesForInsert, parseBackup, type Backup } from "@/lib/backup"
 import {
   isEnabledModelId,
   parseProviderModels,
@@ -39,8 +40,6 @@ import {
 import { mcpProfileForBackup, profileFromRow } from "@/lib/mcp"
 import {
   appearanceToJson,
-  INK_THEME_ID,
-  PAPER_THEME_ID,
   parseAppearance,
   type Appearance,
   type ThemeRecord,
@@ -66,16 +65,11 @@ import {
 } from "@/lib/backup-archive"
 import { completeOnboarding } from "@/lib/identity/adapters/kysely-instance"
 import { validateImageSignature } from "@/lib/file-signatures"
-
-/** SQLite drivers reject JS booleans; Postgres wants real booleans. */
-function toDbBool(value: boolean): boolean {
-  if (databaseKind === "sqlite") return (value ? 1 : 0) as unknown as boolean
-  return value
-}
-
-function fromDbBool(value: unknown): boolean {
-  return value === true || value === 1 || value === "1"
-}
+import {
+  ensureUserSettings,
+  getUserSettings,
+  setUserThemeSlots,
+} from "@/lib/user-settings"
 
 function normalizeNodeRow(node: NodeRow): NodeRow {
   return {
@@ -167,6 +161,7 @@ export async function createChat(
       .selectFrom("prompt_stacks")
       .select("id")
       .where("id", "=", promptStackId)
+      .where("user_id", "=", userId)
       .executeTakeFirst()
     if (!existing) throw new Error("Prompt stack not found")
   }
@@ -1266,7 +1261,6 @@ export async function updateProvider(
     .selectFrom("provider_profiles")
     .select("id")
     .where("id", "=", providerId)
-    .where("user_id", "=", userId)
     .executeTakeFirst()
   if (!existing) throw new Error("Provider not found")
   await db
@@ -1283,7 +1277,6 @@ export async function updateProvider(
       updated_at: now(),
     })
     .where("id", "=", providerId)
-    .where("user_id", "=", userId)
     .execute()
   await clearTitleModelIfUnavailable()
 }
@@ -1292,7 +1285,6 @@ export async function deleteProvider(userId: string, providerId: string) {
   await db
     .deleteFrom("provider_profiles")
     .where("id", "=", providerId)
-    .where("user_id", "=", userId)
     .execute()
   await clearTitleModelIfUnavailable()
 }
@@ -1309,26 +1301,29 @@ function themeRowToRecord(row: ThemeRow): ThemeRecord {
   }
 }
 
-export async function listThemes() {
+export async function listThemes(userId: string) {
   const rows = await db
     .selectFrom("themes")
     .selectAll()
+    .where("user_id", "=", userId)
     .orderBy("name")
     .execute()
   return rows.map(themeRowToRecord)
 }
 
-export async function getTheme(themeId: string) {
+export async function getTheme(userId: string, themeId: string) {
   const row = await db
     .selectFrom("themes")
     .selectAll()
     .where("id", "=", themeId)
+    .where("user_id", "=", userId)
     .executeTakeFirst()
   if (!row) throw new Error("Theme not found")
   return themeRowToRecord(row)
 }
 
 export async function createTheme(input: {
+  userId: string
   name: string
   document?: Appearance
 }) {
@@ -1336,6 +1331,7 @@ export async function createTheme(input: {
   const document = parseAppearance(input.document ?? {})
   const row = {
     id: id(),
+    user_id: input.userId,
     name: input.name.trim() || "Untitled theme",
     document_json: appearanceToJson(document, false),
     created_at: timestamp,
@@ -1346,6 +1342,7 @@ export async function createTheme(input: {
 }
 
 export async function updateTheme(
+  userId: string,
   themeId: string,
   input: { name?: string; document?: Appearance }
 ) {
@@ -1353,6 +1350,7 @@ export async function updateTheme(
     .selectFrom("themes")
     .selectAll()
     .where("id", "=", themeId)
+    .where("user_id", "=", userId)
     .executeTakeFirst()
   if (!existing) throw new Error("Theme not found")
   const patch: {
@@ -1368,27 +1366,21 @@ export async function updateTheme(
     )
   }
   await db.updateTable("themes").set(patch).where("id", "=", themeId).execute()
-  return getTheme(themeId)
+  return getTheme(userId, themeId)
 }
 
-export async function duplicateTheme(themeId: string, name?: string) {
-  const existing = await getTheme(themeId)
+export async function duplicateTheme(userId: string, themeId: string, name?: string) {
+  const existing = await getTheme(userId, themeId)
   return createTheme({
+    userId,
     name: name?.trim() || `${existing.name} copy`,
     document: existing.document,
   })
 }
 
-export async function deleteTheme(themeId: string) {
-  const instance = await db
-    .selectFrom("instance")
-    .select(["light_theme_id", "dark_theme_id"])
-    .where("id", "=", 1)
-    .executeTakeFirstOrThrow()
-  if (
-    instance.light_theme_id === themeId ||
-    instance.dark_theme_id === themeId
-  ) {
+export async function deleteTheme(userId: string, themeId: string) {
+  const prefs = await ensureUserSettings(userId)
+  if (prefs.light_theme_id === themeId || prefs.dark_theme_id === themeId) {
     throw new Error(
       "Cannot delete a theme assigned to light or dark. Choose another theme for that slot first."
     )
@@ -1396,6 +1388,7 @@ export async function deleteTheme(themeId: string) {
   const count = await db
     .selectFrom("themes")
     .select(sql<number>`count(*)`.as("n"))
+    .where("user_id", "=", userId)
     .executeTakeFirst()
   if (Number(count?.n ?? 0) <= 1) {
     throw new Error("Cannot delete the last theme.")
@@ -1404,38 +1397,22 @@ export async function deleteTheme(themeId: string) {
     .selectFrom("themes")
     .select("id")
     .where("id", "=", themeId)
+    .where("user_id", "=", userId)
     .executeTakeFirst()
   if (!existing) throw new Error("Theme not found")
-  await db.deleteFrom("themes").where("id", "=", themeId).execute()
+  await db
+    .deleteFrom("themes")
+    .where("id", "=", themeId)
+    .where("user_id", "=", userId)
+    .execute()
 }
 
 export async function setThemeSlots(input: {
+  userId: string
   lightThemeId: string
   darkThemeId: string
 }) {
-  const light = await db
-    .selectFrom("themes")
-    .select("id")
-    .where("id", "=", input.lightThemeId)
-    .executeTakeFirst()
-  const dark = await db
-    .selectFrom("themes")
-    .select("id")
-    .where("id", "=", input.darkThemeId)
-    .executeTakeFirst()
-  if (!light || !dark) throw new Error("Theme not found")
-  await db
-    .updateTable("instance")
-    .set({
-      light_theme_id: input.lightThemeId,
-      dark_theme_id: input.darkThemeId,
-    })
-    .where("id", "=", 1)
-    .execute()
-  return {
-    lightThemeId: input.lightThemeId,
-    darkThemeId: input.darkThemeId,
-  }
+  return setUserThemeSlots(input.userId, input.lightThemeId, input.darkThemeId)
 }
 
 function stackRowToSummary(row: PromptStackRow) {
@@ -1448,26 +1425,29 @@ function stackRowToSummary(row: PromptStackRow) {
   }
 }
 
-export async function listPromptStacks() {
+export async function listPromptStacks(userId: string) {
   const rows = await db
     .selectFrom("prompt_stacks")
     .selectAll()
+    .where("user_id", "=", userId)
     .orderBy("name")
     .execute()
   return rows.map(stackRowToSummary)
 }
 
-export async function getPromptStack(stackId: string) {
+export async function getPromptStack(userId: string, stackId: string) {
   const row = await db
     .selectFrom("prompt_stacks")
     .selectAll()
     .where("id", "=", stackId)
+    .where("user_id", "=", userId)
     .executeTakeFirst()
   if (!row) throw new Error("Prompt stack not found")
   return stackRowToSummary(row)
 }
 
 export async function createPromptStack(input: {
+  userId: string
   name: string
   stack?: PromptStackDocument
 }) {
@@ -1477,6 +1457,7 @@ export async function createPromptStack(input: {
     : defaultPromptStack()
   const row = {
     id: id(),
+    user_id: input.userId,
     name: input.name.trim() || "Untitled stack",
     stack_json: promptStackToJson(stack),
     created_at: timestamp,
@@ -1487,6 +1468,7 @@ export async function createPromptStack(input: {
 }
 
 export async function updatePromptStack(
+  userId: string,
   stackId: string,
   input: { name?: string; stack?: PromptStackDocument }
 ) {
@@ -1494,6 +1476,7 @@ export async function updatePromptStack(
     .selectFrom("prompt_stacks")
     .selectAll()
     .where("id", "=", stackId)
+    .where("user_id", "=", userId)
     .executeTakeFirst()
   if (!existing) throw new Error("Prompt stack not found")
   const patch: {
@@ -1510,53 +1493,61 @@ export async function updatePromptStack(
     .set(patch)
     .where("id", "=", stackId)
     .execute()
-  return getPromptStack(stackId)
+  return getPromptStack(userId, stackId)
 }
 
-export async function duplicatePromptStack(stackId: string, name?: string) {
-  const existing = await getPromptStack(stackId)
+export async function duplicatePromptStack(
+  userId: string,
+  stackId: string,
+  name?: string
+) {
+  const existing = await getPromptStack(userId, stackId)
   return createPromptStack({
+    userId,
     name: name?.trim() || `${existing.name} copy`,
     stack: existing.stack,
   })
 }
 
-export async function deletePromptStack(stackId: string) {
-  const instance = await db
-    .selectFrom("instance")
-    .select("default_prompt_stack_id")
-    .where("id", "=", 1)
-    .executeTakeFirstOrThrow()
-  if (instance.default_prompt_stack_id === stackId) {
+export async function deletePromptStack(userId: string, stackId: string) {
+  const prefs = await ensureUserSettings(userId)
+  if (prefs.default_prompt_stack_id === stackId) {
     throw new Error(
-      "Cannot delete the instance default stack. Choose another default first."
-    )
+      "Cannot delete the default stack. Choose another default first."
+      )
   }
   const existing = await db
     .selectFrom("prompt_stacks")
     .select("id")
     .where("id", "=", stackId)
+    .where("user_id", "=", userId)
     .executeTakeFirst()
   if (!existing) throw new Error("Prompt stack not found")
   await db
     .updateTable("chats")
     .set({ prompt_stack_id: null })
     .where("prompt_stack_id", "=", stackId)
+    .where("user_id", "=", userId)
     .execute()
-  await db.deleteFrom("prompt_stacks").where("id", "=", stackId).execute()
+  await db
+    .deleteFrom("prompt_stacks")
+    .where("id", "=", stackId)
+    .where("user_id", "=", userId)
+    .execute()
 }
 
-export async function setInstanceDefaultPromptStack(stackId: string) {
+export async function setInstanceDefaultPromptStack(userId: string, stackId: string) {
   const existing = await db
     .selectFrom("prompt_stacks")
     .select("id")
     .where("id", "=", stackId)
+    .where("user_id", "=", userId)
     .executeTakeFirst()
   if (!existing) throw new Error("Prompt stack not found")
   await db
-    .updateTable("instance")
-    .set({ default_prompt_stack_id: stackId })
-    .where("id", "=", 1)
+    .updateTable("user_preferences")
+    .set({ default_prompt_stack_id: stackId, updated_at: now() })
+    .where("user_id", "=", userId)
     .execute()
   return { ok: true as const, defaultPromptStackId: stackId }
 }
@@ -1572,6 +1563,7 @@ export async function setChatPromptStack(
       .selectFrom("prompt_stacks")
       .select("id")
       .where("id", "=", stackId)
+      .where("user_id", "=", userId)
       .executeTakeFirst()
     if (!existing) throw new Error("Prompt stack not found")
   }
@@ -1584,8 +1576,12 @@ export async function setChatPromptStack(
   return { ok: true as const }
 }
 
-async function loadStacksById() {
-  const rows = await db.selectFrom("prompt_stacks").selectAll().execute()
+async function loadStacksById(userId: string) {
+  const query = db
+    .selectFrom("prompt_stacks")
+    .selectAll()
+    .where("user_id", "=", userId)
+  const rows = await query.execute()
   const map = new Map<string, PromptStackDocument>()
   for (const row of rows) {
     map.set(row.id, readStackJson(row.stack_json))
@@ -1595,34 +1591,25 @@ async function loadStacksById() {
 
 export async function resolveStackForChat(chat: {
   prompt_stack_id: string | null
-}) {
-  const instance = await db
-    .selectFrom("instance")
-    .select("default_prompt_stack_id")
-    .where("id", "=", 1)
-    .executeTakeFirstOrThrow()
-  const stacksById = await loadStacksById()
+}, userId: string) {
+  const prefs = await ensureUserSettings(userId)
+  const stacksById = await loadStacksById(userId)
   return resolvePromptStack({
     chatStackId: chat.prompt_stack_id,
-    defaultStackId: instance.default_prompt_stack_id,
+    defaultStackId: prefs.default_prompt_stack_id,
     stacksById,
   })
 }
 
-export async function getInstanceSettings() {
-  const row = await db
-    .selectFrom("instance")
-    .select(["default_prompt_stack_id", "light_theme_id", "dark_theme_id"])
-    .where("id", "=", 1)
-    .executeTakeFirstOrThrow()
-  const stacks = await listPromptStacks()
-  const themes = await listThemes()
+export async function getInstanceSettings(userId: string) {
+  const prefs = await getUserSettings(userId)
   return {
-    defaultPromptStackId: row.default_prompt_stack_id,
-    promptStacks: stacks,
-    themes,
-    lightThemeId: row.light_theme_id || PAPER_THEME_ID,
-    darkThemeId: row.dark_theme_id || INK_THEME_ID,
+    defaultPromptStackId: prefs.default_prompt_stack_id,
+    promptStacks: prefs.promptStacks,
+    themes: prefs.themes,
+    lightThemeId: prefs.light_theme_id,
+    darkThemeId: prefs.dark_theme_id,
+    themeMode: prefs.theme_mode,
     titleModelConfig: await getTitleModelConfig(),
   }
 }
@@ -1633,250 +1620,484 @@ export async function restoreBackup(
   files: ReadonlyMap<string, Uint8Array> = new Map()
 ) {
   const backup = parseBackup(raw)
-  const chatIds = new Set(backup.chats.map((chat) => chat.id))
-  for (const node of backup.nodes) {
-    if (!chatIds.has(node.chat_id))
-      throw new Error(
-        `Backup node ${node.id} references unknown chat ${node.chat_id}`
-      )
-  }
-  const orderedNodes = orderNodesForInsert(backup.nodes)
+  validateMultiUserBackup(backup, files)
+  await restoreMultiUserBackup(userId, backup, files)
+}
 
-  await db.transaction().execute(async (trx) => {
-    const existing = await trx
-      .selectFrom("chats")
-      .select("id")
-      .where("user_id", "=", userId)
-      .executeTakeFirst()
-    if (existing)
-      throw new Error("Restore is only available on an empty owner instance")
+async function restoreOwnerBackup(
+  trx: Transaction<DB>,
+  userId: string,
+  backup: Backup,
+  files: ReadonlyMap<string, Uint8Array>
+) {
+  const nodeIds = new Set(backup.nodes.map((node) => node.id))
 
-    if (backup.promptStacks?.length) {
-      for (const stack of backup.promptStacks) {
-        const stackJson = promptStackToJson(readStackJson(stack.stack_json))
-        await trx
-          .insertInto("prompt_stacks")
-          .values({
-            id: stack.id,
+  if (backup.promptStacks.length) {
+    for (const stack of backup.promptStacks) {
+      const stackJson = promptStackToJson(readStackJson(stack.stack_json))
+      await trx
+        .insertInto("prompt_stacks")
+        .values({
+          id: stack.id,
+          user_id: stack.user_id,
+          name: stack.name,
+          stack_json: stackJson,
+          created_at: stack.created_at,
+          updated_at: stack.updated_at,
+        })
+        .onConflict((oc) =>
+          oc.column("id").doUpdateSet({
             name: stack.name,
             stack_json: stackJson,
-            created_at: stack.created_at,
             updated_at: stack.updated_at,
           })
-          .onConflict((oc) =>
-            oc.column("id").doUpdateSet({
-              name: stack.name,
-              stack_json: stackJson,
-              updated_at: stack.updated_at,
-            })
-          )
-          .execute()
-      }
-    }
-
-    for (const chat of backup.chats) {
-      await trx
-        .insertInto("chats")
-        .values({
-          id: chat.id,
-          user_id: userId,
-          title: chat.title,
-          selected_root_node_id: chat.selected_root_node_id,
-          model_config_json: chat.model_config_json,
-          prompt_stack_id: chat.prompt_stack_id ?? null,
-          created_at: chat.created_at,
-          updated_at: chat.updated_at,
-        })
+        )
         .execute()
     }
+  }
 
-    const nodeIds = new Set(orderedNodes.map((node) => node.id))
-    const restoredAttachmentIds = new Set<string>()
-    for (const attachment of backup.attachments) {
-      const data = files.get(attachment.file)
-      if (!data)
-        throw new Error("This backup includes files; restore the .zip archive")
-      if (data.byteLength !== attachment.byte_size)
-        throw new Error(`Backup attachment ${attachment.id} has the wrong size`)
-      const mediaType = validateImageSignature(data, attachment.media_type)
-      const sha256 = createHash("sha256").update(data).digest("hex")
-      if (sha256 !== attachment.sha256)
-        throw new Error(`Backup attachment ${attachment.id} is corrupt`)
-      const stored = await attachmentStorage.put({
-        sha256: attachment.sha256,
-        data,
+  for (const chat of backup.chats) {
+    await trx
+      .insertInto("chats")
+      .values({
+        id: chat.id,
+        user_id: userId,
+        title: chat.title,
+        selected_root_node_id: chat.selected_root_node_id,
+        model_config_json: chat.model_config_json,
+        prompt_stack_id: chat.prompt_stack_id ?? null,
+        created_at: chat.created_at,
+        updated_at: chat.updated_at,
       })
-      await trx
-        .insertInto("attachments")
-        .values({
-          id: attachment.id,
-          user_id: userId,
-          filename: attachment.filename,
-          media_type: mediaType,
-          byte_size: attachment.byte_size,
-          sha256: attachment.sha256,
-          storage_backend: attachmentStorage.kind,
-          storage_key: stored.storageKey,
-          data: stored.data,
-          claimed_at: attachment.claimed_at,
-          created_at: attachment.created_at,
-        })
-        .execute()
-      restoredAttachmentIds.add(attachment.id)
-    }
+      .execute()
+  }
 
-    for (const node of orderedNodes) {
+  const restoredAttachmentIds = new Set<string>()
+  for (const attachment of backup.attachments) {
+    const data = files.get(attachment.file)
+    if (!data)
+      throw new Error("This backup includes files; restore the .zip archive")
+    if (data.byteLength !== attachment.byte_size)
+      throw new Error(`Backup attachment ${attachment.id} has the wrong size`)
+    const mediaType = validateImageSignature(data, attachment.media_type)
+    const sha256 = createHash("sha256").update(data).digest("hex")
+    if (sha256 !== attachment.sha256)
+      throw new Error(`Backup attachment ${attachment.id} is corrupt`)
+    const stored = await attachmentStorage.put({
+      sha256: attachment.sha256,
+      data,
+    })
+    await trx
+      .insertInto("attachments")
+      .values({
+        id: attachment.id,
+        user_id: userId,
+        filename: attachment.filename,
+        media_type: mediaType,
+        byte_size: attachment.byte_size,
+        sha256: attachment.sha256,
+        storage_backend: attachmentStorage.kind,
+        storage_key: stored.storageKey,
+        data: stored.data,
+        claimed_at: attachment.claimed_at,
+        created_at: attachment.created_at,
+      })
+      .execute()
+    restoredAttachmentIds.add(attachment.id)
+  }
+
+  await insertRestoredMessageNodes(trx, backup.nodes)
+  for (const link of backup.messageAttachments) {
+    if (!nodeIds.has(link.message_node_id))
+      throw new Error(
+        `Backup message attachment references unknown node ${link.message_node_id}`
+      )
+    if (!restoredAttachmentIds.has(link.attachment_id))
+      throw new Error(
+        `Backup message attachment references unknown attachment ${link.attachment_id}`
+      )
+    await trx
+      .insertInto("message_attachments")
+      .values({
+        message_node_id: link.message_node_id,
+        attachment_id: link.attachment_id,
+      })
+      .execute()
+  }
+  for (const provider of backup.providerProfiles) {
+    await trx
+      .insertInto("provider_profiles")
+      .values({
+        id: provider.id,
+        user_id: userId,
+        name: provider.name,
+        kind: provider.kind,
+        base_url: provider.base_url ?? null,
+        api_key: null,
+        api_key_env: provider.api_key_env ?? null,
+        models_json: provider.models_json,
+        created_at: provider.created_at,
+        updated_at: provider.updated_at,
+      })
+      .execute()
+  }
+  for (const profile of backup.mcpServerProfiles) {
+    await trx
+      .insertInto("mcp_server_profiles")
+      .values({
+        id: profile.id,
+        user_id: userId,
+        name: profile.name,
+        namespace: profile.namespace,
+        enabled: toDbBool(profile.enabled),
+        transport: profile.transport,
+        protocol_mode: profile.protocol_mode,
+        config_json: profile.config_json,
+        catalog_json: profile.catalog_json,
+        tool_allowlist_json: profile.tool_allowlist_json,
+        created_at: profile.created_at,
+        updated_at: profile.updated_at,
+      })
+      .execute()
+  }
+  if (backup.themes?.length) {
+    for (const theme of backup.themes) {
+      const documentJson = appearanceToJson(
+        parseAppearance(theme.document),
+        false
+      )
       await trx
-        .insertInto("message_nodes")
+        .insertInto("themes")
         .values({
-          id: node.id,
-          chat_id: node.chat_id,
-          parent_id: node.parent_id,
-          selected_child_id: node.selected_child_id,
-          role: node.role,
-          parts_json: node.parts_json,
-          search_text: node.search_text,
-          metadata_json: node.metadata_json,
-          excluded_from_context: toDbBool(node.excluded_from_context),
-          status: node.status,
-          created_at: node.created_at,
-          updated_at: node.updated_at,
+          id: theme.id,
+          user_id: theme.user_id,
+          name: theme.name,
+          document_json: documentJson,
+          created_at: theme.created_at,
+          updated_at: theme.updated_at,
         })
-        .execute()
-    }
-    for (const link of backup.messageAttachments) {
-      if (!nodeIds.has(link.message_node_id))
-        throw new Error(
-          `Backup message attachment references unknown node ${link.message_node_id}`
+        .onConflict((oc) =>
+          oc.column("id").doUpdateSet({
+            name: theme.name,
+            document_json: documentJson,
+            updated_at: theme.updated_at,
+          })
         )
-      if (!restoredAttachmentIds.has(link.attachment_id))
-        throw new Error(
-          `Backup message attachment references unknown attachment ${link.attachment_id}`
-        )
-      await trx
-        .insertInto("message_attachments")
-        .values({
-          message_node_id: link.message_node_id,
-          attachment_id: link.attachment_id,
-        })
         .execute()
     }
-    for (const provider of backup.providerProfiles) {
+  }
+
+  if (backup.instance) {
+    const titleModelJson =
+      backup.instance && "titleModelConfig" in backup.instance
+        ? backup.instance.titleModelConfig
+          ? JSON.stringify({
+              providerId: backup.instance.titleModelConfig.providerId,
+              model: backup.instance.titleModelConfig.model,
+            })
+          : null
+        : undefined
+    await trx
+      .updateTable("instance")
+      .set({
+        ...(titleModelJson !== undefined
+          ? { title_model_config_json: titleModelJson }
+          : {}),
+      })
+      .where("id", "=", 1)
+      .execute()
+  }
+}
+
+function validateMultiUserBackup(
+  backup: Backup,
+  files: ReadonlyMap<string, Uint8Array>
+) {
+  const users = new Set(backup.users.map((user) => user.id))
+  if (users.size !== backup.users.length || users.size === 0)
+    throw new Error("Backup contains invalid users")
+  const owners = backup.users.filter((user) => user.role === "admin")
+  if (owners.length !== 1) throw new Error("Backup must contain exactly one owner")
+
+  const unique = (values: string[], label: string) => {
+    if (new Set(values).size !== values.length)
+      throw new Error(`Backup contains duplicate ${label} ids`)
+  }
+  unique(backup.chats.map((chat) => chat.id), "chat")
+  unique(backup.nodes.map((node) => node.id), "node")
+  unique(backup.attachments.map((attachment) => attachment.id), "attachment")
+  unique(backup.themes.map((theme) => theme.id), "theme")
+  unique(backup.promptStacks.map((stack) => stack.id), "prompt stack")
+
+  for (const theme of backup.themes) {
+    if (!users.has(theme.user_id))
+      throw new Error(`Backup theme ${theme.id} references an unknown user`)
+  }
+  for (const stack of backup.promptStacks) {
+    if (!users.has(stack.user_id))
+      throw new Error(`Backup prompt stack ${stack.id} references an unknown user`)
+  }
+
+  for (const chat of backup.chats) {
+    if (!users.has(chat.user_id))
+      throw new Error(`Backup chat ${chat.id} references an unknown user`)
+  }
+  const chats = new Set(backup.chats.map((chat) => chat.id))
+  const stacks = new Map(backup.promptStacks.map((stack) => [stack.id, stack]))
+  for (const chat of backup.chats) {
+    if (!chat.prompt_stack_id) continue
+    const stack = stacks.get(chat.prompt_stack_id)
+    if (!stack || stack.user_id !== chat.user_id)
+      throw new Error(`Backup chat ${chat.id} references another user's prompt stack`)
+  }
+  for (const node of backup.nodes) {
+    if (!chats.has(node.chat_id))
+      throw new Error(`Backup node ${node.id} references an unknown chat`)
+  }
+  const nodes = new Set(backup.nodes.map((node) => node.id))
+  const attachments = new Set(backup.attachments.map((attachment) => attachment.id))
+  for (const link of backup.messageAttachments) {
+    if (!nodes.has(link.message_node_id) || !attachments.has(link.attachment_id))
+      throw new Error("Backup contains an invalid attachment link")
+  }
+  for (const attachment of backup.attachments) {
+    if (!users.has(attachment.user_id))
+      throw new Error(`Backup attachment ${attachment.id} references an unknown user`)
+    const data = files.get(attachment.file)
+    if (!data) throw new Error(`Backup attachment ${attachment.id} is missing`)
+    if (data.byteLength !== attachment.byte_size)
+      throw new Error(`Backup attachment ${attachment.id} has the wrong size`)
+    validateImageSignature(data, attachment.media_type)
+    const sha256 = createHash("sha256").update(data).digest("hex")
+    if (sha256 !== attachment.sha256)
+      throw new Error(`Backup attachment ${attachment.id} is corrupt`)
+  }
+  const themes = new Map(backup.themes.map((theme) => [theme.id, theme]))
+  for (const prefs of backup.userPreferences) {
+    if (!users.has(prefs.user_id))
+      throw new Error("Backup preferences reference an unknown user")
+    const light = themes.get(prefs.light_theme_id)
+    const dark = themes.get(prefs.dark_theme_id)
+    const stack = stacks.get(prefs.default_prompt_stack_id)
+    if (
+      !light ||
+      !dark ||
+      !stack ||
+      light.user_id !== prefs.user_id ||
+      dark.user_id !== prefs.user_id ||
+      stack.user_id !== prefs.user_id
+  )
+      throw new Error("Backup preferences reference another user's settings")
+  }
+  const preferenceUsers = backup.userPreferences.map((prefs) => prefs.user_id)
+  if (
+    preferenceUsers.length !== users.size ||
+    new Set(preferenceUsers).size !== preferenceUsers.length ||
+    preferenceUsers.some((userId) => !users.has(userId))
+  )
+    throw new Error("Backup must contain one settings record for every user")
+}
+
+async function insertRestoredMessageNodes(
+  trx: Transaction<DB>,
+  nodes: Backup["nodes"]
+) {
+  for (const node of orderNodesForInsert(nodes)) {
+    await trx
+      .insertInto("message_nodes")
+      .values({
+        id: node.id,
+        chat_id: node.chat_id,
+        parent_id: node.parent_id,
+        selected_child_id: node.selected_child_id,
+        role: node.role,
+        parts_json: node.parts_json,
+        search_text: node.search_text,
+        metadata_json: node.metadata_json,
+        excluded_from_context: toDbBool(node.excluded_from_context),
+        status: node.status,
+        created_at: node.created_at,
+        updated_at: node.updated_at,
+      })
+      .execute()
+  }
+}
+
+async function restoreMultiUserBackup(
+  ownerId: string,
+  backup: ReturnType<typeof parseBackup>,
+  files: ReadonlyMap<string, Uint8Array>
+) {
+  const sourceOwner =
+    backup.users.find((user) => user.role === "admin") ?? backup.users[0]
+  if (!sourceOwner) throw new Error("Backup does not contain an owner")
+  const ownerChatIds = new Set(
+    backup.chats.filter((chat) => chat.user_id === sourceOwner.id).map((chat) => chat.id)
+  )
+  const ownerNodes = backup.nodes.filter((node) => ownerChatIds.has(node.chat_id))
+  const ownerAttachments = backup.attachments.filter(
+    (attachment) => attachment.user_id === sourceOwner.id
+  )
+  const ownerLinks = backup.messageAttachments.filter((link) =>
+    ownerNodes.some((node) => node.id === link.message_node_id)
+  )
+  const ownerBackup: Backup = {
+    version: 1,
+    createdAt: backup.createdAt,
+    instance: backup.instance,
+    chats: backup.chats.filter((chat) => ownerChatIds.has(chat.id)),
+    nodes: ownerNodes,
+    attachments: ownerAttachments,
+    messageAttachments: ownerLinks,
+    providerProfiles: backup.providerProfiles,
+    mcpServerProfiles: backup.mcpServerProfiles,
+    promptStacks: backup.promptStacks
+      .filter((stack) => stack.user_id === sourceOwner.id)
+      .map((stack) => ({ ...stack, user_id: ownerId })),
+    themes: backup.themes
+      .filter((theme) => theme.user_id === sourceOwner.id)
+      .map((theme) => ({ ...theme, user_id: ownerId })),
+    users: [sourceOwner],
+    userPreferences: [],
+  }
+
+  await db.transaction().execute(async (trx) => {
+    const existingChats = await trx
+      .selectFrom("chats")
+      .select("id")
+      .executeTakeFirst()
+    const existingUsers = await trx.selectFrom("user").select("id").execute()
+    if (existingChats || existingUsers.some((user) => user.id !== ownerId))
+      throw new Error("Restore is only available on an empty instance")
+
+    await restoreOwnerBackup(trx, ownerId, ownerBackup, files)
+
+    const ownerPrefs = backup.userPreferences.find(
+      (prefs) => prefs.user_id === sourceOwner.id
+    )
+    if (!ownerPrefs) throw new Error("Backup owner is missing preferences")
+    await trx
+      .insertInto("user_preferences")
+      .values({
+        ...ownerPrefs,
+        user_id: ownerId,
+      })
+      .onConflict((oc) =>
+        oc.column("user_id").doUpdateSet({
+          light_theme_id: ownerPrefs.light_theme_id,
+          dark_theme_id: ownerPrefs.dark_theme_id,
+          default_prompt_stack_id: ownerPrefs.default_prompt_stack_id,
+          theme_mode: ownerPrefs.theme_mode,
+          updated_at: ownerPrefs.updated_at,
+        })
+      )
+      .execute()
+
+    for (const sourceUser of backup.users) {
+      if (sourceUser.id === sourceOwner.id) continue
       await trx
-        .insertInto("provider_profiles")
+        .insertInto("user")
         .values({
-          id: provider.id,
-          user_id: userId,
-          name: provider.name,
-          kind: provider.kind,
-          base_url: provider.base_url ?? null,
-          api_key: null,
-          api_key_env: provider.api_key_env ?? null,
-          models_json: provider.models_json,
-          created_at: provider.created_at,
-          updated_at: provider.updated_at,
+          id: sourceUser.id,
+          name: sourceUser.name,
+          email: sourceUser.email,
+          emailVerified: toDbBool(Boolean(sourceUser.emailVerified)),
+          image: null,
+          createdAt: sourceUser.createdAt,
+          updatedAt: sourceUser.updatedAt,
+          role: "user",
+          // Credentials are intentionally excluded from portable backups.
+          // Restored users stay disabled until the owner sets a password.
+          banned: toDbBool(true),
+          banReason: "Restored account requires a password reset.",
+          banExpires: null,
         })
         .execute()
-    }
-    for (const profile of backup.mcpServerProfiles) {
-      await trx
-        .insertInto("mcp_server_profiles")
-        .values({
-          id: profile.id,
-          user_id: userId,
-          name: profile.name,
-          namespace: profile.namespace,
-          enabled:
-            databaseKind === "sqlite"
-              ? ((profile.enabled ? 1 : 0) as unknown as boolean)
-              : profile.enabled,
-          transport: profile.transport,
-          protocol_mode: profile.protocol_mode,
-          config_json: profile.config_json,
-          catalog_json: profile.catalog_json,
-          tool_allowlist_json: profile.tool_allowlist_json,
-          created_at: profile.created_at,
-          updated_at: profile.updated_at,
-        })
-        .execute()
-    }
-    if (backup.themes?.length) {
-      for (const theme of backup.themes) {
-        const documentJson = appearanceToJson(
-          parseAppearance(theme.document),
-          false
-        )
+      const userChats = backup.chats.filter((chat) => chat.user_id === sourceUser.id)
+      const chatIds = new Set(userChats.map((chat) => chat.id))
+      const userNodes = backup.nodes.filter((node) => chatIds.has(node.chat_id))
+      const userAttachments = backup.attachments.filter(
+        (attachment) => attachment.user_id === sourceUser.id
+      )
+      const userLinks = backup.messageAttachments.filter((link) =>
+        userNodes.some((node) => node.id === link.message_node_id)
+      )
+      for (const theme of backup.themes.filter((theme) => theme.user_id === sourceUser.id))
         await trx
           .insertInto("themes")
           .values({
             id: theme.id,
+            user_id: sourceUser.id,
             name: theme.name,
-            document_json: documentJson,
+            document_json: appearanceToJson(parseAppearance(theme.document), false),
             created_at: theme.created_at,
             updated_at: theme.updated_at,
           })
-          .onConflict((oc) =>
-            oc.column("id").doUpdateSet({
-              name: theme.name,
-              document_json: documentJson,
-              updated_at: theme.updated_at,
-            })
-          )
+          .execute()
+      for (const stack of backup.promptStacks.filter((stack) => stack.user_id === sourceUser.id))
+        await trx
+          .insertInto("prompt_stacks")
+          .values({
+            id: stack.id,
+            user_id: sourceUser.id,
+            name: stack.name,
+            stack_json: promptStackToJson(readStackJson(stack.stack_json)),
+            created_at: stack.created_at,
+            updated_at: stack.updated_at,
+          })
+          .execute()
+      const prefs = backup.userPreferences.find((prefs) => prefs.user_id === sourceUser.id)
+      if (prefs) await trx.insertInto("user_preferences").values(prefs).execute()
+      for (const chat of userChats) {
+        await trx
+          .insertInto("chats")
+          .values({
+            id: chat.id,
+            user_id: sourceUser.id,
+            title: chat.title,
+            selected_root_node_id: chat.selected_root_node_id,
+            model_config_json: chat.model_config_json,
+            prompt_stack_id: chat.prompt_stack_id ?? null,
+            created_at: chat.created_at,
+            updated_at: chat.updated_at,
+          })
           .execute()
       }
-    }
-
-    let lightThemeId = PAPER_THEME_ID
-    let darkThemeId = INK_THEME_ID
-    if (backup.instance?.lightThemeId && backup.instance?.darkThemeId) {
-      lightThemeId = backup.instance.lightThemeId
-      darkThemeId = backup.instance.darkThemeId
-    }
-    const defaultStackId =
-      backup.instance?.default_prompt_stack_id ??
-      (
-        await trx
-          .selectFrom("instance")
-          .select("default_prompt_stack_id")
-          .where("id", "=", 1)
-          .executeTakeFirstOrThrow()
-      ).default_prompt_stack_id
-
-    if (
-      backup.instance ||
-      backup.themes?.length ||
-      backup.promptStacks?.length
-    ) {
-      const titleModelJson =
-        backup.instance && "titleModelConfig" in backup.instance
-          ? backup.instance.titleModelConfig
-            ? JSON.stringify({
-                providerId: backup.instance.titleModelConfig.providerId,
-                model: backup.instance.titleModelConfig.model,
-              })
-            : null
-          : undefined
-      await trx
-        .updateTable("instance")
-        .set({
-          default_prompt_stack_id: defaultStackId,
-          light_theme_id: lightThemeId,
-          dark_theme_id: darkThemeId,
-          ...(titleModelJson !== undefined
-            ? { title_model_config_json: titleModelJson }
-            : {}),
+      await insertRestoredMessageNodes(trx, userNodes)
+      for (const attachment of userAttachments) {
+        const data = files.get(attachment.file)
+        if (!data) throw new Error(`Backup attachment ${attachment.id} is missing`)
+        const stored = await attachmentStorage.put({
+          sha256: attachment.sha256,
+          data,
         })
-        .where("id", "=", 1)
-        .execute()
+        await trx
+          .insertInto("attachments")
+          .values({
+            id: attachment.id,
+            user_id: sourceUser.id,
+            filename: attachment.filename,
+            media_type: attachment.media_type,
+            byte_size: attachment.byte_size,
+            sha256: attachment.sha256,
+            storage_backend: attachmentStorage.kind,
+            storage_key: stored.storageKey,
+            data: stored.data,
+            claimed_at: attachment.claimed_at,
+            created_at: attachment.created_at,
+          })
+          .execute()
+      }
+      for (const link of userLinks)
+        await trx.insertInto("message_attachments").values(link).execute()
     }
   })
 }
 
-export async function createBackup(userId: string) {
+export async function createBackup() {
   const chats = await db
     .selectFrom("chats")
     .selectAll()
-    .where("user_id", "=", userId)
     .execute()
   const chatIds = chats.map((chat) => chat.id)
   const rawNodes =
@@ -1901,7 +2122,6 @@ export async function createBackup(userId: string) {
       "created_at",
       "updated_at",
     ])
-    .where("user_id", "=", userId)
     .execute()
   const promptStacks = await db
     .selectFrom("prompt_stacks")
@@ -1911,7 +2131,6 @@ export async function createBackup(userId: string) {
   const mcpRows = await db
     .selectFrom("mcp_server_profiles")
     .selectAll()
-    .where("user_id", "=", userId)
     .execute()
   const mcpServerProfiles = mcpRows.map((row) =>
     mcpProfileForBackup(profileFromRow(row))
@@ -1919,10 +2138,10 @@ export async function createBackup(userId: string) {
   const attachmentRows = await db
     .selectFrom("attachments")
     .selectAll()
-    .where("user_id", "=", userId)
     .execute()
   const attachments = attachmentRows.map((row) => ({
     id: row.id,
+    user_id: row.user_id,
     filename: row.filename,
     media_type: row.media_type,
     byte_size: row.byte_size,
@@ -1945,7 +2164,6 @@ export async function createBackup(userId: string) {
             "message_attachments.message_node_id",
             "message_attachments.attachment_id",
           ])
-          .where("message_nodes.chat_id", "in", chatIds)
           .execute()
   const normalizedStacks = promptStacks.map((row) => ({
     ...row,
@@ -1953,6 +2171,7 @@ export async function createBackup(userId: string) {
   }))
   const normalizedThemes = themes.map((row) => ({
     id: row.id,
+    user_id: row.user_id,
     name: row.name,
     document: parseAppearance(
       row.document_json ? JSON.parse(row.document_json) : {}
@@ -1960,23 +2179,16 @@ export async function createBackup(userId: string) {
     created_at: row.created_at,
     updated_at: row.updated_at,
   }))
-  const instance = await db
-    .selectFrom("instance")
-    .select(["default_prompt_stack_id", "light_theme_id", "dark_theme_id"])
-    .where("id", "=", 1)
-    .executeTakeFirst()
   const titleModelConfig = await getTitleModelConfig()
+  const users = await db.selectFrom("user").selectAll().execute()
+  const userPreferences = await db
+    .selectFrom("user_preferences")
+    .selectAll()
+    .execute()
   return {
     version: 1 as const,
     createdAt: new Date().toISOString(),
-    instance: instance
-      ? {
-          default_prompt_stack_id: instance.default_prompt_stack_id,
-          lightThemeId: instance.light_theme_id,
-          darkThemeId: instance.dark_theme_id,
-          titleModelConfig,
-        }
-      : undefined,
+    instance: { titleModelConfig },
     promptStacks: normalizedStacks,
     themes: normalizedThemes,
     chats,
@@ -1985,17 +2197,29 @@ export async function createBackup(userId: string) {
     messageAttachments,
     providerProfiles: providers,
     mcpServerProfiles,
+    users: users.map((user) => ({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      emailVerified: user.emailVerified,
+      role: user.role,
+      banned: user.banned,
+      banReason: user.banReason,
+      banExpires: user.banExpires,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    })),
+    userPreferences,
   }
 }
 
-export async function createBackupArchive(userId: string) {
-  const backup = await createBackup(userId)
+export async function createBackupArchive() {
+  const backup = await createBackup()
   const files = new Map<string, Uint8Array>()
   if (backup.attachments.length) {
     const rows = await db
       .selectFrom("attachments")
       .selectAll()
-      .where("user_id", "=", userId)
       .execute()
     const byId = new Map(rows.map((row) => [row.id, row]))
     for (const attachment of backup.attachments) {

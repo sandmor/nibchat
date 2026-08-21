@@ -7,7 +7,7 @@ export const runtime = "nodejs"
 export async function GET(request: Request) {
   try {
     const user = await requireOwner(request.headers)
-    const zip = await createBackupArchive(user.id)
+    const zip = await createBackupArchive()
     const body = new Uint8Array(zip.byteLength)
     body.set(zip)
     return new Response(body.buffer, {

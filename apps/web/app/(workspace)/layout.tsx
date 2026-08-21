@@ -1,9 +1,10 @@
 import { requireWorkspaceUser } from "@/lib/app-session"
 import { getWorkspace, getInstanceSettings } from "@/lib/chat-service"
-import { listProviders } from "@/lib/providers"
+import { listAvailableProviders, listProviders } from "@/lib/providers"
 import { WorkspaceShell } from "@/components/workspace/shell"
 import { ThemeProvider } from "@/components/theme-provider"
 import { ThemeBootstrap } from "@/components/workspace/theme-bootstrap"
+import { getOwnerUserId } from "@/lib/identity/adapters/kysely-instance"
 
 export const dynamic = "force-dynamic"
 
@@ -13,23 +14,30 @@ export default async function WorkspaceLayout({
   children: React.ReactNode
 }) {
   const user = await requireWorkspaceUser()
+  const ownerId = await getOwnerUserId()
   const [settings, workspace, providers] = await Promise.all([
-    getInstanceSettings(),
+    getInstanceSettings(user.id),
     getWorkspace(user.id, { draft: true }),
-    listProviders(user.id),
+    user.id === ownerId ? listProviders() : listAvailableProviders(),
   ])
+  const visibleSettings = user.id === ownerId
+    ? settings
+    : { ...settings, titleModelConfig: null }
 
   return (
-    <ThemeProvider>
+    <ThemeProvider userId={user.id} initialMode={settings.themeMode}>
       <ThemeBootstrap
-        themes={settings.themes}
-        lightThemeId={settings.lightThemeId}
-        darkThemeId={settings.darkThemeId}
+        themes={visibleSettings.themes}
+        lightThemeId={visibleSettings.lightThemeId}
+        darkThemeId={visibleSettings.darkThemeId}
+        userId={user.id}
       />
       <WorkspaceShell
         initialChats={workspace.chats}
         providers={providers}
-        initialSettings={settings}
+        initialSettings={visibleSettings}
+        user={user}
+        isOwner={user.id === ownerId}
       >
         {children}
       </WorkspaceShell>

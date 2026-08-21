@@ -40,7 +40,7 @@ import {
   updatePromptStack,
   updateProvider,
 } from "@/lib/chat-service"
-import { listProviders } from "@/lib/providers"
+import { listAvailableProviders, listProviders } from "@/lib/providers"
 import { appearanceSchema } from "@/lib/appearance"
 import { promptStackDocumentSchema } from "@/lib/prompt-stack"
 import {
@@ -55,22 +55,42 @@ import {
   updateMcpProfile,
 } from "@/lib/mcp"
 import { messageEditSegmentSchema } from "@/lib/agent/parts"
+import { setUserThemeMode } from "@/lib/user-settings"
+import { db } from "@/lib/db"
+import {
+  createManagedUser,
+  deleteManagedUser,
+  listManagedUsers,
+  resetManagedUserPassword,
+  revokeManagedUserSessions,
+  setManagedUserDisabled,
+} from "@/lib/user-admin"
 
 export async function createContext({ req }: { req: Request }) {
   const gate = await resolveAppUser(req.headers)
   if (gate.status === "ok" || gate.status === "onboarding") {
     return {
       user: gate.user as SessionUser,
+      isOwner: gate.user.id === (await defaultIdentityOwnerId()),
+      headers: req.headers,
       authError: null as string | null,
     }
   }
   return {
     user: null as SessionUser | null,
-    authError:
-      gate.status === "wrong_account"
-        ? OWNER_FORBIDDEN_MESSAGE
-        : UNAUTHORIZED_MESSAGE,
+    isOwner: false,
+    headers: req.headers,
+    authError: UNAUTHORIZED_MESSAGE,
   }
+}
+
+async function defaultIdentityOwnerId() {
+  const row = await db
+    .selectFrom("instance")
+    .select("owner_user_id")
+    .where("id", "=", 1)
+    .executeTakeFirst()
+  return row?.owner_user_id ?? null
 }
 
 const t = initTRPC.context<typeof createContext>().create({
@@ -87,14 +107,19 @@ const t = initTRPC.context<typeof createContext>().create({
 })
 const ownerProcedure = t.procedure.use(({ ctx, next }) => {
   if (!ctx.user) {
-    if (ctx.authError === OWNER_FORBIDDEN_MESSAGE)
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: ctx.authError,
-      })
     throw new TRPCError({ code: "UNAUTHORIZED" })
   }
-  return next({ ctx: { user: ctx.user } })
+  if (!ctx.isOwner)
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: OWNER_FORBIDDEN_MESSAGE,
+    })
+  return next({ ctx: { ...ctx, user: ctx.user } })
+})
+
+const userProcedure = t.procedure.use(({ ctx, next }) => {
+  if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" })
+  return next({ ctx: { ...ctx, user: ctx.user } })
 })
 
 const modelConfigSchema = z.object({
@@ -205,7 +230,7 @@ function mapError(error: unknown): never {
 
 export const appRouter = t.router({
   workspace: t.router({
-    get: ownerProcedure
+    get: userProcedure
       .input(
         z
           .object({
@@ -215,10 +240,10 @@ export const appRouter = t.router({
           .optional()
       )
       .query(({ ctx, input }) => getWorkspace(ctx.user.id, input)),
-    search: ownerProcedure
+    search: userProcedure
       .input(z.object({ query: z.string().min(1).max(300) }))
       .query(({ ctx, input }) => searchChats(ctx.user.id, input.query)),
-    createChat: ownerProcedure
+    createChat: userProcedure
       .input(
         z
           .object({
@@ -236,7 +261,7 @@ export const appRouter = t.router({
           input?.promptStackId
         )
       ),
-    updateChat: ownerProcedure
+    updateChat: userProcedure
       .input(
         z.object({
           chatId: z.string(),
@@ -251,7 +276,7 @@ export const appRouter = t.router({
           mapError(error)
         }
       }),
-    deleteChat: ownerProcedure
+    deleteChat: userProcedure
       .input(z.object({ chatId: z.string() }))
       .mutation(async ({ ctx, input }) => {
         try {
@@ -261,7 +286,7 @@ export const appRouter = t.router({
           mapError(error)
         }
       }),
-    setModel: ownerProcedure
+    setModel: userProcedure
       .input(z.object({ chatId: z.string(), config: modelConfigSchema }))
       .mutation(async ({ ctx, input }) => {
         try {
@@ -271,7 +296,7 @@ export const appRouter = t.router({
           mapError(error)
         }
       }),
-    selectChild: ownerProcedure
+    selectChild: userProcedure
       .input(z.object({ nodeId: z.string(), childId: z.string().nullable() }))
       .mutation(async ({ ctx, input }) => {
         try {
@@ -281,7 +306,7 @@ export const appRouter = t.router({
           mapError(error)
         }
       }),
-    selectRoot: ownerProcedure
+    selectRoot: userProcedure
       .input(z.object({ chatId: z.string(), nodeId: z.string() }))
       .mutation(async ({ ctx, input }) => {
         try {
@@ -291,7 +316,7 @@ export const appRouter = t.router({
           mapError(error)
         }
       }),
-    selectPath: ownerProcedure
+    selectPath: userProcedure
       .input(z.object({ chatId: z.string(), nodeId: z.string() }))
       .mutation(async ({ ctx, input }) => {
         try {
@@ -301,7 +326,7 @@ export const appRouter = t.router({
           mapError(error)
         }
       }),
-    setContextExcluded: ownerProcedure
+    setContextExcluded: userProcedure
       .input(z.object({ nodeId: z.string(), excluded: z.boolean() }))
       .mutation(async ({ ctx, input }) => {
         try {
@@ -315,7 +340,7 @@ export const appRouter = t.router({
           mapError(error)
         }
       }),
-    forkEdit: ownerProcedure
+    forkEdit: userProcedure
       .input(
         z.object({
           nodeId: z.string(),
@@ -333,7 +358,7 @@ export const appRouter = t.router({
           mapError(error)
         }
       }),
-    deleteNode: ownerProcedure
+    deleteNode: userProcedure
       .input(
         z.object({
           nodeId: z.string(),
@@ -348,8 +373,8 @@ export const appRouter = t.router({
           mapError(error)
         }
       }),
-    listProviders: ownerProcedure.query(({ ctx }) =>
-      listProviders(ctx.user.id)
+    listProviders: userProcedure.query(({ ctx }) =>
+      ctx.isOwner ? listProviders() : listAvailableProviders()
     ),
     listMcpProfiles: ownerProcedure.query(({ ctx }) =>
       listMcpProfiles(ctx.user.id)
@@ -410,10 +435,8 @@ export const appRouter = t.router({
           mapError(error)
         }
       }),
-    listApprovedMcpSurfaces: ownerProcedure.query(({ ctx }) =>
-      listApprovedMcpSurfaces(ctx.user.id)
-    ),
-    getMcpPrompt: ownerProcedure
+    listApprovedMcpSurfaces: userProcedure.query(() => listApprovedMcpSurfaces()),
+    getMcpPrompt: userProcedure
       .input(
         z.object({
           profileId: z.string().min(1),
@@ -424,7 +447,6 @@ export const appRouter = t.router({
       .mutation(async ({ ctx, input }) => {
         try {
           return await getMcpPrompt(
-            ctx.user.id,
             input.profileId,
             input.name,
             input.arguments ?? {}
@@ -481,23 +503,26 @@ export const appRouter = t.router({
           mapError(error)
         }
       }),
-    getSettings: ownerProcedure.query(() => getInstanceSettings()),
-    listThemes: ownerProcedure.query(() => listThemes()),
-    createTheme: ownerProcedure
+    getSettings: userProcedure.query(async ({ ctx }) => {
+      const settings = await getInstanceSettings(ctx.user.id)
+      return ctx.isOwner ? settings : { ...settings, titleModelConfig: null }
+    }),
+    listThemes: userProcedure.query(({ ctx }) => listThemes(ctx.user.id)),
+    createTheme: userProcedure
       .input(
         z.object({
           name: z.string().min(1).max(200),
           document: appearanceSchema.optional(),
         })
       )
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         try {
-          return await createTheme(input)
+          return await createTheme({ ...input, userId: ctx.user.id })
         } catch (error) {
           mapError(error)
         }
       }),
-    updateTheme: ownerProcedure
+    updateTheme: userProcedure
       .input(
         z.object({
           id: z.string(),
@@ -505,68 +530,74 @@ export const appRouter = t.router({
           document: appearanceSchema.optional(),
         })
       )
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         try {
           const { id, ...patch } = input
-          return await updateTheme(id, patch)
+          return await updateTheme(ctx.user.id, id, patch)
         } catch (error) {
           mapError(error)
         }
       }),
-    duplicateTheme: ownerProcedure
+    duplicateTheme: userProcedure
       .input(
         z.object({
           id: z.string(),
           name: z.string().min(1).max(200).optional(),
         })
       )
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         try {
-          return await duplicateTheme(input.id, input.name)
+          return await duplicateTheme(ctx.user.id, input.id, input.name)
         } catch (error) {
           mapError(error)
         }
       }),
-    deleteTheme: ownerProcedure
+    deleteTheme: userProcedure
       .input(z.object({ id: z.string() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         try {
-          await deleteTheme(input.id)
+          await deleteTheme(ctx.user.id, input.id)
           return { ok: true }
         } catch (error) {
           mapError(error)
         }
       }),
-    setThemeSlots: ownerProcedure
+    setThemeSlots: userProcedure
       .input(
         z.object({
           lightThemeId: z.string(),
           darkThemeId: z.string(),
         })
       )
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         try {
-          return await setThemeSlots(input)
+          return await setThemeSlots({ ...input, userId: ctx.user.id })
         } catch (error) {
           mapError(error)
         }
       }),
-    listPromptStacks: ownerProcedure.query(() => listPromptStacks()),
-    createPromptStack: ownerProcedure
+    setThemeMode: userProcedure
+      .input(z.object({ themeMode: z.enum(["system", "light", "dark"]) }))
+      .mutation(async ({ ctx, input }) => {
+        await setUserThemeMode(ctx.user.id, input.themeMode)
+        return { ok: true as const }
+      }),
+    listPromptStacks: userProcedure.query(({ ctx }) => listPromptStacks(ctx.user.id)),
+    createPromptStack: userProcedure
       .input(
         z.object({
           name: z.string().min(1).max(200),
           stack: promptStackDocumentSchema.optional(),
         })
       )
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         try {
-          return await createPromptStack(input)
+          return await createPromptStack({ ...input, userId: ctx.user.id })
         } catch (error) {
           mapError(error)
         }
       }),
-    updatePromptStack: ownerProcedure
+    updatePromptStack: userProcedure
       .input(
         z.object({
           id: z.string(),
@@ -574,43 +605,43 @@ export const appRouter = t.router({
           stack: promptStackDocumentSchema.optional(),
         })
       )
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         try {
           const { id, ...patch } = input
-          return await updatePromptStack(id, patch)
+          return await updatePromptStack(ctx.user.id, id, patch)
         } catch (error) {
           mapError(error)
         }
       }),
-    duplicatePromptStack: ownerProcedure
+    duplicatePromptStack: userProcedure
       .input(
         z.object({
           id: z.string(),
           name: z.string().min(1).max(200).optional(),
         })
       )
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         try {
-          return await duplicatePromptStack(input.id, input.name)
+          return await duplicatePromptStack(ctx.user.id, input.id, input.name)
         } catch (error) {
           mapError(error)
         }
       }),
-    deletePromptStack: ownerProcedure
+    deletePromptStack: userProcedure
       .input(z.object({ id: z.string() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         try {
-          await deletePromptStack(input.id)
+          await deletePromptStack(ctx.user.id, input.id)
           return { ok: true }
         } catch (error) {
           mapError(error)
         }
       }),
-    setInstanceDefaultPromptStack: ownerProcedure
+    setInstanceDefaultPromptStack: userProcedure
       .input(z.object({ stackId: z.string() }))
-      .mutation(async ({ input }) => {
+      .mutation(async ({ ctx, input }) => {
         try {
-          return await setInstanceDefaultPromptStack(input.stackId)
+          return await setInstanceDefaultPromptStack(ctx.user.id, input.stackId)
         } catch (error) {
           mapError(error)
         }
@@ -631,7 +662,7 @@ export const appRouter = t.router({
           mapError(error)
         }
       }),
-    setChatPromptStack: ownerProcedure
+    setChatPromptStack: userProcedure
       .input(
         z.object({
           chatId: z.string(),
@@ -648,6 +679,52 @@ export const appRouter = t.router({
         } catch (error) {
           mapError(error)
         }
+      }),
+  }),
+  admin: t.router({
+    listUsers: ownerProcedure.query(({ ctx }) =>
+      listManagedUsers(ctx.headers)
+    ),
+    createUser: ownerProcedure
+      .input(
+        z.object({
+          name: z.string().trim().min(1).max(120),
+          email: z.string().email(),
+          password: z.string().min(8).max(256),
+        })
+      )
+      .mutation(({ ctx, input }) => createManagedUser(ctx.headers, input)),
+    resetUserPassword: ownerProcedure
+      .input(z.object({ userId: z.string(), password: z.string().min(8).max(256) }))
+      .mutation(async ({ ctx, input }) => {
+        if (input.userId === ctx.user.id)
+          throw new TRPCError({ code: "BAD_REQUEST", message: "The owner account cannot be changed here." })
+        await resetManagedUserPassword(ctx.headers, input.userId, input.password)
+        return { ok: true as const }
+      }),
+    setUserDisabled: ownerProcedure
+      .input(z.object({ userId: z.string(), disabled: z.boolean() }))
+      .mutation(async ({ ctx, input }) => {
+        if (input.userId === ctx.user.id)
+          throw new TRPCError({ code: "BAD_REQUEST", message: "The owner account cannot be disabled." })
+        await setManagedUserDisabled(ctx.headers, input.userId, input.disabled)
+        return { ok: true as const }
+      }),
+    revokeUserSessions: ownerProcedure
+      .input(z.object({ userId: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        if (input.userId === ctx.user.id)
+          throw new TRPCError({ code: "BAD_REQUEST", message: "The owner sessions cannot be revoked here." })
+        await revokeManagedUserSessions(ctx.headers, input.userId)
+        return { ok: true as const }
+      }),
+    deleteUser: ownerProcedure
+      .input(z.object({ userId: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        if (input.userId === ctx.user.id)
+          throw new TRPCError({ code: "BAD_REQUEST", message: "The owner account cannot be deleted." })
+        await deleteManagedUser(ctx.headers, input.userId)
+        return { ok: true as const }
       }),
   }),
 })

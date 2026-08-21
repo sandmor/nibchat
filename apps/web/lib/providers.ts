@@ -29,7 +29,7 @@ export type ModelConfig = {
    */
   replayReasoning?: boolean
 }
-export async function listProviders(userId: string) {
+export async function listProviders() {
   return db
     .selectFrom("provider_profiles")
     .select([
@@ -42,8 +42,21 @@ export async function listProviders(userId: string) {
       "created_at",
       "updated_at",
     ])
-    .where("user_id", "=", userId)
     .execute()
+}
+
+/** Safe catalog used by regular users to choose an enabled model. */
+export async function listAvailableProviders() {
+  const rows = await db
+    .selectFrom("provider_profiles")
+    .select(["id", "name", "kind", "models_json", "created_at", "updated_at"])
+    .orderBy("name")
+    .execute()
+  return rows.map((row) => ({
+    ...row,
+    base_url: null as string | null,
+    api_key_env: null as string | null,
+  }))
 }
 
 /** Seed newly created chats from the latest chat or first provider profile. */
@@ -67,7 +80,6 @@ export async function defaultModelConfig(userId: string): Promise<ModelConfig> {
   const provider = await db
     .selectFrom("provider_profiles")
     .select(["id", "models_json"])
-    .where("user_id", "=", userId)
     .orderBy("created_at", "asc")
     .executeTakeFirst()
   if (!provider) return {}
@@ -90,7 +102,6 @@ export async function modelFor(
         .selectFrom("provider_profiles")
         .selectAll()
         .where("id", "=", config.providerId)
-        .where("user_id", "=", userId)
         .executeTakeFirst()
     : undefined
   const enabledModels = parseProviderModelsJson(profile?.models_json ?? "[]")
@@ -143,7 +154,6 @@ export async function resolveModelConfig(
     .selectFrom("provider_profiles")
     .select("models_json")
     .where("id", "=", config.providerId)
-    .where("user_id", "=", userId)
     .executeTakeFirst()
   if (!profile) return config
   const models = parseProviderModelsJson(profile.models_json)
@@ -162,7 +172,6 @@ export async function canReplayReasoning(userId: string, config: ModelConfig) {
     .selectFrom("provider_profiles")
     .select("kind")
     .where("id", "=", config.providerId)
-    .where("user_id", "=", userId)
     .executeTakeFirst()
   if (!profile) return false
   return replayReasoningEnabled(profile.kind, config.replayReasoning)

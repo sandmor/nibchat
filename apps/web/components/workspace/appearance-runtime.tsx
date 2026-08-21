@@ -3,16 +3,21 @@
 import { useEffect, useRef } from "react"
 import type { Appearance, ThemeRecord } from "@/lib/appearance"
 import { createAppearanceApplier } from "@/lib/apply-appearance"
-import { useAppearanceStore } from "@/lib/appearance-store"
+import {
+  setAppearancePersistenceUser,
+  useAppearanceStore,
+} from "@/lib/appearance-store"
 
 export function AppearanceRuntime({
   themes,
   activeThemeId,
   fallback,
+  userId,
 }: {
   themes: ThemeRecord[]
   activeThemeId: string
   fallback: Appearance
+  userId: string
 }) {
   const hydrateThemeLibrary = useAppearanceStore((s) => s.hydrateThemeLibrary)
   const draft = useAppearanceStore((s) => s.draft)
@@ -31,6 +36,10 @@ export function AppearanceRuntime({
       applierRef.current = null
     }
   }, [])
+
+  useEffect(() => {
+    setAppearancePersistenceUser(userId)
+  }, [userId])
 
   useEffect(() => {
     hydrateThemeLibrary(themes, activeThemeId)

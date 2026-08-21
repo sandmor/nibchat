@@ -25,6 +25,7 @@ describe("backup archive", () => {
       attachments: [
         {
           id,
+          user_id: "u1",
           filename: "shot.png",
           media_type: "image/png",
           byte_size: bytes.byteLength,
@@ -58,6 +59,7 @@ describe("backup archive", () => {
       attachments: [
         {
           id: "att-1",
+          user_id: "u1",
           filename: "shot.png",
           media_type: "image/png",
           byte_size: 1,

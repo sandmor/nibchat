@@ -18,10 +18,18 @@ import {
   type ThemeGroupId,
 } from "@/lib/appearance-registry"
 import type { ThemeHit } from "@/lib/appearance-targets"
+import {
+  appearanceMagicStorageKey,
+} from "@/lib/theme-slot"
+export { APPEARANCE_MAGIC_LS_KEY } from "@/lib/theme-slot"
 
 type ThemeDocument = { id: string; document: Appearance }
 
-export const APPEARANCE_MAGIC_LS_KEY = "nibchat.appearance.magic"
+let persistenceUserId: string | undefined
+
+export function setAppearancePersistenceUser(userId?: string) {
+  persistenceUserId = userId
+}
 const LS_VERSION = 2 as const
 
 export const MAGIC_PERSIST_DEBOUNCE_MS = 250
@@ -186,7 +194,7 @@ export function parseMagicPersist(
 function readLocalMagic(): AppearanceMagicPersist | null {
   if (typeof window === "undefined") return null
   try {
-    return parseMagicPersist(localStorage.getItem(APPEARANCE_MAGIC_LS_KEY))
+    return parseMagicPersist(localStorage.getItem(appearanceMagicStorageKey(persistenceUserId)))
   } catch {
     return null
   }
@@ -195,7 +203,7 @@ function readLocalMagic(): AppearanceMagicPersist | null {
 function removeLocalMagic(): void {
   if (typeof window === "undefined") return
   try {
-    localStorage.removeItem(APPEARANCE_MAGIC_LS_KEY)
+    localStorage.removeItem(appearanceMagicStorageKey(persistenceUserId))
   } catch {
     /* ignore */
   }
@@ -222,7 +230,7 @@ function writeLocalMagic(
       ? previewSnapshot(themeId, drafts[themeId ?? ""])
       : undefined
     localStorage.setItem(
-      APPEARANCE_MAGIC_LS_KEY,
+      appearanceMagicStorageKey(persistenceUserId),
       serializeMagicPersist({
         v: LS_VERSION,
         open,

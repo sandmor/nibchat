@@ -1,4 +1,4 @@
-import { requireOwner } from "@/lib/app-session"
+import { requireUser } from "@/lib/app-session"
 import { createUploadedImage } from "@/lib/attachments"
 import { jsonError } from "@/lib/http-error"
 
@@ -6,7 +6,7 @@ export const runtime = "nodejs"
 
 export async function POST(request: Request) {
   try {
-    const user = await requireOwner(request.headers)
+    const user = await requireUser(request.headers)
     const form = await request.formData()
     const file = form.get("file")
     if (!(file instanceof File))

@@ -23,9 +23,10 @@ describe("decideGate", () => {
     expect(decideGate("owner", null)).toEqual({ status: "login" })
   })
 
-  it("returns wrong_account when session is not owner", () => {
+  it("returns ok for a regular user session", () => {
     expect(decideGate("owner", user("other"))).toEqual({
-      status: "wrong_account",
+      status: "ok",
+      user: user("other"),
     })
   })
 

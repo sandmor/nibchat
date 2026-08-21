@@ -1,28 +1,17 @@
 import type { Kysely } from "kysely"
 import { sql } from "kysely"
-import {
-  appearanceToJson,
-  INK_THEME_ID,
-  PAPER_THEME_ID,
-  SEED_THEMES,
-} from "@/lib/appearance"
 import type { DbKind } from "@/lib/db/port"
-import {
-  DEFAULT_PROMPT_STACK_ID,
-  defaultPromptStack,
-  promptStackToJson,
-} from "@/lib/prompt-stack"
 import type { DB } from "@/lib/types"
 
 /**
- * Apply the current schema (version 1). `kind` selects dialect-specific
+ * Apply the current schema for a fresh installation. `kind` selects dialect-specific
  * column types (SQLite blob vs Postgres bytea).
  */
 export async function applySchema(db: Kysely<DB>, kind: DbKind) {
-  await sql`create table if not exists "user" (id text primary key, name text not null, email text not null unique, "emailVerified" boolean not null default false, image text, "createdAt" text not null, "updatedAt" text not null)`.execute(
+  await sql`create table if not exists "user" (id text primary key, name text not null, email text not null unique, "emailVerified" boolean not null default false, image text, "createdAt" text not null, "updatedAt" text not null, role text, banned boolean not null default false, "banReason" text, "banExpires" text)`.execute(
     db
   )
-  await sql`create table if not exists session (id text primary key, "expiresAt" text not null, token text not null unique, "createdAt" text not null, "updatedAt" text not null, "ipAddress" text, "userAgent" text, "userId" text not null references "user"(id) on delete cascade)`.execute(
+  await sql`create table if not exists session (id text primary key, "expiresAt" text not null, token text not null unique, "createdAt" text not null, "updatedAt" text not null, "ipAddress" text, "userAgent" text, "userId" text not null references "user"(id) on delete cascade, "impersonatedBy" text)`.execute(
     db
   )
   await sql`create table if not exists account (id text primary key, "accountId" text not null, "providerId" text not null, "userId" text not null references "user"(id) on delete cascade, "accessToken" text, "refreshToken" text, "idToken" text, "accessTokenExpiresAt" text, "refreshTokenExpiresAt" text, scope text, password text, "createdAt" text not null, "updatedAt" text not null)`.execute(
@@ -31,13 +20,13 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create table if not exists verification (id text primary key, identifier text not null, value text not null, "expiresAt" text not null, "createdAt" text, "updatedAt" text)`.execute(
     db
   )
-  await sql`create table if not exists prompt_stacks (id text primary key, name text not null, stack_json text not null, created_at text not null, updated_at text not null)`.execute(
+  await sql`create table if not exists prompt_stacks (id text primary key, user_id text not null references "user"(id) on delete cascade, name text not null, stack_json text not null, created_at text not null, updated_at text not null)`.execute(
     db
   )
-  await sql`create table if not exists themes (id text primary key, name text not null, document_json text not null, created_at text not null, updated_at text not null)`.execute(
+  await sql`create table if not exists themes (id text primary key, user_id text not null references "user"(id) on delete cascade, name text not null, document_json text not null, created_at text not null, updated_at text not null)`.execute(
     db
   )
-  await sql`create table if not exists instance (id integer primary key, owner_user_id text unique, default_prompt_stack_id text not null, light_theme_id text not null, dark_theme_id text not null, title_model_config_json text, onboarding_completed_at text, created_at text not null)`.execute(
+  await sql`create table if not exists instance (id integer primary key, owner_user_id text unique, title_model_config_json text, onboarding_completed_at text, created_at text not null)`.execute(
     db
   )
   await sql`create table if not exists chats (id text primary key, user_id text not null references "user"(id) on delete cascade, title text, selected_root_node_id text, model_config_json text not null, prompt_stack_id text, created_at text not null, updated_at text not null)`.execute(
@@ -69,6 +58,10 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create table if not exists mcp_server_profiles (id text primary key, user_id text not null references "user"(id) on delete cascade, name text not null, namespace text not null, enabled boolean not null default true, transport text not null, protocol_mode text not null, config_json text not null, catalog_json text not null default '{}', tool_allowlist_json text not null default '[]', created_at text not null, updated_at text not null, unique(user_id, namespace))`.execute(
     db
   )
+  await sql`create table if not exists user_preferences (user_id text primary key references "user"(id) on delete cascade, light_theme_id text not null, dark_theme_id text not null, default_prompt_stack_id text not null, theme_mode text not null default 'system', created_at text not null, updated_at text not null)`.execute(
+    db
+  )
+
   await sql`create index if not exists message_nodes_chat_idx on message_nodes(chat_id, created_at)`.execute(
     db
   )
@@ -78,53 +71,13 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
 
   const seedAt = new Date().toISOString()
   await db
-    .insertInto("prompt_stacks")
-    .values({
-      id: DEFAULT_PROMPT_STACK_ID,
-      name: "Default",
-      stack_json: promptStackToJson(defaultPromptStack()),
-      created_at: seedAt,
-      updated_at: seedAt,
-    })
-    .onConflict((oc) => oc.column("id").doNothing())
-    .execute()
-
-  for (const theme of SEED_THEMES) {
-    await db
-      .insertInto("themes")
-      .values({
-        id: theme.id,
-        name: theme.name,
-        document_json: appearanceToJson(theme.document, false),
-        created_at: seedAt,
-        updated_at: seedAt,
-      })
-      .onConflict((oc) => oc.column("id").doNothing())
-      .execute()
-  }
-
-  await db
     .insertInto("instance")
     .values({
       id: 1,
       owner_user_id: null,
-      default_prompt_stack_id: DEFAULT_PROMPT_STACK_ID,
-      light_theme_id: PAPER_THEME_ID,
-      dark_theme_id: INK_THEME_ID,
       created_at: seedAt,
     })
     .onConflict((oc) => oc.column("id").doNothing())
-    .execute()
-
-  await db
-    .updateTable("instance")
-    .set({ light_theme_id: PAPER_THEME_ID })
-    .where("light_theme_id", "is", null)
-    .execute()
-  await db
-    .updateTable("instance")
-    .set({ dark_theme_id: INK_THEME_ID })
-    .where("dark_theme_id", "is", null)
     .execute()
 
   // Interrupted streams cannot be resumed across process restarts.

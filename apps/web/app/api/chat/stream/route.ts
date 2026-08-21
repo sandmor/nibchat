@@ -13,7 +13,7 @@ import {
   formatQuestionResult,
   validateQuestionAnswers,
 } from "@/lib/agent/tools"
-import { requireOwner } from "@/lib/app-session"
+import { requireUser } from "@/lib/app-session"
 import {
   createTurn,
   getTitleModelConfig,
@@ -47,7 +47,7 @@ function streamMeta(config: ModelConfig) {
 
 export async function POST(request: Request) {
   try {
-    const user = await requireOwner(request.headers)
+    const user = await requireUser(request.headers)
     let body: ReturnType<typeof streamBodySchema.parse>
     try {
       body = streamBodySchema.parse(await request.json())
@@ -104,7 +104,7 @@ export async function POST(request: Request) {
       const attachments = [
         ...(await Promise.all(
           mcpReferences.map((reference) =>
-            resolveMcpResourceAttachment(user.id, reference)
+            resolveMcpResourceAttachment(reference)
           )
         )),
         ...(await resolveUploadedAttachments(user.id, references)),
@@ -263,7 +263,7 @@ export async function POST(request: Request) {
           : {}),
       }
 
-      const resolved = await resolveStackForChat(chat)
+      const resolved = await resolveStackForChat(chat, user.id)
 
       const allNodes = await db
         .selectFrom("message_nodes")
@@ -298,7 +298,7 @@ export async function POST(request: Request) {
       }
     }
 
-    const resolved = await resolveStackForChat(chat)
+      const resolved = await resolveStackForChat(chat, user.id)
 
     const allNodes = await db
       .selectFrom("message_nodes")

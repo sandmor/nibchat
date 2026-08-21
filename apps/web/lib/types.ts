@@ -133,6 +133,7 @@ export interface MessageAttachmentsTable {
 }
 export interface PromptStacksTable {
   id: string
+  user_id: string
   name: string
   stack_json: string
   created_at: string
@@ -140,6 +141,7 @@ export interface PromptStacksTable {
 }
 export interface ThemesTable {
   id: string
+  user_id: string
   name: string
   document_json: string
   created_at: string
@@ -148,9 +150,6 @@ export interface ThemesTable {
 export interface InstanceTable {
   id: number
   owner_user_id: string | null
-  default_prompt_stack_id: string
-  light_theme_id: string
-  dark_theme_id: string
   /** `{ providerId, model }` JSON; null means title LLM is off. */
   title_model_config_json: string | null
   /** ISO timestamp; null means first-run setup is still in progress. */
@@ -207,6 +206,10 @@ export interface DB {
     image: string | null
     createdAt: string
     updatedAt: string
+    role: string | null
+    banned: boolean | null
+    banReason: string | null
+    banExpires: string | null
   }
   session: {
     id: string
@@ -217,6 +220,7 @@ export interface DB {
     ipAddress: string | null
     userAgent: string | null
     userId: string
+    impersonatedBy: string | null
   }
   account: {
     id: string
@@ -240,6 +244,15 @@ export interface DB {
     expiresAt: string
     createdAt: string
     updatedAt: string
+  }
+  user_preferences: {
+    user_id: string
+    light_theme_id: string
+    dark_theme_id: string
+    default_prompt_stack_id: string
+    theme_mode: "system" | "light" | "dark"
+    created_at: string
+    updated_at: string
   }
 }
 export type ChatRow = Selectable<ChatsTable>

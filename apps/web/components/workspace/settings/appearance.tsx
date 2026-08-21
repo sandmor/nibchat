@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 import { toast } from "sonner"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Button } from "@/components/ui/button"
@@ -30,7 +30,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { TooltipProvider, WithTooltip } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { useTRPC } from "@/lib/trpc-react"
 import { compileAppearance, type ThemeRecord } from "@/lib/appearance"
@@ -58,20 +57,6 @@ export function AppearanceSettings() {
   )
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [deleteId, setDeleteId] = useState<string | null>(null)
-  const previousActiveThemeId = useRef(activeThemeId)
-
-  useEffect(() => {
-    if (previousActiveThemeId.current === activeThemeId) return
-    previousActiveThemeId.current = activeThemeId
-    const state = useAppearanceStore.getState()
-    // Slot changes (including D) end a clean library viewing session.
-    // Dirty drafts and an open picker keep the document being painted.
-    if (state.open || isAppearanceDirty(state.draft, state.saved)) return
-    setSelectedId(null)
-    const slotTheme = themes.find((theme) => theme.id === activeThemeId)
-    if (slotTheme) hydrateTheme(slotTheme.id, slotTheme.document)
-  }, [activeThemeId, hydrateTheme, themes])
-
   const requestedId =
     selectedId ?? storeThemeId ?? activeThemeId ?? themes[0]?.id ?? null
   const selected =
@@ -87,31 +72,11 @@ export function AppearanceSettings() {
   const effectiveSaved =
     editingSelected && storeSaved ? storeSaved : (selected?.document ?? null)
 
-  const slotThemeRef = useRef(
-    themes.find((theme) => theme.id === activeThemeId) ?? null
-  )
-  const hydrateThemeRef = useRef(hydrateTheme)
-
-  useEffect(() => {
-    slotThemeRef.current =
-      themes.find((theme) => theme.id === activeThemeId) ?? null
-    hydrateThemeRef.current = hydrateTheme
-  }, [activeThemeId, hydrateTheme, themes])
-
   useEffect(() => {
     if (!selected) return
     if (storeThemeId === selected.id) return
     hydrateTheme(selected.id, selected.document)
   }, [hydrateTheme, selected, storeThemeId])
-
-  useEffect(() => {
-    return () => {
-      const state = useAppearanceStore.getState()
-      if (state.open || isAppearanceDirty(state.draft, state.saved)) return
-      const slotTheme = slotThemeRef.current
-      if (slotTheme) hydrateThemeRef.current(slotTheme.id, slotTheme.document)
-    }
-  }, [])
 
   const refetch = () =>
     queryClient.invalidateQueries(trpc.workspace.getSettings.queryFilter())

@@ -1,4 +1,5 @@
 import { compileAppearance, type ThemeRecord } from "@/lib/appearance"
+import { appearanceMagicStorageKey } from "@/lib/theme-slot"
 
 type SlotTheme = {
   id: string
@@ -37,17 +38,20 @@ export function ThemeBootstrap({
   themes,
   lightThemeId,
   darkThemeId,
+  userId,
 }: {
   themes: ThemeRecord[]
   lightThemeId: string
   darkThemeId: string
+  userId: string
 }) {
   const payload = {
     light: slotTheme(themes.find((theme) => theme.id === lightThemeId)),
     dark: slotTheme(themes.find((theme) => theme.id === darkThemeId)),
     ids: themes.map((theme) => theme.id),
   }
-  const script = `(function(data){try{var root=document.documentElement;var slot=root.getAttribute("data-theme-slot")==="dark"?"dark":"light";var theme=data[slot]||data.light||data.dark;try{var saved=JSON.parse(localStorage.getItem("nibchat.appearance.magic")||"null");var preview=saved&&saved.v===2&&saved.open&&saved.preview;if(preview&&data.ids.indexOf(preview.themeId)>=0)theme={id:preview.themeId,vars:preview.vars,scheme:preview.scheme,density:preview.density,motionEnabled:preview.motionEnabled,motionReduced:preview.motionReduced}}catch(_){}if(!theme)return;Object.keys(theme.vars).forEach(function(key){if(key.slice(0,2)==="--")root.style.setProperty(key,theme.vars[key])});root.dataset.density=theme.density;root.dataset.motionEnabled=String(theme.motionEnabled);root.dataset.motionReduced=theme.motionReduced;root.classList.toggle("dark",theme.scheme==="dark");root.style.colorScheme=theme.scheme;root.dataset.nibchatThemeId=theme.id}catch(_){}})(${safeJson(payload)})`
+  const storageKey = appearanceMagicStorageKey(userId)
+  const script = `(function(data){try{var root=document.documentElement;var slot=root.getAttribute("data-theme-slot")==="dark"?"dark":"light";var theme=data[slot]||data.light||data.dark;try{var saved=JSON.parse(localStorage.getItem(${safeJson(storageKey)})||"null");var preview=saved&&saved.v===2&&saved.open&&saved.preview;if(preview&&data.ids.indexOf(preview.themeId)>=0)theme={id:preview.themeId,vars:preview.vars,scheme:preview.scheme,density:preview.density,motionEnabled:preview.motionEnabled,motionReduced:preview.motionReduced}}catch(_){}if(!theme)return;Object.keys(theme.vars).forEach(function(key){if(key.slice(0,2)==="--")root.style.setProperty(key,theme.vars[key])});root.dataset.density=theme.density;root.dataset.motionEnabled=String(theme.motionEnabled);root.dataset.motionReduced=theme.motionReduced;root.classList.toggle("dark",theme.scheme==="dark");root.style.colorScheme=theme.scheme;root.dataset.nibchatThemeId=theme.id}catch(_){}})(${safeJson(payload)})`
 
   return (
     <script

@@ -7,7 +7,7 @@ export default async function Page() {
   const gate = await getRequestGate()
   if (gate.status === "setup" || gate.status === "onboarding")
     redirect("/setup")
-  if (gate.status === "login" || gate.status === "wrong_account")
+  if (gate.status === "login")
     redirect("/login")
   redirect(await workspaceHomePath(gate.user.id))
 }

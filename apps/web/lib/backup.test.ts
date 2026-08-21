@@ -11,12 +11,13 @@ describe("parseBackup", () => {
     expect(() => parseBackup({ version: 1 })).toThrow()
   })
 
-  it("parses v1 with stacks and provider profiles", () => {
+  it("parses the current backup format with stacks and provider profiles", () => {
     const backup = parseBackup({
       version: 1,
       chats: [
         {
           id: "c1",
+          user_id: "u1",
           title: "t",
           selected_root_node_id: null,
           model_config_json: "{}",
@@ -28,6 +29,7 @@ describe("parseBackup", () => {
       promptStacks: [
         {
           id: "default",
+          user_id: "u1",
           name: "Default",
           stack_json: promptStackToJson(defaultPromptStack()),
           created_at: "t",
@@ -37,6 +39,7 @@ describe("parseBackup", () => {
       providerProfiles: [
         {
           id: "p1",
+          user_id: "u1",
           name: "Local",
           kind: "openai-compatible",
           models_json: '{"version":1,"preferences":[]}',
@@ -56,6 +59,7 @@ describe("parseBackup", () => {
       chats: [
         {
           id: "c1",
+          user_id: "u1",
           title: null,
           selected_root_node_id: null,
           model_config_json: "{}",

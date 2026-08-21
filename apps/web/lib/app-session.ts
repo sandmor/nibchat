@@ -42,14 +42,13 @@ export async function workspaceHomePath(userId: string) {
 }
 
 /**
- * Workspace RSC gate: redirect until the caller is the instance owner.
+ * Workspace RSC gate: redirect until the caller is signed in.
  */
 export async function requireWorkspaceUser(): Promise<SessionUser> {
   const gate = await getRequestGate()
   if (gate.status === "setup" || gate.status === "onboarding")
     redirect("/setup")
   if (gate.status === "login") redirect("/login")
-  if (gate.status === "wrong_account") redirect("/login")
   return gate.user
 }
 
@@ -63,6 +62,13 @@ export async function resolveAppUser(
 /** API routes: owner or throw stable auth messages. Migrates once via resolve. */
 export async function requireOwner(requestHeaders: Headers) {
   return requireOwnerWithPorts(defaultIdentityPorts, requestHeaders)
+}
+
+/** API/RSC gate for any signed-in workspace user. */
+export async function requireUser(requestHeaders: Headers) {
+  const gate = await resolveAppUserWithPorts(defaultIdentityPorts, requestHeaders)
+  if (gate.status === "ok" || gate.status === "onboarding") return gate.user
+  throw new Error(UNAUTHORIZED_MESSAGE)
 }
 
 export type { AppGate, SessionUser }

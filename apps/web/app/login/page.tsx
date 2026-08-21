@@ -14,6 +14,5 @@ export default async function LoginPage() {
   if (gate.status === "setup" || gate.status === "onboarding")
     redirect("/setup")
   if (gate.status === "ok") redirect(await workspaceHomePath(gate.user.id))
-  if (gate.status === "wrong_account") return <AuthCard wrongAccount />
   return <AuthCard />
 }

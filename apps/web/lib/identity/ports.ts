@@ -7,6 +7,8 @@ export type SessionUser = {
   image?: string | null
   createdAt: Date
   updatedAt: Date
+  role?: string | null
+  banned?: boolean | null
 }
 
 export interface SessionPort {

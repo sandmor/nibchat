@@ -149,7 +149,7 @@ export async function createGenerationResponse(
     )
     // Tools always register from global MCP profiles; this stack module only
     // injects server initialize instructions (if any) at its stack position.
-    const mcp = await prepareMcpTools(userId, {
+    const mcp = await prepareMcpTools({
       includeInstructionsText: mcpServerInstructionsEnabled,
       reservedToolNames: Object.keys(nibchatTools),
     })

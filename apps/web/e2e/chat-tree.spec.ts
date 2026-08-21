@@ -59,7 +59,9 @@ test.describe("tree canvas", () => {
       tree.getByRole("button", { name: "Stop generation" })
     ).toBeVisible()
     llm.release()
-    await expect(tree.getByText("TREE_BRANCH_REPLY")).toBeVisible({
+    await expect(
+      tree.getByRole("paragraph").filter({ hasText: "TREE_BRANCH_REPLY" })
+    ).toBeVisible({
       timeout: 30_000,
     })
     await expect(handoff).toHaveCount(0)

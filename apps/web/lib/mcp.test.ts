@@ -1,9 +1,12 @@
-import { describe, expect, it } from "vitest"
+import { beforeAll, describe, expect, it } from "vitest"
 import {
   buildMcpInstructionsText,
   canReturnKvValue,
+  createMcpProfile,
   defaultAllowlistSelection,
   diffCatalogTools,
+  getEnabledMcpProfiles,
+  getMcpProfile,
   mergeKvEntries,
   mergeStoredValues,
   mcpProfileInputSchema,
@@ -16,6 +19,7 @@ import {
   textFromResourceContents,
   type McpCatalog,
 } from "@/lib/mcp"
+import { db, migrate } from "@/lib/db"
 
 const emptyCatalog = (): McpCatalog => ({
   tools: [],
@@ -296,6 +300,66 @@ describe("textFromResourceContents", () => {
     expect(
       textFromResourceContents([{ type: "blob", blob: "AAE=" }])
     ).toBeNull()
+  })
+})
+
+describe("instance-shared MCP runtime", () => {
+  const ownerId = "mcp-owner"
+  const guestId = "mcp-guest"
+
+  beforeAll(async () => {
+    await migrate()
+    const stamp = new Date().toISOString()
+    for (const user of [
+      { id: ownerId, email: "mcp-owner@test.local", name: "MCP Owner" },
+      { id: guestId, email: "mcp-guest@test.local", name: "MCP Guest" },
+    ]) {
+      const existing = await db
+        .selectFrom("user")
+        .select("id")
+        .where("id", "=", user.id)
+        .executeTakeFirst()
+      if (existing) continue
+      await db
+        .insertInto("user")
+        .values({
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          emailVerified: 1 as unknown as boolean,
+          image: null,
+          createdAt: stamp,
+          updatedAt: stamp,
+        })
+        .execute()
+    }
+    await db
+      .updateTable("instance")
+      .set({ owner_user_id: ownerId })
+      .where("id", "=", 1)
+      .execute()
+  })
+
+  it("lets a non-owner load enabled instance profiles", async () => {
+    const enabled = await createMcpProfile(ownerId, {
+      name: "Shared tools",
+      namespace: `shared_${Date.now()}`,
+      transport: "streamable-http",
+      config: { url: "https://mcp.example.com/mcp", headers: [] },
+    })
+    await createMcpProfile(ownerId, {
+      name: "Disabled tools",
+      namespace: `off_${Date.now()}`,
+      enabled: false,
+      transport: "streamable-http",
+      config: { url: "https://mcp.example.com/other", headers: [] },
+    })
+    const profiles = await getEnabledMcpProfiles()
+    expect(profiles.some((profile) => profile.id === enabled.id)).toBe(true)
+    expect(profiles.every((profile) => profile.enabled)).toBe(true)
+    const loaded = await getMcpProfile(enabled.id)
+    expect(loaded?.id).toBe(enabled.id)
+    expect(loaded?.name).toBe("Shared tools")
   })
 })
 

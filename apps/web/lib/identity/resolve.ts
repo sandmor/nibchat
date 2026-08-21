@@ -19,13 +19,19 @@ export async function resolveAppUser(
   const onboardingComplete = ownerUserId
     ? await ports.instance.isOnboardingComplete()
     : false
-  return decideGate(ownerUserId, session?.user ?? null, onboardingComplete)
+  const gate = decideGate(ownerUserId, session?.user ?? null, onboardingComplete)
+  return gate
 }
 
 /** Map gate to throw with stable messages for REST / tRPC. */
 export async function requireOwner(ports: IdentityPorts, headers: Headers) {
   const gate = await resolveAppUser(ports, headers)
-  if (gate.status === "ok" || gate.status === "onboarding") return gate.user
-  if (gate.status === "wrong_account") throw new Error(OWNER_FORBIDDEN_MESSAGE)
+  if (
+    (gate.status === "ok" || gate.status === "onboarding") &&
+    gate.user.id === (await ports.instance.getOwnerUserId())
+  )
+    return gate.user
+  if (gate.status === "ok" || gate.status === "onboarding")
+    throw new Error(OWNER_FORBIDDEN_MESSAGE)
   throw new Error(UNAUTHORIZED_MESSAGE)
 }

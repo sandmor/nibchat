@@ -58,11 +58,9 @@ describe("resolveAppUser (read-only gate)", () => {
     })
   })
 
-  it("returns wrong_account for non-owner session", async () => {
+  it("returns ok for a regular user session", async () => {
     const p = ports({ owner: "owner", session: user("other") })
-    expect((await resolveAppUser(p, new Headers())).status).toBe(
-      "wrong_account"
-    )
+    expect((await resolveAppUser(p, new Headers())).status).toBe("ok")
   })
 
   it("returns login when owned without session", async () => {

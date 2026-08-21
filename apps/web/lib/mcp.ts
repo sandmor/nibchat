@@ -7,7 +7,7 @@ import {
 } from "@modelcontextprotocol/client"
 import { dynamicTool, jsonSchema, type ToolSet } from "ai"
 import { z } from "zod"
-import { db, databaseKind } from "@/lib/db"
+import { db, fromDbBool, toDbBool } from "@/lib/db"
 import { id, now, parseJson } from "@/lib/domain"
 import {
   MAX_ATTACHMENT_TEXT_CHARS,
@@ -17,16 +17,6 @@ import {
 import { buildMcpInstructionsText } from "@/lib/mcp-instructions"
 
 export { buildMcpInstructionsText }
-
-/** SQLite drivers reject JS booleans; Postgres wants real booleans. */
-function toDbBool(value: boolean): boolean {
-  if (databaseKind === "sqlite") return (value ? 1 : 0) as unknown as boolean
-  return value
-}
-
-function fromDbBool(value: unknown): boolean {
-  return value === true || value === 1 || value === "1"
-}
 
 /** Matches `${ENV_NAME}` template tokens inside header/env values. */
 export const ENV_TEMPLATE_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g
@@ -168,6 +158,8 @@ export const mcpProfileInputSchema = z.preprocess(
 )
 
 export type McpProfileInput = z.infer<typeof mcpProfileShapeSchema>
+/** Unparsed create/update payload; defaults are applied in `mcpProfileInputSchema`. */
+export type McpProfileInit = z.input<typeof mcpProfileShapeSchema>
 export type McpTransport = z.infer<typeof mcpTransportSchema>
 export type McpProtocolMode = z.infer<typeof mcpProtocolModeSchema>
 
@@ -457,6 +449,15 @@ export function profileSupported(profile: {
   )
 }
 
+async function instanceOwnerUserId() {
+  const owner = await db
+    .selectFrom("instance")
+    .select("owner_user_id")
+    .where("id", "=", 1)
+    .executeTakeFirst()
+  return owner?.owner_user_id ?? null
+}
+
 export async function listMcpProfiles(userId: string) {
   const rows = await db
     .selectFrom("mcp_server_profiles")
@@ -471,26 +472,30 @@ export async function listMcpProfiles(userId: string) {
   }))
 }
 
-export async function getEnabledMcpProfiles(userId: string) {
+/** Enabled instance MCP profiles. Shared with every signed-in user at runtime. */
+export async function getEnabledMcpProfiles() {
+  const ownerUserId = await instanceOwnerUserId()
+  if (!ownerUserId) return []
   const rows = await db
     .selectFrom("mcp_server_profiles")
     .selectAll()
-    .where("user_id", "=", userId)
+    .where("user_id", "=", ownerUserId)
     .where("enabled", "=", toDbBool(true))
     .execute()
   return rows.map(profileFromRow)
 }
 
-/** Load a single profile for the owner (or null if missing/foreign). */
+/** Load an instance MCP profile for runtime use (or null if missing/foreign). */
 export async function getMcpProfile(
-  userId: string,
   profileId: string
 ): Promise<McpProfile | null> {
+  const ownerUserId = await instanceOwnerUserId()
+  if (!ownerUserId) return null
   const row = await db
     .selectFrom("mcp_server_profiles")
     .selectAll()
     .where("id", "=", profileId)
-    .where("user_id", "=", userId)
+    .where("user_id", "=", ownerUserId)
     .executeTakeFirst()
   return row ? profileFromRow(row) : null
 }
@@ -555,7 +560,7 @@ function configForStorage(config: McpProfileInput["config"]) {
   }
 }
 
-export async function createMcpProfile(userId: string, raw: McpProfileInput) {
+export async function createMcpProfile(userId: string, raw: McpProfileInit) {
   const input = mcpProfileInputSchema.parse(raw)
   validateRuntime(input)
   const timestamp = now()
@@ -580,7 +585,7 @@ export async function createMcpProfile(userId: string, raw: McpProfileInput) {
 export async function updateMcpProfile(
   userId: string,
   profileId: string,
-  raw: McpProfileInput
+  raw: McpProfileInit
 ) {
   const input = mcpProfileInputSchema.parse(raw)
   validateRuntime(input)
@@ -876,12 +881,11 @@ export type PrepareMcpToolsOptions = {
  * Tool execute reloads the profile from the DB so pool config stays current.
  */
 export async function prepareMcpTools(
-  userId: string,
   options: PrepareMcpToolsOptions = {}
 ) {
   const includeInstructionsText = options.includeInstructionsText === true
   const reserved = new Set(options.reservedToolNames ?? [])
-  const profiles = await getEnabledMcpProfiles(userId)
+  const profiles = await getEnabledMcpProfiles()
   const supported = profiles.filter(profileSupported)
   const warnings = profiles
     .filter((profile) => !profileSupported(profile))
@@ -921,7 +925,7 @@ export async function prepareMcpTools(
           },
         },
         execute: async (input, options) => {
-          const live = await getMcpProfile(userId, profileId)
+          const live = await getMcpProfile(profileId)
           if (!live || !live.enabled)
             throw new Error(`MCP server is no longer available.`)
           if (!profileSupported(live))
@@ -994,12 +998,8 @@ export type McpApprovedSurface = {
 }
 
 /** Approved catalog resources/prompts for chat pickers (no ambient system dump). */
-export async function listApprovedMcpSurfaces(
-  userId: string
-): Promise<McpApprovedSurface[]> {
-  const profiles = (await getEnabledMcpProfiles(userId)).filter(
-    profileSupported
-  )
+export async function listApprovedMcpSurfaces(): Promise<McpApprovedSurface[]> {
+  const profiles = (await getEnabledMcpProfiles()).filter(profileSupported)
   return profiles.map((profile) => {
     const resources = metadataList(profile.catalog.resources, (item) => {
       const uri = typeof item.uri === "string" ? item.uri : null
@@ -1096,12 +1096,11 @@ function approvedMcpResource(
 }
 
 export async function resolveMcpResourceAttachment(
-  userId: string,
   reference: AttachmentReference
 ): Promise<AttachmentPart> {
   if (reference.kind !== "mcp-resource")
     throw new Error("Unsupported attachment source.")
-  const profile = await getMcpProfile(userId, reference.profileId)
+  const profile = await getMcpProfile(reference.profileId)
   if (!profile || !profile.enabled) throw new Error("MCP profile not found")
   if (!profileSupported(profile))
     throw new Error(
@@ -1139,12 +1138,11 @@ export async function resolveMcpResourceAttachment(
 }
 
 export async function getMcpPrompt(
-  userId: string,
   profileId: string,
   name: string,
   args: Record<string, string> = {}
 ) {
-  const profile = await getMcpProfile(userId, profileId)
+  const profile = await getMcpProfile(profileId)
   if (!profile || !profile.enabled) throw new Error("MCP profile not found")
   if (!profileSupported(profile))
     throw new Error(

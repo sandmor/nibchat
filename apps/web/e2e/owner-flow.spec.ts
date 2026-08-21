@@ -105,7 +105,7 @@ test.describe("owner flow", () => {
     const body = (await signup.json().catch(() => ({}))) as {
       message?: string
     }
-    expect(body.message ?? "").toMatch(/already claimed/i)
+    expect(body.message ?? "").toMatch(/already has an owner/i)
 
     await p.goto("/setup")
     await expect(p).toHaveURL(/\/login$/)
@@ -131,5 +131,41 @@ test.describe("owner flow", () => {
     })
     await expect(p).toHaveURL(/\/login$/)
     await bare.close()
+  })
+
+  test("owner creates an isolated regular account", async ({ browser }) => {
+    await page.goto("/settings")
+    await expect(page.getByText("Users", { exact: true })).toBeVisible()
+    await page.locator("#new-user-name").fill("Regular User")
+    await page.locator("#new-user-email").fill("regular@example.com")
+    await page.locator("#new-user-password").fill("password12345")
+    await page.getByRole("button", { name: "Create user" }).click()
+    await expect(page.locator("#new-user-email")).toHaveValue("")
+
+    const regular = await browser.newContext()
+    const regularPage = await regular.newPage()
+    await regularPage.goto("/login")
+    await regularPage.getByLabel("Email").fill("regular@example.com")
+    await regularPage.getByLabel("Password").fill("password12345")
+    await regularPage.getByRole("button", { name: "Sign in" }).click()
+    await expect(regularPage).toHaveURL(/\/chat\/new$/, { timeout: 30_000 })
+
+    await regularPage.goto("/settings")
+    await expect(regularPage.getByText("Personal settings")).toBeVisible()
+    await expect(regularPage.getByText("Users", { exact: true })).toHaveCount(0)
+    await expect(regularPage.getByText("Providers", { exact: true })).toHaveCount(0)
+
+    await regularPage.getByRole("button", { name: "Ink Dark" }).click()
+    const previewThemeId = await regularPage
+      .locator("html")
+      .getAttribute("data-nibchat-theme-id")
+    expect(previewThemeId).toBeTruthy()
+    await regularPage.getByRole("link", { name: /^chats$/i }).first().click()
+    await expect(regularPage).toHaveURL(/\/chat\//)
+    await expect(regularPage.locator("html")).toHaveAttribute(
+      "data-nibchat-theme-id",
+      previewThemeId!
+    )
+    await regular.close()
   })
 })

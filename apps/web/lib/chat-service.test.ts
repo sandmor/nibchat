@@ -16,6 +16,7 @@ import {
   insertNode,
   nodeParts,
   restoreAwaitingInput,
+  restoreBackup,
   setNodeContextExcluded,
   startGenerate,
   startRegenerate,
@@ -30,7 +31,16 @@ import { unpackBackupArchive } from "@/lib/backup-archive"
 import { db, migrate } from "@/lib/db"
 import { ancestorPath, parseJson, resolveActivePath } from "@/lib/domain"
 import { formatProviderError } from "@/lib/provider-errors"
-import { modelFor, resolveModelConfig, type ModelConfig } from "@/lib/providers"
+import {
+  listAvailableProviders,
+  listProviders,
+  modelFor,
+  resolveModelConfig,
+  type ModelConfig,
+} from "@/lib/providers"
+import { getUserSettings } from "@/lib/user-settings"
+import { SEED_THEMES } from "@/lib/appearance"
+import { defaultPromptStack, promptStackToJson } from "@/lib/prompt-stack"
 
 const userId = "test-owner"
 beforeAll(async () => {
@@ -118,7 +128,7 @@ describe("SQLite chat repository", () => {
     expect(firstStored?.excluded_from_context).toBe(true)
     expect(secondStored?.excluded_from_context).toBe(false)
     expect(workspace.chat?.selected_root_node_id).toBe(root.id)
-    const backup = await createBackup(userId)
+    const backup = await createBackup()
     expect(
       backup.nodes.find((node) => node.id === first.id)?.excluded_from_context
     ).toBe(true)
@@ -472,7 +482,7 @@ describe("SQLite chat repository", () => {
       .insertInto("message_attachments")
       .values({ message_node_id: original.id, attachment_id: attachmentId })
       .execute()
-    const backup = await createBackup(userId)
+    const backup = await createBackup()
     const row = backup.attachments.find((item) => item.id === attachmentId)
     expect(row?.file).toBe(`attachments/${attachmentId}`)
     expect(row && "data" in row).toBe(false)
@@ -483,7 +493,7 @@ describe("SQLite chat repository", () => {
           link.attachment_id === attachmentId
       )
     ).toBe(true)
-    const zip = await createBackupArchive(userId)
+    const zip = await createBackupArchive()
     const unpacked = unpackBackupArchive(zip)
     expect([...unpacked.files.get(row!.file)!]).toEqual([9, 8, 7, 6])
     expect(
@@ -971,7 +981,7 @@ describe("modelFor preflight", () => {
 })
 
 describe("backup schema", () => {
-  it("accepts a minimal v1 backup", () => {
+  it("accepts a minimal current backup", () => {
     const backup = parseBackup({
       version: 1,
       chats: [],
@@ -1129,6 +1139,7 @@ describe("prompt stacks", () => {
       setChatPromptStack,
     } = await import("@/lib/chat-service")
     const stack = await createPromptStack({
+      userId,
       name: "Coding",
       stack: {
         modules: [
@@ -1152,7 +1163,7 @@ describe("prompt stacks", () => {
     })
     const chat = await createChat(userId, "Stack test", undefined, stack.id)
     expect(chat.prompt_stack_id).toBe(stack.id)
-    const resolved = await resolveStackForChat(chat)
+    const resolved = await resolveStackForChat(chat, userId)
     expect(resolved.source).toBe("chat")
     const first = resolved.stack.modules[0]
     expect(first?.kind).toBe("prompt")
@@ -1169,7 +1180,7 @@ describe("prompt stacks", () => {
     expect(afterClear.prompt_stack_id).toBeNull()
 
     await setChatPromptStack(userId, chat.id, stack.id)
-    await deletePromptStack(stack.id)
+    await deletePromptStack(userId, stack.id)
     const afterDelete = await db
       .selectFrom("chats")
       .select("prompt_stack_id")
@@ -1177,8 +1188,202 @@ describe("prompt stacks", () => {
       .executeTakeFirstOrThrow()
     expect(afterDelete.prompt_stack_id).toBeNull()
 
-    await expect(deletePromptStack("default")).rejects.toThrow(
-      /instance default/i
-    )
+    const settings = await getUserSettings(userId)
+    await expect(
+      deletePromptStack(userId, settings.default_prompt_stack_id)
+    ).rejects.toThrow(/default stack/i)
   })
 })
+
+describe("provider catalog privacy", () => {
+  it("hides provider connection details from the shared catalog", async () => {
+    const provider = await createProvider(userId, {
+      name: `Catalog privacy ${Date.now()}`,
+      kind: "openai-compatible",
+      baseUrl: "http://127.0.0.1:8080/v1",
+      apiKeyEnv: "NIBCHAT_TEST_KEY",
+      models: [
+        {
+          id: "privacy-model",
+          label: "privacy-model",
+          enabled: true,
+          source: "custom",
+        },
+      ],
+    })
+    const available = await listAvailableProviders()
+    const shared = available.find((row) => row.id === provider.id)
+    expect(shared?.base_url).toBeNull()
+    expect(shared?.api_key_env).toBeNull()
+    const owned = (await listProviders()).find((row) => row.id === provider.id)
+    expect(owned?.base_url).toBe("http://127.0.0.1:8080/v1")
+    expect(owned?.api_key_env).toBe("NIBCHAT_TEST_KEY")
+  })
+})
+
+describe("multi-user restore", () => {
+  it("restores a guest user as disabled without leaking owner chats", async () => {
+    await db.deleteFrom("chats").execute()
+    await db.deleteFrom("user").where("id", "!=", userId).execute()
+    await restoreBackup(userId, multiUserBackup("guest-restore@test.local"))
+    const guest = await db
+      .selectFrom("user")
+      .selectAll()
+      .where("id", "=", "src-guest")
+      .executeTakeFirstOrThrow()
+    expect(Boolean(guest.banned)).toBe(true)
+    expect(guest.role).toBe("user")
+    const ownerChat = await db
+      .selectFrom("chats")
+      .select("user_id")
+      .where("id", "=", "oc")
+      .executeTakeFirstOrThrow()
+    expect(ownerChat.user_id).toBe(userId)
+    const guestChat = await db
+      .selectFrom("chats")
+      .select("user_id")
+      .where("id", "=", "gc")
+      .executeTakeFirstOrThrow()
+    expect(guestChat.user_id).toBe("src-guest")
+    const guestNode = await db
+      .selectFrom("message_nodes")
+      .select("id")
+      .where("id", "=", "gn")
+      .executeTakeFirst()
+    expect(guestNode?.id).toBe("gn")
+  })
+
+  it("rolls back owner rows when guest restore fails", async () => {
+    await db.deleteFrom("chats").execute()
+    await db.deleteFrom("user").where("id", "!=", userId).execute()
+    await expect(
+      restoreBackup(userId, multiUserBackup("owner@test.local"))
+    ).rejects.toThrow()
+    expect(
+      await db.selectFrom("chats").select("id").executeTakeFirst()
+    ).toBeUndefined()
+    expect(
+      await db
+        .selectFrom("user")
+        .select("id")
+        .where("id", "=", "src-guest")
+        .executeTakeFirst()
+    ).toBeUndefined()
+  })
+})
+
+function fixtureUser(id: string, email: string, role: string) {
+  return {
+    id,
+    name: id,
+    email,
+    emailVerified: true,
+    role,
+    banned: false,
+    createdAt: "t",
+    updatedAt: "t",
+  }
+}
+
+function fixtureTheme(
+  id: string,
+  ownerId: string,
+  seed: (typeof SEED_THEMES)[number]
+) {
+  return {
+    id,
+    user_id: ownerId,
+    name: seed.name,
+    document: seed.document,
+    created_at: "t",
+    updated_at: "t",
+  }
+}
+
+function fixtureStack(id: string, ownerId: string) {
+  return {
+    id,
+    user_id: ownerId,
+    name: "Default",
+    stack_json: promptStackToJson(defaultPromptStack()),
+    created_at: "t",
+    updated_at: "t",
+  }
+}
+
+function fixturePrefs(
+  ownerId: string,
+  light: string,
+  dark: string,
+  stack: string
+) {
+  return {
+    user_id: ownerId,
+    light_theme_id: light,
+    dark_theme_id: dark,
+    default_prompt_stack_id: stack,
+    theme_mode: "system" as const,
+    created_at: "t",
+    updated_at: "t",
+  }
+}
+
+function fixtureChat(id: string, ownerId: string) {
+  return {
+    id,
+    user_id: ownerId,
+    title: id,
+    selected_root_node_id: null,
+    model_config_json: "{}",
+    created_at: "t",
+    updated_at: "t",
+  }
+}
+
+function fixtureNode(id: string, chatId: string) {
+  return {
+    id,
+    chat_id: chatId,
+    parent_id: null,
+    selected_child_id: null,
+    role: "user" as const,
+    parts_json: "[]",
+    search_text: "",
+    metadata_json: "{}",
+    excluded_from_context: false,
+    status: "complete" as const,
+    created_at: "t",
+    updated_at: "t",
+  }
+}
+
+function multiUserBackup(guestEmail: string) {
+  const owner = "src-owner"
+  const guest = "src-guest"
+  const paper = SEED_THEMES.find((theme) => theme.id === "paper")
+  const ink = SEED_THEMES.find((theme) => theme.id === "ink")
+  if (!paper || !ink) throw new Error("Seed themes missing")
+  return {
+    version: 1 as const,
+    users: [
+      fixtureUser(owner, "backup-owner@test.local", "admin"),
+      fixtureUser(guest, guestEmail, "user"),
+    ],
+    themes: [
+      fixtureTheme("ot-light", owner, paper),
+      fixtureTheme("ot-dark", owner, ink),
+      fixtureTheme("gt-light", guest, paper),
+      fixtureTheme("gt-dark", guest, ink),
+    ],
+    promptStacks: [
+      fixtureStack("os", owner),
+      fixtureStack("gs", guest),
+    ],
+    userPreferences: [
+      fixturePrefs(owner, "ot-light", "ot-dark", "os"),
+      fixturePrefs(guest, "gt-light", "gt-dark", "gs"),
+    ],
+    chats: [fixtureChat("oc", owner), fixtureChat("gc", guest)],
+    nodes: [fixtureNode("on", "oc"), fixtureNode("gn", "gc")],
+  }
+}

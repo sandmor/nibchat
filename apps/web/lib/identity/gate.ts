@@ -1,17 +1,10 @@
 import type { SessionUser } from "@/lib/identity/ports"
-import {
-  OWNER_FORBIDDEN_MESSAGE,
-  UNAUTHORIZED_MESSAGE,
-} from "@/lib/auth-messages"
 
 export type AppGate =
   | { status: "ok"; user: SessionUser }
   | { status: "setup" }
   | { status: "onboarding"; user: SessionUser }
   | { status: "login" }
-  | { status: "wrong_account" }
-
-export { OWNER_FORBIDDEN_MESSAGE, UNAUTHORIZED_MESSAGE }
 
 /** Pure decision: owner id × optional session user × onboarding → gate. */
 export function decideGate(
@@ -24,7 +17,10 @@ export function decideGate(
     return { status: "setup" }
   }
   if (!sessionUser) return { status: "login" }
-  if (sessionUser.id !== ownerUserId) return { status: "wrong_account" }
-  if (!onboardingComplete) return { status: "onboarding", user: sessionUser }
+  if (!onboardingComplete) {
+    return sessionUser.id === ownerUserId
+      ? { status: "onboarding", user: sessionUser }
+      : { status: "login" }
+  }
   return { status: "ok", user: sessionUser }
 }

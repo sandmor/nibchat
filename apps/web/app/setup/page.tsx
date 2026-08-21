@@ -14,7 +14,7 @@ export default async function SetupPage() {
   const gate = await getRequestGate()
   if (gate.status === "setup") return <SetupWizard initialStep="owner" />
   if (gate.status === "onboarding") {
-    const providers = await listProviders(gate.user.id)
+    const providers = await listProviders()
     return (
       <SetupWizard
         initialStep="provider"

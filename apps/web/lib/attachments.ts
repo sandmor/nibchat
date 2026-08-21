@@ -229,7 +229,7 @@ export async function cleanupExpiredPendingAttachments() {
   }
 }
 
-async function removeFileIfUnreferenced(storageKey: string) {
+export async function removeFileIfUnreferenced(storageKey: string) {
   const other = await db
     .selectFrom("attachments")
     .select("id")

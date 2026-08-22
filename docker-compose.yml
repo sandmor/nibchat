@@ -1,5 +1,6 @@
 services:
   nibchat:
+    image: docker.io/sandmor/nibchat:nightly
     build:
       context: .
       dockerfile: apps/web/Dockerfile

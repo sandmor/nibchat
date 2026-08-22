@@ -3,7 +3,6 @@
 import { motion } from "motion/react"
 import { MessageParts } from "@/components/workspace/message-parts"
 import { useStreamBuffer } from "@/lib/stream-store"
-import type { Parts } from "@/lib/types"
 import { cn } from "@/lib/utils"
 
 const BUBBLE_CLASS =
@@ -22,13 +21,7 @@ export function StreamingBubble({
   presentation?: "linear" | "tree"
 }) {
   const stream = useStreamBuffer(streamId)
-  const parts: Parts = [
-    ...(stream.reasoning
-      ? [{ type: "reasoning" as const, text: stream.reasoning }]
-      : []),
-    ...stream.tools,
-    ...(stream.text ? [{ type: "text" as const, text: stream.text }] : []),
-  ]
+  const parts = stream.parts
   const tree = presentation === "tree"
 
   const body = (

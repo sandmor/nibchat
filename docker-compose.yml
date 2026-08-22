@@ -13,6 +13,10 @@ services:
       DATABASE_URL: ${DATABASE_URL:-}
       BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
       MCP_RUNTIME_MODE: ${MCP_RUNTIME_MODE:-stateful}
+      GENERATION_RUNTIME_MODE: ${GENERATION_RUNTIME_MODE:-stateful}
+      GENERATION_STREAM_BACKEND: ${GENERATION_STREAM_BACKEND:-memory}
+      REDIS_URL: ${REDIS_URL:-}
+      REDIS_TOKEN: ${REDIS_TOKEN:-}
       ATTACHMENT_STORAGE: ${ATTACHMENT_STORAGE:-filesystem}
       ATTACHMENT_FILESYSTEM_PATH: ${ATTACHMENT_FILESYSTEM_PATH:-/data/attachments}
     volumes:
@@ -31,6 +35,14 @@ services:
     volumes: ["nibchat-postgres:/var/lib/postgresql"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U nibchat -d nibchat"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  redis:
+    image: redis:8-alpine
+    profiles: ["redis"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 10

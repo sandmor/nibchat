@@ -2,8 +2,8 @@ import type { QueryClient } from "@tanstack/react-query"
 import type {
   AttachmentReference,
   NodeRow,
-  ToolInvocationPart,
 } from "@/lib/types"
+import type { GenerationPayload } from "@/lib/generation-streams/events"
 import { resolveActivePath } from "@/lib/domain"
 import type { WorkspaceData } from "@/lib/workspace-cache"
 
@@ -130,9 +130,8 @@ export function streamPlacement(
 }
 
 export type StreamEventHandlers = {
-  onText: (delta: string) => void
-  onReasoning: (delta: string) => void
-  onTool?: (tool: ToolInvocationPart) => void
+  onEvent: (event: GenerationPayload) => void
+  onCursor?: (cursor: string) => void
 }
 
 /**
@@ -145,6 +144,7 @@ export async function readStreamEvents(
   const reader = body.getReader()
   const decoder = new TextDecoder()
   let carry = ""
+  let eventCursor: string | undefined
   while (true) {
     const part = await reader.read()
     if (part.done) break
@@ -152,69 +152,19 @@ export async function readStreamEvents(
     const lines = carry.split("\n")
     carry = lines.pop() ?? ""
     for (const line of lines)
-      if (line.startsWith("data: ")) {
+      if (line.startsWith("id: ")) eventCursor = line.slice(4).trim()
+      else if (line.startsWith("data: ")) {
         const raw = line.slice(6).trim()
         if (!raw || raw === "[DONE]") continue
         try {
-          const event = JSON.parse(raw) as {
-            type?: string
-            delta?: string
-            errorText?: string
-            toolCallId?: string
-            toolName?: string
-            input?: unknown
-            output?: unknown
-          }
-          if (event.type === "text-delta" && event.delta)
-            handlers.onText(event.delta)
-          if (event.type === "reasoning-delta" && event.delta)
-            handlers.onReasoning(event.delta)
-          if (
-            event.type === "tool-input-start" &&
-            event.toolCallId &&
-            event.toolName &&
-            handlers.onTool
-          ) {
-            handlers.onTool({
-              type: "tool-invocation",
-              toolCallId: event.toolCallId,
-              toolName: event.toolName,
-              state: "input-streaming",
-              input: {},
-            })
-          }
-          if (
-            event.type === "tool-input-available" &&
-            event.toolCallId &&
-            event.toolName &&
-            handlers.onTool
-          ) {
-            handlers.onTool({
-              type: "tool-invocation",
-              toolCallId: event.toolCallId,
-              toolName: event.toolName,
-              state: "input-available",
-              input: event.input,
-            })
-          }
-          if (
-            event.type === "tool-output-available" &&
-            event.toolCallId &&
-            handlers.onTool
-          ) {
-            handlers.onTool({
-              type: "tool-invocation",
-              toolCallId: event.toolCallId,
-              toolName: event.toolName ?? "unknown",
-              state: "output-available",
-              input: event.input ?? {},
-              output: event.output,
-            })
-          }
+          const event = JSON.parse(raw) as GenerationPayload
           if (event.type === "error")
             throw new Error(
               event.errorText || "An error occurred while generating."
             )
+          handlers.onEvent(event)
+          if (eventCursor) handlers.onCursor?.(eventCursor)
+          eventCursor = undefined
         } catch (eventError) {
           if (eventError instanceof SyntaxError) continue
           throw eventError

@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest"
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import {
   beginResumeAssistant,
   createBackup,
@@ -21,6 +21,8 @@ import {
   startGenerate,
   startRegenerate,
 } from "@/lib/chat-service"
+import { getGenerationRun } from "@/lib/generation-runs"
+import { generationStreamStore } from "@/lib/generation-streams/default-port"
 import {
   isGenerationActive,
   registerGeneration,
@@ -43,6 +45,9 @@ import { SEED_THEMES } from "@/lib/appearance"
 import { defaultPromptStack, promptStackToJson } from "@/lib/prompt-stack"
 
 const userId = "test-owner"
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 beforeAll(async () => {
   await migrate()
   const existing = await db
@@ -693,6 +698,76 @@ describe("branch stream helpers", () => {
 })
 
 describe("generation abort + finalize", () => {
+  it("deletes a chat when stream cancellation is unavailable", async () => {
+    const chat = await createChat(userId, "Delete despite stream outage")
+    const assistant = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "assistant",
+      parts: [],
+      status: "streaming",
+      generationId: crypto.randomUUID(),
+    })
+    const run = await db
+      .selectFrom("generation_runs")
+      .select("id")
+      .where("node_id", "=", assistant.id)
+      .executeTakeFirstOrThrow()
+    const requestCancel = vi
+      .spyOn(generationStreamStore, "requestCancel")
+      .mockRejectedValue(new Error("Redis unavailable"))
+
+    await deleteChat(userId, chat.id)
+
+    expect(requestCancel).toHaveBeenCalledWith(run.id)
+    expect(
+      await db
+        .selectFrom("chats")
+        .select("id")
+        .where("id", "=", chat.id)
+        .executeTakeFirst()
+    ).toBeUndefined()
+    expect(await getGenerationRun(run.id)).toBeUndefined()
+  })
+
+  it("deletes a generation subtree when stream cancellation is unavailable", async () => {
+    const chat = await createChat(userId, "Subtree delete despite stream outage")
+    const root = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "root" }],
+    })
+    const assistant = await insertNode({
+      chatId: chat.id,
+      parentId: root.id,
+      role: "assistant",
+      parts: [],
+      status: "streaming",
+      generationId: crypto.randomUUID(),
+    })
+    const run = await db
+      .selectFrom("generation_runs")
+      .select("id")
+      .where("node_id", "=", assistant.id)
+      .executeTakeFirstOrThrow()
+    const requestCancel = vi
+      .spyOn(generationStreamStore, "requestCancel")
+      .mockRejectedValue(new Error("Redis unavailable"))
+
+    await deleteNode(userId, root.id, "subtree")
+
+    expect(requestCancel).toHaveBeenCalledWith(run.id)
+    expect(
+      await db
+        .selectFrom("message_nodes")
+        .select("id")
+        .where("id", "=", assistant.id)
+        .executeTakeFirst()
+    ).toBeUndefined()
+    expect(await getGenerationRun(run.id)).toBeUndefined()
+  })
+
   it("deleteNode subtree aborts registered generations under the root", async () => {
     clearActiveGenerations()
     const chat = await createChat(userId, "Abort on delete")
@@ -734,8 +809,7 @@ describe("generation abort + finalize", () => {
     const result = await finalizeStreamingAssistant({
       nodeId: assistant.id,
       outcome: "aborted",
-      text: "  half reply  ",
-      reasoning: "",
+      parts: [{ type: "text", text: "half reply" }],
     })
     expect(result).toBe("stopped")
     const workspace = await getWorkspace(userId, { chatId: chat.id })
@@ -763,8 +837,7 @@ describe("generation abort + finalize", () => {
     const result = await finalizeStreamingAssistant({
       nodeId: assistant.id,
       outcome: "aborted",
-      text: "  ",
-      reasoning: "",
+      parts: [],
     })
     expect(result).toBe("deleted")
     const workspace = await getWorkspace(userId, { chatId: chat.id })
@@ -776,7 +849,7 @@ describe("generation abort + finalize", () => {
     const result = await finalizeStreamingAssistant({
       nodeId: "does-not-exist",
       outcome: "aborted",
-      text: "x",
+      parts: [{ type: "text", text: "x" }],
     })
     expect(result).toBe("missing")
   })
@@ -793,8 +866,10 @@ describe("generation abort + finalize", () => {
     const result = await finalizeStreamingAssistant({
       nodeId: assistant.id,
       outcome: "complete",
-      text: "full reply",
-      reasoning: "thinking",
+      parts: [
+        { type: "reasoning", text: "thinking" },
+        { type: "text", text: "full reply" },
+      ],
       finishReason: "stop",
       usage: { totalTokens: 1 },
       config: { providerId: "p", model: "m" },
@@ -853,7 +928,7 @@ describe("generation abort + finalize", () => {
     const result = await finalizeStreamingAssistant({
       nodeId: "gone",
       outcome: "complete",
-      text: "x",
+      parts: [{ type: "text", text: "x" }],
     })
     expect(result).toBe("missing")
   })
@@ -870,7 +945,7 @@ describe("generation abort + finalize", () => {
     const result = await finalizeStreamingAssistant({
       nodeId: assistant.id,
       outcome: "complete",
-      text: "should not win",
+      parts: [{ type: "text", text: "should not win" }],
     })
     expect(result).toBe("superseded")
     const workspace = await getWorkspace(userId, { chatId: chat.id })
@@ -892,12 +967,12 @@ describe("generation abort + finalize", () => {
     const first = await finalizeStreamingAssistant({
       nodeId: assistant.id,
       outcome: "complete",
-      text: "first",
+      parts: [{ type: "text", text: "first" }],
     })
     const second = await finalizeStreamingAssistant({
       nodeId: assistant.id,
       outcome: "error",
-      text: "second",
+      parts: [{ type: "text", text: "second" }],
       error: "nope",
     })
     expect(first).toBe("complete")
@@ -911,7 +986,7 @@ describe("generation abort + finalize", () => {
     const result = await finalizeStreamingAssistant({
       nodeId: "gone",
       outcome: "error",
-      text: "x",
+      parts: [{ type: "text", text: "x" }],
       error: "boom",
     })
     expect(result).toBe("missing")
@@ -1269,6 +1344,147 @@ describe("multi-user restore", () => {
         .where("id", "=", "src-guest")
         .executeTakeFirst()
     ).toBeUndefined()
+  })
+})
+
+describe("generation run reconciliation", () => {
+  it("finalizes a stale starting run whose stream store never opened", async () => {
+    const chat = await createChat(userId, "Stale starting")
+    const generationId = crypto.randomUUID()
+    const assistant = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "assistant",
+      parts: [{ type: "text", text: "partial" }],
+      status: "streaming",
+      generationId,
+    })
+    await db
+      .updateTable("generation_runs")
+      .set({ started_at: new Date(Date.now() - 60_000).toISOString() })
+      .where("id", "=", generationId)
+      .execute()
+
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    expect(workspace.activeGenerations).toEqual([])
+    expect(workspace.nodes.find((node) => node.id === assistant.id)?.status).toBe(
+      "error"
+    )
+    expect(await getGenerationRun(generationId)).toBeUndefined()
+  })
+
+  it("leaves a young starting run alone during the store hand-off", async () => {
+    const chat = await createChat(userId, "Young starting")
+    const generationId = crypto.randomUUID()
+    const assistant = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "assistant",
+      parts: [],
+      status: "streaming",
+      generationId,
+    })
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    expect(workspace.activeGenerations.map((run) => run.generationId)).toEqual([
+      generationId,
+    ])
+    expect(workspace.nodes.find((node) => node.id === assistant.id)?.status).toBe(
+      "streaming"
+    )
+    expect(await getGenerationRun(generationId)).toMatchObject({
+      state: "starting",
+    })
+  })
+
+  it("does not recover an open stream even when the run is old", async () => {
+    const chat = await createChat(userId, "Open lease")
+    const generationId = crypto.randomUUID()
+    const assistant = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "assistant",
+      parts: [],
+      status: "streaming",
+      generationId,
+    })
+    await generationStreamStore.open({
+      generationId,
+      nodeId: assistant.id,
+      chatId: chat.id,
+      parentNodeId: null,
+    })
+    await db
+      .updateTable("generation_runs")
+      .set({
+        state: "active",
+        started_at: new Date(Date.now() - 60_000).toISOString(),
+      })
+      .where("id", "=", generationId)
+      .execute()
+    try {
+      const workspace = await getWorkspace(userId, { chatId: chat.id })
+      expect(workspace.activeGenerations).toHaveLength(1)
+      expect(
+        workspace.nodes.find((node) => node.id === assistant.id)?.status
+      ).toBe("streaming")
+    } finally {
+      await generationStreamStore.discard(generationId)
+    }
+  })
+
+  it("retries leftover recovering rows and removes the run", async () => {
+    const chat = await createChat(userId, "Stuck recovering")
+    const generationId = crypto.randomUUID()
+    const assistant = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "assistant",
+      parts: [{ type: "text", text: "kept" }],
+      status: "streaming",
+      generationId,
+    })
+    await db
+      .updateTable("generation_runs")
+      .set({
+        state: "recovering",
+        started_at: new Date(Date.now() - 60_000).toISOString(),
+      })
+      .where("id", "=", generationId)
+      .execute()
+
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    expect(workspace.activeGenerations).toEqual([])
+    expect(workspace.nodes.find((node) => node.id === assistant.id)?.status).toBe(
+      "error"
+    )
+    expect(await getGenerationRun(generationId)).toBeUndefined()
+  })
+
+  it("drops a leftover run when the node is already terminal", async () => {
+    const chat = await createChat(userId, "Superseded run")
+    const generationId = crypto.randomUUID()
+    const assistant = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "assistant",
+      parts: [{ type: "text", text: "done" }],
+      status: "streaming",
+      generationId,
+    })
+    await db
+      .updateTable("message_nodes")
+      .set({ status: "complete" })
+      .where("id", "=", assistant.id)
+      .execute()
+
+    const result = await finalizeStreamingAssistant({
+      nodeId: assistant.id,
+      generationId,
+      outcome: "error",
+      parts: [{ type: "text", text: "should not win" }],
+    })
+    expect(result).toBe("superseded")
+    expect(await getGenerationRun(generationId)).toBeUndefined()
   })
 })
 

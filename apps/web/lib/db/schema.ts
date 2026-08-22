@@ -35,6 +35,12 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create table if not exists message_nodes (id text primary key, chat_id text not null references chats(id) on delete cascade, parent_id text references message_nodes(id) on delete cascade, selected_child_id text, role text not null, parts_json text not null, search_text text not null, metadata_json text not null, excluded_from_context boolean not null default false, status text not null, created_at text not null, updated_at text not null)`.execute(
     db
   )
+  await sql`create table if not exists generation_runs (id text primary key, node_id text not null unique references message_nodes(id) on delete cascade, chat_id text not null references chats(id) on delete cascade, started_at text not null, state text not null)`.execute(
+    db
+  )
+  await sql`create index if not exists generation_runs_chat_idx on generation_runs(chat_id)`.execute(
+    db
+  )
   const attachmentDataType =
     kind === "postgres" ? sql.raw("bytea") : sql.raw("blob")
   await sql`create table if not exists attachments (id text primary key, user_id text not null references "user"(id) on delete cascade, filename text not null, media_type text not null, byte_size integer not null, sha256 text not null, storage_backend text not null, storage_key text, data ${attachmentDataType}, claimed_at text, created_at text not null)`.execute(
@@ -80,10 +86,22 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
     .onConflict((oc) => oc.column("id").doNothing())
     .execute()
 
-  // Interrupted streams cannot be resumed across process restarts.
+  // Legacy streaming rows from before generation_runs have no owner and cannot
+  // be resumed. Rows with a run are reconciled by the selected stream adapter;
+  // this must not invalidate a healthy Redis-backed run on another instance.
   await db
     .updateTable("message_nodes")
     .set({ status: "error", updated_at: new Date().toISOString() })
     .where("status", "=", "streaming")
+    .where((eb) =>
+      eb.not(
+        eb.exists(
+          eb
+            .selectFrom("generation_runs")
+            .select("generation_runs.id")
+            .whereRef("generation_runs.node_id", "=", "message_nodes.id")
+        )
+      )
+    )
     .execute()
 }

@@ -2,21 +2,29 @@ import "server-only"
 import { createHash } from "node:crypto"
 import { sql, type Transaction } from "kysely"
 import { db, fromDbBool, toDbBool } from "@/lib/db"
-import {
-  id,
-  now,
-  parseJson,
-  subtreeNodeIds,
-} from "@/lib/domain"
+import { id, now, parseJson, subtreeNodeIds } from "@/lib/domain"
 import {
   applyMessageEdits,
   isEmptyParts,
-  partsFromTextReasoning,
   partsHavePendingClientTools,
   searchTextFromParts,
   type MessageEditSegment,
 } from "@/lib/agent/parts"
 import { abortGenerations } from "@/lib/active-generations"
+import {
+  claimGenerationRecovery,
+  insertGenerationRun,
+  removeGenerationRun,
+  restoreGenerationRunState,
+} from "@/lib/generation-runs"
+import { generationStreamStore } from "@/lib/generation-streams/default-port"
+import { reduceGenerationPayload } from "@/lib/generation-streams/events"
+import {
+  FOLLOWABLE_RUN_STATES,
+  revertRecoveryState,
+  shouldReconcileGeneration,
+  type GenerationRunState,
+} from "@/lib/generation-streams/policy"
 import type {
   DB,
   MessageRole,
@@ -78,6 +86,26 @@ function normalizeNodeRow(node: NodeRow): NodeRow {
   }
 }
 
+async function cancelGenerationRuns(nodeIds: Iterable<string>) {
+  const ids = [...nodeIds]
+  if (!ids.length) return
+  const runs = await db
+    .selectFrom("generation_runs")
+    .select("id")
+    .where("node_id", "in", ids)
+    .execute()
+  await Promise.all(
+    runs.map((run) =>
+      generationStreamStore.requestCancel(run.id).catch((error) => {
+        // Database deletion is authoritative and cascades the run, fencing
+        // later terminal writes. Stream-store cancellation is only a prompt
+        // best-effort signal to a still-running producer.
+        console.warn("[nibchat/generation-cancel]", run.id, error)
+      })
+    )
+  )
+}
+
 async function assertChatOwner(chatId: string, userId: string) {
   const chat = await db
     .selectFrom("chats")
@@ -131,6 +159,7 @@ export async function getWorkspace(
       : chats[0]
   // Explicit chatId miss falls back to none, not a different conversation
   if (input?.chatId && !selected) selected = undefined
+  if (selected) await reconcileChatGenerationRuns(selected.id)
   const nodes = selected
     ? await db
         .selectFrom("message_nodes")
@@ -139,10 +168,30 @@ export async function getWorkspace(
         .orderBy("created_at")
         .execute()
     : []
+  const activeGenerations = selected
+    ? await db
+        .selectFrom("generation_runs")
+        .innerJoin(
+          "message_nodes",
+          "message_nodes.id",
+          "generation_runs.node_id"
+        )
+        .select([
+          "generation_runs.id as generationId",
+          "generation_runs.node_id as nodeId",
+          "generation_runs.chat_id as chatId",
+          "generation_runs.started_at as startedAt",
+          "message_nodes.parent_id as parentNodeId",
+        ])
+        .where("generation_runs.chat_id", "=", selected.id)
+        .where("generation_runs.state", "in", [...FOLLOWABLE_RUN_STATES])
+        .execute()
+    : []
   return {
     chats,
     chat: selected ?? null,
     nodes: nodes.map((node) => normalizeNodeRow(node)),
+    activeGenerations,
   }
 }
 
@@ -188,6 +237,7 @@ export async function deleteChat(userId: string, chatId: string) {
     .where("chat_id", "=", chatId)
     .execute()
   abortGenerations(nodeIds.map((row) => row.id))
+  await cancelGenerationRuns(nodeIds.map((row) => row.id))
   await db
     .deleteFrom("chats")
     .where("id", "=", chatId)
@@ -203,6 +253,8 @@ export async function insertNode(input: {
   parts: Parts
   metadata?: Record<string, unknown>
   status?: MessageStatus
+  /** Required when inserting a streaming assistant. */
+  generationId?: string
   /** When false, only insert the row — do not rewire view selection. Default true. */
   attachSelection?: boolean
 }) {
@@ -224,6 +276,12 @@ export async function insertNode(input: {
   }
   await db.transaction().execute(async (trx) => {
     await trx.insertInto("message_nodes").values(node).execute()
+    if (input.generationId)
+      await insertGenerationRun(trx, {
+        id: input.generationId,
+        nodeId: node.id,
+        chatId: node.chat_id,
+      })
     if (!attachSelection) return
     if (input.parentId)
       await trx
@@ -296,6 +354,7 @@ export async function createTurn(input: {
   /** Optional attachments ahead of the user text (MCP resources, future files). */
   attachments?: AttachmentPart[]
   assistantMetadata: Record<string, unknown>
+  generationId?: string
 }) {
   if (input.parentId) {
     const parent = await db
@@ -338,6 +397,12 @@ export async function createTurn(input: {
     await trx.insertInto("message_nodes").values(user).execute()
     await claimUploadedAttachments(input.userId, user.id, attachments, trx)
     await trx.insertInto("message_nodes").values(assistant).execute()
+    if (input.generationId)
+      await insertGenerationRun(trx, {
+        id: input.generationId,
+        nodeId: assistant.id,
+        chatId: assistant.chat_id,
+      })
   })
   return { user, assistant }
 }
@@ -682,6 +747,7 @@ export async function forkEdit(
 export async function startRegenerate(
   userId: string,
   assistantNodeId: string,
+  generationId?: string,
   assistantMetadata: Record<string, unknown> = {}
 ) {
   const original = await assertNodeOwner(assistantNodeId, userId)
@@ -694,6 +760,7 @@ export async function startRegenerate(
     parts: [],
     status: "streaming",
     metadata: assistantMetadata,
+    generationId,
     attachSelection: false,
   })
   return {
@@ -706,6 +773,7 @@ export async function startRegenerate(
 export async function startGenerate(
   userId: string,
   parentNodeId: string,
+  generationId?: string,
   assistantMetadata: Record<string, unknown> = {}
 ) {
   const parent = await assertNodeOwner(parentNodeId, userId)
@@ -716,6 +784,7 @@ export async function startGenerate(
     parts: [],
     status: "streaming",
     metadata: assistantMetadata,
+    generationId,
     attachSelection: false,
   })
   return {
@@ -741,24 +810,16 @@ export type StreamFinalizeResult =
 
 export type StreamFinalizeInput = {
   nodeId: string
+  /** Fences terminal writes to the generation that still owns this node. */
+  generationId?: string
   outcome: StreamFinalizeOutcome
-  /** Preferred: full ordered parts for multi-stage turns. */
-  parts?: Parts
-  /** Backward-compat partials when `parts` is omitted. */
-  text?: string
-  reasoning?: string
+  /** Full ordered parts for the completed multi-stage turn. */
+  parts: Parts
   usage?: unknown
   finishReason?: string
   error?: string
   config?: ModelConfig
   previousMetadata?: Record<string, unknown>
-  /**
-   * When true (default for complete), always write a text part even if empty.
-   * Awaiting_input keeps empty text optional.
-   */
-  forceTextPart?: boolean
-  /** Allowed starting statuses (default: streaming only). Resume may use awaiting_input. */
-  fromStatuses?: MessageStatus[]
 }
 
 /**
@@ -789,19 +850,6 @@ async function updateStreamingNode(
   return Number(result.numUpdatedRows ?? 0) > 0
 }
 
-function resolveFinalizeParts(input: StreamFinalizeInput): Parts {
-  if (input.parts) return input.parts
-  const text = input.text ?? ""
-  const reasoning = (input.reasoning ?? "").trim()
-  if (input.outcome === "complete" && input.forceTextPart !== false) {
-    return [
-      ...(reasoning ? [{ type: "reasoning" as const, text: reasoning }] : []),
-      { type: "text" as const, text },
-    ]
-  }
-  return partsFromTextReasoning(text.trim(), reasoning)
-}
-
 /**
  * Single write path for stream terminal outcomes.
  * Idempotent: only mutates rows still in `fromStatuses` (default streaming).
@@ -810,16 +858,29 @@ function resolveFinalizeParts(input: StreamFinalizeInput): Parts {
 export async function finalizeStreamingAssistant(
   input: StreamFinalizeInput
 ): Promise<StreamFinalizeResult> {
-  const fromStatuses = input.fromStatuses ?? ["streaming"]
+  const fromStatuses = ["streaming"] as MessageStatus[]
+  if (input.generationId) {
+    const run = await db
+      .selectFrom("generation_runs")
+      .select(["id", "node_id"])
+      .where("id", "=", input.generationId)
+      .executeTakeFirst()
+    if (!run || run.node_id !== input.nodeId) return "superseded"
+  }
+  const finishRun = async (result: StreamFinalizeResult) => {
+    if (input.generationId) await removeGenerationRun(db, input.generationId)
+    return result
+  }
   const row = await db
     .selectFrom("message_nodes")
     .select(["id", "chat_id", "status", "metadata_json"])
     .where("id", "=", input.nodeId)
     .executeTakeFirst()
-  if (!row) return "missing"
-  if (!(fromStatuses as string[]).includes(row.status)) return "superseded"
+  if (!row) return finishRun("missing")
+  if (!(fromStatuses as string[]).includes(row.status))
+    return finishRun("superseded")
 
-  const parts = resolveFinalizeParts(input)
+  const parts = input.parts
   const previous = {
     ...parseJson<Record<string, unknown>>(row.metadata_json, {}),
     ...(input.previousMetadata ?? {}),
@@ -828,7 +889,7 @@ export async function finalizeStreamingAssistant(
 
   if (input.outcome === "aborted") {
     if (isEmptyParts(parts)) {
-      return deleteStreamingShell(input.nodeId)
+      return finishRun(await deleteStreamingShell(input.nodeId))
     }
     const updated = await updateStreamingNode(
       input.nodeId,
@@ -836,7 +897,7 @@ export async function finalizeStreamingAssistant(
       "stopped",
       fromStatuses
     )
-    return updated ? "stopped" : "superseded"
+    return finishRun(updated ? "stopped" : "superseded")
   }
 
   if (input.outcome === "error") {
@@ -846,7 +907,7 @@ export async function finalizeStreamingAssistant(
       "error",
       fromStatuses
     )
-    if (!updated) return "superseded"
+    if (!updated) return finishRun("superseded")
     await db
       .updateTable("message_nodes")
       .set({
@@ -863,7 +924,7 @@ export async function finalizeStreamingAssistant(
       })
       .where("id", "=", input.nodeId)
       .execute()
-    return "error"
+    return finishRun("error")
   }
 
   if (input.outcome === "awaiting_input") {
@@ -873,7 +934,7 @@ export async function finalizeStreamingAssistant(
       "awaiting_input",
       fromStatuses
     )
-    if (!updated) return "superseded"
+    if (!updated) return finishRun("superseded")
     await db
       .updateTable("message_nodes")
       .set({
@@ -894,7 +955,7 @@ export async function finalizeStreamingAssistant(
       })
       .where("id", "=", input.nodeId)
       .execute()
-    return "awaiting_input"
+    return finishRun("awaiting_input")
   }
 
   // complete
@@ -904,7 +965,7 @@ export async function finalizeStreamingAssistant(
     "complete",
     fromStatuses
   )
-  if (!updated) return "superseded"
+  if (!updated) return finishRun("superseded")
   await db
     .updateTable("message_nodes")
     .set({
@@ -923,7 +984,59 @@ export async function finalizeStreamingAssistant(
     })
     .where("id", "=", input.nodeId)
     .execute()
-  return "complete"
+  return finishRun("complete")
+}
+
+/** Lazy reconciliation: never treat an adapter outage as a lost producer. */
+async function reconcileChatGenerationRuns(chatId: string) {
+  const runs = await db
+    .selectFrom("generation_runs")
+    .selectAll()
+    .where("chat_id", "=", chatId)
+    .execute()
+  for (const run of runs) {
+    let snapshot
+    try {
+      snapshot = await generationStreamStore.inspect(run.id)
+    } catch (error) {
+      console.warn("[nibchat/generation-reconcile] store unavailable", error)
+      continue
+    }
+    if (
+      !shouldReconcileGeneration(
+        {
+          state: run.state as GenerationRunState,
+          startedAt: run.started_at,
+        },
+        snapshot
+      )
+    )
+      continue
+    if (!(await claimGenerationRecovery(run.id))) continue
+    let parts: Parts = []
+    try {
+      for (const event of await generationStreamStore.replay(run.id))
+        parts = reduceGenerationPayload(parts, event.payload)
+    } catch (error) {
+      console.warn("[nibchat/generation-reconcile] replay unavailable", error)
+      await restoreGenerationRunState(
+        run.id,
+        revertRecoveryState(run.state as GenerationRunState)
+      )
+      continue
+    }
+    await finalizeStreamingAssistant({
+      nodeId: run.node_id,
+      generationId: run.id,
+      outcome: run.state === "cancel_requested" ? "aborted" : "error",
+      parts,
+      error:
+        run.state === "cancel_requested"
+          ? undefined
+          : "Generation interrupted before completion.",
+    })
+    await generationStreamStore.discard(run.id).catch(() => {})
+  }
 }
 
 /**
@@ -932,7 +1045,8 @@ export async function finalizeStreamingAssistant(
  */
 export async function beginResumeAssistant(
   nodeId: string,
-  parts: Parts
+  parts: Parts,
+  generationId?: string
 ): Promise<"streaming" | "missing" | "superseded"> {
   const row = await db
     .selectFrom("message_nodes")
@@ -941,18 +1055,32 @@ export async function beginResumeAssistant(
     .executeTakeFirst()
   if (!row) return "missing"
   if (row.status !== "awaiting_input") return "superseded"
-  const result = await db
-    .updateTable("message_nodes")
-    .set({
-      parts_json: JSON.stringify(parts),
-      search_text: searchTextFromParts(parts),
-      status: "streaming",
-      updated_at: now(),
-    })
-    .where("id", "=", nodeId)
-    .where("status", "=", "awaiting_input")
-    .executeTakeFirst()
-  return Number(result.numUpdatedRows ?? 0) > 0 ? "streaming" : "superseded"
+  return db.transaction().execute(async (trx) => {
+    const result = await trx
+      .updateTable("message_nodes")
+      .set({
+        parts_json: JSON.stringify(parts),
+        search_text: searchTextFromParts(parts),
+        status: "streaming",
+        updated_at: now(),
+      })
+      .where("id", "=", nodeId)
+      .where("status", "=", "awaiting_input")
+      .executeTakeFirst()
+    if (Number(result.numUpdatedRows ?? 0) === 0) return "superseded"
+    const current = await trx
+      .selectFrom("message_nodes")
+      .select("chat_id")
+      .where("id", "=", nodeId)
+      .executeTakeFirstOrThrow()
+    if (generationId)
+      await insertGenerationRun(trx, {
+        id: generationId,
+        nodeId,
+        chatId: current.chat_id,
+      })
+    return "streaming"
+  })
 }
 
 /**
@@ -961,7 +1089,8 @@ export async function beginResumeAssistant(
  */
 export async function restoreAwaitingInput(
   nodeId: string,
-  originalParts: Parts
+  originalParts: Parts,
+  generationId?: string
 ): Promise<"awaiting_input" | "missing" | "superseded"> {
   const row = await db
     .selectFrom("message_nodes")
@@ -970,20 +1099,22 @@ export async function restoreAwaitingInput(
     .executeTakeFirst()
   if (!row) return "missing"
   if (row.status !== "streaming") return "superseded"
-  const result = await db
-    .updateTable("message_nodes")
-    .set({
-      parts_json: JSON.stringify(originalParts),
-      search_text: searchTextFromParts(originalParts),
-      status: "awaiting_input",
-      updated_at: now(),
-    })
-    .where("id", "=", nodeId)
-    .where("status", "=", "streaming")
-    .executeTakeFirst()
-  return Number(result.numUpdatedRows ?? 0) > 0
-    ? "awaiting_input"
-    : "superseded"
+  return db.transaction().execute(async (trx) => {
+    const result = await trx
+      .updateTable("message_nodes")
+      .set({
+        parts_json: JSON.stringify(originalParts),
+        search_text: searchTextFromParts(originalParts),
+        status: "awaiting_input",
+        updated_at: now(),
+      })
+      .where("id", "=", nodeId)
+      .where("status", "=", "streaming")
+      .executeTakeFirst()
+    if (Number(result.numUpdatedRows ?? 0) === 0) return "superseded"
+    if (generationId) await removeGenerationRun(trx, generationId)
+    return "awaiting_input"
+  })
 }
 
 /**
@@ -1018,27 +1149,6 @@ async function deleteStreamingShell(
   return "deleted"
 }
 
-/** Abort-only convenience wrapper (kept for tests / call sites). */
-export async function finalizeAbortedAssistant(
-  nodeId: string,
-  partial: { text?: string; reasoning?: string; parts?: Parts }
-): Promise<"stopped" | "deleted" | "missing" | "superseded"> {
-  const result = await finalizeStreamingAssistant({
-    nodeId,
-    outcome: "aborted",
-    parts: partial.parts,
-    text: partial.text,
-    reasoning: partial.reasoning,
-  })
-  if (
-    result === "complete" ||
-    result === "error" ||
-    result === "awaiting_input"
-  )
-    return "superseded"
-  return result
-}
-
 export async function deleteNode(
   userId: string,
   nodeId: string,
@@ -1048,6 +1158,7 @@ export async function deleteNode(
 
   if (mode === "reparent") {
     abortGenerations([node.id])
+    await cancelGenerationRuns([node.id])
     await deleteNodeInternal(node.id, node.chat_id, "reparent")
     await cleanupDetachedAttachments()
     return
@@ -1060,6 +1171,7 @@ export async function deleteNode(
     .where("chat_id", "=", node.chat_id)
     .execute()
   abortGenerations(subtreeNodeIds(chatNodes, node.id))
+  await cancelGenerationRuns(subtreeNodeIds(chatNodes, node.id))
   await deleteNodeInternal(node.id, node.chat_id, "subtree")
   await cleanupDetachedAttachments()
 }
@@ -1369,7 +1481,11 @@ export async function updateTheme(
   return getTheme(userId, themeId)
 }
 
-export async function duplicateTheme(userId: string, themeId: string, name?: string) {
+export async function duplicateTheme(
+  userId: string,
+  themeId: string,
+  name?: string
+) {
   const existing = await getTheme(userId, themeId)
   return createTheme({
     userId,
@@ -1514,7 +1630,7 @@ export async function deletePromptStack(userId: string, stackId: string) {
   if (prefs.default_prompt_stack_id === stackId) {
     throw new Error(
       "Cannot delete the default stack. Choose another default first."
-      )
+    )
   }
   const existing = await db
     .selectFrom("prompt_stacks")
@@ -1536,7 +1652,10 @@ export async function deletePromptStack(userId: string, stackId: string) {
     .execute()
 }
 
-export async function setInstanceDefaultPromptStack(userId: string, stackId: string) {
+export async function setInstanceDefaultPromptStack(
+  userId: string,
+  stackId: string
+) {
   const existing = await db
     .selectFrom("prompt_stacks")
     .select("id")
@@ -1589,9 +1708,12 @@ async function loadStacksById(userId: string) {
   return map
 }
 
-export async function resolveStackForChat(chat: {
-  prompt_stack_id: string | null
-}, userId: string) {
+export async function resolveStackForChat(
+  chat: {
+    prompt_stack_id: string | null
+  },
+  userId: string
+) {
   const prefs = await ensureUserSettings(userId)
   const stacksById = await loadStacksById(userId)
   return resolvePromptStack({
@@ -1817,17 +1939,33 @@ function validateMultiUserBackup(
   if (users.size !== backup.users.length || users.size === 0)
     throw new Error("Backup contains invalid users")
   const owners = backup.users.filter((user) => user.role === "admin")
-  if (owners.length !== 1) throw new Error("Backup must contain exactly one owner")
+  if (owners.length !== 1)
+    throw new Error("Backup must contain exactly one owner")
 
   const unique = (values: string[], label: string) => {
     if (new Set(values).size !== values.length)
       throw new Error(`Backup contains duplicate ${label} ids`)
   }
-  unique(backup.chats.map((chat) => chat.id), "chat")
-  unique(backup.nodes.map((node) => node.id), "node")
-  unique(backup.attachments.map((attachment) => attachment.id), "attachment")
-  unique(backup.themes.map((theme) => theme.id), "theme")
-  unique(backup.promptStacks.map((stack) => stack.id), "prompt stack")
+  unique(
+    backup.chats.map((chat) => chat.id),
+    "chat"
+  )
+  unique(
+    backup.nodes.map((node) => node.id),
+    "node"
+  )
+  unique(
+    backup.attachments.map((attachment) => attachment.id),
+    "attachment"
+  )
+  unique(
+    backup.themes.map((theme) => theme.id),
+    "theme"
+  )
+  unique(
+    backup.promptStacks.map((stack) => stack.id),
+    "prompt stack"
+  )
 
   for (const theme of backup.themes) {
     if (!users.has(theme.user_id))
@@ -1835,7 +1973,9 @@ function validateMultiUserBackup(
   }
   for (const stack of backup.promptStacks) {
     if (!users.has(stack.user_id))
-      throw new Error(`Backup prompt stack ${stack.id} references an unknown user`)
+      throw new Error(
+        `Backup prompt stack ${stack.id} references an unknown user`
+      )
   }
 
   for (const chat of backup.chats) {
@@ -1848,21 +1988,30 @@ function validateMultiUserBackup(
     if (!chat.prompt_stack_id) continue
     const stack = stacks.get(chat.prompt_stack_id)
     if (!stack || stack.user_id !== chat.user_id)
-      throw new Error(`Backup chat ${chat.id} references another user's prompt stack`)
+      throw new Error(
+        `Backup chat ${chat.id} references another user's prompt stack`
+      )
   }
   for (const node of backup.nodes) {
     if (!chats.has(node.chat_id))
       throw new Error(`Backup node ${node.id} references an unknown chat`)
   }
   const nodes = new Set(backup.nodes.map((node) => node.id))
-  const attachments = new Set(backup.attachments.map((attachment) => attachment.id))
+  const attachments = new Set(
+    backup.attachments.map((attachment) => attachment.id)
+  )
   for (const link of backup.messageAttachments) {
-    if (!nodes.has(link.message_node_id) || !attachments.has(link.attachment_id))
+    if (
+      !nodes.has(link.message_node_id) ||
+      !attachments.has(link.attachment_id)
+    )
       throw new Error("Backup contains an invalid attachment link")
   }
   for (const attachment of backup.attachments) {
     if (!users.has(attachment.user_id))
-      throw new Error(`Backup attachment ${attachment.id} references an unknown user`)
+      throw new Error(
+        `Backup attachment ${attachment.id} references an unknown user`
+      )
     const data = files.get(attachment.file)
     if (!data) throw new Error(`Backup attachment ${attachment.id} is missing`)
     if (data.byteLength !== attachment.byte_size)
@@ -1886,7 +2035,7 @@ function validateMultiUserBackup(
       light.user_id !== prefs.user_id ||
       dark.user_id !== prefs.user_id ||
       stack.user_id !== prefs.user_id
-  )
+    )
       throw new Error("Backup preferences reference another user's settings")
   }
   const preferenceUsers = backup.userPreferences.map((prefs) => prefs.user_id)
@@ -1932,9 +2081,13 @@ async function restoreMultiUserBackup(
     backup.users.find((user) => user.role === "admin") ?? backup.users[0]
   if (!sourceOwner) throw new Error("Backup does not contain an owner")
   const ownerChatIds = new Set(
-    backup.chats.filter((chat) => chat.user_id === sourceOwner.id).map((chat) => chat.id)
+    backup.chats
+      .filter((chat) => chat.user_id === sourceOwner.id)
+      .map((chat) => chat.id)
   )
-  const ownerNodes = backup.nodes.filter((node) => ownerChatIds.has(node.chat_id))
+  const ownerNodes = backup.nodes.filter((node) =>
+    ownerChatIds.has(node.chat_id)
+  )
   const ownerAttachments = backup.attachments.filter(
     (attachment) => attachment.user_id === sourceOwner.id
   )
@@ -2013,7 +2166,9 @@ async function restoreMultiUserBackup(
           banExpires: null,
         })
         .execute()
-      const userChats = backup.chats.filter((chat) => chat.user_id === sourceUser.id)
+      const userChats = backup.chats.filter(
+        (chat) => chat.user_id === sourceUser.id
+      )
       const chatIds = new Set(userChats.map((chat) => chat.id))
       const userNodes = backup.nodes.filter((node) => chatIds.has(node.chat_id))
       const userAttachments = backup.attachments.filter(
@@ -2022,19 +2177,26 @@ async function restoreMultiUserBackup(
       const userLinks = backup.messageAttachments.filter((link) =>
         userNodes.some((node) => node.id === link.message_node_id)
       )
-      for (const theme of backup.themes.filter((theme) => theme.user_id === sourceUser.id))
+      for (const theme of backup.themes.filter(
+        (theme) => theme.user_id === sourceUser.id
+      ))
         await trx
           .insertInto("themes")
           .values({
             id: theme.id,
             user_id: sourceUser.id,
             name: theme.name,
-            document_json: appearanceToJson(parseAppearance(theme.document), false),
+            document_json: appearanceToJson(
+              parseAppearance(theme.document),
+              false
+            ),
             created_at: theme.created_at,
             updated_at: theme.updated_at,
           })
           .execute()
-      for (const stack of backup.promptStacks.filter((stack) => stack.user_id === sourceUser.id))
+      for (const stack of backup.promptStacks.filter(
+        (stack) => stack.user_id === sourceUser.id
+      ))
         await trx
           .insertInto("prompt_stacks")
           .values({
@@ -2046,8 +2208,11 @@ async function restoreMultiUserBackup(
             updated_at: stack.updated_at,
           })
           .execute()
-      const prefs = backup.userPreferences.find((prefs) => prefs.user_id === sourceUser.id)
-      if (prefs) await trx.insertInto("user_preferences").values(prefs).execute()
+      const prefs = backup.userPreferences.find(
+        (prefs) => prefs.user_id === sourceUser.id
+      )
+      if (prefs)
+        await trx.insertInto("user_preferences").values(prefs).execute()
       for (const chat of userChats) {
         await trx
           .insertInto("chats")
@@ -2066,7 +2231,8 @@ async function restoreMultiUserBackup(
       await insertRestoredMessageNodes(trx, userNodes)
       for (const attachment of userAttachments) {
         const data = files.get(attachment.file)
-        if (!data) throw new Error(`Backup attachment ${attachment.id} is missing`)
+        if (!data)
+          throw new Error(`Backup attachment ${attachment.id} is missing`)
         const stored = await attachmentStorage.put({
           sha256: attachment.sha256,
           data,
@@ -2095,10 +2261,7 @@ async function restoreMultiUserBackup(
 }
 
 export async function createBackup() {
-  const chats = await db
-    .selectFrom("chats")
-    .selectAll()
-    .execute()
+  const chats = await db.selectFrom("chats").selectAll().execute()
   const chatIds = chats.map((chat) => chat.id)
   const rawNodes =
     chatIds.length === 0
@@ -2217,10 +2380,7 @@ export async function createBackupArchive() {
   const backup = await createBackup()
   const files = new Map<string, Uint8Array>()
   if (backup.attachments.length) {
-    const rows = await db
-      .selectFrom("attachments")
-      .selectAll()
-      .execute()
+    const rows = await db.selectFrom("attachments").selectAll().execute()
     const byId = new Map(rows.map((row) => [row.id, row]))
     for (const attachment of backup.attachments) {
       const row = byId.get(attachment.id)

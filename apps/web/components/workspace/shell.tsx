@@ -145,6 +145,7 @@ export function WorkspaceShell({
       chats: initialChats,
       chat: null,
       nodes: [],
+      activeGenerations: [],
     } satisfies WorkspaceData,
   })
 

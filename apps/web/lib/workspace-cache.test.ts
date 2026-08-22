@@ -26,6 +26,7 @@ function sample(chatId: string, title: string): WorkspaceData {
       updated_at: "",
     },
     nodes: [],
+    activeGenerations: [],
   }
 }
 
@@ -62,6 +63,7 @@ describe("patchChatTitle", () => {
       ],
       chat: null,
       nodes: [],
+      activeGenerations: [],
     }
     const next = patchChatTitle(data, "c2", "B2")
     expect(next?.chats.find((c) => c.id === "c1")?.title).toBe("A")

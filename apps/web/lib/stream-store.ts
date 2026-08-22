@@ -1,6 +1,7 @@
 "use client"
 import { create } from "zustand"
-import type { ToolInvocationPart } from "@/lib/types"
+import { reduceGenerationPayload, type GenerationPayload } from "@/lib/generation-streams/events"
+import type { Parts } from "@/lib/types"
 
 export type StreamMeta = {
   nodeId: string
@@ -11,15 +12,11 @@ export type StreamMeta = {
 }
 
 export type StreamBuffer = {
-  text: string
-  reasoning: string
-  tools: ToolInvocationPart[]
+  parts: Parts
 }
 
 const emptyBuffer = (): StreamBuffer => ({
-  text: "",
-  reasoning: "",
-  tools: [],
+  parts: [],
 })
 
 /** Read-only fallback so missing ids do not look like buffer updates. */
@@ -37,11 +34,9 @@ type StreamState = {
       parentNodeId: string | null
     }
   ) => void
-  appendText: (streamId: string, delta: string) => void
-  appendReasoning: (streamId: string, delta: string) => void
-  upsertTool: (streamId: string, tool: ToolInvocationPart) => void
+  applyEvent: (streamId: string, event: GenerationPayload) => void
   attachController: (streamId: string, controller: AbortController) => void
-  /** Abort a single in-tab stream (Stop button). Structural cancel is server-side. */
+  /** Stop is server-side; aborting only detaches this local subscription. */
   stop: (streamId: string) => void
   finish: (streamId: string) => void
 }
@@ -64,40 +59,14 @@ export const useStreamStore = create<StreamState>((set, get) => ({
         [streamId]: emptyBuffer(),
       },
     })),
-  appendText: (streamId, delta) =>
+  applyEvent: (streamId, event) =>
     set((state) => {
       const buffer = state.buffers[streamId]
       if (!buffer) return state
       return {
         buffers: {
           ...state.buffers,
-          [streamId]: { ...buffer, text: buffer.text + delta },
-        },
-      }
-    }),
-  appendReasoning: (streamId, delta) =>
-    set((state) => {
-      const buffer = state.buffers[streamId]
-      if (!buffer) return state
-      return {
-        buffers: {
-          ...state.buffers,
-          [streamId]: { ...buffer, reasoning: buffer.reasoning + delta },
-        },
-      }
-    }),
-  upsertTool: (streamId, tool) =>
-    set((state) => {
-      const buffer = state.buffers[streamId]
-      if (!buffer) return state
-      const tools = buffer.tools.slice()
-      const index = tools.findIndex((t) => t.toolCallId === tool.toolCallId)
-      if (index === -1) tools.push(tool)
-      else tools[index] = tool
-      return {
-        buffers: {
-          ...state.buffers,
-          [streamId]: { ...buffer, tools },
+          [streamId]: { parts: reduceGenerationPayload(buffer.parts, event) },
         },
       }
     }),
@@ -106,6 +75,9 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       controllers: { ...state.controllers, [streamId]: controller },
     })),
   stop: (streamId) => {
+    void fetch(`/api/chat/stream/${encodeURIComponent(streamId)}`, {
+      method: "DELETE",
+    })
     get().controllers[streamId]?.abort()
   },
   finish: (streamId) =>

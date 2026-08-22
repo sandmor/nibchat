@@ -114,6 +114,14 @@ export interface MessageNodesTable {
   created_at: string
   updated_at: string
 }
+/** One currently-owned generation per assistant node. Removed at terminal state. */
+export interface GenerationRunsTable {
+  id: string
+  node_id: string
+  chat_id: string
+  started_at: string
+  state: "starting" | "active" | "recovering" | "cancel_requested"
+}
 export interface AttachmentsTable {
   id: string
   user_id: string
@@ -190,6 +198,7 @@ export interface McpServerProfilesTable {
 export interface DB {
   chats: ChatsTable
   message_nodes: MessageNodesTable
+  generation_runs: GenerationRunsTable
   attachments: AttachmentsTable
   message_attachments: MessageAttachmentsTable
   prompt_stacks: PromptStacksTable

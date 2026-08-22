@@ -1,10 +1,14 @@
 import {
-  createUIMessageStreamResponse,
   stepCountIs,
   streamText,
-  toUIMessageStream,
   type LanguageModel,
 } from "ai"
+import { generationStreamStore } from "@/lib/generation-streams/default-port"
+import { generationExecutor } from "@/lib/generation-streams/default-port"
+import { generationSseResponse } from "@/lib/generation-streams/http"
+import type { GenerationProducer } from "@/lib/generation-streams/ports"
+import { startProducerGuards } from "@/lib/generation-streams/producer-session"
+import { activateGenerationRun } from "@/lib/generation-runs"
 import { buildEmbeddedModelMessages } from "@/lib/agent/build-messages-embed"
 import {
   partsHavePendingClientTools,
@@ -73,6 +77,7 @@ export type GenerationSetup = {
     outcome: "complete" | "awaiting_input" | "aborted" | "error"
     parts: Parts
   }) => Promise<void>
+  generationId: string
 }
 
 /**
@@ -96,6 +101,7 @@ export async function createGenerationResponse(
     previousMetadata,
     resumeClaim,
     afterFinalize,
+    generationId,
   } = setup
 
   const generation = new AbortController()
@@ -108,10 +114,29 @@ export async function createGenerationResponse(
   }
 
   let claimSucceeded = false
+  let producerHandle: GenerationProducer | null = null
+  let producerGuards: { stop: () => void } | null = null
+
+  const respond = (body: Response) => {
+    const withHeaders = new Headers(body.headers)
+    for (const [k, v] of Object.entries(headers)) withHeaders.set(k, v)
+    withHeaders.set("X-Accel-Buffering", "no")
+    withHeaders.set("X-Nibchat-Assistant-Node", assistant.id)
+    withHeaders.set("X-Nibchat-Generation-Id", generationId)
+    return new Response(body.body, {
+      status: body.status,
+      statusText: body.statusText,
+      headers: withHeaders,
+    })
+  }
 
   try {
     if (resumeClaim) {
-      const claim = await beginResumeAssistant(assistant.id, seedParts)
+      const claim = await beginResumeAssistant(
+        assistant.id,
+        seedParts,
+        generationId
+      )
       if (claim === "missing")
         throw new ResumeClaimError("missing", "Node not found")
       if (claim === "superseded")
@@ -120,6 +145,46 @@ export async function createGenerationResponse(
           "Assistant is no longer awaiting input."
         )
       claimSucceeded = true
+    }
+
+    // Open before prompt/MCP preparation so other clients see a pending,
+    // durable stream rather than an empty successful attachment.
+    producerHandle = await generationStreamStore.open({
+      generationId,
+      nodeId: assistant.id,
+      chatId: assistant.chat_id,
+      parentNodeId: assistant.parent_id,
+    })
+    producerGuards = startProducerGuards(
+      generationStreamStore,
+      producerHandle,
+      () => generation.abort()
+    )
+    await generationStreamStore.append(producerHandle, {
+      type: "parts-snapshot",
+      parts: seedParts,
+    })
+    if (!(await activateGenerationRun(generationId))) {
+      generation.abort()
+      await finalizeStreamingAssistant({
+        nodeId: assistant.id,
+        generationId,
+        outcome: "aborted",
+        parts: seedParts,
+        previousMetadata: {
+          ...parseJson<Record<string, unknown>>(assistant.metadata_json, {}),
+          ...(previousMetadata ?? {}),
+        },
+      })
+      producerGuards.stop()
+      producerGuards = null
+      await generationStreamStore.close(producerHandle)
+      dropRegistration()
+      return respond(
+        generationSseResponse(
+          generationStreamStore.subscribe(generationId, null, requestSignal)
+        )
+      )
     }
 
     // Prefer post-claim node parts for resume context leaf rebuild.
@@ -165,7 +230,9 @@ export async function createGenerationResponse(
     let stepText = ""
     let stepReasoning = ""
     let settled = false
-    const abortSignal = AbortSignal.any([requestSignal, generation.signal])
+    // HTTP readers are subscribers only. Explicit server-side cancellation is
+    // the sole signal that may stop the provider request.
+    const abortSignal = generation.signal
 
     const flushStepTextReasoning = () => {
       const reasoning = stepReasoning.trim()
@@ -175,6 +242,25 @@ export async function createGenerationResponse(
         orderedParts = [...orderedParts, { type: "text", text: stepText }]
       stepText = ""
       stepReasoning = ""
+    }
+    const appendEvent = async (
+      event:
+        | { type: "text-delta"; delta: string }
+        | { type: "reasoning-delta"; delta: string }
+        | { type: "tool-upsert"; tool: ToolInvocationPart }
+        | { type: "error"; errorText: string }
+    ) => {
+      if (!producerHandle) throw new Error("Generation stream was not opened")
+      await generationStreamStore.append(producerHandle, event)
+    }
+    const cancellationWasRequested = async () => {
+      if (generation.signal.aborted) return true
+      try {
+        return await generationStreamStore.isCancelled(generationId)
+      } catch (error) {
+        console.warn("[nibchat/generation-cancel-check]", error)
+        return false
+      }
     }
 
     const finalizeOnce = async (
@@ -195,6 +281,7 @@ export async function createGenerationResponse(
       }
       await finalizeStreamingAssistant({
         nodeId: assistant.id,
+        generationId,
         outcome: resolved,
         parts,
         usage: payload.usage,
@@ -227,28 +314,38 @@ export async function createGenerationResponse(
       presencePenalty: config.presencePenalty,
       stopSequences: config.stopSequences,
       providerOptions: config.providerOptions as never,
-      onChunk: ({ chunk }) => {
-        if (chunk.type === "text-delta") stepText += chunk.text
-        if (chunk.type === "reasoning-delta") stepReasoning += chunk.text
+      onChunk: async ({ chunk }) => {
+        if (chunk.type === "text-delta") {
+          stepText += chunk.text
+          await appendEvent({ type: "text-delta", delta: chunk.text })
+        }
+        if (chunk.type === "reasoning-delta") {
+          stepReasoning += chunk.text
+          await appendEvent({ type: "reasoning-delta", delta: chunk.text })
+        }
         if (chunk.type === "tool-input-start") {
           flushStepTextReasoning()
-          orderedParts = upsertToolInvocation(orderedParts, {
+          const tool = {
             type: "tool-invocation",
             toolCallId: chunk.id,
             toolName: chunk.toolName,
             state: "input-streaming",
             input: {},
-          })
+          } satisfies ToolInvocationPart
+          orderedParts = upsertToolInvocation(orderedParts, tool)
+          await appendEvent({ type: "tool-upsert", tool })
         }
         if (chunk.type === "tool-call") {
           flushStepTextReasoning()
-          orderedParts = upsertToolInvocation(orderedParts, {
+          const tool = {
             type: "tool-invocation",
             toolCallId: chunk.toolCallId,
             toolName: chunk.toolName,
             state: "input-available",
             input: chunk.input,
-          })
+          } satisfies ToolInvocationPart
+          orderedParts = upsertToolInvocation(orderedParts, tool)
+          await appendEvent({ type: "tool-upsert", tool })
         }
         if (chunk.type === "tool-result") {
           flushStepTextReasoning()
@@ -256,14 +353,16 @@ export async function createGenerationResponse(
             (p): p is ToolInvocationPart =>
               p.type === "tool-invocation" && p.toolCallId === chunk.toolCallId
           )
-          orderedParts = upsertToolInvocation(orderedParts, {
+          const tool = {
             type: "tool-invocation",
             toolCallId: chunk.toolCallId,
             toolName: existing?.toolName ?? chunk.toolName,
             state: "output-available",
             input: existing?.input ?? chunk.input ?? {},
             output: chunk.output,
-          })
+          } satisfies ToolInvocationPart
+          orderedParts = upsertToolInvocation(orderedParts, tool)
+          await appendEvent({ type: "tool-upsert", tool })
         }
         if (chunk.type === "tool-error") {
           flushStepTextReasoning()
@@ -273,14 +372,16 @@ export async function createGenerationResponse(
           )
           const errorText = formatProviderError(chunk.error)
           console.warn("[nibchat/mcp-tool]", chunk.toolName, errorText)
-          orderedParts = upsertToolInvocation(orderedParts, {
+          const tool = {
             type: "tool-invocation",
             toolCallId: chunk.toolCallId,
             toolName: existing?.toolName ?? chunk.toolName,
             state: "output-error",
             input: existing?.input ?? chunk.input ?? {},
             errorText,
-          })
+          } satisfies ToolInvocationPart
+          orderedParts = upsertToolInvocation(orderedParts, tool)
+          await appendEvent({ type: "tool-upsert", tool })
         }
       },
       onFinish: async ({ usage, finishReason }) => {
@@ -309,7 +410,16 @@ export async function createGenerationResponse(
       },
       onError: async ({ error }) => {
         try {
+          if (await cancellationWasRequested()) {
+            generation.abort()
+            await finalizeOnce("aborted")
+            return
+          }
           console.error("[nibchat/stream]", error)
+          await appendEvent({
+            type: "error",
+            errorText: formatProviderError(error),
+          }).catch(() => {})
           await finalizeOnce("error", {
             error: formatProviderError(error),
           })
@@ -319,32 +429,73 @@ export async function createGenerationResponse(
       },
     })
 
-    const response = createUIMessageStreamResponse({
-      stream: toUIMessageStream({
-        stream: result.stream,
-        sendReasoning: true,
-        onError: formatProviderError,
-      }),
+    generationExecutor.execute({
+      generationId,
+      nodeId: assistant.id,
+      run: async () => {
+        if (!producerHandle) throw new Error("Generation stream was not opened")
+        try {
+          await result.consumeStream()
+        } catch (error) {
+          // A remote cancellation can make append reject before the producer
+          // guard's next poll aborts this local controller. Check before
+          // aborting locally so that failure still persists as stopped.
+          const cancelled = await cancellationWasRequested()
+          generation.abort()
+          if (!cancelled && producerHandle)
+            await generationStreamStore
+              .append(producerHandle, {
+                type: "error",
+                errorText: formatProviderError(error),
+              })
+              .catch(() => {})
+          await finalizeOnce(
+            cancelled ? "aborted" : "error",
+            cancelled ? {} : { error: formatProviderError(error) }
+          )
+        } finally {
+          producerGuards?.stop()
+          producerGuards = null
+          // Terminal assistant persistence is performed by the AI SDK callbacks
+          // above before its provider stream completes.
+          if (producerHandle) await generationStreamStore.close(producerHandle)
+        }
+      },
     })
 
-    const withHeaders = new Headers(response.headers)
-    for (const [k, v] of Object.entries(headers)) withHeaders.set(k, v)
-    withHeaders.set("X-Accel-Buffering", "no")
-    withHeaders.set("X-Nibchat-Assistant-Node", assistant.id)
-    return new Response(response.body, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: withHeaders,
-    })
+    return respond(
+      generationSseResponse(
+        generationStreamStore.subscribe(generationId, null, requestSignal)
+      )
+    )
   } catch (error) {
     if (claimSucceeded && resumeClaim) {
       try {
-        await restoreAwaitingInput(assistant.id, resumeClaim.originalParts)
+        await restoreAwaitingInput(
+          assistant.id,
+          resumeClaim.originalParts,
+          generationId
+        )
       } catch (restoreError) {
         console.error("[nibchat/stream] restoreAwaitingInput", restoreError)
       }
     }
+    if (!claimSucceeded) {
+      try {
+        await finalizeStreamingAssistant({
+          nodeId: assistant.id,
+          generationId,
+          outcome: "error",
+          parts: seedParts,
+          error: formatProviderError(error),
+        })
+      } catch (finalizeError) {
+        console.error("[nibchat/stream] setup finalization", finalizeError)
+      }
+    }
     dropRegistration()
+    producerGuards?.stop()
+    if (producerHandle) await generationStreamStore.close(producerHandle).catch(() => {})
     throw error
   }
 }

@@ -30,6 +30,30 @@ Nibchat streams responses from its Route Handler. With nginx or another reverse 
 
 Serverless deployments require PostgreSQL. Set `DATABASE_URL`, `BETTER_AUTH_SECRET`, and `BETTER_AUTH_URL`; do not use the SQLite default path on ephemeral instances.
 
+## Resumable generation streams
+
+The default `GENERATION_RUNTIME_MODE=stateful` and
+`GENERATION_STREAM_BACKEND=memory` need no additional service and work for one
+long-lived Node process. For serverless or multiple replicas, set
+`GENERATION_RUNTIME_MODE=stateless`, `GENERATION_STREAM_BACKEND=redis`, and
+`REDIS_URL`. Redis retains active token events so another invocation can replay
+them. It does not exceed the hosting platform's hard function duration: an
+interrupted provider connection is finalized as an interrupted response.
+
+`REDIS_URL` selects the Redis transport: `redis://` or `rediss://` opens one
+shared TCP connection; `http://` or `https://` POSTs each command as a JSON
+array (`["XADD", …]`). HTTP Redis accepts an optional `{ result }` / `{ error }`
+envelope. Set `REDIS_TOKEN` (or put the token in the URL userinfo) for Bearer
+auth. Prefer HTTP Redis on serverless hosts that cannot hold extra TCP
+connections.
+
+For local Redis, enable the optional profile and set
+`REDIS_URL=redis://redis:6379`:
+
+```bash
+docker compose --profile redis up --build
+```
+
 ## MCP deployments
 
 `MCP_RUNTIME_MODE=stateful` (the default) keeps one process-local connection per MCP profile and supports stdio, legacy SSE, and Streamable HTTP. Use it for the Docker deployment or another long-lived runtime.

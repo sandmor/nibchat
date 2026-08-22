@@ -101,9 +101,9 @@ describe("shouldSoftFollow", () => {
       assistantNodeId: "a1",
       toolResults: [{ toolCallId: "t1", output: [] }],
     }
-    expect(shouldSoftFollow(body, [node("u1"), node("a1")], "c1", "/chat/c1")).toBe(
-      true
-    )
+    expect(
+      shouldSoftFollow(body, [node("u1"), node("a1")], "c1", "/chat/c1")
+    ).toBe(true)
   })
 })
 
@@ -134,9 +134,8 @@ describe("streamPlacement", () => {
 })
 
 describe("readStreamEvents", () => {
-  it("forwards text and reasoning deltas", async () => {
-    const text: string[] = []
-    const reasoning: string[] = []
+  it("forwards ordered generation events", async () => {
+    const events: unknown[] = []
     await readStreamEvents(
       sseBody([
         { type: "text-delta", delta: "Hel" },
@@ -144,34 +143,64 @@ describe("readStreamEvents", () => {
         { type: "text-delta", delta: "lo" },
       ]),
       {
-        onText: (d) => text.push(d),
-        onReasoning: (d) => reasoning.push(d),
+        onEvent: (event) => events.push(event),
       }
     )
-    expect(text.join("")).toBe("Hello")
-    expect(reasoning.join("")).toBe("think")
+    expect(events).toHaveLength(3)
   })
 
-  it("forwards tool input lifecycle events", async () => {
+  it("reports SSE cursors alongside the stored UI event", async () => {
+    const encoder = new TextEncoder()
+    const cursors: string[] = []
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode('id: 42\ndata: {"type":"text-delta","delta":"x"}\n\n')
+        )
+        controller.close()
+      },
+    })
+    await readStreamEvents(body, {
+      onEvent: () => {},
+      onCursor: (cursor) => cursors.push(cursor),
+    })
+    expect(cursors).toEqual(["42"])
+  })
+
+  it("keeps an SSE cursor when id and data arrive in separate chunks", async () => {
+    const encoder = new TextEncoder()
+    const cursors: string[] = []
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("id: 42\n"))
+        controller.enqueue(encoder.encode('data: {"type":"text-delta","delta":"x"}\n\n'))
+        controller.close()
+      },
+    })
+    await readStreamEvents(body, {
+      onEvent: () => {},
+      onCursor: (cursor) => cursors.push(cursor),
+    })
+    expect(cursors).toEqual(["42"])
+  })
+
+  it("forwards tool upsert events", async () => {
     const tools: ToolInvocationPart[] = []
     await readStreamEvents(
       sseBody([
         {
-          type: "tool-input-start",
-          toolCallId: "c1",
-          toolName: "question",
+          type: "tool-upsert",
+          tool: { type: "tool-invocation", toolCallId: "c1", toolName: "question", state: "input-streaming", input: {} },
         },
         {
-          type: "tool-input-available",
-          toolCallId: "c1",
-          toolName: "question",
-          input: { questions: [] },
+          type: "tool-upsert",
+          tool: { type: "tool-invocation", toolCallId: "c1", toolName: "question", state: "input-available", input: { questions: [] } },
         },
       ]),
       {
-        onText: () => {},
-        onReasoning: () => {},
-        onTool: (t) => tools.push(t),
+        onEvent: (event) => {
+          if (event.type === "tool-upsert") tools.push(event.tool)
+        },
       }
     )
     expect(tools).toHaveLength(2)

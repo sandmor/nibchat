@@ -4,6 +4,13 @@ export type WorkspaceData = {
   chats: ChatRow[]
   chat: ChatRow | null
   nodes: NodeRow[]
+  activeGenerations: Array<{
+    generationId: string
+    nodeId: string
+    chatId: string
+    parentNodeId: string | null
+    startedAt: string
+  }>
 }
 
 /** Query key payload for workspace.get — null chatId + draft clears auto-select. */
@@ -41,6 +48,7 @@ export function omitChat(
     chats,
     chat: wasActive ? null : data.chat,
     nodes: wasActive ? [] : data.nodes,
+    activeGenerations: wasActive ? [] : data.activeGenerations,
   }
 }
 

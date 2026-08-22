@@ -81,6 +81,7 @@ export async function POST(request: Request) {
         .execute()
     const languageModel = await modelFor(user.id, config)
     const assistantMeta = streamMeta(config)
+    const generationId = crypto.randomUUID()
 
     let assistant: NodeRow
     let contextLeafId: string | null
@@ -117,6 +118,7 @@ export async function POST(request: Request) {
         content: message,
         attachments,
         assistantMetadata: assistantMeta,
+        generationId,
       })
       assistant = turn.assistant
       contextLeafId = turn.user.id
@@ -154,6 +156,7 @@ export async function POST(request: Request) {
       const result = await startRegenerate(
         user.id,
         body.assistantNodeId,
+        generationId,
         assistantMeta
       )
       assistant = result.assistant
@@ -167,6 +170,7 @@ export async function POST(request: Request) {
       const result = await startGenerate(
         user.id,
         body.parentNodeId,
+        generationId,
         assistantMeta
       )
       assistant = result.assistant
@@ -286,6 +290,7 @@ export async function POST(request: Request) {
             allNodes,
             previousMetadata: assistantMeta,
             resumeClaim: { originalParts: currentParts },
+            generationId,
           },
           headers
         )
@@ -298,7 +303,7 @@ export async function POST(request: Request) {
       }
     }
 
-      const resolved = await resolveStackForChat(chat, user.id)
+    const resolved = await resolveStackForChat(chat, user.id)
 
     const allNodes = await db
       .selectFrom("message_nodes")
@@ -320,6 +325,7 @@ export async function POST(request: Request) {
         allNodes,
         previousMetadata: assistantMeta,
         afterFinalize,
+        generationId,
       },
       headers
     )

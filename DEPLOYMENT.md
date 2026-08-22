@@ -28,6 +28,24 @@ The `postgres` profile starts Postgres (healthchecked). `nibchat` depends on it 
 
 Nibchat streams responses from its Route Handler. With nginx or another reverse proxy, disable response buffering for `/api/chat/stream` (for nginx: `proxy_buffering off`) and preserve streaming response bodies. The handler also sends `X-Accel-Buffering: no`.
 
+## Ollama
+
+Ollama stays an external service. In **Settings → Model providers**, choose
+kind **Ollama**, then **Local** or **Cloud**. Nibchat discovers models from
+that host; pull and manage them in Ollama.
+
+Local leaves Base URL blank for `http://127.0.0.1:11434` and needs no key.
+Cloud uses `https://ollama.com` plus a stored key, or an environment variable
+such as `OLLAMA_API_KEY`.
+
+Compose maps `host.docker.internal` to the Docker host. Use Base URL
+`http://host.docker.internal:11434` for Ollama on that machine. On Linux, bind
+Ollama beyond loopback (for example `OLLAMA_HOST=0.0.0.0:11434`) and restrict
+the port to trusted networks.
+
+Nibchat talks to Ollama from the server, not the browser. A daemon on a laptop
+cannot serve a remote instance unless you expose it on a secured network.
+
 Serverless deployments require PostgreSQL. Set `DATABASE_URL`, `BETTER_AUTH_SECRET`, and `BETTER_AUTH_URL`; do not use the SQLite default path on ephemeral instances.
 
 ## Resumable generation streams

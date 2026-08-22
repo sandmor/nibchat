@@ -5,6 +5,7 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
 import type { LanguageModel } from "ai"
 import { db } from "@/lib/db"
 import { parseJson } from "@/lib/domain"
+import { isOllamaCloudUrl, ollamaApiUrl } from "@/lib/ollama"
 import {
   firstEnabledModelId,
   isEnabledModelId,
@@ -124,7 +125,9 @@ export async function modelFor(
   const apiKey =
     profile.api_key ??
     (profile.api_key_env ? process.env[profile.api_key_env] : undefined)
-  if (!apiKey?.trim()) {
+  const ollamaCloud =
+    profile.kind === "ollama" && isOllamaCloudUrl(profile.base_url)
+  if (!apiKey?.trim() && (profile.kind !== "ollama" || ollamaCloud)) {
     const envHint = profile.api_key_env
       ? ` or set the ${profile.api_key_env} environment variable`
       : ""
@@ -137,6 +140,15 @@ export async function modelFor(
     return createOpenAI({ apiKey, baseURL: profile.base_url ?? undefined })(
       model
     )
+  if (profile.kind === "ollama")
+    return createOpenAICompatible({
+      name: "ollama",
+      // Local Ollama hosts do not need a key. More importantly, never send a
+      // credential retained from a Cloud profile to a local/custom endpoint.
+      apiKey: ollamaCloud ? apiKey?.trim() || undefined : undefined,
+      baseURL: ollamaApiUrl(profile.base_url, "v1"),
+      supportsStructuredOutputs: true,
+    })(model)
   return createOpenAICompatible({
     name: profile.name,
     apiKey,

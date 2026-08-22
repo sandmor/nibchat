@@ -52,6 +52,14 @@ export async function startMockLlm(): Promise<MockLlm> {
       res.end(JSON.stringify({ data: [{ id: "e2e-model" }] }))
       return
     }
+    if (
+      req.method === "GET" &&
+      /\/api\/tags\/?$/.test(url.split("?")[0] ?? "")
+    ) {
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({ models: [{ model: "e2e-model" }] }))
+      return
+    }
 
     if (
       req.method === "POST" &&

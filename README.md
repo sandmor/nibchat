@@ -10,6 +10,7 @@ Every AI chat client has features you love and features you hate. Here you choos
 
 - Appearance is handled through themes, defined through JSON (CSS vars, density, motion, optional remote stylesheet)
 - Full user control
+- First-class OpenAI, Anthropic, and Ollama providers, plus OpenAI-compatible endpoints
 - Chats are trees, made from messages with sibling branches, path selection, and search across all branches. Our goal is maximum flexibility and non-destructive editing, though the alternative is also possible.
 - No additional services required. SQLite by default; PostgreSQL is optional.
 - Serverless support. Stateful default.
@@ -51,7 +52,7 @@ Open the printed URL (or `/reset-password?token=…`).
 | `REDIS_URL`                 | Redis for generation streams (`redis://` TCP or `https://` HTTP)    |
 | `REDIS_TOKEN`               | Optional Bearer token for HTTP Redis                                |
 
-Copy [`.env.example`](./.env.example) to `.env` and fill secrets. See [DEPLOYMENT.md](./DEPLOYMENT.md).
+Copy [`.env.example`](./.env.example) to `.env` and fill secrets. See [DEPLOYMENT.md](./DEPLOYMENT.md) for Ollama Cloud, Docker host networking, and production.
 
 ## Development
 

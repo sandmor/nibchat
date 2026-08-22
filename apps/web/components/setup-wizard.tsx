@@ -28,6 +28,7 @@ import {
   asProviderKind,
   type ProviderKind,
 } from "@/lib/provider-kinds"
+import { isOllamaCloudUrl } from "@/lib/ollama"
 import {
   catalogNameMap,
   defaultPdfInputForProviderKind,
@@ -278,6 +279,7 @@ function ProviderFlow({
   const [baseUrl, setBaseUrl] = useState(initialProvider?.base_url ?? "")
   const [apiKey, setApiKey] = useState("")
   const [apiKeyEnv, setApiKeyEnv] = useState(initialProvider?.api_key_env ?? "")
+  const [clearApiKey, setClearApiKey] = useState(false)
   const [providerId, setProviderId] = useState(initialProvider?.id ?? "")
   const [models, setModels] = useState<ProviderModel[]>(() =>
     initialProvider ? parseProviderModelsJson(initialProvider.models_json) : []
@@ -333,6 +335,7 @@ function ProviderFlow({
       baseUrl: baseUrl.trim() || undefined,
       apiKey: includeKey ? apiKey.trim() || undefined : undefined,
       apiKeyEnv: apiKeyEnv.trim() || undefined,
+      clearApiKey: clearApiKey || undefined,
       models: modelsToPersist(
         models,
         catalogNameMap(catalog),
@@ -345,12 +348,10 @@ function ProviderFlow({
     if (!displayName.trim()) return "Give this provider a display name."
     if (kind === "openai-compatible" && !baseUrl.trim())
       return "Compatible endpoints need a base URL."
-    if (
+    const needsKey =
       kind !== "openai-compatible" &&
-      !providerId &&
-      !apiKey.trim() &&
-      !apiKeyEnv.trim()
-    )
+      (kind !== "ollama" || isOllamaCloudUrl(baseUrl))
+    if (needsKey && !providerId && !apiKey.trim() && !apiKeyEnv.trim())
       return "Add an API key or an environment variable name."
     return ""
   }
@@ -423,12 +424,14 @@ function ProviderFlow({
             baseUrl,
             apiKey,
             apiKeyEnv,
+            clearApiKey,
           }}
           onChange={(next) => {
             setKind(next.kind)
             setBaseUrl(next.baseUrl)
             setApiKey(next.apiKey)
             setApiKeyEnv(next.apiKeyEnv)
+            setClearApiKey(Boolean(next.clearApiKey))
             if (next.kind !== kind && !nameTouched) {
               setName(PROVIDER_KINDS[next.kind].name)
               return

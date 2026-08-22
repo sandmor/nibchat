@@ -6,6 +6,7 @@ import {
 } from "@/lib/app-session"
 import { parseJson } from "@/lib/domain"
 import { jsonError } from "@/lib/http-error"
+import { discoverOllamaModels } from "@/lib/provider-catalog"
 
 export const runtime = "nodejs"
 
@@ -29,7 +30,10 @@ export async function GET(request: Request) {
       .executeTakeFirst()
     const isOwner = owner?.owner_user_id === user.id
     if (url.searchParams.has("refresh") && !isOwner)
-      return Response.json({ error: "Only the owner can refresh catalogs" }, { status: 403 })
+      return Response.json(
+        { error: "Only the owner can refresh catalogs" },
+        { status: 403 }
+      )
     const cached = await db
       .selectFrom("model_catalog_cache")
       .selectAll()
@@ -50,10 +54,13 @@ export async function GET(request: Request) {
     if (!isOwner) return Response.json({ models: [] })
     let discovered: Array<{ id: string; name: string }> = []
     let discoverySucceeded = false
-    if (profile.kind === "openai-compatible" && profile.base_url) {
-      const apiKey =
-        profile.api_key ??
-        (profile.api_key_env ? process.env[profile.api_key_env] : undefined)
+    const apiKey =
+      profile.api_key ??
+      (profile.api_key_env ? process.env[profile.api_key_env] : undefined)
+    if (profile.kind === "ollama") {
+      discovered = await discoverOllamaModels(profile, apiKey)
+      discoverySucceeded = true
+    } else if (profile.kind === "openai-compatible" && profile.base_url) {
       const response = await fetch(
         new URL(
           "models",
@@ -76,7 +83,7 @@ export async function GET(request: Request) {
         )
       }
     }
-    if (!discovered.length) {
+    if (!discovered.length && profile.kind !== "ollama") {
       const response = await fetch("https://models.dev/api.json", {
         signal: AbortSignal.timeout(8000),
       })

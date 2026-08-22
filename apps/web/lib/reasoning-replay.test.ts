@@ -11,6 +11,8 @@ describe("replayReasoningEnabled", () => {
   it("defaults off for compatible endpoints", () => {
     expect(replayReasoningEnabled("openai-compatible", undefined)).toBe(false)
     expect(replayReasoningEnabled("openai-compatible", true)).toBe(true)
+    expect(replayReasoningEnabled("ollama", undefined)).toBe(false)
+    expect(replayReasoningEnabled("ollama", true)).toBe(true)
   })
 
   it("is off without a provider", () => {

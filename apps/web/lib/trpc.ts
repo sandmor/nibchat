@@ -143,10 +143,11 @@ const providerModelSchema = z.object({
 })
 const providerInputSchema = z.object({
   name: z.string().min(1).max(120),
-  kind: z.enum(["openai", "anthropic", "openai-compatible"]),
+  kind: z.enum(["openai", "anthropic", "ollama", "openai-compatible"]),
   baseUrl: z.string().optional(),
   apiKey: z.string().optional(),
   apiKeyEnv: z.string().optional(),
+  clearApiKey: z.boolean().optional(),
   models: z.array(providerModelSchema),
 })
 

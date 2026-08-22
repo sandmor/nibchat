@@ -5,6 +5,7 @@ import {
   createBackupArchive,
   createChat,
   createProvider,
+  updateProvider,
   finishSetup,
   getTitleModelConfig,
   createTurn,

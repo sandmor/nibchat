@@ -38,6 +38,7 @@ const emptyForm = {
   baseUrl: "",
   apiKey: "",
   apiKeyEnv: "",
+  clearApiKey: false,
 }
 
 export function ProviderSettings({
@@ -83,9 +84,7 @@ export function ProviderSettings({
   const createProvider = useMutation(
     trpc.workspace.createProvider.mutationOptions({
       onSuccess: (result) => {
-        toast.success(
-          "Provider saved."
-        )
+        toast.success("Provider saved.")
         setForm((current) => ({ ...current, apiKey: "" }))
         setEditingId(result.id)
         onSaved()
@@ -96,9 +95,7 @@ export function ProviderSettings({
   const updateProvider = useMutation(
     trpc.workspace.updateProvider.mutationOptions({
       onSuccess: () => {
-        toast.success(
-          "Provider saved."
-        )
+        toast.success("Provider saved.")
         setForm((current) => ({ ...current, apiKey: "" }))
         void invalidateTitleModel()
         onSaved()
@@ -129,6 +126,7 @@ export function ProviderSettings({
       baseUrl: form.baseUrl,
       apiKey: form.apiKey || undefined,
       apiKeyEnv: form.apiKeyEnv || undefined,
+      clearApiKey: form.clearApiKey || undefined,
     }
     if (editingId)
       await updateProvider.mutateAsync({ id: editingId, ...payload })
@@ -140,13 +138,13 @@ export function ProviderSettings({
       <CardHeader>
         <CardTitle>Model providers</CardTitle>
         <CardDescription>
-          Native OpenAI and Anthropic, plus any OpenAI-compatible endpoint. A
-          key may be stored here or read from any environment variable. Curate
-          which models appear in chats, and give them aliases.
+          Connect an API, then choose which models appear in chats. Store a key
+          here or name an environment variable.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <ProviderProfileFields
+          key={editingId ?? "new"}
           value={form}
           onChange={setForm}
           kindUi="select"
@@ -214,6 +212,7 @@ export function ProviderSettings({
                         baseUrl: provider.base_url ?? "",
                         apiKey: "",
                         apiKeyEnv: provider.api_key_env ?? "",
+                        clearApiKey: false,
                       })
                     }}
                   >

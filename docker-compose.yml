@@ -22,6 +22,9 @@ services:
       ATTACHMENT_FILESYSTEM_PATH: ${ATTACHMENT_FILESYSTEM_PATH:-/data/attachments}
     volumes:
       - ./data:/data
+    # Reach Ollama on the Docker host at http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy

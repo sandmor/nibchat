@@ -1308,10 +1308,11 @@ async function deleteSingleNodeWithSelectionRepair(
 
 type ProviderProfileInput = {
   name: string
-  kind: "openai" | "anthropic" | "openai-compatible"
+  kind: "openai" | "anthropic" | "ollama" | "openai-compatible"
   baseUrl?: string
   apiKey?: string
   apiKeyEnv?: string
+  clearApiKey?: boolean
   models: Array<{
     id: string
     label?: string
@@ -1383,10 +1384,12 @@ export async function updateProvider(
       name: profile.name,
       kind: profile.kind,
       base_url: profile.baseUrl || null,
-      ...(profile.apiKey !== undefined
+      ...(profile.clearApiKey
+        ? { api_key: null }
+        : profile.apiKey !== undefined
         ? { api_key: profile.apiKey || null }
         : {}),
-      api_key_env: profile.apiKeyEnv || null,
+      api_key_env: profile.clearApiKey ? null : profile.apiKeyEnv || null,
       models_json: providerModelsToJson(parseProviderModels(profile.models)),
       updated_at: now(),
     })

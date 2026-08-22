@@ -1,8 +1,6 @@
 "use client"
 
-import type { ReactNode } from "react"
-import { HugeiconsIcon } from "@hugeicons/react"
-import { Tick02Icon } from "@hugeicons/core-free-icons"
+import { useState, type ReactNode } from "react"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
@@ -12,12 +10,21 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import {
   PROVIDER_KIND_LABELS,
   PROVIDER_KIND_ORDER,
   PROVIDER_KINDS,
   type ProviderKind,
 } from "@/lib/provider-kinds"
+import {
+  OLLAMA_CLOUD_BASE_URL,
+  OLLAMA_DEFAULT_BASE_URL,
+  applyOllamaHostMode,
+  isOllamaCloudUrl,
+  isOllamaPresetUrl,
+  type OllamaHostMode,
+} from "@/lib/ollama"
 import { cn } from "@/lib/utils"
 
 export type ProviderProfileFieldsValue = {
@@ -26,6 +33,8 @@ export type ProviderProfileFieldsValue = {
   baseUrl: string
   apiKey: string
   apiKeyEnv: string
+  /** Set only after the user explicitly switches Ollama from Cloud to Local. */
+  clearApiKey: boolean
 }
 
 export function ProviderProfileFields({
@@ -45,16 +54,59 @@ export function ProviderProfileFields({
   apiKeyLabel?: string
   children?: ReactNode
 }) {
+  const ollama = value.kind === "ollama"
+  const [cloudChosen, setCloudChosen] = useState(() =>
+    isOllamaCloudUrl(value.baseUrl)
+  )
+  const ollamaMode: OllamaHostMode =
+    ollama && (cloudChosen || isOllamaCloudUrl(value.baseUrl))
+      ? "cloud"
+      : "local"
+  const showKeys =
+    !ollama ||
+    ollamaMode === "cloud" ||
+    Boolean(value.apiKey.trim() || value.apiKeyEnv.trim())
+  const baseUrlPlaceholder = ollama
+    ? ollamaMode === "cloud"
+      ? OLLAMA_CLOUD_BASE_URL
+      : OLLAMA_DEFAULT_BASE_URL
+    : "https://your-endpoint/v1"
+  const localHintId = "provider-base-url-hint"
+
   function patch(partial: Partial<ProviderProfileFieldsValue>) {
     onChange({ ...value, ...partial })
+  }
+
+  function setKind(next: ProviderKind) {
+    if (next === value.kind) return
+    setCloudChosen(next === "ollama" && isOllamaCloudUrl(value.baseUrl))
+    patch({
+      kind: next,
+      baseUrl:
+        value.kind === "ollama" && isOllamaPresetUrl(value.baseUrl)
+          ? ""
+          : value.baseUrl,
+    })
+  }
+
+  function setOllamaMode(mode: OllamaHostMode) {
+    setCloudChosen(mode === "cloud")
+    const leavingCloud =
+      isOllamaCloudUrl(value.baseUrl) && mode === "local"
+    patch({
+      baseUrl: applyOllamaHostMode(value.baseUrl, mode),
+      ...(leavingCloud
+        ? { apiKey: "", apiKeyEnv: "", clearApiKey: true }
+        : { clearApiKey: false }),
+    })
   }
 
   return (
     <div className="grid gap-3 sm:grid-cols-2">
       {kindUi === "cards" ? (
-        <fieldset className="grid gap-2 sm:col-span-2" disabled={disabled}>
+        <fieldset className="grid gap-1.5 sm:col-span-2" disabled={disabled}>
           <legend className="mb-1 text-sm font-medium">Kind</legend>
-          <div role="radiogroup" className="grid gap-2 sm:grid-cols-3">
+          <div role="radiogroup" className="grid gap-1.5">
             {PROVIDER_KIND_ORDER.map((id) => {
               const item = PROVIDER_KINDS[id]
               const selected = value.kind === id
@@ -64,32 +116,14 @@ export function ProviderProfileFields({
                   type="button"
                   role="radio"
                   aria-checked={selected}
-                  onClick={() => patch({ kind: id })}
+                  onClick={() => setKind(id)}
                   className={cn(
-                    "relative flex min-h-11 flex-col gap-0.5 rounded-2xl border border-input bg-input/20 px-3 py-3 text-left text-sm transition-colors outline-none hover:bg-input/40 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                    "flex items-center justify-between gap-3 rounded-2xl border border-input bg-input/20 px-3 py-2 text-left text-sm transition-colors outline-none hover:bg-input/40 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
                     selected && "border-primary/40 bg-primary/10"
                   )}
                 >
-                  <span className="flex items-center gap-2 font-medium">
-                    <span
-                      aria-hidden="true"
-                      className={cn(
-                        "flex size-4 shrink-0 items-center justify-center rounded-full border border-input-border",
-                        selected &&
-                          "border-primary bg-primary text-primary-foreground"
-                      )}
-                    >
-                      {selected ? (
-                        <HugeiconsIcon
-                          icon={Tick02Icon}
-                          strokeWidth={2}
-                          className="size-3"
-                        />
-                      ) : null}
-                    </span>
-                    {item.label}
-                  </span>
-                  <span className="pl-6 text-xs text-muted-foreground">
+                  <span className="font-medium">{item.label}</span>
+                  <span className="min-w-0 truncate text-right text-xs text-muted-foreground">
                     {item.description}
                   </span>
                 </button>
@@ -117,7 +151,7 @@ export function ProviderProfileFields({
             items={PROVIDER_KIND_LABELS}
             onValueChange={(next) => {
               if (next == null) return
-              patch({ kind: next as ProviderKind })
+              setKind(next as ProviderKind)
             }}
             disabled={disabled}
           >
@@ -134,38 +168,77 @@ export function ProviderProfileFields({
           </Select>
         </div>
       ) : null}
+      {ollama ? (
+        <div className="grid gap-1.5 sm:col-span-2">
+          <Label id="ollama-host-mode">Host</Label>
+          <ToggleGroup
+            value={[ollamaMode]}
+            onValueChange={(next) => {
+              const mode = next[0]
+              if (mode === "local" || mode === "cloud") setOllamaMode(mode)
+            }}
+            disabled={disabled}
+            variant="outline"
+            spacing={0}
+            size="sm"
+            aria-labelledby="ollama-host-mode"
+          >
+            <ToggleGroupItem value="local">Local</ToggleGroupItem>
+            <ToggleGroupItem value="cloud">Cloud</ToggleGroupItem>
+          </ToggleGroup>
+        </div>
+      ) : null}
       <div className="grid gap-1.5 sm:col-span-2">
         <Label htmlFor="provider-base-url">Base URL</Label>
+        {ollama && ollamaMode === "local" ? (
+          <p
+            id={localHintId}
+            className="text-xs text-pretty text-muted-foreground"
+          >
+            Leave blank for the local default.
+          </p>
+        ) : null}
         <Input
           id="provider-base-url"
           value={value.baseUrl}
           onChange={(event) => patch({ baseUrl: event.target.value })}
-          placeholder="https://your-endpoint/v1"
+          placeholder={baseUrlPlaceholder}
           disabled={disabled}
+          aria-describedby={
+            ollama && ollamaMode === "local" ? localHintId : undefined
+          }
         />
       </div>
-      <div className="grid gap-1.5">
-        <Label htmlFor="provider-api-key">{apiKeyLabel}</Label>
-        <Input
-          id="provider-api-key"
-          type="password"
-          value={value.apiKey}
-          onChange={(event) => patch({ apiKey: event.target.value })}
-          autoComplete="off"
-          placeholder={existing ? "Leave blank to keep existing" : undefined}
-          disabled={disabled}
-        />
-      </div>
-      <div className="grid gap-1.5">
-        <Label htmlFor="provider-api-key-env">Or environment variable</Label>
-        <Input
-          id="provider-api-key-env"
-          value={value.apiKeyEnv}
-          onChange={(event) => patch({ apiKeyEnv: event.target.value })}
-          placeholder="OPENAI_API_KEY"
-          disabled={disabled}
-        />
-      </div>
+      {showKeys ? (
+        <>
+          <div className="grid gap-1.5">
+            <Label htmlFor="provider-api-key">{apiKeyLabel}</Label>
+            <Input
+              id="provider-api-key"
+              type="password"
+              value={value.apiKey}
+              onChange={(event) => patch({ apiKey: event.target.value })}
+              autoComplete="off"
+              placeholder={
+                existing ? "Leave blank to keep existing" : undefined
+              }
+              disabled={disabled}
+            />
+          </div>
+          <div className="grid gap-1.5">
+            <Label htmlFor="provider-api-key-env">
+              Or environment variable
+            </Label>
+            <Input
+              id="provider-api-key-env"
+              value={value.apiKeyEnv}
+              onChange={(event) => patch({ apiKeyEnv: event.target.value })}
+              placeholder={ollama ? "OLLAMA_API_KEY" : "OPENAI_API_KEY"}
+              disabled={disabled}
+            />
+          </div>
+        </>
+      ) : null}
       {children}
     </div>
   )

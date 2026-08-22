@@ -3,10 +3,12 @@
  * Usage: pnpm --filter web reset-password -- owner@example.com
  */
 import { randomBytes, randomUUID } from "node:crypto"
-import { loadRootEnv } from "../lib/db/paths"
-import { db, migrate } from "../lib/db"
+import { monorepoRoot } from "../lib/db/paths"
+import { loadRootEnv } from "../lib/root-env"
 
-loadRootEnv()
+loadRootEnv(monorepoRoot())
+
+const { db, migrate } = await import("../lib/db")
 
 const email = process.argv[2]
 const baseUrl = (

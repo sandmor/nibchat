@@ -9,7 +9,7 @@ function root() {
     process.env.ATTACHMENT_FILESYSTEM_PATH ?? "./data/attachments"
   return path.isAbsolute(configured)
     ? configured
-    : path.join(monorepoRoot(), configured)
+    : path.join(/* turbopackIgnore: true */ monorepoRoot(), configured)
 }
 
 export function createFilesystemAttachmentStoragePort(): AttachmentStoragePort {
@@ -17,10 +17,10 @@ export function createFilesystemAttachmentStoragePort(): AttachmentStoragePort {
     kind: "filesystem",
     async put({ sha256, data }) {
       const storageKey = path.join(sha256.slice(0, 2), sha256)
-      const target = path.join(root(), storageKey)
+      const target = path.join(/* turbopackIgnore: true */ root(), storageKey)
       await mkdir(path.dirname(target), { recursive: true })
       try {
-        await stat(target)
+        await stat(/* turbopackIgnore: true */ target)
       } catch {
         const temporary = `${target}.${randomUUID()}.tmp`
         await writeFile(temporary, data, { flag: "wx" })
@@ -36,13 +36,23 @@ export function createFilesystemAttachmentStoragePort(): AttachmentStoragePort {
     async read({ storageKey }) {
       if (!storageKey) throw new Error("Attachment storage key is missing")
       try {
-        return new Uint8Array(await readFile(path.join(root(), storageKey)))
+        return new Uint8Array(
+          await readFile(
+            /* turbopackIgnore: true */ path.join(
+              /* turbopackIgnore: true */ root(),
+              storageKey
+            )
+          )
+        )
       } catch {
         throw new Error("Attachment file is missing")
       }
     },
     async remove({ storageKey }) {
-      if (storageKey) await rm(path.join(root(), storageKey), { force: true })
+      if (storageKey)
+        await rm(path.join(/* turbopackIgnore: true */ root(), storageKey), {
+          force: true,
+        })
     },
   }
 }

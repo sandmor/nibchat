@@ -1,6 +1,14 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react"
 import { AnimatePresence } from "motion/react"
 import { useRouter } from "next/navigation"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
@@ -33,10 +41,18 @@ import { chatStreamEntries, useStreamStore } from "@/lib/stream-store"
 import { useTRPC } from "@/lib/trpc-react"
 import {
   patchChatTitle,
+  patchChatViewState,
   patchSelection,
   workspaceInput,
   type WorkspaceData,
 } from "@/lib/workspace-cache"
+import {
+  DEFAULT_CHAT_VIEW_STATE,
+  chatViewCamerasEqual,
+  parseChatViewState,
+  type ChatViewCamera,
+  type ChatViewState,
+} from "@/lib/chat-view-state"
 import { motionTransition, shouldAnimate } from "@/lib/appearance"
 import type { ModelConfigLocal } from "./types"
 import { seedDraftModelConfig, usePrefersReducedMotion } from "./hooks"
@@ -45,6 +61,7 @@ import { GenerationParameters } from "./generation-parameters"
 import { PromptStackPicker } from "./prompt-stack-picker"
 import { ChatTranscript } from "./chat-transcript"
 import { ChatTree } from "./chat-tree"
+import { drainChatViewStateSaves } from "./chat-view-state-persistence"
 import { composeLayoutAnchor, composeLayoutId } from "./tree-layout"
 import { ConversationFindLayer } from "./conversation-find"
 import { ConversationFindBar } from "./conversation-find-bar"
@@ -96,6 +113,10 @@ function isPdfFile(file: File) {
   )
 }
 
+function readChatViewState(raw: string | undefined): ChatViewState {
+  return raw ? parseChatViewState(raw) : DEFAULT_CHAT_VIEW_STATE
+}
+
 export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const { appearance, providers: chromeProviders } = useWorkspaceChrome()
   const trpc = useTRPC()
@@ -103,6 +124,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const router = useRouter()
   /** URL-derived selection: null when drafting, string when on /chat/[id] */
   const selectedChatId = mode === "draft" ? null : chatId
+  const chatIdentity = chatRouteIdentity(selectedChatId)
   const linearComposerSlot = composerSlotId(selectedChatId, "linear", null)
   const updateSessionDraft = useConversationSessionStore(
     (state) => state.update
@@ -132,8 +154,29 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     null
   )
   const [inFlightCount, setInFlightCount] = useState(0)
-  /** Deliberately route-local: every chat opens in the familiar linear view. */
-  const [view, setView] = useState<"linear" | "tree">("linear")
+  const [viewState, setViewState] = useState<ChatViewState>(() =>
+    readChatViewState(initial.chat?.view_state_json)
+  )
+  const [viewStateIdentity, setViewStateIdentity] = useState(chatIdentity)
+  const viewStatesRef = useRef(new Map([[chatIdentity, viewState]]))
+  const pendingViewStatesRef = useRef(new Map<string, ChatViewState>())
+  const viewPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  )
+  const viewPersistingRef = useRef(false)
+  const viewSaveErrorShownRef = useRef(false)
+  // React can preserve this client component across soft navigation. Resetting
+  // during render prevents the prior chat's tree from committing for one frame.
+  let renderedViewState = viewState
+  if (viewStateIdentity !== chatIdentity) {
+    renderedViewState =
+      viewStatesRef.current.get(chatIdentity) ??
+      readChatViewState(initial.chat?.view_state_json)
+    viewStatesRef.current.set(chatIdentity, renderedViewState)
+    setViewState(renderedViewState)
+    setViewStateIdentity(chatIdentity)
+  }
+  const view = renderedViewState.mode
   /** User node id → compose-slot id. Tree owns the overlay; this only names the pair. */
   const [composeMorphs, setComposeMorphs] = useState<Record<string, string>>({})
   /** Which composer slot MCP pickers write into. */
@@ -207,7 +250,6 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
 
   // Soft-nav between /chat/[id] reuses this component instance. Drop scroll
   // targets and re-enable deep links for the chat now on screen.
-  const chatIdentity = chatRouteIdentity(selectedChatId)
   useEffect(() => {
     if (boundChatIdentityRef.current === chatIdentity) return
     const previous = boundChatIdentityRef.current
@@ -217,7 +259,6 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       const previousChatId = previous === "draft" ? null : previous
       disposeSessionChat(previousChatId)
     }
-    setView("linear")
     setPickerSlot(composerSlotId(selectedChatId, "linear", null))
     setComposeMorphs({})
     nodeDeepLinkDone.current = false
@@ -370,6 +411,107 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     })
   )
 
+  const setChatViewStateMutation = useMutation({
+    ...trpc.workspace.setChatViewState.mutationOptions(),
+    retry: 2,
+  })
+  const persistViewStateRef = useRef(setChatViewStateMutation.mutateAsync)
+  persistViewStateRef.current = setChatViewStateMutation.mutateAsync
+  const flushChatViewStateRef = useRef<() => void>(() => {})
+
+  const flushChatViewState = useCallback(() => {
+    if (viewPersistTimerRef.current) {
+      clearTimeout(viewPersistTimerRef.current)
+      viewPersistTimerRef.current = null
+    }
+    if (viewPersistingRef.current) return
+    viewPersistingRef.current = true
+    void (async () => {
+      let failed = false
+      try {
+        const result = await drainChatViewStateSaves(
+          pendingViewStatesRef.current,
+          persistViewStateRef.current,
+          {
+            onSaved: () => {
+              viewSaveErrorShownRef.current = false
+            },
+            onFailed: () => {
+              if (viewSaveErrorShownRef.current) return
+              viewSaveErrorShownRef.current = true
+              toast.error("Could not save conversation view")
+            },
+          }
+        )
+        failed = result.failed
+      } finally {
+        viewPersistingRef.current = false
+        if (!failed && pendingViewStatesRef.current.size > 0)
+          flushChatViewStateRef.current()
+      }
+    })()
+  }, [])
+  flushChatViewStateRef.current = flushChatViewState
+
+  const queueChatViewState = useCallback(
+    (chatId: string, state: ChatViewState, immediate = false) => {
+      pendingViewStatesRef.current.set(chatId, state)
+      queryClient.setQueriesData<WorkspaceData>(
+        trpc.workspace.get.queryFilter(),
+        (old) => patchChatViewState(old, chatId, state)
+      )
+      if (immediate) {
+        flushChatViewState()
+        return
+      }
+      if (viewPersistTimerRef.current) clearTimeout(viewPersistTimerRef.current)
+      viewPersistTimerRef.current = setTimeout(flushChatViewState, 300)
+    },
+    [flushChatViewState, queryClient, trpc.workspace.get]
+  )
+
+  const setPersistedView = useCallback<Dispatch<SetStateAction<"linear" | "tree">>>(
+    (next) => {
+      const current =
+        viewStatesRef.current.get(chatIdentity) ?? DEFAULT_CHAT_VIEW_STATE
+      const mode = typeof next === "function" ? next(current.mode) : next
+      if (mode === current.mode) return
+      const updated = { ...current, mode }
+      viewStatesRef.current.set(chatIdentity, updated)
+      setViewState(updated)
+      if (selectedChatId) queueChatViewState(selectedChatId, updated, true)
+    },
+    [chatIdentity, queueChatViewState, selectedChatId]
+  )
+
+  const persistTreeCamera = useCallback(
+    (chatId: string, camera: ChatViewCamera | null) => {
+      const current = viewStatesRef.current.get(chatId)
+      if (!current) return
+      if (chatViewCamerasEqual(current.camera, camera)) return
+      const updated = { ...current, camera }
+      viewStatesRef.current.set(chatId, updated)
+      // ChatTree owns the live camera. Updating React state here would rebuild
+      // the pane on every pan; setPersistedView reads the ref on mode changes.
+      queueChatViewState(chatId, updated, true)
+    },
+    [queueChatViewState]
+  )
+
+  useEffect(() => {
+    const flushOnHidden = () => {
+      if (document.visibilityState === "hidden") flushChatViewState()
+    }
+    const flushOnOnline = () => flushChatViewState()
+    document.addEventListener("visibilitychange", flushOnHidden)
+    window.addEventListener("online", flushOnOnline)
+    return () => {
+      document.removeEventListener("visibilitychange", flushOnHidden)
+      window.removeEventListener("online", flushOnOnline)
+      flushChatViewState()
+    }
+  }, [flushChatViewState])
+
   const selectChildMutation = useMutation(
     trpc.workspace.selectChild.mutationOptions({
       onMutate: async (input) => {
@@ -454,7 +596,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const find = useConversationFindSession({
     chatIdentity,
     view,
-    setView,
+    setView: setPersistedView,
     nodes: data.nodes,
     pathIds,
     pathChatId: data.chat?.id ?? chatId,
@@ -1205,7 +1347,9 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
               className="gap-1.5"
               disabled={!data.chat}
               onClick={() =>
-                setView((current) => (current === "tree" ? "linear" : "tree"))
+                setPersistedView((current) =>
+                  current === "tree" ? "linear" : "tree"
+                )
               }
             >
               <HugeiconsIcon
@@ -1343,6 +1487,10 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
               onAnswerTools={streamTreeResume}
               onStop={() =>
                 streamsForActiveChat.forEach(([id]) => stopStream(id))
+              }
+              initialCamera={renderedViewState.camera}
+              onCameraChange={(camera) =>
+                persistTreeCamera(data.chat!.id, camera)
               }
             />
           )}

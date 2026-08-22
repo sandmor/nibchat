@@ -40,6 +40,11 @@ import { seedChatTitle } from "@/lib/chat-title"
 import { defaultModelConfig, type ModelConfig } from "@/lib/providers"
 import { orderNodesForInsert, parseBackup, type Backup } from "@/lib/backup"
 import {
+  parseChatViewState,
+  chatViewStateToJson,
+  type ChatViewState,
+} from "@/lib/chat-view-state"
+import {
   isEnabledModelId,
   parseProviderModels,
   parseProviderModelsJson,
@@ -221,6 +226,7 @@ export async function createChat(
     title,
     selected_root_node_id: null,
     model_config_json: JSON.stringify(resolved),
+    view_state_json: chatViewStateToJson({ mode: "linear", camera: null }),
     prompt_stack_id: promptStackId ?? null,
     created_at: timestamp,
     updated_at: timestamp,
@@ -456,6 +462,29 @@ export async function updateChat(
         : {}),
       updated_at: now(),
     })
+    .where("id", "=", chatId)
+    .execute()
+}
+
+/** Persist presentation separately so moving around a tree never reorders chats. */
+export async function setChatViewState(
+  userId: string,
+  chatId: string,
+  state: ChatViewState
+) {
+  await assertChatOwner(chatId, userId)
+  if (state.camera) {
+    const anchor = await db
+      .selectFrom("message_nodes")
+      .select("id")
+      .where("id", "=", state.camera.anchorNodeId)
+      .where("chat_id", "=", chatId)
+      .executeTakeFirst()
+    if (!anchor) throw new Error("Tree camera anchor not found")
+  }
+  await db
+    .updateTable("chats")
+    .set({ view_state_json: chatViewStateToJson(state) })
     .where("id", "=", chatId)
     .execute()
 }
@@ -1146,6 +1175,7 @@ async function deleteStreamingShell(
     return "superseded"
   }
 
+  await clearDeletedTreeCamera(node.chat_id, new Set([node.id]))
   await deleteSingleNodeWithSelectionRepair(node)
   return "deleted"
 }
@@ -1160,6 +1190,7 @@ export async function deleteNode(
   if (mode === "reparent") {
     abortGenerations([node.id])
     await cancelGenerationRuns([node.id])
+    await clearDeletedTreeCamera(node.chat_id, new Set([node.id]))
     await deleteNodeInternal(node.id, node.chat_id, "reparent")
     await cleanupDetachedAttachments()
     return
@@ -1171,10 +1202,29 @@ export async function deleteNode(
     .select(["id", "parent_id"])
     .where("chat_id", "=", node.chat_id)
     .execute()
-  abortGenerations(subtreeNodeIds(chatNodes, node.id))
-  await cancelGenerationRuns(subtreeNodeIds(chatNodes, node.id))
+  const deletedIds = subtreeNodeIds(chatNodes, node.id)
+  abortGenerations(deletedIds)
+  await cancelGenerationRuns(deletedIds)
+  await clearDeletedTreeCamera(node.chat_id, new Set(deletedIds))
   await deleteNodeInternal(node.id, node.chat_id, "subtree")
   await cleanupDetachedAttachments()
+}
+
+/** A deleted anchor cannot be restored meaningfully, but its view mode can. */
+async function clearDeletedTreeCamera(chatId: string, deletedIds: ReadonlySet<string>) {
+  const chat = await db
+    .selectFrom("chats")
+    .select("view_state_json")
+    .where("id", "=", chatId)
+    .executeTakeFirst()
+  if (!chat) return
+  const state = parseChatViewState(chat.view_state_json)
+  if (!state.camera || !deletedIds.has(state.camera.anchorNodeId)) return
+  await db
+    .updateTable("chats")
+    .set({ view_state_json: chatViewStateToJson({ ...state, camera: null }) })
+    .where("id", "=", chatId)
+    .execute()
 }
 
 /**
@@ -1792,6 +1842,7 @@ async function restoreOwnerBackup(
         title: chat.title,
         selected_root_node_id: chat.selected_root_node_id,
         model_config_json: chat.model_config_json,
+        view_state_json: chat.view_state_json,
         prompt_stack_id: chat.prompt_stack_id ?? null,
         created_at: chat.created_at,
         updated_at: chat.updated_at,
@@ -2002,6 +2053,15 @@ function validateMultiUserBackup(
       throw new Error(`Backup node ${node.id} references an unknown chat`)
   }
   const nodes = new Set(backup.nodes.map((node) => node.id))
+  const nodeChatIds = new Map(backup.nodes.map((node) => [node.id, node.chat_id]))
+  for (const chat of backup.chats) {
+    const state = parseChatViewState(chat.view_state_json)
+    if (
+      state.camera &&
+      nodeChatIds.get(state.camera.anchorNodeId) !== chat.id
+    )
+      throw new Error("Backup chat view references a node outside its conversation")
+  }
   const attachments = new Set(
     backup.attachments.map((attachment) => attachment.id)
   )
@@ -2227,6 +2287,7 @@ async function restoreMultiUserBackup(
             title: chat.title,
             selected_root_node_id: chat.selected_root_node_id,
             model_config_json: chat.model_config_json,
+            view_state_json: chat.view_state_json,
             prompt_stack_id: chat.prompt_stack_id ?? null,
             created_at: chat.created_at,
             updated_at: chat.updated_at,

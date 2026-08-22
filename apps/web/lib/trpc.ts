@@ -39,6 +39,7 @@ import {
   updateChat,
   updatePromptStack,
   updateProvider,
+  setChatViewState,
 } from "@/lib/chat-service"
 import { listAvailableProviders, listProviders } from "@/lib/providers"
 import { appearanceSchema } from "@/lib/appearance"
@@ -56,6 +57,7 @@ import {
 } from "@/lib/mcp"
 import { messageEditSegmentSchema } from "@/lib/agent/parts"
 import { setUserThemeMode } from "@/lib/user-settings"
+import { chatViewStateSchema } from "@/lib/chat-view-state"
 import { db } from "@/lib/db"
 import {
   createManagedUser,
@@ -273,6 +275,16 @@ export const appRouter = t.router({
       .mutation(async ({ ctx, input }) => {
         try {
           await updateChat(input.chatId, { title: input.title }, ctx.user.id)
+          return { ok: true }
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    setChatViewState: userProcedure
+      .input(z.object({ chatId: z.string(), state: chatViewStateSchema }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          await setChatViewState(ctx.user.id, input.chatId, input.state)
           return { ok: true }
         } catch (error) {
           mapError(error)

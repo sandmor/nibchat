@@ -7,6 +7,9 @@ import {
   WORK_LEAVE,
   applyCameraTransform,
   applyZoomCssVars,
+  cameraFromPersistedView,
+  cameraToPersistedView,
+  canCommitPersistedCamera,
   cameraTransform,
   centerOnRect,
   clampScale,
@@ -76,6 +79,76 @@ describe("tree camera", () => {
     applyCameraTransform(el, camera)
     expect(el.style.transform).toBe(cameraTransform(camera))
     expect(el.style.transform).toBe("translate(12px, -4px) scale(0.5)")
+  })
+})
+
+describe("persisted tree camera", () => {
+  const rects = new Map([
+    ["near", { x: 100, y: 80, width: 200, height: 120 }],
+    ["far", { x: 2000, y: 2000, width: 200, height: 120 }],
+  ])
+
+  it("round-trips through a durable anchor and proportional offset", () => {
+    const camera = { x: 160, y: 70, scale: 0.9 }
+    const viewport = { width: 1000, height: 600 }
+    const saved = cameraToPersistedView(camera, viewport, rects, ["near", "far"])
+    expect(saved?.anchorNodeId).toBe("near")
+    const restored = cameraFromPersistedView(saved!, viewport, rects)!
+    expect(restored.scale).toBe(camera.scale)
+    expect(restored.x).toBeCloseTo(camera.x)
+    expect(restored.y).toBeCloseTo(camera.y)
+  })
+
+  it("keeps the anchor at the same viewport proportions after resize", () => {
+    const camera = { x: 160, y: 70, scale: 0.9 }
+    const saved = cameraToPersistedView(camera, { width: 1000, height: 600 }, rects, ["near"])
+    const restored = cameraFromPersistedView(saved!, { width: 500, height: 900 }, rects)!
+    const rect = rects.get("near")!
+    const x = restored.x + (rect.x + rect.width / 2) * restored.scale
+    const y = restored.y + (rect.y + rect.height / 2) * restored.scale
+    expect(x / 500).toBeCloseTo(0.5 + saved!.offsetX)
+    expect(y / 900).toBeCloseTo(0.5 + saved!.offsetY)
+  })
+
+  it("keeps the anchor at the same viewport proportions after layout reflow", () => {
+    const saved = {
+      anchorNodeId: "far",
+      offsetX: 0.12,
+      offsetY: -0.18,
+      zoom: 0.9,
+    }
+    const reflowed = new Map([
+      ["near", { x: 100, y: 80, width: 200, height: 220 }],
+      ["far", { x: 2000, y: 2330, width: 200, height: 120 }],
+    ])
+    const viewport = { width: 1000, height: 600 }
+    const restored = cameraFromPersistedView(saved, viewport, reflowed)!
+    const anchor = reflowed.get("far")!
+    const x = restored.x + (anchor.x + anchor.width / 2) * restored.scale
+    const y = restored.y + (anchor.y + anchor.height / 2) * restored.scale
+
+    expect(x / viewport.width).toBeCloseTo(0.5 + saved.offsetX)
+    expect(y / viewport.height).toBeCloseTo(0.5 + saved.offsetY)
+  })
+
+  it("cannot restore a deleted anchor", () => {
+    expect(
+      cameraFromPersistedView(
+        { anchorNodeId: "gone", offsetX: 0, offsetY: 0, zoom: 0.82 },
+        { width: 800, height: 600 },
+        rects
+      )
+    ).toBeNull()
+  })
+
+  it("refuses to commit until the camera was shown at a real viewport", () => {
+    expect(canCommitPersistedCamera(false, { width: 800, height: 600 })).toBe(
+      false
+    )
+    expect(canCommitPersistedCamera(true, { width: 0, height: 600 })).toBe(false)
+    expect(canCommitPersistedCamera(true, { width: 800, height: 600 })).toBe(
+      true
+    )
   })
 })
 

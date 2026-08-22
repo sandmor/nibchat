@@ -1,6 +1,7 @@
 import { z } from "zod"
 import { appearanceSchema } from "@/lib/appearance"
 import { isProviderModelsJson } from "@/lib/provider-models"
+import { chatViewStateSchema } from "@/lib/chat-view-state"
 
 const chatRowSchema = z
   .object({
@@ -9,6 +10,13 @@ const chatRowSchema = z
     title: z.string().nullable(),
     selected_root_node_id: z.string().nullable(),
     model_config_json: z.string(),
+    view_state_json: z.string().refine((value) => {
+      try {
+        return chatViewStateSchema.safeParse(JSON.parse(value)).success
+      } catch {
+        return false
+      }
+    }, "Invalid chat view state"),
     prompt_stack_id: z.string().nullable().optional(),
     created_at: z.string(),
     updated_at: z.string(),

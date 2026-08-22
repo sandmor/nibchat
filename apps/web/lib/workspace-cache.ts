@@ -1,4 +1,5 @@
 import type { ChatRow, NodeRow } from "@/lib/types"
+import { chatViewStateToJson, type ChatViewState } from "@/lib/chat-view-state"
 
 export type WorkspaceData = {
   chats: ChatRow[]
@@ -33,6 +34,24 @@ export function patchChatTitle(
       chat.id === chatId ? { ...chat, title } : chat
     ),
     chat: data.chat?.id === chatId ? { ...data.chat, title } : data.chat,
+  }
+}
+
+/** Optimistic durable presentation state; it must not affect list ordering. */
+export function patchChatViewState(
+  data: WorkspaceData | undefined,
+  chatId: string,
+  state: ChatViewState
+): WorkspaceData | undefined {
+  if (!data) return data
+  const patch = (chat: ChatRow) =>
+    chat.id === chatId
+      ? { ...chat, view_state_json: chatViewStateToJson(state) }
+      : chat
+  return {
+    ...data,
+    chats: data.chats.map(patch),
+    chat: data.chat ? patch(data.chat) : null,
   }
 }
 

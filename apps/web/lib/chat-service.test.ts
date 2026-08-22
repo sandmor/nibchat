@@ -21,6 +21,7 @@ import {
   setNodeContextExcluded,
   startGenerate,
   startRegenerate,
+  setChatViewState,
 } from "@/lib/chat-service"
 import { getGenerationRun } from "@/lib/generation-runs"
 import { generationStreamStore } from "@/lib/generation-streams/default-port"
@@ -44,6 +45,7 @@ import {
 import { getUserSettings } from "@/lib/user-settings"
 import { SEED_THEMES } from "@/lib/appearance"
 import { defaultPromptStack, promptStackToJson } from "@/lib/prompt-stack"
+import { parseChatViewState } from "@/lib/chat-view-state"
 
 const userId = "test-owner"
 afterEach(() => {
@@ -561,6 +563,77 @@ describe("SQLite chat repository", () => {
     expect(workspace.nodes.some((n) => n.id === b.id)).toBe(false)
     const rootRow = workspace.nodes.find((n) => n.id === root.id)
     expect(rootRow?.selected_child_id).toBe(a.id)
+  })
+
+  it("persists conversation view without bumping updated_at", async () => {
+    const chat = await createChat(userId, "View state")
+    const node = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "hello" }],
+    })
+    const before = await getWorkspace(userId, { chatId: chat.id })
+    const camera = {
+      anchorNodeId: node.id,
+      offsetX: 0.1,
+      offsetY: -0.2,
+      zoom: 0.9,
+    }
+    await setChatViewState(userId, chat.id, { mode: "tree", camera })
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    expect(parseChatViewState(workspace.chat!.view_state_json)).toEqual({
+      mode: "tree",
+      camera,
+    })
+    expect(workspace.chat!.updated_at).toBe(before.chat!.updated_at)
+  })
+
+  it("rejects a camera anchored on another conversation", async () => {
+    const home = await createChat(userId, "Home")
+    const other = await createChat(userId, "Other")
+    const node = await insertNode({
+      chatId: other.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "elsewhere" }],
+    })
+    await expect(
+      setChatViewState(userId, home.id, {
+        mode: "tree",
+        camera: {
+          anchorNodeId: node.id,
+          offsetX: 0,
+          offsetY: 0,
+          zoom: 0.82,
+        },
+      })
+    ).rejects.toThrow(/anchor/)
+  })
+
+  it("clears a deleted camera anchor and keeps the view mode", async () => {
+    const chat = await createChat(userId, "Clear camera")
+    const node = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "root" }],
+    })
+    await setChatViewState(userId, chat.id, {
+      mode: "tree",
+      camera: {
+        anchorNodeId: node.id,
+        offsetX: 0,
+        offsetY: 0,
+        zoom: 0.9,
+      },
+    })
+    await deleteNode(userId, node.id, "subtree")
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    expect(parseChatViewState(workspace.chat!.view_state_json)).toEqual({
+      mode: "tree",
+      camera: null,
+    })
   })
 
   it("seeds new chats from latest chat model config when available", async () => {
@@ -1572,6 +1645,7 @@ function fixtureChat(id: string, ownerId: string) {
     title: id,
     selected_root_node_id: null,
     model_config_json: "{}",
+    view_state_json: '{"mode":"linear","camera":null}',
     created_at: "t",
     updated_at: "t",
   }

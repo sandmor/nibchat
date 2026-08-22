@@ -24,6 +24,7 @@ import { Button } from "@/components/ui/button"
 import { motion } from "motion/react"
 import { cn } from "@/lib/utils"
 import type { NodeRow } from "@/lib/types"
+import type { ChatViewCamera } from "@/lib/chat-view-state"
 import type { ProviderSummary } from "./types"
 import { ComposeSlot, TreeHandoff, TreePlaque } from "./tree-card"
 import { Message } from "./message"
@@ -50,6 +51,9 @@ import {
   applyMinimapView,
   applyZoomCssVars,
   cameraEqual,
+  cameraFromPersistedView,
+  cameraToPersistedView,
+  canCommitPersistedCamera,
   centerOnRect,
   consumeTreeWheel,
   createTreeViewStore,
@@ -118,6 +122,8 @@ export function ChatTree({
   onGenerateUnder,
   onAnswerTools,
   onStop,
+  initialCamera = null,
+  onCameraChange,
 }: {
   nodes: NodeRow[]
   activePath: NodeRow[]
@@ -154,6 +160,8 @@ export function ChatTree({
     results: Array<{ toolCallId: string; output: unknown }>
   ) => void
   onStop: () => void
+  initialCamera?: ChatViewCamera | null
+  onCameraChange?: (camera: ChatViewCamera | null) => void
 }) {
   const viewportRef = useRef<HTMLDivElement>(null)
   const worldRef = useRef<HTMLDivElement>(null)
@@ -190,6 +198,7 @@ export function ChatTree({
     ArrayLike<{ setAttribute: (name: string, value: string) => void }>
   >([])
   const viewRafRef = useRef(0)
+  const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastCullViewRef = useRef<TreeRect | null>(null)
   const lastCullScaleRef = useRef(DEFAULT_CAMERA.scale)
   const zoomCssScaleRef = useRef(Number.NaN)
@@ -221,6 +230,12 @@ export function ChatTree({
   const forestTransition =
     animate && forestMotion ? transition : { ...transition, duration: 0 }
   const layoutRef = useRef(layout)
+  const nodeIdsRef = useRef(nodes.map((node) => node.id))
+  const onCameraChangeRef = useRef(onCameraChange)
+  const initialCameraAppliedRef = useRef(false)
+  const [initialCameraRestorePass, setInitialCameraRestorePass] = useState(0)
+  const cameraReadyRef = useRef(false)
+  const [cameraReady, setCameraReady] = useState(false)
   const moveCameraRef = useRef<(next: Camera, immediate?: boolean) => void>(
     () => {}
   )
@@ -330,6 +345,39 @@ export function ChatTree({
 
   const viewportMetrics = () => viewportSizeRef.current
 
+  const markCameraReady = () => {
+    if (cameraReadyRef.current) return
+    cameraReadyRef.current = true
+    setCameraReady(true)
+  }
+
+  const flushCameraPersistence = () => {
+    if (persistTimerRef.current) {
+      clearTimeout(persistTimerRef.current)
+      persistTimerRef.current = null
+    }
+    const viewport = viewportMetrics()
+    if (!canCommitPersistedCamera(cameraReadyRef.current, viewport)) return
+    onCameraChangeRef.current?.(
+      cameraToPersistedView(
+        cameraRef.current,
+        viewport,
+        layoutRef.current.rects,
+        nodeIdsRef.current
+      )
+    )
+  }
+
+  const scheduleCameraPersistence = (immediate = false) => {
+    if (!onCameraChangeRef.current || !cameraReadyRef.current) return
+    if (immediate) {
+      flushCameraPersistence()
+      return
+    }
+    if (persistTimerRef.current) clearTimeout(persistTimerRef.current)
+    persistTimerRef.current = setTimeout(flushCameraPersistence, 300)
+  }
+
   const viewportPoint = (clientX: number, clientY: number) => {
     const box = viewportRef.current?.getBoundingClientRect()
     if (!box) return { x: 0, y: 0 }
@@ -384,10 +432,13 @@ export function ChatTree({
     if (cameraEqual(cameraRef.current, next)) return
     paintCamera(next, Boolean(animate && !immediate))
     scheduleView()
+    scheduleCameraPersistence()
   }
 
   useLayoutEffect(() => {
     layoutRef.current = layout
+    nodeIdsRef.current = nodes.map((node) => node.id)
+    onCameraChangeRef.current = onCameraChange
     moveCameraRef.current = moveCamera
     const viewport = viewportRef.current
     minimapViewsRef.current = viewport
@@ -403,12 +454,62 @@ export function ChatTree({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layout, viewportSize, mapOpen])
 
+  useLayoutEffect(() => {
+    if (initialCameraAppliedRef.current || !initialCamera) return
+    const restored = cameraFromPersistedView(
+      initialCamera,
+      viewportMetrics(),
+      layout.rects
+    )
+    if (!restored) return
+
+    // First aim at the saved anchor so its nearby cards render. Their measured
+    // heights can move every later row, including the anchor itself.
+    didCenter.current = true
+    paintCamera(restored, false)
+    commitView(true)
+
+    const world = worldRef.current
+    const measured = world
+      ? readTreeCardSizes(
+          sizes,
+          world.querySelectorAll("[data-tree-size]")
+        )
+      : sizes
+    if (measured !== sizes) {
+      setSizes(measured)
+      return
+    }
+
+    // The first pass only changes the cull window. Let React render and measure
+    // that window before treating this camera as restored.
+    if (initialCameraRestorePass === 0) {
+      setInitialCameraRestorePass(1)
+      return
+    }
+
+    initialCameraAppliedRef.current = true
+    markCameraReady()
+    // The saved camera is deliberately applied before the default tip focus.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialCamera, initialCameraRestorePass, layout, sizes, viewportSize])
+
   useEffect(() => {
     return () => {
-      if (!viewRafRef.current) return
-      cancelAnimationFrame(viewRafRef.current)
-      viewRafRef.current = 0
+      if (viewRafRef.current) {
+        cancelAnimationFrame(viewRafRef.current)
+        viewRafRef.current = 0
+      }
+      flushCameraPersistence()
     }
+  }, [])
+
+  useEffect(() => {
+    const flushOnHidden = () => {
+      if (document.visibilityState === "hidden") flushCameraPersistence()
+    }
+    document.addEventListener("visibilitychange", flushOnHidden)
+    return () => document.removeEventListener("visibilitychange", flushOnHidden)
   }, [])
 
   const centerOn = useCallback(
@@ -465,26 +566,44 @@ export function ChatTree({
     if (didCenter.current) return
     if (findLocate) return
     const tip = activePath.at(-1)?.id
-    if (!tip || !layout.rects.has(tip) || !viewportRef.current) return
+    const viewport = viewportMetrics()
+    if (
+      !tip ||
+      !layout.rects.has(tip) ||
+      viewport.width <= 0 ||
+      viewport.height <= 0
+    )
+      return
     didCenter.current = true
     setFocusedId(tip)
+    markCameraReady()
     centerOn(tip, undefined, true)
     // One-shot camera: tree focus is independent from later linear selection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layout, activePath, findLocate])
+  }, [layout, activePath, findLocate, viewportSize])
 
   useLayoutEffect(() => {
+    if (cameraReady || viewportSize.width <= 0 || viewportSize.height <= 0)
+      return
+    if (initialCamera || activePath.at(-1)?.id) return
+    markCameraReady()
+  }, [cameraReady, viewportSize, initialCamera, activePath])
+
+  useLayoutEffect(() => {
+    const viewport = viewportMetrics()
     if (
       !focusTargetId ||
       !layout.rects.has(focusTargetId) ||
-      !viewportRef.current
+      viewport.width <= 0 ||
+      viewport.height <= 0
     )
       return
     didCenter.current = true
     setFocusedId(focusTargetId)
+    markCameraReady()
     centerOn(focusTargetId)
     onFocusTargetConsumed?.()
-  }, [focusTargetId, layout, centerOn, onFocusTargetConsumed])
+  }, [focusTargetId, layout, centerOn, onFocusTargetConsumed, viewportSize])
 
   useLayoutEffect(() => {
     if (!findLocate) {
@@ -492,17 +611,18 @@ export function ChatTree({
       return
     }
     if (findLocateAppliedKeyRef.current === findLocate.key) return
-    if (!layout.rects.has(findLocate.nodeId) || !viewportRef.current) return
+    const viewport = viewportMetrics()
+    if (
+      !layout.rects.has(findLocate.nodeId) ||
+      viewport.width <= 0 ||
+      viewport.height <= 0
+    )
+      return
     findLocateAppliedKeyRef.current = findLocate.key
     didCenter.current = true
     const id = findLocate.nodeId
     const rect = layout.rects.get(id)
     if (!rect) return
-    const viewport = viewportRef.current
-    const viewportSizeNow = {
-      width: viewport.clientWidth,
-      height: viewport.clientHeight,
-    }
     const paint = nodePaint({
       rect,
       scale: cameraRef.current.scale,
@@ -512,10 +632,11 @@ export function ChatTree({
     const alreadyOnCard =
       focusedIdRef.current === id &&
       paint === "live" &&
-      rectFullyVisible(rect, cameraRef.current, viewportSizeNow)
+      rectFullyVisible(rect, cameraRef.current, viewport)
     setFocusedId(id)
+    markCameraReady()
     if (!alreadyOnCard) centerOnLive(id)
-  }, [findLocate, layout, centerOnLive])
+  }, [findLocate, layout, centerOnLive, viewportSize])
 
   useLayoutEffect(() => {
     const world = worldRef.current
@@ -689,6 +810,7 @@ export function ChatTree({
         if (event.currentTarget.hasPointerCapture(event.pointerId))
           event.currentTarget.releasePointerCapture(event.pointerId)
         delete event.currentTarget.dataset.panning
+        if (state?.mode === "pan") flushCameraPersistence()
         if (!state || state.mode !== "pending") return
         const target = event.target
         if (!(target instanceof Element)) return
@@ -709,7 +831,8 @@ export function ChatTree({
       <div
         ref={worldRef}
         data-tree-world
-        className="absolute origin-top-left will-change-transform"
+        data-camera-ready={cameraReady ? "" : undefined}
+        className="absolute origin-top-left opacity-0 will-change-transform data-[camera-ready]:opacity-100"
         style={{
           width: layout.bounds.width,
           height: layout.bounds.height,
@@ -957,6 +1080,7 @@ export function ChatTree({
               y: viewport.clientHeight / 2,
             }
             moveCamera(zoomToward(cameraRef.current, 1.15, point), true)
+            flushCameraPersistence()
           }}
         >
           <HugeiconsIcon icon={PlusSignIcon} className="size-3.5" />
@@ -973,6 +1097,7 @@ export function ChatTree({
               y: viewport.clientHeight / 2,
             }
             moveCamera(zoomToward(cameraRef.current, 1 / 1.15, point), true)
+            flushCameraPersistence()
           }}
         >
           <HugeiconsIcon icon={MinusSignIcon} className="size-3.5" />

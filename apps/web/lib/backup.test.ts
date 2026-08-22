@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { parseBackup } from "@/lib/backup"
 import { defaultPromptStack, promptStackToJson } from "@/lib/prompt-stack"
+import { chatViewStateToJson } from "@/lib/chat-view-state"
 
 describe("parseBackup", () => {
   it("rejects unknown backup versions", () => {
@@ -21,6 +22,7 @@ describe("parseBackup", () => {
           title: "t",
           selected_root_node_id: null,
           model_config_json: "{}",
+          view_state_json: chatViewStateToJson({ mode: "linear", camera: null }),
           created_at: "t",
           updated_at: "t",
         },
@@ -63,6 +65,7 @@ describe("parseBackup", () => {
           title: null,
           selected_root_node_id: null,
           model_config_json: "{}",
+          view_state_json: chatViewStateToJson({ mode: "linear", camera: null }),
           created_at: "t",
           updated_at: "t",
         },

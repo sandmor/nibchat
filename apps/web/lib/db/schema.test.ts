@@ -58,6 +58,9 @@ describe("applySchema", () => {
     expect(chatColumns).toContainEqual(
       expect.objectContaining({ name: "title", notnull: 0 })
     )
+    expect(chatColumns).toContainEqual(
+      expect.objectContaining({ name: "view_state_json", notnull: 1 })
+    )
     const instanceColumns = sqlite
       .prepare("pragma table_info(instance)")
       .all() as Array<{ name: string }>

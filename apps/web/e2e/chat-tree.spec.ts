@@ -70,4 +70,41 @@ test.describe("tree canvas", () => {
     await expectAssistantText(page, "TREE_SEED_REPLY")
     await expect(page.getByText("TREE_BRANCH_REPLY")).toBeVisible()
   })
+
+  test("restores its mode and zoom after a reload", async () => {
+    await openNewChat(page)
+    llm.enqueue({ text: "PERSISTED_TREE_REPLY" })
+    await sendMessage(page, "persist this tree view")
+    await expectAssistantText(page, "PERSISTED_TREE_REPLY")
+
+    await page.getByRole("button", { name: "Tree", exact: true }).click()
+    const tree = page.getByTestId("chat-tree")
+    await expect(tree).toBeVisible()
+    const world = tree.locator("[data-tree-world]")
+    await expect(world).toHaveAttribute("data-camera-ready", "")
+    const saved = page.waitForResponse((response) => {
+      if (!response.url().includes("setChatViewState") || !response.ok())
+        return false
+      const zoom = Number(
+        (response.request().postData() ?? "").match(/"zoom"\s*:\s*([0-9.]+)/)?.[1]
+      )
+      return zoom > 0.9
+    })
+    await tree
+      .getByRole("button", { name: "Zoom in" })
+      .evaluate((element) => (element as HTMLButtonElement).click())
+    await saved
+
+    await page.reload()
+    await expect(page.getByTestId("chat-tree")).toBeVisible()
+    const restored = page
+      .getByTestId("chat-tree")
+      .locator("[data-tree-world]")
+    await expect(restored).toHaveAttribute("data-camera-ready", "")
+    const transform = await restored.evaluate(
+      (element) => getComputedStyle(element).transform
+    )
+    const scale = Number(transform.match(/^matrix\(([^,]+)/)?.[1])
+    expect(scale).toBeGreaterThan(0.9)
+  })
 })

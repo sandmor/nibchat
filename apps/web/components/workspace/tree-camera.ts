@@ -1,9 +1,11 @@
 import type { TreeRect } from "./tree-layout"
+import type { ChatViewCamera } from "@/lib/chat-view-state"
+import { TREE_MAX_SCALE, TREE_MIN_SCALE } from "@/lib/tree-camera-constants"
 
 export type Camera = { x: number; y: number; scale: number }
 
-export const MIN_SCALE = 0.08
-export const MAX_SCALE = 1.2
+export const MIN_SCALE = TREE_MIN_SCALE
+export const MAX_SCALE = TREE_MAX_SCALE
 export const PAN_THRESHOLD = 6
 /** Floor used by centerOn when the caller does not pass a scale. */
 export const CENTER_SCALE = 0.78
@@ -96,6 +98,74 @@ export function rectsOverlap(a: TreeRect, b: TreeRect, pad = 0) {
 
 export function cameraEqual(a: Camera, b: Camera) {
   return a.x === b.x && a.y === b.y && a.scale === b.scale
+}
+
+/**
+ * A durable camera is anchored to the nearest message card, rather than raw
+ * CSS translation. This keeps the same meaningful place visible after a
+ * viewport resize or a card-height reflow.
+ */
+export function cameraToPersistedView(
+  camera: Camera,
+  viewport: { width: number; height: number },
+  rects: ReadonlyMap<string, TreeRect>,
+  nodeIds: readonly string[]
+): ChatViewCamera | null {
+  if (viewport.width <= 0 || viewport.height <= 0) return null
+  const cx = viewport.width / 2
+  const cy = viewport.height / 2
+  let best:
+    | { id: string; x: number; y: number; distance: number }
+    | undefined
+  for (const id of nodeIds) {
+    const rect = rects.get(id)
+    if (!rect) continue
+    const x = camera.x + (rect.x + rect.width / 2) * camera.scale
+    const y = camera.y + (rect.y + rect.height / 2) * camera.scale
+    const dx = (x - cx) / viewport.width
+    const dy = (y - cy) / viewport.height
+    const distance = dx * dx + dy * dy
+    if (
+      !best ||
+      distance < best.distance ||
+      (distance === best.distance && id < best.id)
+    )
+      best = { id, x, y, distance }
+  }
+  if (!best) return null
+  return {
+    anchorNodeId: best.id,
+    offsetX: (best.x - cx) / viewport.width,
+    offsetY: (best.y - cy) / viewport.height,
+    zoom: camera.scale,
+  }
+}
+
+export function cameraFromPersistedView(
+  saved: ChatViewCamera,
+  viewport: { width: number; height: number },
+  rects: ReadonlyMap<string, TreeRect>
+): Camera | null {
+  const rect = rects.get(saved.anchorNodeId)
+  if (!rect || viewport.width <= 0 || viewport.height <= 0) return null
+  const scale = clampScale(saved.zoom)
+  return {
+    scale,
+    x:
+      viewport.width * (0.5 + saved.offsetX) -
+      (rect.x + rect.width / 2) * scale,
+    y:
+      viewport.height * (0.5 + saved.offsetY) -
+      (rect.y + rect.height / 2) * scale,
+  }
+}
+
+/** Unready or 0×0 views must not serialize; that would clear a saved camera. */
+export function canCommitPersistedCamera(
+  ready: boolean,
+  viewport: { width: number; height: number }
+) {
+  return ready && viewport.width > 0 && viewport.height > 0
 }
 
 export function cameraTransform(camera: Camera) {

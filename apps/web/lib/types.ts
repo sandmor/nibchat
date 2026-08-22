@@ -113,6 +113,8 @@ export interface ChatsTable {
   title: string | null
   selected_root_node_id: string | null
   model_config_json: string
+  /** Durable per-conversation linear/tree mode and tree camera. */
+  view_state_json: string
   /** Library stack ref; null = use instance default. */
   prompt_stack_id: string | null
   created_at: string

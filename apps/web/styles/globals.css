@@ -446,6 +446,20 @@
   background-color: transparent !important;
 }
 
+/* Tables: markdown.tsx supplies the topbar + outline. Column headers are a
+   square full-bleed band under that topbar. */
+.markdown-content [data-streamdown="table-header"] th {
+  border-radius: 0;
+}
+
+/* Growing rows would otherwise tween border/background via the base card
+   transitions and stutter as tokens arrive. Hover/theme motion returns after. */
+.markdown-content [data-streamdown="table-wrapper"][data-streaming],
+.markdown-content [data-streamdown="table-wrapper"][data-streaming] * {
+  transition-duration: 0ms !important;
+  animation-duration: 0ms !important;
+}
+
 .markdown-content-reasoning [data-streamdown="heading-1"] {
   font-size: 1rem;
 }

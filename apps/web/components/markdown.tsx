@@ -2,9 +2,12 @@
 
 import {
   isValidElement,
+  memo,
   type ComponentProps,
   type ReactNode,
   type RefObject,
+  useCallback,
+  useContext,
   useLayoutEffect,
   useRef,
   useState,
@@ -15,12 +18,18 @@ import {
   CodeBlockCopyButton,
   CodeBlockDownloadButton,
   Streamdown,
+  StreamdownContext,
+  TableCopyDropdown,
+  TableDownloadDropdown,
   useIsCodeFenceIncomplete,
 } from "streamdown"
 import { code } from "@streamdown/code"
 import { createMathPlugin } from "@streamdown/math"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { Cancel01Icon, FullScreenIcon } from "@hugeicons/core-free-icons"
 import { cn } from "@/lib/utils"
 import { normalizeLatexDelimiters } from "@/lib/normalize-latex-delimiters"
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog"
 import "katex/dist/katex.min.css"
 import "streamdown/styles.css"
 
@@ -108,6 +117,14 @@ function MarkdownImage({
 const FENCE_LANGUAGE = /language-([^\s]+)/
 const FENCE_START_LINE = /startLine=(\d+)/
 
+/** Single outline + topbar; Streamdown's nested card is stripped. */
+const MARKDOWN_BLOCK_SHELL = "my-3 min-w-0 rounded-xl border"
+const MARKDOWN_BLOCK_TOPBAR = "flex h-9 items-center gap-2 border-b px-2.5"
+const MARKDOWN_BLOCK_LABEL =
+  "min-w-0 flex-1 truncate font-mono text-xs lowercase text-muted-foreground"
+const TABLE_ICON_BUTTON =
+  "cursor-pointer p-1 text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+
 /** Strip Streamdown's nested card chrome; we supply a topbar instead. */
 const FENCED_CODE_UNWRAP =
   "[&_[data-streamdown=code-block]]:contents [&_[data-streamdown=code-block-header]]:hidden [&_[data-streamdown=code-block-body]]:rounded-none [&_[data-streamdown=code-block-body]]:border-0 [&_[data-streamdown=code-block-body]]:bg-transparent [&_[data-streamdown=code-block-body]]:p-3 [&_[data-streamdown=code-block-body]]:[--sdm-bg:transparent] [&_[data-streamdown=code-block-body]]:[--shiki-dark-bg:transparent] [&_[data-streamdown=code-block-body]_pre]:bg-transparent"
@@ -163,15 +180,14 @@ function MarkdownCode({
   return (
     <div
       className={cn(
-        "my-3 min-w-0 overflow-hidden rounded-xl border",
+        MARKDOWN_BLOCK_SHELL,
+        "overflow-hidden",
         FENCED_CODE_UNWRAP
       )}
       data-language={language || undefined}
     >
-      <div className="flex h-9 items-center gap-2 border-b px-2.5">
-        <span className="min-w-0 flex-1 truncate font-mono text-xs lowercase text-muted-foreground">
-          {language || "code"}
-        </span>
+      <div className={MARKDOWN_BLOCK_TOPBAR}>
+        <span className={MARKDOWN_BLOCK_LABEL}>{language || "code"}</span>
         <div className="flex shrink-0 items-center">
           <CodeBlockDownloadButton code={source} language={language} />
           <CodeBlockCopyButton code={source} />
@@ -188,10 +204,159 @@ function MarkdownCode({
   )
 }
 
+const TableToolbar = memo(function TableToolbar({
+  onExitFullscreen,
+  onOpenFullscreen,
+}: {
+  onExitFullscreen?: () => void
+  onOpenFullscreen?: () => void
+}) {
+  const { isAnimating } = useContext(StreamdownContext)
+
+  return (
+    <div className={MARKDOWN_BLOCK_TOPBAR}>
+      <span className={MARKDOWN_BLOCK_LABEL}>table</span>
+      <div className="flex shrink-0 items-center">
+        <TableCopyDropdown />
+        <TableDownloadDropdown />
+        {onExitFullscreen ? (
+          <button
+            className={TABLE_ICON_BUTTON}
+            onClick={onExitFullscreen}
+            title="Exit fullscreen"
+            type="button"
+          >
+            <HugeiconsIcon
+              icon={Cancel01Icon}
+              className="size-3.5"
+              strokeWidth={2}
+            />
+          </button>
+        ) : (
+          <button
+            className={TABLE_ICON_BUTTON}
+            disabled={isAnimating}
+            onClick={onOpenFullscreen}
+            title="View fullscreen"
+            type="button"
+          >
+            <HugeiconsIcon
+              icon={FullScreenIcon}
+              className="size-3.5"
+              strokeWidth={2}
+            />
+          </button>
+        )}
+      </div>
+    </div>
+  )
+})
+
+const TABLE_DIALOG_CONTENT =
+  "top-0 left-0 flex h-dvh max-h-dvh w-full max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none bg-background p-0 ring-0 sm:max-w-none duration-[var(--motion-effective-duration)] ease-[var(--motion-ease)] [animation-duration:var(--motion-effective-duration)]"
+
+const TABLE_DIALOG_SCROLL =
+  "min-h-0 flex-1 overflow-auto [&_[data-streamdown=table-header]]:sticky [&_[data-streamdown=table-header]]:top-0 [&_[data-streamdown=table-header]]:z-10"
+
+/** One card with a topbar; thead is a full-bleed band, not a nested frame. */
+const MarkdownTable = memo(function MarkdownTable({
+  className,
+  children,
+  node: _node,
+  ...props
+}: ComponentProps<"table"> & MarkdownNodeProps) {
+  void _node
+  const { isAnimating } = useContext(StreamdownContext)
+  const [fullscreen, setFullscreen] = useState(false)
+  const [dialogMounted, setDialogMounted] = useState(false)
+
+  if (isAnimating && fullscreen) {
+    setFullscreen(false)
+  }
+
+  const dialogOpen = fullscreen && !isAnimating
+
+  const onOpenChange = useCallback(
+    (open: boolean) => {
+      if (open && isAnimating) return
+      if (open) setDialogMounted(true)
+      setFullscreen(open)
+    },
+    [isAnimating]
+  )
+  const onOpenFullscreen = useCallback(() => onOpenChange(true), [onOpenChange])
+  const onExitFullscreen = useCallback(
+    () => onOpenChange(false),
+    [onOpenChange]
+  )
+
+  const tableClassName = cn("w-full divide-y divide-border", className)
+
+  return (
+    <>
+      <div
+        className={MARKDOWN_BLOCK_SHELL}
+        data-streamdown="table-wrapper"
+        data-streaming={isAnimating ? "" : undefined}
+      >
+        <TableToolbar onOpenFullscreen={onOpenFullscreen} />
+        <div className="min-w-0 overflow-x-auto rounded-b-xl">
+          <table
+            className={tableClassName}
+            data-streamdown="table"
+            {...props}
+          >
+            {children}
+          </table>
+        </div>
+      </div>
+      {dialogMounted && !isAnimating ? (
+        <Dialog open={dialogOpen} onOpenChange={onOpenChange}>
+          <DialogContent
+            showCloseButton={false}
+            showOverlay={false}
+            className={TABLE_DIALOG_CONTENT}
+          >
+            <DialogTitle className="sr-only">Table</DialogTitle>
+            <div
+              className="flex min-h-0 flex-1 flex-col"
+              data-streamdown="table-wrapper"
+            >
+              <TableToolbar onExitFullscreen={onExitFullscreen} />
+              <div className={TABLE_DIALOG_SCROLL}>
+                <table className={tableClassName} data-streamdown="table">
+                  {children}
+                </table>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+      ) : null}
+    </>
+  )
+})
+
+const MarkdownThead = memo(function MarkdownThead({
+  className,
+  node: _node,
+  ...props
+}: ComponentProps<"thead"> & MarkdownNodeProps) {
+  void _node
+  return (
+    <thead
+      className={cn("bg-muted [&_th]:bg-muted", className)}
+      data-streamdown="table-header"
+      {...props}
+    />
+  )
+})
+
 const components: Components = {
   a: MarkdownLink,
   img: MarkdownImage,
   code: MarkdownCode,
+  table: MarkdownTable,
+  thead: MarkdownThead,
 }
 
 function setMathOverflow(el: HTMLElement, overflowing: boolean) {

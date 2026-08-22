@@ -72,7 +72,7 @@ import {
   unpackBackupArchive,
 } from "@/lib/backup-archive"
 import { completeOnboarding } from "@/lib/identity/adapters/kysely-instance"
-import { validateImageSignature } from "@/lib/file-signatures"
+import { validateAttachmentSignature } from "@/lib/file-signatures"
 import {
   ensureUserSettings,
   getUserSettings,
@@ -710,7 +710,8 @@ export async function forkEdit(
     timestamp
   )
   const attachmentIds = parts.flatMap((part) =>
-    part.type === "attachment" && part.content.kind === "binary"
+    part.type === "attachment" &&
+    (part.content.kind === "binary" || part.content.kind === "document")
       ? [part.content.attachmentId]
       : []
   )
@@ -1316,6 +1317,7 @@ type ProviderProfileInput = {
     label?: string
     enabled: boolean
     source: "catalog" | "custom"
+    pdfInput: "native" | "extracted"
   }>
 }
 
@@ -1801,7 +1803,7 @@ async function restoreOwnerBackup(
       throw new Error("This backup includes files; restore the .zip archive")
     if (data.byteLength !== attachment.byte_size)
       throw new Error(`Backup attachment ${attachment.id} has the wrong size`)
-    const mediaType = validateImageSignature(data, attachment.media_type)
+    const mediaType = validateAttachmentSignature(data, attachment.media_type)
     const sha256 = createHash("sha256").update(data).digest("hex")
     if (sha256 !== attachment.sha256)
       throw new Error(`Backup attachment ${attachment.id} is corrupt`)
@@ -2016,7 +2018,7 @@ function validateMultiUserBackup(
     if (!data) throw new Error(`Backup attachment ${attachment.id} is missing`)
     if (data.byteLength !== attachment.byte_size)
       throw new Error(`Backup attachment ${attachment.id} has the wrong size`)
-    validateImageSignature(data, attachment.media_type)
+    validateAttachmentSignature(data, attachment.media_type)
     const sha256 = createHash("sha256").update(data).digest("hex")
     if (sha256 !== attachment.sha256)
       throw new Error(`Backup attachment ${attachment.id} is corrupt`)

@@ -14,6 +14,7 @@ import type { NodeRow } from "@/lib/types"
 export async function buildEmbeddedModelMessages(options: {
   nodes: NodeRow[]
   replayReasoning: boolean
+  pdfInputMode: "native" | "extracted"
 }) {
   const binaries = new Map<string, EmbeddedBinaryAttachment>()
   for (const node of options.nodes) {
@@ -21,7 +22,13 @@ export async function buildEmbeddedModelMessages(options: {
     if (node.status === "error" && !node.search_text) continue
     const parts = parseJson<Parts>(node.parts_json, [])
     for (const part of parts) {
-      if (part.type !== "attachment" || part.content.kind === "text") continue
+      if (
+        part.type !== "attachment" ||
+        part.content.kind === "text" ||
+        (part.content.kind === "document" &&
+          options.pdfInputMode === "extracted")
+      )
+        continue
       const row = await getAttachedAttachment(part.content.attachmentId)
       binaries.set(part.id, {
         type: "file",
@@ -34,6 +41,7 @@ export async function buildEmbeddedModelMessages(options: {
   return buildModelMessages({
     nodes: options.nodes,
     replayReasoning: options.replayReasoning,
+    pdfInputMode: options.pdfInputMode,
     resolveBinaryAttachment: (part) => {
       const file = binaries.get(part.id)
       if (!file) throw new Error(`Attachment ${part.id} was not loaded`)

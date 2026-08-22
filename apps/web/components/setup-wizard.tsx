@@ -30,6 +30,7 @@ import {
 } from "@/lib/provider-kinds"
 import {
   catalogNameMap,
+  defaultPdfInputForProviderKind,
   mergeCatalogWithSaved,
   modelsToPersist,
   parseProviderModelsJson,
@@ -296,10 +297,19 @@ function ProviderFlow({
     ? titleModel
     : (enabledModels[0]?.id ?? "")
 
-  const handleCatalogChange = useCallback((next: CatalogModel[]) => {
-    setCatalog(next)
-    setModels((current) => mergeCatalogWithSaved(current, next))
-  }, [])
+  const handleCatalogChange = useCallback(
+    (next: CatalogModel[]) => {
+      setCatalog(next)
+      setModels((current) =>
+        mergeCatalogWithSaved(
+          current,
+          next,
+          defaultPdfInputForProviderKind(kind)
+        )
+      )
+    },
+    [kind]
+  )
 
   const createProvider = useMutation(
     trpc.workspace.createProvider.mutationOptions()
@@ -323,7 +333,11 @@ function ProviderFlow({
       baseUrl: baseUrl.trim() || undefined,
       apiKey: includeKey ? apiKey.trim() || undefined : undefined,
       apiKeyEnv: apiKeyEnv.trim() || undefined,
-      models: modelsToPersist(models, catalogNameMap(catalog)),
+      models: modelsToPersist(
+        models,
+        catalogNameMap(catalog),
+        defaultPdfInputForProviderKind(kind)
+      ),
     }
   }
 
@@ -470,6 +484,7 @@ function ProviderFlow({
         providerId={providerId || null}
         models={models}
         catalog={catalog}
+        defaultPdfInput={defaultPdfInputForProviderKind(kind)}
         onModelsChange={setModels}
         onCatalogChange={handleCatalogChange}
         onLoadingChange={setCatalogLoading}

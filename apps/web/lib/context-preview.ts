@@ -9,6 +9,7 @@ import {
   type ResolvePromptStackResult,
 } from "@/lib/prompt-stack"
 import type { NodeRow, Parts } from "@/lib/types"
+import type { PdfAnalysis } from "@/lib/pdf-analysis"
 
 export const TOKEN_ESTIMATE_TOOLTIP =
   "Approximate. Actual usage depends on model tokenizer."
@@ -49,6 +50,8 @@ export type ContextPreviewDraftInput = {
   attachments: Array<{
     name: string
     reference: { kind: string }
+    previewUrl?: string
+    pdfAnalysis?: PdfAnalysis
   }>
 }
 
@@ -190,7 +193,7 @@ export function summarizeAssembledContext(input: {
     for (const part of parts) {
       if (part.type !== "attachment") continue
       attachmentCount += 1
-      if (part.content.kind !== "text") imageCount += 1
+      if (part.content.kind === "binary") imageCount += 1
     }
   }
 
@@ -250,6 +253,7 @@ export type AssembledContextPreviewData = {
   stackId: string | null
   missingStackId?: string
   system: string
+  pdfInputMode: "native" | "extracted"
   demotedModuleIds: string[]
   warnings: ContextPreviewWarning[]
   summary: AssembledContextSummary
@@ -264,12 +268,15 @@ export type AssembleContextPreviewInput = {
   defaultStackId: string | null | undefined
   stacks: ReadonlyArray<{ id: string; stack: PromptStackDocument }>
   replayReasoning: boolean
+  /** The selected model receives PDFs either as bytes or extracted text. */
+  pdfInputMode?: "native" | "extracted"
   mcpServerInstructionsText?: string
 }
 
 export function assembleContextPreview(
   input: AssembleContextPreviewInput
 ): AssembledContextPreviewData {
+  const pdfInputMode = input.pdfInputMode ?? "extracted"
   const stacksById = new Map(
     input.stacks.map((row) => [row.id, row.stack] as const)
   )
@@ -284,6 +291,7 @@ export function assembleContextPreview(
   const pathMessages = buildModelMessages({
     nodes: contextNodes,
     replayReasoning: input.replayReasoning,
+    pdfInputMode,
   })
   const assembled = assemblePromptContext({
     stack: resolved.stack,
@@ -304,6 +312,7 @@ export function assembleContextPreview(
       ? resolved.missingStackId
       : undefined,
     system: assembled.system,
+    pdfInputMode,
     demotedModuleIds: assembled.demotedModuleIds,
     warnings: [...assembled.warnings, ...preview.extraWarnings],
     summary: preview.summary,
@@ -313,12 +322,22 @@ export function assembleContextPreview(
 
 export function mergeDraftSummary(
   summary: AssembledContextSummary,
-  draft: ContextPreviewDraftInput
+  draft: ContextPreviewDraftInput,
+  pdfInputMode: "native" | "extracted" = "extracted"
 ): AssembledContextSummary {
-  const draftChars = draft.text.length
-  const draftImages = draft.attachments.filter(
-    (item) => item.reference.kind === "uploaded-file"
-  ).length
+  const draftPdfChars =
+    pdfInputMode === "extracted"
+      ? draft.attachments.reduce((sum, attachment) => {
+          const analysis = attachment.pdfAnalysis
+          if (analysis?.status !== "ready") return sum
+          return (
+            sum +
+            `[PDF attachment: ${attachment.name}]\n${analysis.markdown}`.length
+          )
+        }, 0)
+      : 0
+  const draftChars = draft.text.length + draftPdfChars
+  const draftImages = draft.attachments.filter((item) => item.previewUrl).length
   const draftAttachments = draft.attachments.length
   if (draftChars === 0 && draftAttachments === 0) return summary
 

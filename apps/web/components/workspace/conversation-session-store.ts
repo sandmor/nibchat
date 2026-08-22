@@ -3,6 +3,7 @@
 import { create } from "zustand"
 import type { AttachmentReference } from "@/lib/types"
 import type { MessageEditSegment } from "@/lib/agent/parts"
+import type { PdfAnalysis } from "@/lib/pdf-analysis"
 
 export type ComposerSurface = "linear" | "tree"
 
@@ -10,6 +11,8 @@ export type ComposerAttachment = {
   name: string
   reference: AttachmentReference
   previewUrl?: string
+  /** Local extraction result used by the context preview before this upload is sent. */
+  pdfAnalysis?: PdfAnalysis
   uploading?: boolean
   /** Server already claimed this upload onto a message; do not DELETE it. */
   claimed?: boolean

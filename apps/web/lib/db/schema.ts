@@ -49,6 +49,9 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create table if not exists message_attachments (message_node_id text not null references message_nodes(id) on delete cascade, attachment_id text not null references attachments(id) on delete cascade, primary key(message_node_id, attachment_id))`.execute(
     db
   )
+  await sql`create table if not exists attachment_derivations (attachment_id text primary key references attachments(id) on delete cascade, kind text not null, data_json text not null, created_at text not null, updated_at text not null)`.execute(
+    db
+  )
   await sql`create index if not exists attachments_owner_idx on attachments(user_id, claimed_at)`.execute(
     db
   )

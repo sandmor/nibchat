@@ -573,6 +573,7 @@ describe("SQLite chat repository", () => {
           label: "seed-model",
           enabled: true,
           source: "custom",
+          pdfInput: "extracted",
         },
       ],
     })
@@ -597,6 +598,7 @@ describe("SQLite chat repository", () => {
             id: "gpt-4o",
             enabled: true,
             source: "custom",
+            pdfInput: "native",
           },
         ],
       },
@@ -731,7 +733,10 @@ describe("generation abort + finalize", () => {
   })
 
   it("deletes a generation subtree when stream cancellation is unavailable", async () => {
-    const chat = await createChat(userId, "Subtree delete despite stream outage")
+    const chat = await createChat(
+      userId,
+      "Subtree delete despite stream outage"
+    )
     const root = await insertNode({
       chatId: chat.id,
       parentId: null,
@@ -999,8 +1004,20 @@ describe("modelFor preflight", () => {
       name: `Fallback ${Date.now()}`,
       kind: "openai-compatible",
       models: [
-        { id: "first", label: "First", enabled: true, source: "custom" },
-        { id: "second", label: "Second", enabled: true, source: "custom" },
+        {
+          id: "first",
+          label: "First",
+          enabled: true,
+          source: "custom",
+          pdfInput: "extracted",
+        },
+        {
+          id: "second",
+          label: "Second",
+          enabled: true,
+          source: "custom",
+          pdfInput: "extracted",
+        },
       ],
     })
     await expect(
@@ -1018,6 +1035,7 @@ describe("modelFor preflight", () => {
           label: "gpt-4o-mini",
           enabled: true,
           source: "custom",
+          pdfInput: "native",
         },
       ],
     })
@@ -1037,6 +1055,7 @@ describe("modelFor preflight", () => {
           label: "local-model",
           enabled: true,
           source: "custom",
+          pdfInput: "extracted",
         },
       ],
     })
@@ -1283,6 +1302,7 @@ describe("provider catalog privacy", () => {
           label: "privacy-model",
           enabled: true,
           source: "custom",
+          pdfInput: "extracted",
         },
       ],
     })
@@ -1367,9 +1387,9 @@ describe("generation run reconciliation", () => {
 
     const workspace = await getWorkspace(userId, { chatId: chat.id })
     expect(workspace.activeGenerations).toEqual([])
-    expect(workspace.nodes.find((node) => node.id === assistant.id)?.status).toBe(
-      "error"
-    )
+    expect(
+      workspace.nodes.find((node) => node.id === assistant.id)?.status
+    ).toBe("error")
     expect(await getGenerationRun(generationId)).toBeUndefined()
   })
 
@@ -1388,9 +1408,9 @@ describe("generation run reconciliation", () => {
     expect(workspace.activeGenerations.map((run) => run.generationId)).toEqual([
       generationId,
     ])
-    expect(workspace.nodes.find((node) => node.id === assistant.id)?.status).toBe(
-      "streaming"
-    )
+    expect(
+      workspace.nodes.find((node) => node.id === assistant.id)?.status
+    ).toBe("streaming")
     expect(await getGenerationRun(generationId)).toMatchObject({
       state: "starting",
     })
@@ -1454,9 +1474,9 @@ describe("generation run reconciliation", () => {
 
     const workspace = await getWorkspace(userId, { chatId: chat.id })
     expect(workspace.activeGenerations).toEqual([])
-    expect(workspace.nodes.find((node) => node.id === assistant.id)?.status).toBe(
-      "error"
-    )
+    expect(
+      workspace.nodes.find((node) => node.id === assistant.id)?.status
+    ).toBe("error")
     expect(await getGenerationRun(generationId)).toBeUndefined()
   })
 
@@ -1591,10 +1611,7 @@ function multiUserBackup(guestEmail: string) {
       fixtureTheme("gt-light", guest, paper),
       fixtureTheme("gt-dark", guest, ink),
     ],
-    promptStacks: [
-      fixtureStack("os", owner),
-      fixtureStack("gs", guest),
-    ],
+    promptStacks: [fixtureStack("os", owner), fixtureStack("gs", guest)],
     userPreferences: [
       fixturePrefs(owner, "ot-light", "ot-dark", "os"),
       fixturePrefs(guest, "gt-light", "gt-dark", "gs"),

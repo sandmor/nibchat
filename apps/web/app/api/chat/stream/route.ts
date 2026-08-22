@@ -27,9 +27,15 @@ import { db } from "@/lib/db"
 import { parseJson } from "@/lib/domain"
 import { jsonError, statusFromError } from "@/lib/http-error"
 import { formatProviderError } from "@/lib/provider-errors"
-import { modelFor, resolveModelConfig, type ModelConfig } from "@/lib/providers"
+import {
+  modelFor,
+  pdfInputModeFor,
+  resolveModelConfig,
+  type ModelConfig,
+} from "@/lib/providers"
 import { resolveMcpResourceAttachment } from "@/lib/mcp"
 import { resolveUploadedAttachments } from "@/lib/attachments"
+import { assertPdfFallbackAvailable } from "@/lib/pdf-input"
 import { streamBodySchema } from "@/lib/stream-body"
 import { firstTurnTitleAction } from "@/lib/chat-title"
 import type { AttachmentReference, NodeRow, Parts } from "@/lib/types"
@@ -110,6 +116,8 @@ export async function POST(request: Request) {
         )),
         ...(await resolveUploadedAttachments(user.id, references)),
       ]
+      if ((await pdfInputModeFor(user.id, config)) === "extracted")
+        assertPdfFallbackAvailable(attachments)
       const parentId = body.parentNodeId ?? null
       const turn = await createTurn({
         userId: user.id,

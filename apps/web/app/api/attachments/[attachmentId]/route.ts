@@ -4,7 +4,9 @@ import {
   getAttachmentForOwner,
   headerSafeFilename,
   readAttachment,
+  savePdfAnalysis,
 } from "@/lib/attachments"
+import { pdfAnalysisSchema } from "@/lib/pdf-analysis"
 import { jsonError } from "@/lib/http-error"
 
 export const runtime = "nodejs"
@@ -46,5 +48,20 @@ export async function DELETE(
     return Response.json({ ok: true })
   } catch (error) {
     return jsonError(error, "Attachment deletion failed")
+  }
+}
+
+export async function PATCH(
+  request: Request,
+  { params }: { params: Promise<{ attachmentId: string }> }
+) {
+  try {
+    const user = await requireUser(request.headers)
+    const { attachmentId } = await params
+    const analysis = pdfAnalysisSchema.parse(await request.json())
+    await savePdfAnalysis(user.id, attachmentId, analysis)
+    return Response.json({ ok: true })
+  } catch (error) {
+    return jsonError(error, "PDF analysis could not be saved")
   }
 }

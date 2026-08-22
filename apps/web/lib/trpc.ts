@@ -139,6 +139,7 @@ const providerModelSchema = z.object({
   label: z.string().trim().max(120).optional(),
   enabled: z.boolean(),
   source: z.enum(["catalog", "custom"]),
+  pdfInput: z.enum(["native", "extracted"]),
 })
 const providerInputSchema = z.object({
   name: z.string().min(1).max(120),
@@ -435,7 +436,9 @@ export const appRouter = t.router({
           mapError(error)
         }
       }),
-    listApprovedMcpSurfaces: userProcedure.query(() => listApprovedMcpSurfaces()),
+    listApprovedMcpSurfaces: userProcedure.query(() =>
+      listApprovedMcpSurfaces()
+    ),
     getMcpPrompt: userProcedure
       .input(
         z.object({
@@ -582,7 +585,9 @@ export const appRouter = t.router({
         await setUserThemeMode(ctx.user.id, input.themeMode)
         return { ok: true as const }
       }),
-    listPromptStacks: userProcedure.query(({ ctx }) => listPromptStacks(ctx.user.id)),
+    listPromptStacks: userProcedure.query(({ ctx }) =>
+      listPromptStacks(ctx.user.id)
+    ),
     createPromptStack: userProcedure
       .input(
         z.object({
@@ -682,9 +687,7 @@ export const appRouter = t.router({
       }),
   }),
   admin: t.router({
-    listUsers: ownerProcedure.query(({ ctx }) =>
-      listManagedUsers(ctx.headers)
-    ),
+    listUsers: ownerProcedure.query(({ ctx }) => listManagedUsers(ctx.headers)),
     createUser: ownerProcedure
       .input(
         z.object({
@@ -695,18 +698,30 @@ export const appRouter = t.router({
       )
       .mutation(({ ctx, input }) => createManagedUser(ctx.headers, input)),
     resetUserPassword: ownerProcedure
-      .input(z.object({ userId: z.string(), password: z.string().min(8).max(256) }))
+      .input(
+        z.object({ userId: z.string(), password: z.string().min(8).max(256) })
+      )
       .mutation(async ({ ctx, input }) => {
         if (input.userId === ctx.user.id)
-          throw new TRPCError({ code: "BAD_REQUEST", message: "The owner account cannot be changed here." })
-        await resetManagedUserPassword(ctx.headers, input.userId, input.password)
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "The owner account cannot be changed here.",
+          })
+        await resetManagedUserPassword(
+          ctx.headers,
+          input.userId,
+          input.password
+        )
         return { ok: true as const }
       }),
     setUserDisabled: ownerProcedure
       .input(z.object({ userId: z.string(), disabled: z.boolean() }))
       .mutation(async ({ ctx, input }) => {
         if (input.userId === ctx.user.id)
-          throw new TRPCError({ code: "BAD_REQUEST", message: "The owner account cannot be disabled." })
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "The owner account cannot be disabled.",
+          })
         await setManagedUserDisabled(ctx.headers, input.userId, input.disabled)
         return { ok: true as const }
       }),
@@ -714,7 +729,10 @@ export const appRouter = t.router({
       .input(z.object({ userId: z.string() }))
       .mutation(async ({ ctx, input }) => {
         if (input.userId === ctx.user.id)
-          throw new TRPCError({ code: "BAD_REQUEST", message: "The owner sessions cannot be revoked here." })
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "The owner sessions cannot be revoked here.",
+          })
         await revokeManagedUserSessions(ctx.headers, input.userId)
         return { ok: true as const }
       }),
@@ -722,7 +740,10 @@ export const appRouter = t.router({
       .input(z.object({ userId: z.string() }))
       .mutation(async ({ ctx, input }) => {
         if (input.userId === ctx.user.id)
-          throw new TRPCError({ code: "BAD_REQUEST", message: "The owner account cannot be deleted." })
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "The owner account cannot be deleted.",
+          })
         await deleteManagedUser(ctx.headers, input.userId)
         return { ok: true as const }
       }),

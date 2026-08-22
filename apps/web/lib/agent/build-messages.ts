@@ -27,6 +27,7 @@ export type ResolveBinaryAttachment = (
 export type BuildMessagesOptions = {
   nodes: NodeRow[]
   replayReasoning: boolean
+  pdfInputMode?: "native" | "extracted"
   resolveBinaryAttachment?: ResolveBinaryAttachment
 }
 
@@ -71,12 +72,23 @@ export function buildModelMessages(
         } else if (part.type === "attachment") {
           if (part.content.kind === "text") {
             content.push({ type: "text", text: attachmentModelText(part) })
+          } else if (
+            part.content.kind === "document" &&
+            options.pdfInputMode === "extracted"
+          ) {
+            content.push({ type: "text", text: attachmentModelText(part) })
           } else {
             const resolved = resolveBinary(part)
             if (resolved === "placeholder") {
               content.push({
                 type: "text",
-                text: attachmentModelText(part),
+                // A native PDF contributes its bytes, not extracted markdown.
+                // Client-only callers use this placeholder because they cannot
+                // embed the file, so preserve that same context footprint.
+                text:
+                  part.content.kind === "document"
+                    ? `[PDF attachment: ${part.name}]`
+                    : attachmentModelText(part),
               })
             } else {
               content.push(resolved)

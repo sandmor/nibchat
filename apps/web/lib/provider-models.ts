@@ -1,4 +1,5 @@
 export type ProviderModelSource = "catalog" | "custom"
+export type PdfInputMode = "native" | "extracted"
 
 /** A user preference. Catalog entries are sparse; custom entries are always stored. */
 export type ProviderModel = {
@@ -6,6 +7,7 @@ export type ProviderModel = {
   label: string
   enabled: boolean
   source: ProviderModelSource
+  pdfInput: PdfInputMode
 }
 
 export type ProviderModelDocument = {
@@ -15,6 +17,10 @@ export type ProviderModelDocument = {
 
 export type CatalogModel = { id: string; name: string }
 export type ModelVisibilityFilter = "all" | "on" | "off"
+
+export function defaultPdfInputForProviderKind(kind: string): PdfInputMode {
+  return kind === "openai" || kind === "anthropic" ? "native" : "extracted"
+}
 
 /** Normalize `/api/models` JSON. A failed payload with no rows is an error. */
 export function parseProviderCatalogPayload(payload: unknown): {
@@ -68,12 +74,14 @@ export function parseProviderModels(raw: unknown): ProviderModel[] {
       label?: unknown
       enabled?: unknown
       source?: unknown
+      pdfInput?: unknown
     }
     const id = trimId(record.id)
     if (
       !id ||
       seen.has(id) ||
-      (record.source !== "catalog" && record.source !== "custom")
+      (record.source !== "catalog" && record.source !== "custom") ||
+      (record.pdfInput !== "native" && record.pdfInput !== "extracted")
     )
       continue
     seen.add(id)
@@ -82,6 +90,7 @@ export function parseProviderModels(raw: unknown): ProviderModel[] {
       label: trimLabel(record.label, id),
       enabled: record.enabled === true,
       source: record.source,
+      pdfInput: record.pdfInput,
     })
   }
   return models
@@ -156,7 +165,8 @@ export function catalogNameMap(catalog: CatalogModel[]) {
  */
 export function mergeCatalogWithSaved(
   saved: ProviderModel[],
-  catalog: CatalogModel[]
+  catalog: CatalogModel[],
+  pdfInput: PdfInputMode
 ): ProviderModel[] {
   const catalogNames = catalogNameMap(catalog)
   const result: ProviderModel[] = []
@@ -170,7 +180,13 @@ export function mergeCatalogWithSaved(
   for (const [id, name] of catalogNames) {
     if (seen.has(id)) continue
     seen.add(id)
-    result.push({ id, label: name, enabled: false, source: "catalog" })
+    result.push({
+      id,
+      label: name,
+      enabled: false,
+      source: "catalog",
+      pdfInput,
+    })
   }
   return result
 }
@@ -178,13 +194,18 @@ export function mergeCatalogWithSaved(
 /** Persist sparse catalog preferences while retaining every explicit custom model. */
 export function modelsToPersist(
   models: ProviderModel[],
-  catalogNames: ReadonlyMap<string, string>
+  catalogNames: ReadonlyMap<string, string>,
+  defaultPdfInput: PdfInputMode
 ): ProviderModel[] {
   return models
     .filter((model) => {
       if (model.source === "custom") return true
       if (!catalogNames.has(model.id)) return false
-      return model.enabled || model.label !== catalogNames.get(model.id)
+      return (
+        model.enabled ||
+        model.label !== catalogNames.get(model.id) ||
+        model.pdfInput !== defaultPdfInput
+      )
     })
     .map((model) => ({ ...model, label: trimLabel(model.label, model.id) }))
 }
@@ -218,7 +239,8 @@ export function setModelsEnabled(
 
 export function upsertCustomModel(
   models: ProviderModel[],
-  rawId: string
+  rawId: string,
+  pdfInput: PdfInputMode
 ): { models: ProviderModel[]; status: "added" | "enabled" | "exists" } {
   const id = trimId(rawId)
   if (!id) return { models, status: "exists" }
@@ -226,7 +248,10 @@ export function upsertCustomModel(
   if (index === -1)
     return {
       status: "added",
-      models: [{ id, label: id, enabled: true, source: "custom" }, ...models],
+      models: [
+        { id, label: id, enabled: true, source: "custom", pdfInput },
+        ...models,
+      ],
     }
   if (models[index]!.enabled) return { models, status: "exists" }
   const next = [...models]

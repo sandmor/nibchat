@@ -1,10 +1,13 @@
 "use client"
 
 import { useState } from "react"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { Pdf02Icon } from "@hugeicons/core-free-icons"
 import { Markdown } from "@/components/markdown"
 import { Textarea } from "@/components/ui/textarea"
 import { QuestionToolView } from "@/components/workspace/tools/question-tool"
 import { ImageViewer } from "@/components/workspace/image-viewer"
+import { pdfAttachmentCaption } from "@/lib/pdf-input"
 import type { QuestionAnswers } from "@/lib/agent/tools/question-shared"
 import {
   coalesceAdjacentTextParts,
@@ -138,6 +141,36 @@ export function MessageParts({
                   <figcaption className="mt-1 text-[11px] text-muted-foreground">
                     {part.name}
                   </figcaption>
+                </figure>
+              )
+            }
+            if (part.content.kind === "document") {
+              const src = `/api/attachments/${part.content.attachmentId}`
+              return (
+                <figure key={part.id} className="w-fit max-w-full">
+                  <a
+                    href={src}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex max-w-full items-center gap-2.5 rounded-md border bg-muted/40 px-2.5 py-2 outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring/50"
+                  >
+                    <span className="grid size-10 shrink-0 place-items-center rounded-md bg-muted">
+                      <HugeiconsIcon
+                        icon={Pdf02Icon}
+                        strokeWidth={2}
+                        className="size-5 text-muted-foreground"
+                      />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-medium">
+                        {part.name}
+                        <span className="sr-only"> (opens in a new tab)</span>
+                      </span>
+                      <span className="text-[11px] text-muted-foreground">
+                        {pdfAttachmentCaption(part.content.analysis)}
+                      </span>
+                    </span>
+                  </a>
                 </figure>
               )
             }

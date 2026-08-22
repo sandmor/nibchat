@@ -53,6 +53,9 @@ importers:
       '@dnd-kit/utilities':
         specifier: ^3.2.2
         version: 3.2.2(react@19.2.4)
+      '@firecrawl/pdf-inspector-wasm':
+        specifier: 1.17.0
+        version: 1.17.0
       '@hugeicons/core-free-icons':
         specifier: ^4.2.3
         version: 4.2.3
@@ -849,6 +852,9 @@ packages:
     peerDependenciesMeta:
       '@noble/hashes':
         optional: true
+
+  '@firecrawl/pdf-inspector-wasm@1.17.0':
+    resolution: {integrity: sha512-ExFOZYKwIamKyO9nRFgKq0g+xJNpuvgxv/GlAL877xNol5TNu55DZz/Ow+hdlRZXPTxjfQVrfJ7y58gtNBYNhg==}
 
   '@floating-ui/core@1.8.0':
     resolution: {integrity: sha512-0CIZ5itps/8x7BG8dEIhs53BvCUH2PCoogtakwRTut+Arm58sJooJ0AuZhLw2HJYIR5cMLNPBSS728sPho2khQ==}
@@ -5749,6 +5755,8 @@ snapshots:
   '@exodus/bytes@1.15.1(@noble/hashes@2.3.0)':
     optionalDependencies:
       '@noble/hashes': 2.3.0
+
+  '@firecrawl/pdf-inspector-wasm@1.17.0': {}
 
   '@floating-ui/core@1.8.0':
     dependencies:

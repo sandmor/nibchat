@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
 import {
   filterProviderModels,
@@ -32,6 +33,20 @@ const VISIBILITY_ITEMS: { id: ModelVisibilityFilter; label: string }[] = [
   { id: "off", label: "Off" },
 ]
 
+const PDF_INPUT_ITEMS: { id: ProviderModel["pdfInput"]; label: string }[] = [
+  { id: "native", label: "File" },
+  { id: "extracted", label: "Text" },
+]
+
+const quietToggleItemClassName = "h-6 min-w-6 px-2.5 text-xs"
+
+function firstSelected<T extends string>(
+  items: readonly { id: T }[],
+  next: string[]
+): T | undefined {
+  return items.find((item) => item.id === next[0])?.id
+}
+
 /** Used only until the first mounted row is measured. */
 const FALLBACK_ROW_HEIGHT = 74
 
@@ -41,6 +56,7 @@ function ModelRow({
   disabled,
   onToggle,
   onAlias,
+  onPdfInput,
   onRemove,
 }: {
   model: ProviderModel
@@ -48,6 +64,7 @@ function ModelRow({
   disabled: boolean
   onToggle: (enabled: boolean) => void
   onAlias: (label: string) => void
+  onPdfInput: (pdfInput: "native" | "extracted") => void
   onRemove: () => void
 }) {
   return (
@@ -74,14 +91,43 @@ function ModelRow({
             </span>
           ) : null}
         </p>
-        <Input
-          value={model.label}
-          onChange={(event) => onAlias(event.target.value)}
-          aria-label={`Alias for ${model.id}`}
-          placeholder="Alias"
-          disabled={disabled}
-          className="h-8 rounded-xl text-sm"
-        />
+        <div className="flex items-center gap-1.5">
+          <Input
+            value={model.label}
+            onChange={(event) => onAlias(event.target.value)}
+            aria-label={`Alias for ${model.id}`}
+            placeholder="Alias"
+            disabled={disabled}
+            className="h-8 min-w-0 flex-1 rounded-xl text-sm"
+          />
+          <ToggleGroup
+            value={[model.pdfInput]}
+            onValueChange={(next) => {
+              const id = firstSelected(PDF_INPUT_ITEMS, next)
+              if (id) onPdfInput(id)
+            }}
+            disabled={disabled}
+            size="sm"
+            spacing={1}
+            className="shrink-0"
+            aria-label={`PDF input for ${model.id}`}
+          >
+            {PDF_INPUT_ITEMS.map((item) => (
+              <ToggleGroupItem
+                key={item.id}
+                value={item.id}
+                className={quietToggleItemClassName}
+                aria-label={
+                  item.id === "native"
+                    ? `Send original PDF for ${model.id}`
+                    : `Send extracted text for ${model.id}`
+                }
+              >
+                {item.label}
+              </ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+        </div>
       </div>
       {custom ? (
         <Button
@@ -105,6 +151,7 @@ export function ProviderModelsEditor({
   catalog,
   onModelsChange,
   onCatalogChange,
+  defaultPdfInput,
   onLoadingChange,
   disabled = false,
   refreshOnMount = false,
@@ -114,6 +161,7 @@ export function ProviderModelsEditor({
   catalog: CatalogModel[]
   onModelsChange: (models: ProviderModel[]) => void
   onCatalogChange: (catalog: CatalogModel[]) => void
+  defaultPdfInput: "native" | "extracted"
   onLoadingChange?: (loading: boolean) => void
   disabled?: boolean
   refreshOnMount?: boolean
@@ -223,7 +271,11 @@ export function ProviderModelsEditor({
 
   function addCustom() {
     if (disabled) return
-    const result = upsertCustomModel(modelsRef.current, customId)
+    const result = upsertCustomModel(
+      modelsRef.current,
+      customId,
+      defaultPdfInput
+    )
     if (!customId.trim()) return
     if (result.status === "exists") {
       toast.message("That model is already on and in the list.")
@@ -243,7 +295,8 @@ export function ProviderModelsEditor({
           <Label>Models in chats</Label>
           <p className="mt-1 text-xs text-muted-foreground">
             Only enabled models appear in the chat picker. Aliases are labels,
-            not API ids.
+            not API ids. For PDFs, File sends the original and Text sends
+            extracted text.
           </p>
         </div>
         <p className="text-xs text-muted-foreground">
@@ -263,21 +316,27 @@ export function ProviderModelsEditor({
             disabled={disabled}
             className="min-w-[12rem] flex-1"
           />
-          <div className="flex rounded-4xl bg-background p-0.5 ring-1 ring-foreground/10">
+          <ToggleGroup
+            value={[visibility]}
+            onValueChange={(next) => {
+              const id = firstSelected(VISIBILITY_ITEMS, next)
+              if (id) setVisibility(id)
+            }}
+            disabled={disabled}
+            size="sm"
+            spacing={1}
+            aria-label="Filter by visibility"
+          >
             {VISIBILITY_ITEMS.map((item) => (
-              <Button
+              <ToggleGroupItem
                 key={item.id}
-                type="button"
-                size="xs"
-                variant={visibility === item.id ? "secondary" : "ghost"}
-                aria-pressed={visibility === item.id}
-                disabled={disabled}
-                onClick={() => setVisibility(item.id)}
+                value={item.id}
+                className={quietToggleItemClassName}
               >
                 {item.label}
-              </Button>
+              </ToggleGroupItem>
             ))}
-          </div>
+          </ToggleGroup>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button
@@ -371,6 +430,15 @@ export function ProviderModelsEditor({
                         onModelsChange(
                           models.map((entry) =>
                             entry.id === model.id ? { ...entry, label } : entry
+                          )
+                        )
+                      }
+                      onPdfInput={(pdfInput) =>
+                        onModelsChange(
+                          models.map((entry) =>
+                            entry.id === model.id
+                              ? { ...entry, pdfInput }
+                              : entry
                           )
                         )
                       }

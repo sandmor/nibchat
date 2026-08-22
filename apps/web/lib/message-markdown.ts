@@ -46,6 +46,8 @@ export function partsToMarkdown(parts: Parts): string {
     if (part.type === "attachment") {
       if (part.content.kind === "text") {
         sections.push(`**Attachment: ${part.name}**\n\n${part.content.text}`)
+      } else if (part.content.kind === "document") {
+        sections.push(`*[PDF: ${part.name}]*`)
       } else {
         sections.push(`*[Image: ${part.name}]*`)
       }

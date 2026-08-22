@@ -61,6 +61,28 @@ const attachmentContentSchema = z.discriminatedUnion("kind", [
     byteSize: z.number().int().positive(),
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
   }),
+  z.object({
+    kind: z.literal("document"),
+    attachmentId: z.string().min(1),
+    mediaType: z.literal("application/pdf"),
+    byteSize: z.number().int().positive(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    analysis: z.discriminatedUnion("status", [
+      z.object({
+        status: z.literal("ready"),
+        pdfType: z.enum(["TextBased", "Scanned", "ImageBased", "Mixed"]),
+        pageCount: z.number().int().positive(),
+        markdown: z.string().min(1).max(MAX_ATTACHMENT_TEXT_CHARS),
+      }),
+      z.object({
+        status: z.enum(["no-text", "failed", "unavailable"]),
+        pdfType: z
+          .enum(["TextBased", "Scanned", "ImageBased", "Mixed"])
+          .optional(),
+        pageCount: z.number().int().positive().optional(),
+      }),
+    ]),
+  }),
 ])
 
 export const attachmentPartSchema = z.object({
@@ -79,6 +101,8 @@ export function textFromParts(parts: Parts): string {
     else if (part.type === "attachment") {
       if (part.content.kind === "text")
         chunks.push(`[${part.name}]\n${part.content.text}`)
+      else if (part.content.kind === "document")
+        chunks.push(`[PDF: ${part.name}]`)
       else chunks.push(`[Image: ${part.name}]`)
     }
   }
@@ -117,7 +141,7 @@ export function conversationFindTextFromParts(parts: Parts): string {
     if (part.type === "reasoning") continue
     if (part.type === "text" && part.text) chunks.push(part.text)
     else if (part.type === "attachment") {
-      if (part.content.kind === "binary") {
+      if (part.content.kind === "binary" || part.content.kind === "document") {
         chunks.push(part.name)
         continue
       }
@@ -141,7 +165,12 @@ export function conversationFindTextFromParts(parts: Parts): string {
 
 /** How attachment content is presented to the model. */
 export function attachmentModelText(part: AttachmentPart): string {
-  if (part.content.kind !== "text") return `[Image attachment: ${part.name}]`
+  if (part.content.kind === "binary") return `[Image attachment: ${part.name}]`
+  if (part.content.kind === "document") {
+    if (part.content.analysis.status !== "ready")
+      return `[PDF attachment: ${part.name}]`
+    return `[PDF attachment: ${part.name}]\n${part.content.analysis.markdown}`
+  }
   const locator =
     part.source.kind === "mcp-resource" ? ` (${part.source.uri})` : ""
   const truncated = part.content.truncated

@@ -1,10 +1,18 @@
 "use client"
 
-import { memo, useCallback, useMemo, useRef, useState } from "react"
+import {
+  memo,
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
-  ImageAdd02Icon,
+  AttachmentIcon,
   Loading03Icon,
+  Pdf02Icon,
   SentIcon,
   StopIcon,
 } from "@hugeicons/core-free-icons"
@@ -179,7 +187,7 @@ export function ConversationComposer({
   onStop,
   onRevealContextMessage,
 }: ConversationComposerProps) {
-  const imageInputRef = useRef<HTMLInputElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [mcpMenuOpen, setMcpMenuOpen] = useState(false)
   const [dropActive, setDropActive] = useState(false)
   const dropDepthRef = useRef(0)
@@ -224,13 +232,13 @@ export function ConversationComposer({
     >
       {dropActive ? (
         <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center rounded-xl bg-background/70 text-sm text-muted-foreground">
-          Drop images
+          Drop images or PDFs
         </div>
       ) : null}
       <input
-        ref={imageInputRef}
+        ref={fileInputRef}
         type="file"
-        accept="image/jpeg,image/png,image/webp,image/gif"
+        accept="image/jpeg,image/png,image/webp,image/gif,application/pdf,.pdf"
         multiple
         disabled={submitting}
         className="sr-only"
@@ -248,7 +256,14 @@ export function ConversationComposer({
                 : part.reference.id
             if (part.previewUrl) {
               return (
-                <span key={key} className="relative size-14 shrink-0">
+                <ComposerFileTile
+                  key={key}
+                  name={part.name}
+                  uploading={part.uploading}
+                  submitting={submitting}
+                  animate={animate}
+                  onRemove={() => onRemoveAttachment(part)}
+                >
                   <button
                     type="button"
                     className="size-14 overflow-hidden rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
@@ -260,28 +275,49 @@ export function ConversationComposer({
                       className="size-full object-cover"
                     />
                   </button>
-                  {part.uploading ? (
-                    <span className="pointer-events-none absolute inset-0 grid place-items-center rounded-md bg-background/60">
-                      <HugeiconsIcon
-                        icon={Loading03Icon}
-                        strokeWidth={2}
-                        className={cn("size-4", animate && "animate-spin")}
-                        style={{
-                          animationDuration: "var(--motion-spinner-duration)",
-                        }}
-                      />
-                    </span>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="absolute -top-1 -right-1 flex size-5 items-center justify-center rounded-full border bg-background text-xs leading-none text-muted-foreground hover:text-foreground"
-                    aria-label={`Remove ${part.name}`}
-                    onClick={() => onRemoveAttachment(part)}
-                    disabled={submitting}
-                  >
-                    ×
-                  </button>
+                </ComposerFileTile>
+              )
+            }
+            if (part.reference.kind === "uploaded-file") {
+              const href = part.uploading
+                ? undefined
+                : `/api/attachments/${part.reference.id}`
+              const preview = (
+                <span className="flex size-14 flex-col items-center justify-center gap-0.5 overflow-hidden rounded-md border bg-muted/50 px-1">
+                  <HugeiconsIcon
+                    icon={Pdf02Icon}
+                    strokeWidth={2}
+                    className="size-5 text-muted-foreground"
+                  />
+                  <span className="w-full truncate text-center text-[9px] leading-tight text-muted-foreground">
+                    {part.name}
+                  </span>
                 </span>
+              )
+              return (
+                <ComposerFileTile
+                  key={key}
+                  name={part.name}
+                  uploading={part.uploading}
+                  submitting={submitting}
+                  animate={animate}
+                  onRemove={() => onRemoveAttachment(part)}
+                >
+                  {href ? (
+                    <a
+                      href={href}
+                      target="_blank"
+                      rel="noreferrer"
+                      title={part.name}
+                      className="block size-14 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                    >
+                      {preview}
+                      <span className="sr-only"> (opens in a new tab)</span>
+                    </a>
+                  ) : (
+                    <span title={part.name}>{preview}</span>
+                  )}
+                </ComposerFileTile>
               )
             }
             return (
@@ -338,18 +374,18 @@ export function ConversationComposer({
       <div className="flex items-center justify-between gap-2 px-2 pb-1">
         <div className="flex flex-wrap items-center gap-1">
           <TooltipProvider delay={400}>
-            <WithTooltip label="Attach image">
+            <WithTooltip label="Attach file">
               <Button
                 type="button"
                 variant="ghost"
                 size="icon-xs"
                 className="size-7"
-                aria-label="Attach image"
+                aria-label="Attach file"
                 disabled={submitting}
-                onClick={() => imageInputRef.current?.click()}
+                onClick={() => fileInputRef.current?.click()}
               >
                 <HugeiconsIcon
-                  icon={ImageAdd02Icon}
+                  icon={AttachmentIcon}
                   strokeWidth={2}
                   className="size-3.5"
                 />
@@ -475,5 +511,48 @@ export function ConversationComposer({
         </div>
       </div>
     </div>
+  )
+}
+
+function ComposerFileTile({
+  name,
+  uploading,
+  submitting,
+  animate,
+  onRemove,
+  children,
+}: {
+  name: string
+  uploading?: boolean
+  submitting?: boolean
+  animate: boolean
+  onRemove: () => void
+  children: ReactNode
+}) {
+  return (
+    <span className="relative size-14 shrink-0" aria-busy={uploading}>
+      {children}
+      {uploading ? (
+        <span className="pointer-events-none absolute inset-0 grid place-items-center rounded-md bg-background/60">
+          <HugeiconsIcon
+            icon={Loading03Icon}
+            strokeWidth={2}
+            className={cn("size-4", animate && "animate-spin")}
+            style={{
+              animationDuration: "var(--motion-spinner-duration)",
+            }}
+          />
+        </span>
+      ) : null}
+      <button
+        type="button"
+        className="absolute -top-1 -right-1 flex size-5 items-center justify-center rounded-full border bg-background text-xs leading-none text-muted-foreground hover:text-foreground"
+        aria-label={`Remove ${name}`}
+        onClick={onRemove}
+        disabled={submitting}
+      >
+        ×
+      </button>
+    </span>
   )
 }

@@ -67,7 +67,13 @@ import { ImageViewer } from "./image-viewer"
 import { chatRouteIdentity } from "./chat-transcript-helpers"
 import { useWorkspaceChrome } from "./shell"
 import { DocumentTitle } from "@/components/document-title"
-import { MAX_IMAGE_ATTACHMENTS, type NodeRow } from "@/lib/types"
+import {
+  MAX_FILE_ATTACHMENT_BYTES,
+  MAX_FILE_ATTACHMENTS,
+  type NodeRow,
+} from "@/lib/types"
+import { analyzePdf } from "@/lib/pdf-analysis-client"
+import type { PdfAnalysis } from "@/lib/pdf-analysis"
 import {
   readStreamEvents,
   shouldSoftFollow,
@@ -82,6 +88,12 @@ type Props = {
   initial: WorkspaceData
   /** When set, select this node into the active path on mount. */
   selectNodeId?: string | null
+}
+
+function isPdfFile(file: File) {
+  return (
+    file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")
+  )
 }
 
 export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
@@ -286,17 +298,16 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
             // Reattach with the cursor advanced only after the reducer applied it.
           }
         }
-      })()
-        .finally(() => {
-          discoveredFollowersRef.current.delete(generation.generationId)
-          finishStream(generation.generationId)
-          if (controller.signal.aborted) return
-          void queryClient.invalidateQueries({
-            queryKey: trpc.workspace.get.queryKey({
-              chatId: generation.chatId,
-            }),
-          })
+      })().finally(() => {
+        discoveredFollowersRef.current.delete(generation.generationId)
+        finishStream(generation.generationId)
+        if (controller.signal.aborted) return
+        void queryClient.invalidateQueries({
+          queryKey: trpc.workspace.get.queryKey({
+            chatId: generation.chatId,
+          }),
         })
+      })
     }
   }, [
     applyStreamEvent,
@@ -769,31 +780,39 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     }
   }
 
-  async function uploadImages(slot: string, files: FileList | File[]) {
+  async function uploadFiles(slot: string, files: FileList | File[]) {
     const read = () => readComposerDraft(slot)
     const writeAttachments = (next: ComposerAttachment[]) => {
       updateSessionDraft(slot, { attachments: next })
     }
     const all = Array.from(files)
-    const selected = all.filter(
+    const supported = all.filter(
       (file) =>
         file.type.startsWith("image/") ||
+        isPdfFile(file) ||
         file.type === "" ||
         file.type === "application/octet-stream"
     )
-    if (selected.length !== all.length)
-      toast.error("Only image files can be attached")
+    if (supported.length !== all.length)
+      toast.error("Only images and PDFs can be attached")
+    const selected = supported.filter(
+      (file) => file.size <= MAX_FILE_ATTACHMENT_BYTES
+    )
+    if (selected.length !== supported.length)
+      toast.error("Files must be 10 MiB or smaller")
     if (!selected.length) return
-    const imageCount = read().attachments.filter(
+    const fileCount = read().attachments.filter(
       (item) => item.reference.kind === "uploaded-file"
     ).length
-    if (imageCount + selected.length > MAX_IMAGE_ATTACHMENTS) {
-      toast.error("You can attach up to four images")
+    if (fileCount + selected.length > MAX_FILE_ATTACHMENTS) {
+      toast.error("You can attach up to four files")
       return
     }
     const placeholders: ComposerAttachment[] = selected.map((file) => ({
       name: file.name,
-      previewUrl: URL.createObjectURL(file),
+      ...(file.type.startsWith("image/")
+        ? { previewUrl: URL.createObjectURL(file) }
+        : {}),
       uploading: true,
       reference: { kind: "uploaded-file", id: crypto.randomUUID() },
     }))
@@ -802,7 +821,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       const part = placeholders[index]!
       const localId =
         part.reference.kind === "uploaded-file" ? part.reference.id : ""
-      const previewUrl = part.previewUrl!
+      const previewUrl = part.previewUrl
       try {
         const form = new FormData()
         form.set("file", file)
@@ -813,14 +832,31 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
         const payload = (await response.json().catch(() => ({}))) as {
           id?: string
           filename?: string
+          mediaType?: string
           error?: string
         }
         if (!response.ok || !payload.id)
-          throw new Error(payload.error || "Image upload failed")
+          throw new Error(payload.error || "File upload failed")
         if (!aliveRef.current || cancelledUploadIds.current.has(localId)) {
           void fetch(`/api/attachments/${payload.id}`, { method: "DELETE" })
-          URL.revokeObjectURL(previewUrl)
+          if (previewUrl) URL.revokeObjectURL(previewUrl)
           continue
+        }
+        let pdfAnalysis: PdfAnalysis | undefined
+        if (payload.mediaType === "application/pdf") {
+          pdfAnalysis = await analyzePdf(file)
+          const analysisResponse = await fetch(
+            `/api/attachments/${payload.id}`,
+            {
+              method: "PATCH",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(pdfAnalysis),
+            }
+          )
+          if (!analysisResponse.ok) {
+            toast.error("PDF attached, but text could not be read")
+            pdfAnalysis = undefined
+          }
         }
         writeAttachments(
           read().attachments.map((item) =>
@@ -833,6 +869,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
                     kind: "uploaded-file" as const,
                     id: payload.id!,
                   },
+                  ...(pdfAnalysis ? { pdfAnalysis } : {}),
                   uploading: false,
                 }
               : item
@@ -847,10 +884,10 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
                 item.reference.id !== localId
             )
           )
-          URL.revokeObjectURL(previewUrl)
+          if (previewUrl) URL.revokeObjectURL(previewUrl)
           if (viewer?.src === previewUrl) setViewer(null)
           toast.error(
-            error instanceof Error ? error.message : "Image upload failed"
+            error instanceof Error ? error.message : "File upload failed"
           )
         }
       }
@@ -1087,9 +1124,14 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const previewModelConfig = useMemo(
     () => ({
       providerId: activeModelConfig.providerId,
+      model: activeModelConfig.model,
       replayReasoning: activeModelConfig.replayReasoning,
     }),
-    [activeModelConfig.providerId, activeModelConfig.replayReasoning]
+    [
+      activeModelConfig.providerId,
+      activeModelConfig.model,
+      activeModelConfig.replayReasoning,
+    ]
   )
   const treeSlotSignature = useTreeDraftSlotSignature(data.chat?.id)
   const treeDraftAnchors = useMemo(() => {
@@ -1276,7 +1318,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
                     contextParentId={anchor}
                     onSend={options.onSend}
                     onCancel={() => closeTreeDraft(anchor)}
-                    onFiles={(files) => void uploadImages(slot, files)}
+                    onFiles={(files) => void uploadFiles(slot, files)}
                     onRemoveAttachment={(part) => removeAttachment(slot, part)}
                     onPreview={(src, name) => setViewer({ src, name })}
                     onOpenResources={() => {
@@ -1347,9 +1389,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
                 showContextPreview
                 contextParentId={composerParentId}
                 onSend={() => void streamContinue()}
-                onFiles={(files) =>
-                  void uploadImages(linearComposerSlot, files)
-                }
+                onFiles={(files) => void uploadFiles(linearComposerSlot, files)}
                 onRemoveAttachment={(part) =>
                   removeAttachment(linearComposerSlot, part)
                 }

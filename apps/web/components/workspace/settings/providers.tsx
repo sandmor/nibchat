@@ -21,6 +21,7 @@ import {
 } from "@/lib/provider-kinds"
 import {
   catalogNameMap,
+  defaultPdfInputForProviderKind,
   mergeCatalogWithSaved,
   modelsToPersist,
   parseProviderModelsJson,
@@ -53,10 +54,19 @@ export function ProviderSettings({
   const [catalog, setCatalog] = useState<CatalogModel[]>([])
   const [editingId, setEditingId] = useState<string | null>(null)
 
-  const handleCatalogChange = useCallback((next: CatalogModel[]) => {
-    setCatalog(next)
-    setModels((current) => mergeCatalogWithSaved(current, next))
-  }, [])
+  const handleCatalogChange = useCallback(
+    (next: CatalogModel[]) => {
+      setCatalog(next)
+      setModels((current) =>
+        mergeCatalogWithSaved(
+          current,
+          next,
+          defaultPdfInputForProviderKind(form.kind)
+        )
+      )
+    },
+    [form.kind]
+  )
 
   function resetEditor() {
     setForm(emptyForm)
@@ -74,7 +84,7 @@ export function ProviderSettings({
     trpc.workspace.createProvider.mutationOptions({
       onSuccess: (result) => {
         toast.success(
-          "Provider saved. Secrets remain server-only and are excluded from exports."
+          "Provider saved."
         )
         setForm((current) => ({ ...current, apiKey: "" }))
         setEditingId(result.id)
@@ -87,7 +97,7 @@ export function ProviderSettings({
     trpc.workspace.updateProvider.mutationOptions({
       onSuccess: () => {
         toast.success(
-          "Provider saved. Secrets remain server-only and are excluded from exports."
+          "Provider saved."
         )
         setForm((current) => ({ ...current, apiKey: "" }))
         void invalidateTitleModel()
@@ -111,7 +121,11 @@ export function ProviderSettings({
     const payload = {
       name: form.name,
       kind: form.kind,
-      models: modelsToPersist(models, catalogNameMap(catalog)),
+      models: modelsToPersist(
+        models,
+        catalogNameMap(catalog),
+        defaultPdfInputForProviderKind(form.kind)
+      ),
       baseUrl: form.baseUrl,
       apiKey: form.apiKey || undefined,
       apiKeyEnv: form.apiKeyEnv || undefined,
@@ -143,6 +157,7 @@ export function ProviderSettings({
             providerId={editingId}
             models={models}
             catalog={catalog}
+            defaultPdfInput={defaultPdfInputForProviderKind(form.kind)}
             onModelsChange={setModels}
             onCatalogChange={handleCatalogChange}
           />

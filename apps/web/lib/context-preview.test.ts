@@ -314,14 +314,19 @@ describe("context preview helpers", () => {
     const merged = mergeDraftSummary(base, {
       text: "hello",
       attachments: [
-        { name: "shot.png", reference: { kind: "uploaded-file" } },
+        {
+          name: "shot.png",
+          previewUrl: "blob:shot",
+          reference: { kind: "uploaded-file" },
+        },
+        { name: "report.pdf", reference: { kind: "uploaded-file" } },
         { name: "notes", reference: { kind: "mcp-resource" } },
       ],
     })
     expect(merged.charCount).toBe(base.charCount + 5)
     expect(merged.estimatedTokens).toBe(estimateTokens(merged.charCount))
     expect(merged.imageCount).toBe(1)
-    expect(merged.attachmentCount).toBe(2)
+    expect(merged.attachmentCount).toBe(3)
     const draft = merged.layers.find((l) => l.id === "draft")
     expect(draft?.charCount).toBe(5)
     expect(draft?.messageCount).toBe(1)

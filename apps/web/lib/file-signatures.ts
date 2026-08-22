@@ -1,12 +1,13 @@
 export const FILE_SIGNATURE_BYTES = 12
 
-export type SupportedImageMediaType =
+export type SupportedAttachmentMediaType =
   | "image/jpeg"
   | "image/png"
   | "image/gif"
   | "image/webp"
+  | "application/pdf"
 
-type DetectedFileType = SupportedImageMediaType | "application/zip"
+type DetectedFileType = SupportedAttachmentMediaType | "application/zip"
 
 function hasPrefix(bytes: Uint8Array, prefix: readonly number[]) {
   return (
@@ -36,31 +37,42 @@ export function detectFileType(bytes: Uint8Array): DetectedFileType | null {
     hasPrefix(bytes, [0x50, 0x4b, 0x05, 0x06])
   )
     return "application/zip"
+  if (
+    bytes.byteLength >= 5 &&
+    bytes[0] === 0x25 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x44 &&
+    bytes[3] === 0x46 &&
+    bytes[4] === 0x2d
+  )
+    return "application/pdf"
   return null
 }
 
-export function validateImageSignature(
+export function validateAttachmentSignature(
   signature: Uint8Array,
   declaredMediaType?: string
-): SupportedImageMediaType {
+): SupportedAttachmentMediaType {
   const detected = detectFileType(signature)
   if (
-    !detected?.startsWith("image/") ||
-    (declaredMediaType && declaredMediaType !== detected)
+    !detected ||
+    detected === "application/zip" ||
+    (declaredMediaType &&
+      declaredMediaType !== "application/octet-stream" &&
+      declaredMediaType !== detected)
   )
-    throw new Error("Upload a valid JPEG, PNG, WebP, or GIF image")
-  return detected as SupportedImageMediaType
+    throw new Error("Upload a valid JPEG, PNG, WebP, GIF, or PDF file")
+  return detected
 }
 
-/** Read only enough of a Blob to validate its magic number. */
-export async function validateImageBlob(
+export async function validateAttachmentBlob(
   blob: Blob,
   declaredMediaType?: string
 ) {
   const signature = new Uint8Array(
     await blob.slice(0, FILE_SIGNATURE_BYTES).arrayBuffer()
   )
-  return validateImageSignature(signature, declaredMediaType)
+  return validateAttachmentSignature(signature, declaredMediaType)
 }
 
 export function looksLikeZip(bytes: Uint8Array) {

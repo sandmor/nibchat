@@ -1,9 +1,9 @@
 import type { Selectable } from "kysely"
 
 export const MAX_ATTACHMENT_TEXT_CHARS = 10_000_000
-export const MAX_IMAGE_ATTACHMENTS = 4
-export const MAX_IMAGE_ATTACHMENT_BYTES = 10 * 1024 * 1024
-export const MAX_IMAGE_ATTACHMENT_TOTAL_BYTES = 20 * 1024 * 1024
+export const MAX_FILE_ATTACHMENTS = 4
+export const MAX_FILE_ATTACHMENT_BYTES = 10 * 1024 * 1024
+export const MAX_FILE_ATTACHMENT_TOTAL_BYTES = 20 * 1024 * 1024
 
 export type MessageRole = "user" | "assistant" | "system" | "tool"
 export type MessageStatus =
@@ -67,6 +67,25 @@ export type AttachmentContent =
       mediaType: string
       byteSize: number
       sha256: string
+    }
+  | {
+      kind: "document"
+      attachmentId: string
+      mediaType: "application/pdf"
+      byteSize: number
+      sha256: string
+      analysis:
+        | {
+            status: "ready"
+            pdfType: "TextBased" | "Scanned" | "ImageBased" | "Mixed"
+            pageCount: number
+            markdown: string
+          }
+        | {
+            status: "no-text" | "failed" | "unavailable"
+            pdfType?: "TextBased" | "Scanned" | "ImageBased" | "Mixed"
+            pageCount?: number
+          }
     }
 
 /**
@@ -139,6 +158,13 @@ export interface MessageAttachmentsTable {
   message_node_id: string
   attachment_id: string
 }
+export interface AttachmentDerivationsTable {
+  attachment_id: string
+  kind: "pdf"
+  data_json: string
+  created_at: string
+  updated_at: string
+}
 export interface PromptStacksTable {
   id: string
   user_id: string
@@ -201,6 +227,7 @@ export interface DB {
   generation_runs: GenerationRunsTable
   attachments: AttachmentsTable
   message_attachments: MessageAttachmentsTable
+  attachment_derivations: AttachmentDerivationsTable
   prompt_stacks: PromptStacksTable
   themes: ThemesTable
   instance: InstanceTable

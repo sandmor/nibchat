@@ -1,8 +1,4 @@
-import {
-  stepCountIs,
-  streamText,
-  type LanguageModel,
-} from "ai"
+import { stepCountIs, streamText, type LanguageModel } from "ai"
 import { generationStreamStore } from "@/lib/generation-streams/default-port"
 import { generationExecutor } from "@/lib/generation-streams/default-port"
 import { generationSseResponse } from "@/lib/generation-streams/http"
@@ -28,12 +24,17 @@ import {
   unregisterGeneration,
 } from "@/lib/active-generations"
 import { formatProviderError } from "@/lib/provider-errors"
-import { canReplayReasoning, type ModelConfig } from "@/lib/providers"
+import {
+  canReplayReasoning,
+  pdfInputModeFor,
+  type ModelConfig,
+} from "@/lib/providers"
 import {
   assemblePromptContext,
   type PromptStackDocument,
 } from "@/lib/prompt-stack"
 import { prepareMcpTools } from "@/lib/mcp"
+import { assertPdfFallbackAvailable } from "@/lib/pdf-input"
 import type { NodeRow, ToolInvocationPart } from "@/lib/types"
 
 const MAX_STEPS = 20
@@ -205,9 +206,15 @@ export async function createGenerationResponse(
       ? ancestorPath(nodesForContext, contextLeafId)
       : []
     const replayReasoning = await canReplayReasoning(userId, config)
+    const pdfInputMode = await pdfInputModeFor(userId, config)
+    if (pdfInputMode === "extracted")
+      assertPdfFallbackAvailable(
+        contextNodes.flatMap((node) => parseJson<Parts>(node.parts_json, []))
+      )
     const pathMessages = await buildEmbeddedModelMessages({
       nodes: contextNodes,
       replayReasoning,
+      pdfInputMode,
     })
     const mcpServerInstructionsEnabled = promptStack.modules.some(
       (module) => module.kind === "mcp-instructions" && module.enabled
@@ -495,7 +502,8 @@ export async function createGenerationResponse(
     }
     dropRegistration()
     producerGuards?.stop()
-    if (producerHandle) await generationStreamStore.close(producerHandle).catch(() => {})
+    if (producerHandle)
+      await generationStreamStore.close(producerHandle).catch(() => {})
     throw error
   }
 }

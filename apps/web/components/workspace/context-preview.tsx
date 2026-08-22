@@ -36,6 +36,7 @@ import {
   type ContextPreviewLayer,
 } from "@/lib/context-preview"
 import { buildMcpInstructionsText } from "@/lib/mcp-instructions"
+import { parseProviderModelsJson } from "@/lib/provider-models"
 import { replayReasoningEnabled } from "@/lib/reasoning-replay"
 import { useTRPC } from "@/lib/trpc-react"
 import type { NodeRow } from "@/lib/types"
@@ -46,12 +47,14 @@ export type { AssembledContextPreviewData }
 
 type PreviewModelConfig = {
   providerId?: string
+  model?: string
   replayReasoning?: boolean
 }
 
 type PreviewProviderKind = {
   id: string
   kind: string
+  models_json: string
 }
 
 type ContextPreviewGraph = {
@@ -77,6 +80,7 @@ export function ContextPreviewProvider({
   children,
 }: ContextPreviewGraph & { children: ReactNode }) {
   const providerId = modelConfig.providerId
+  const model = modelConfig.model
   const replayReasoning = modelConfig.replayReasoning
   const value = useMemo(
     () => ({
@@ -84,7 +88,7 @@ export function ContextPreviewProvider({
       chatStackId,
       draftStackId,
       hasChat,
-      modelConfig: { providerId, replayReasoning },
+      modelConfig: { providerId, model, replayReasoning },
       providers,
     }),
     [
@@ -93,6 +97,7 @@ export function ContextPreviewProvider({
       draftStackId,
       hasChat,
       providerId,
+      model,
       replayReasoning,
       providers,
     ]
@@ -124,6 +129,12 @@ function useAssembledContextPreview(contextParentId: string | null) {
     const provider = graph.providers.find(
       (item) => item.id === graph.modelConfig.providerId
     )
+    const pdfInputMode =
+      provider && graph.modelConfig.model
+        ? (parseProviderModelsJson(provider.models_json).find(
+            (model) => model.id === graph.modelConfig.model
+          )?.pdfInput ?? "extracted")
+        : "extracted"
     const mcpServerInstructionsText = buildMcpInstructionsText(
       (surfacesQuery.data ?? []).map((surface) => ({
         name: surface.profileName,
@@ -140,6 +151,7 @@ function useAssembledContextPreview(contextParentId: string | null) {
         provider?.kind,
         graph.modelConfig.replayReasoning
       ),
+      pdfInputMode,
       mcpServerInstructionsText,
     })
   }, [graph, contextParentId, settingsQuery.data, surfacesQuery.data])
@@ -176,8 +188,11 @@ function ContextPreviewCompose({
   onRevealMessage?: (nodeId: string) => void
 }) {
   const merged = useMemo(
-    () => (draft ? mergeDraftSummary(data.summary, draft) : data.summary),
-    [data.summary, draft]
+    () =>
+      draft
+        ? mergeDraftSummary(data.summary, draft, data.pdfInputMode)
+        : data.summary,
+    [data.summary, data.pdfInputMode, draft]
   )
   const layers = merged.layers.filter(
     (layer) => layer.charCount > 0 || layer.messageCount > 0

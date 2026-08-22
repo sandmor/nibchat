@@ -176,3 +176,21 @@ export async function canReplayReasoning(userId: string, config: ModelConfig) {
   if (!profile) return false
   return replayReasoningEnabled(profile.kind, config.replayReasoning)
 }
+
+export async function pdfInputModeFor(
+  userId: string,
+  config: ModelConfig
+): Promise<"native" | "extracted"> {
+  if (!config.providerId) return "extracted"
+  const profile = await db
+    .selectFrom("provider_profiles")
+    .select(["kind", "models_json"])
+    .where("id", "=", config.providerId)
+    .where("user_id", "=", userId)
+    .executeTakeFirst()
+  if (!profile) return "extracted"
+  const model = parseProviderModelsJson(profile.models_json).find(
+    (item) => item.id === config.model
+  )
+  return model?.pdfInput ?? "extracted"
+}

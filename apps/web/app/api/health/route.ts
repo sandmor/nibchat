@@ -3,15 +3,13 @@ import { db } from "@/lib/db"
 export const runtime = "nodejs"
 
 /**
- * Unauthenticated probe. Only reads a known row; does not run migrations.
- * Returns 503 if the database is missing or not yet initialized.
+ * Unauthenticated readiness probe. Checks database connectivity without
+ * requiring a schema or running migrations.
  */
 export async function GET() {
   try {
     await db
-      .selectFrom("instance")
-      .select("id")
-      .where("id", "=", 1)
+      .selectNoFrom((eb) => eb.val(1).as("reachable"))
       .executeTakeFirstOrThrow()
     return Response.json({ ok: true })
   } catch {

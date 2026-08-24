@@ -3,6 +3,7 @@
 import {
   memo,
   useCallback,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -10,6 +11,8 @@ import {
 } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
+  ArrowExpand01Icon,
+  ArrowShrink01Icon,
   AttachmentIcon,
   Loading03Icon,
   Pdf02Icon,
@@ -32,6 +35,13 @@ import {
   type ComposerDraft,
 } from "./conversation-session-store"
 import { ContextPreviewStrip } from "./context-preview"
+import {
+  applyFieldHeightCap,
+  composerFieldMaxHeight,
+  composerFieldMinHeight,
+  fieldOverflow,
+  fieldOverflowEqual,
+} from "./composer-layout"
 
 export type ConversationComposerProps = {
   draft: ComposerDraft
@@ -136,6 +146,7 @@ const SessionComposerLeaf = memo(function SessionComposerLeaf({
   )
   return (
     <ConversationComposer
+      key={slot}
       draft={draft}
       placeholder={placeholder}
       autoFocus={autoFocus}
@@ -190,6 +201,7 @@ export function ConversationComposer({
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [mcpMenuOpen, setMcpMenuOpen] = useState(false)
   const [dropActive, setDropActive] = useState(false)
+  const [expanded, setExpanded] = useState(false)
   const dropDepthRef = useRef(0)
   const showMcp =
     mcpAvailable ||
@@ -199,17 +211,19 @@ export function ConversationComposer({
     submitting ||
     (!draft.text.trim() && draft.attachments.length === 0) ||
     draft.attachments.some((attachment) => attachment.uploading)
+  const send = () => {
+    setExpanded(false)
+    onSend()
+  }
 
   return (
     <div
       data-theme-group="composer"
       data-theme-target="composer"
       data-tree-chrome={inline ? true : undefined}
-      data-tree-scroll={inline ? "" : undefined}
       className={cn(
-        "relative rounded-xl border border-composer-border bg-composer p-2 text-composer-foreground",
-        inline &&
-          "[touch-action:pan-x_pan-y] overflow-auto overscroll-contain shadow-[var(--tree-shadow-lg)]",
+        "relative flex flex-col rounded-xl border border-composer-border bg-composer p-2 text-composer-foreground",
+        inline && "shadow-[var(--tree-shadow-lg)]",
         dropActive ? "border-foreground/40 bg-muted/40" : null
       )}
       onDragEnter={(event) => {
@@ -248,7 +262,10 @@ export function ConversationComposer({
         }}
       />
       {draft.attachments.length > 0 ? (
-        <div className="flex flex-wrap items-end gap-1.5 px-2 pt-1">
+        <div
+          data-tree-scroll={inline ? "" : undefined}
+          className="flex max-h-20 [touch-action:pan-y] flex-wrap items-end gap-1.5 overflow-y-auto overscroll-contain px-2 pt-1"
+        >
           {draft.attachments.map((part) => {
             const key =
               part.reference.kind === "mcp-resource"
@@ -340,40 +357,32 @@ export function ConversationComposer({
           })}
         </div>
       ) : null}
-      <Textarea
+      <ComposerField
         autoFocus={autoFocus}
         disabled={submitting}
         value={draft.text}
-        onChange={(event) => onTextChange(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && !event.shiftKey) {
-            event.preventDefault()
-            if (event.repeat || submitting) return
-            onSend()
-          }
-        }}
         placeholder={placeholder}
-        onPaste={(event) => {
-          const files = Array.from(event.clipboardData.files)
-          if (files.length) {
-            event.preventDefault()
-            onFiles(files)
-          }
-        }}
-        rows={3}
-        className="min-h-[4.5rem] resize-none border-0 bg-transparent px-2 py-1 shadow-none focus-visible:ring-0"
+        inline={inline}
+        expanded={expanded}
+        menuOpen={mcpMenuOpen}
+        onChange={onTextChange}
+        onSend={send}
+        onFiles={onFiles}
+        onCollapse={() => setExpanded(false)}
       />
       {showContextPreview ? (
-        <ContextPreviewStrip
-          contextParentId={contextParentId}
-          draft={draft}
-          streaming={Boolean(streaming && onStop)}
-          onRevealMessage={onRevealContextMessage}
-        />
+        <div className="shrink-0">
+          <ContextPreviewStrip
+            contextParentId={contextParentId}
+            draft={draft}
+            streaming={Boolean(streaming && onStop)}
+            onRevealMessage={onRevealContextMessage}
+          />
+        </div>
       ) : null}
-      <div className="flex items-center justify-between gap-2 px-2 pb-1">
-        <div className="flex flex-wrap items-center gap-1">
-          <TooltipProvider delay={400}>
+      <div className="flex shrink-0 items-center justify-between gap-2 px-2 pb-1">
+        <TooltipProvider delay={400}>
+          <div className="flex flex-wrap items-center gap-1">
             <WithTooltip label="Attach file">
               <Button
                 type="button"
@@ -391,74 +400,96 @@ export function ConversationComposer({
                 />
               </Button>
             </WithTooltip>
-          </TooltipProvider>
-          {showMcp ? (
-            <Popover open={mcpMenuOpen} onOpenChange={setMcpMenuOpen}>
-              <PopoverTrigger
-                render={
-                  <Button
+            {showMcp ? (
+              <Popover open={mcpMenuOpen} onOpenChange={setMcpMenuOpen}>
+                <PopoverTrigger
+                  render={
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-xs"
+                      disabled={submitting}
+                    />
+                  }
+                >
+                  MCP
+                  {draft.attachments.some(
+                    (item) => item.reference.kind === "mcp-resource"
+                  ) ? (
+                    <span className="ml-1 text-muted-foreground">
+                      ·{" "}
+                      {
+                        draft.attachments.filter(
+                          (item) => item.reference.kind === "mcp-resource"
+                        ).length
+                      }
+                    </span>
+                  ) : null}
+                </PopoverTrigger>
+                <PopoverContent
+                  align="start"
+                  side="top"
+                  className="w-72 gap-0.5 p-1.5"
+                >
+                  <button
                     type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 text-xs"
-                    disabled={submitting}
-                  />
-                }
+                    className="flex w-full flex-col items-start gap-0.5 rounded-xl px-3 py-2 text-left hover:bg-muted/70"
+                    onClick={() => {
+                      setMcpMenuOpen(false)
+                      onOpenResources()
+                    }}
+                  >
+                    <span className="text-sm font-medium">Attach resource</span>
+                    <span className="text-xs text-muted-foreground">
+                      Pull docs or files from an MCP server into this message
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full flex-col items-start gap-0.5 rounded-xl px-3 py-2 text-left hover:bg-muted/70"
+                    onClick={() => {
+                      setMcpMenuOpen(false)
+                      onOpenPrompts()
+                    }}
+                  >
+                    <span className="text-sm font-medium">Insert prompt</span>
+                    <span className="text-xs text-muted-foreground">
+                      Paste a server prompt template into the composer
+                    </span>
+                  </button>
+                </PopoverContent>
+              </Popover>
+            ) : null}
+            <WithTooltip
+              label={expanded ? "Collapse composer" : "Expand composer"}
+            >
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                className="size-7"
+                aria-label={expanded ? "Collapse composer" : "Expand composer"}
+                aria-pressed={expanded}
+                disabled={submitting}
+                onClick={() => setExpanded((open) => !open)}
               >
-                MCP
-                {draft.attachments.some(
-                  (item) => item.reference.kind === "mcp-resource"
-                ) ? (
-                  <span className="ml-1 text-muted-foreground">
-                    ·{" "}
-                    {
-                      draft.attachments.filter(
-                        (item) => item.reference.kind === "mcp-resource"
-                      ).length
-                    }
-                  </span>
-                ) : null}
-              </PopoverTrigger>
-              <PopoverContent
-                align="start"
-                side="top"
-                className="w-72 gap-0.5 p-1.5"
-              >
-                <button
-                  type="button"
-                  className="flex w-full flex-col items-start gap-0.5 rounded-xl px-3 py-2 text-left hover:bg-muted/70"
-                  onClick={() => {
-                    setMcpMenuOpen(false)
-                    onOpenResources()
-                  }}
-                >
-                  <span className="text-sm font-medium">Attach resource</span>
-                  <span className="text-xs text-muted-foreground">
-                    Pull docs or files from an MCP server into this message
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className="flex w-full flex-col items-start gap-0.5 rounded-xl px-3 py-2 text-left hover:bg-muted/70"
-                  onClick={() => {
-                    setMcpMenuOpen(false)
-                    onOpenPrompts()
-                  }}
-                >
-                  <span className="text-sm font-medium">Insert prompt</span>
-                  <span className="text-xs text-muted-foreground">
-                    Paste a server prompt template into the composer
-                  </span>
-                </button>
-              </PopoverContent>
-            </Popover>
-          ) : null}
-          {inline ? null : (
-            <span className="hidden text-[11px] text-muted-foreground sm:inline">
-              Enter to send · Shift + Enter for a new line
-            </span>
-          )}
-        </div>
+                <HugeiconsIcon
+                  icon={expanded ? ArrowShrink01Icon : ArrowExpand01Icon}
+                  strokeWidth={2}
+                  className="size-3.5"
+                />
+              </Button>
+            </WithTooltip>
+            {inline ? null : (
+              <span className="hidden text-[11px] text-muted-foreground sm:inline">
+                {expanded
+                  ? "Esc to collapse · Enter to send"
+                  : "Enter to send · Shift + Enter for a new line"}
+              </span>
+            )}
+          </div>
+        </TooltipProvider>
         <div className="flex items-center gap-1.5">
           {inline ? (
             <Button
@@ -487,7 +518,7 @@ export function ConversationComposer({
           <Button
             size={inline ? "xs" : "sm"}
             className="gap-1.5"
-            onClick={onSend}
+            onClick={send}
             disabled={sending}
           >
             {submitting ? (
@@ -510,6 +541,118 @@ export function ConversationComposer({
           </Button>
         </div>
       </div>
+    </div>
+  )
+}
+
+function ComposerField({
+  autoFocus,
+  disabled,
+  value,
+  placeholder,
+  inline,
+  expanded,
+  menuOpen,
+  onChange,
+  onSend,
+  onFiles,
+  onCollapse,
+}: {
+  autoFocus?: boolean
+  disabled: boolean
+  value: string
+  placeholder: string
+  inline: boolean
+  expanded: boolean
+  menuOpen: boolean
+  onChange: (text: string) => void
+  onSend: () => void
+  onFiles: (files: File[] | FileList) => void
+  onCollapse: () => void
+}) {
+  const fieldRef = useRef<HTMLTextAreaElement>(null)
+  const surface = inline ? "inline" : "docked"
+  const [overflow, setOverflow] = useState(
+    fieldOverflow({
+      scrollTop: 0,
+      scrollHeight: 0,
+      clientHeight: 0,
+    })
+  )
+
+  const syncField = useCallback(() => {
+    const el = fieldRef.current
+    if (!el) return
+    applyFieldHeightCap(el)
+    const next = fieldOverflow(el)
+    setOverflow((prev) => (fieldOverflowEqual(prev, next) ? prev : next))
+  }, [])
+
+  useLayoutEffect(() => {
+    syncField()
+  }, [syncField, expanded])
+
+  useLayoutEffect(() => {
+    const el = fieldRef.current
+    if (!el || typeof ResizeObserver === "undefined") return
+    const observer = new ResizeObserver(syncField)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [syncField])
+
+  return (
+    <div className="relative min-h-0">
+      <Textarea
+        ref={fieldRef}
+        data-composer-field=""
+        data-tree-scroll={inline ? "" : undefined}
+        autoFocus={autoFocus}
+        disabled={disabled}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        onScroll={syncField}
+        onKeyDown={(event) => {
+          if (event.defaultPrevented || event.nativeEvent.isComposing) return
+          if (event.key === "Escape") {
+            if (menuOpen || !expanded) return
+            event.preventDefault()
+            onCollapse()
+            return
+          }
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault()
+            if (event.repeat || disabled) return
+            onSend()
+          }
+        }}
+        placeholder={placeholder}
+        onPaste={(event) => {
+          const files = Array.from(event.clipboardData.files)
+          if (files.length) {
+            event.preventDefault()
+            onFiles(files)
+          }
+        }}
+        rows={3}
+        style={{
+          minHeight: composerFieldMinHeight(surface, expanded),
+          maxHeight: composerFieldMaxHeight(surface, expanded),
+          overflowY: "auto",
+        }}
+        className="[touch-action:pan-y] resize-none overflow-y-auto overscroll-contain border-0 bg-transparent px-2 py-1 shadow-none focus-visible:ring-0"
+      />
+      {overflow.top ? (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 top-0 h-5 bg-gradient-to-b from-composer to-transparent"
+        />
+      ) : null}
+      {overflow.bottom ? (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-5 bg-gradient-to-t from-composer to-transparent"
+        />
+      ) : null}
     </div>
   )
 }

@@ -1523,7 +1523,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
         </ConversationFindLayer>
 
         {view === "linear" ? (
-          <div className="border-t border-border bg-background p-3 sm:px-6 sm:py-4">
+          <div className="shrink-0 border-t border-border bg-background p-3 sm:px-6 sm:py-4">
             <div
               className="mx-auto"
               style={{ maxWidth: "var(--composer-width, 48rem)" }}

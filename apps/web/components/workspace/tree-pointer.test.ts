@@ -192,18 +192,18 @@ describe("tree wheel targeting", () => {
     expect(treeWheelScroller(label, 0, 40)).toBeNull()
   })
 
-  it("uses composer overflow instead of treating it as unscrolled chrome", () => {
+  it("uses composer field overflow instead of treating the shell as unscrolled chrome", () => {
     const composer = document.createElement("div")
     composer.setAttribute("data-tree-chrome", "")
-    composer.setAttribute("data-tree-scroll", "")
     const field = document.createElement("textarea")
+    field.setAttribute("data-tree-scroll", "")
     composer.append(field)
     document.body.append(composer)
-    scrollMetrics(composer, {
+    scrollMetrics(field, {
       scrollHeight: 240,
       clientHeight: 80,
       scrollTop: 10,
     })
-    expect(treeWheelScroller(field, 0, 20)).toBe(composer)
+    expect(treeWheelScroller(field, 0, 20)).toBe(field)
   })
 })

@@ -321,19 +321,23 @@
     animation: tree-stream-pulse 1.5s ease-in-out infinite;
     transition: none;
   }
-  [data-tree-scroll] {
+  [data-tree-scroll],
+  [data-composer-field] {
     scrollbar-width: thin;
     scrollbar-color: color-mix(in oklab, var(--palette-muted) 45%, transparent)
       transparent;
   }
-  [data-tree-scroll]::-webkit-scrollbar {
+  [data-tree-scroll]::-webkit-scrollbar,
+  [data-composer-field]::-webkit-scrollbar {
     width: 10px;
   }
-  [data-tree-scroll]::-webkit-scrollbar-track {
+  [data-tree-scroll]::-webkit-scrollbar-track,
+  [data-composer-field]::-webkit-scrollbar-track {
     background: transparent;
     margin-block: 6px;
   }
-  [data-tree-scroll]::-webkit-scrollbar-thumb {
+  [data-tree-scroll]::-webkit-scrollbar-thumb,
+  [data-composer-field]::-webkit-scrollbar-thumb {
     background-color: color-mix(
       in oklab,
       var(--palette-muted) 45%,
@@ -343,7 +347,8 @@
     background-clip: padding-box;
     border-radius: 999px;
   }
-  [data-tree-scroll]::-webkit-scrollbar-thumb:hover {
+  [data-tree-scroll]::-webkit-scrollbar-thumb:hover,
+  [data-composer-field]::-webkit-scrollbar-thumb:hover {
     background-color: color-mix(
       in oklab,
       var(--palette-muted) 70%,

@@ -412,8 +412,9 @@ function eventElement(target: EventTarget | null): Element | null {
  * - `[data-tree-hit]` clickable id
  * - `[data-tree-live]` readable card (text select when focused). Map plaques omit this.
  * - `[data-tree-scroll]` the overflow port. Sticky action rows sit beside it, not in it.
- * `[data-tree-chrome]` is overlays (minimap, composer). Chrome that is itself a
- * scrollport also carries `[data-tree-scroll]`.
+ * `[data-tree-chrome]` is overlays (minimap, composer shell). Chrome that is
+ * itself a scrollport also carries `[data-tree-scroll]`. The composer field is
+ * the scrollport; attach/send stay unscrolled chrome.
  */
 function firstScrollable(
   elements: Iterable<Element>,

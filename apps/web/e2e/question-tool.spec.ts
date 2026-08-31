@@ -35,6 +35,19 @@ const questionToolCall = {
   },
 }
 
+function presentTranscript(page: Page) {
+  return page.locator('[data-slot-layer="present"]')
+}
+
+async function chooseAnswer(page: Page, name: RegExp) {
+  await expect(async () => {
+    const radio = page.getByRole("radio", { name })
+    await radio.check({ timeout: 1_000 })
+    await expect(radio).toBeChecked()
+    await expect(radio.locator("..")).toHaveAttribute("data-checked", "")
+  }).toPass({ timeout: 15_000 })
+}
+
 test.describe("question tool", () => {
   let context: BrowserContext
   let page: Page
@@ -83,17 +96,19 @@ test.describe("question tool", () => {
     ).toHaveCount(0)
     await expect(page.getByText("waiting for input")).toBeVisible()
 
-    // Select recommended choice (hidden radio overlays the label).
-    await page
-      .getByRole("radio", { name: /Tool timeline \(Recommended\)/ })
-      .click({ force: true })
+    await chooseAnswer(page, /Tool timeline \(Recommended\)/)
     await page.getByRole("button", { name: /Submit answers|Submit/i }).click()
 
     await expectAssistantText(page, "QUESTION_DONE_WITH_ANSWERS", {
       timeout: 30_000,
     })
-    await expect(page.getByText("Questions answered")).toBeVisible()
-    await expect(page.getByText("Tool timeline (Recommended)")).toBeVisible()
+    const transcript = presentTranscript(page)
+    await expect(
+      transcript.getByText("Questions answered", { exact: true })
+    ).toBeVisible()
+    await expect(
+      transcript.getByText("Tool timeline (Recommended)", { exact: true })
+    ).toBeVisible()
   })
 
   test("allows skipping optional questions", async () => {
@@ -121,8 +136,13 @@ test.describe("question tool", () => {
     await expectAssistantText(page, "QUESTION_SKIPPED_OK", {
       timeout: 30_000,
     })
-    await expect(page.getByText("Questions answered")).toBeVisible()
-    await expect(page.getByText("Unanswered")).toBeVisible()
+    const transcript = presentTranscript(page)
+    await expect(
+      transcript.getByText("Questions answered", { exact: true })
+    ).toBeVisible()
+    await expect(
+      transcript.getByText("Unanswered", { exact: true })
+    ).toBeVisible()
   })
 
   test("awaiting question survives tab close and continues after reopening", async () => {
@@ -182,15 +202,18 @@ test.describe("question tool", () => {
     await expect(page.getByText("waiting for input")).toBeVisible()
     await expect(page.getByText("Quick checkpoint.")).toBeVisible()
 
-    await page
-      .getByRole("radio", { name: /Yes continue \(Recommended\)/ })
-      .click({ force: true })
+    await chooseAnswer(page, /Yes continue \(Recommended\)/)
     await page.getByRole("button", { name: /Submit answers|Submit/i }).click()
 
     await expectAssistantText(page, "RESUMED_AFTER_TAB_CLOSE", {
       timeout: 30_000,
     })
-    await expect(page.getByText("Questions answered")).toBeVisible()
-    await expect(page.getByText("Yes continue (Recommended)")).toBeVisible()
+    const transcript = presentTranscript(page)
+    await expect(
+      transcript.getByText("Questions answered", { exact: true })
+    ).toBeVisible()
+    await expect(
+      transcript.getByText("Yes continue (Recommended)", { exact: true })
+    ).toBeVisible()
   })
 })

@@ -1,6 +1,6 @@
 "use client"
 
-import { useLayoutEffect, useMemo } from "react"
+import { useLayoutEffect, useMemo, useRef } from "react"
 import { motion } from "motion/react"
 import {
   MessageScroller,
@@ -24,9 +24,9 @@ import {
   mountedTranscriptMessageIds,
   transcriptPeekPx,
 } from "./chat-transcript-helpers"
+import { PathRewriteViewportPin } from "./transcript-viewport-pin"
 
 export {
-  isScrollAnchorRole,
   isScrollTargetMounted,
   chatRouteIdentity,
   pathSlotKey,
@@ -128,6 +128,7 @@ export function ChatTranscript({
   onGenerateUnder,
   onAnswerTools,
 }: ChatTranscriptProps) {
+  const viewportRef = useRef<HTMLDivElement>(null)
   const peek = transcriptPeekPx(density)
   const contentPad =
     density === "compact"
@@ -152,7 +153,7 @@ export function ChatTranscript({
     <MessageScrollerProvider
       key={chatKey}
       autoScroll
-      defaultScrollPosition="last-anchor"
+      defaultScrollPosition="end"
       scrollPreviousItemPeek={peek}
     >
       <MessageScroller className="min-h-0 flex-1">
@@ -163,7 +164,15 @@ export function ChatTranscript({
           pathSignature={pathSignature}
           findLocateKey={findLocateKey}
         />
-        <MessageScrollerViewport data-testid="chat-transcript-viewport">
+        <PathRewriteViewportPin
+          pathSignature={pathSignature}
+          scrollTargetId={scrollTargetId}
+          viewportRef={viewportRef}
+        />
+        <MessageScrollerViewport
+          ref={viewportRef}
+          data-testid="chat-transcript-viewport"
+        >
           <MessageScrollerContent
             aria-busy={ariaBusy}
             className={cn("mx-auto w-full max-w-none min-w-0", contentPad)}
@@ -177,7 +186,6 @@ export function ChatTranscript({
                   <MessageScrollerItem
                     key={row.reactKey}
                     messageId={row.messageId}
-                    scrollAnchor={row.scrollAnchor}
                   >
                     <motion.div
                       key="empty"
@@ -196,7 +204,6 @@ export function ChatTranscript({
                   <MessageScrollerItem
                     key={row.reactKey}
                     messageId={row.messageId}
-                    scrollAnchor={row.scrollAnchor}
                     className={LIVE_ROW_CLASS}
                   >
                     <StreamingBubble

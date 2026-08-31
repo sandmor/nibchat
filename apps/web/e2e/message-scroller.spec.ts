@@ -1,9 +1,11 @@
 import { expect, test, type BrowserContext, type Page } from "@playwright/test"
 import { startMockLlm, type MockLlm } from "./helpers/mock-llm"
 import {
+  editUserAsBranch,
   ensureMockProvider,
   ensureWorkspace,
   expectAssistantText,
+  expectUserMessage,
   openNewChat,
   sendMessage,
   streamingMarkers,
@@ -34,9 +36,10 @@ test.describe("message scroller transcript", () => {
 
     const longReply =
       "SCROLL_MARKER_START " +
-      Array.from({ length: 80 }, (_, i) => `paragraph-${i} streaming filler line for height.`).join(
-        " "
-      ) +
+      Array.from(
+        { length: 80 },
+        (_, i) => `paragraph-${i} streaming filler line for height.`
+      ).join(" ") +
       " SCROLL_MARKER_END"
 
     llm.enqueue({ text: longReply, hold: true })
@@ -65,14 +68,12 @@ test.describe("message scroller transcript", () => {
     await expectAssistantText(page, "SCROLL_MARKER_END", { timeout: 30_000 })
 
     // Seed enough height that scrolling up is meaningful.
-    llm.enqueue(
-      {
-        text:
-          "SECOND " +
-          Array.from({ length: 60 }, (_, i) => `more-line-${i}`).join(" "),
-        hold: true,
-      }
-    )
+    llm.enqueue({
+      text:
+        "SECOND " +
+        Array.from({ length: 60 }, (_, i) => `more-line-${i}`).join(" "),
+      hold: true,
+    })
     await sendMessage(page, "another tall turn")
     await expect(streamingMarkers(page)).toHaveCount(1, { timeout: 15_000 })
 
@@ -99,7 +100,9 @@ test.describe("message scroller transcript", () => {
 
     // Jump-to-end re-engages the live edge.
     const jump = page.getByTestId("chat-scroll-to-end")
-    await expect(jump).toHaveAttribute("data-active", "true", { timeout: 10_000 })
+    await expect(jump).toHaveAttribute("data-active", "true", {
+      timeout: 10_000,
+    })
     await jump.click()
 
     await expect
@@ -110,5 +113,67 @@ test.describe("message scroller transcript", () => {
         })
       })
       .toBe(true)
+  })
+
+  test("edit-as-branch keeps the edited slot in view", async () => {
+    await openNewChat(page)
+
+    const filler = (tag: string) =>
+      `${tag} ` +
+      Array.from({ length: 50 }, (_, i) => `${tag}-line-${i}`).join(" ")
+
+    for (const [prompt, tag] of [
+      ["first tall turn", "TURN_A"],
+      ["second tall turn", "TURN_B"],
+      ["third tall turn", "TURN_C"],
+    ] as const) {
+      llm.enqueue({ text: filler(tag) })
+      await sendMessage(page, prompt)
+      await expectAssistantText(page, `${tag}-line-49`, { timeout: 30_000 })
+    }
+
+    const viewport = page.getByTestId("chat-transcript-viewport")
+    await expect(viewport).toBeVisible()
+
+    const lastUser = page
+      .locator("article")
+      .filter({ has: page.getByText("user", { exact: true }) })
+      .last()
+
+    await viewport.dispatchEvent("wheel", { deltaY: -400 })
+    await lastUser.evaluate((el) => {
+      el.scrollIntoView({ block: "center", inline: "nearest" })
+    })
+
+    const scrollBefore = await viewport.evaluate((el) => el.scrollTop)
+    expect(scrollBefore).toBeGreaterThan(80)
+
+    llm.enqueue({
+      text:
+        "EDIT_REPLY " +
+        Array.from({ length: 20 }, (_, i) => `edit-line-${i}`).join(" "),
+    })
+    await editUserAsBranch(page, "edited third question")
+    await expectUserMessage(page, "edited third question")
+
+    const edited = page
+      .locator('[data-slot-layer="present"]')
+      .filter({ has: page.getByText("user", { exact: true }) })
+      .filter({ hasText: "edited third question" })
+    await expect(edited).toBeVisible()
+
+    const editedInView = await edited.evaluate((el) => {
+      const viewport = document.querySelector(
+        "[data-testid=chat-transcript-viewport]"
+      )
+      if (!viewport) return false
+      const v = viewport.getBoundingClientRect()
+      const r = el.getBoundingClientRect()
+      return r.bottom > v.top && r.top < v.bottom
+    })
+    expect(editedInView).toBe(true)
+
+    const scrollAfter = await viewport.evaluate((el) => el.scrollTop)
+    expect(scrollAfter).toBeGreaterThan(80)
   })
 })

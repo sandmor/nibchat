@@ -55,7 +55,6 @@ export function PathSlot({
   return (
     <MessageScrollerItem
       messageId={row.messageId}
-      scrollAnchor={row.scrollAnchor}
       className={liveStreamId ? LIVE_ROW_CLASS : undefined}
     >
       <SlotCrossfade

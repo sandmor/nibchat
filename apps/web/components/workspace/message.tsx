@@ -194,7 +194,8 @@ export function Message({
   useEffect(() => {
     const wasEditing = wasEditingRef.current
     wasEditingRef.current = editing
-    if (wasEditing && !editing) articleRef.current?.focus()
+    if (wasEditing && !editing)
+      articleRef.current?.focus({ preventScroll: true })
   }, [editing])
   const canEditAsBranch = canEditMessageParts(node.status, parts)
   const interactiveTools =

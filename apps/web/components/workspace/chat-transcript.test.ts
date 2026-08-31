@@ -4,7 +4,6 @@ import {
   afterTipMessageId,
   buildTranscriptRows,
   chatRouteIdentity,
-  isScrollAnchorRole,
   isScrollTargetMounted,
   mountedTranscriptMessageIds,
   pathSlotKey,
@@ -46,13 +45,6 @@ describe("pathSlotKey", () => {
 })
 
 describe("transcript row mapping", () => {
-  it("anchors only user messages", () => {
-    expect(isScrollAnchorRole("user")).toBe(true)
-    expect(isScrollAnchorRole("assistant")).toBe(false)
-    expect(isScrollAnchorRole("system")).toBe(false)
-    expect(isScrollAnchorRole("tool")).toBe(false)
-  })
-
   it("uses density-based previous-item peek", () => {
     expect(transcriptPeekPx("compact")).toBe(40)
     expect(transcriptPeekPx("comfortable")).toBe(64)
@@ -93,8 +85,6 @@ describe("buildTranscriptRows dual identity", () => {
     expect(tipAfter?.kind).toBe("path")
     if (tipBefore?.kind === "path" && tipAfter?.kind === "path") {
       expect(tipBefore.slotIndex).toBe(tipAfter.slotIndex)
-      expect(tipBefore.scrollAnchor).toBe(false)
-      expect(tipAfter.scrollAnchor).toBe(false)
     }
   })
 
@@ -113,15 +103,6 @@ describe("buildTranscriptRows dual identity", () => {
     expect(short.map((r) => r.reactKey)).toEqual(["slot:0"])
     expect(longer.map((r) => r.reactKey)).toEqual(["slot:0", "slot:1"])
     expect(longer[0]?.messageId).toBe(short[0]?.messageId)
-  })
-
-  it("marks user path rows as scroll anchors", () => {
-    const rows = buildTranscriptRows({
-      activePath: [node("u1"), node("a1", "assistant", "u1")],
-      ...noStreams,
-      showEmpty: false,
-    })
-    expect(rows.map((r) => r.scrollAnchor)).toEqual([true, false])
   })
 
   it("wires live stream ids onto matching path slots", () => {
@@ -165,7 +146,6 @@ describe("buildTranscriptRows dual identity", () => {
         kind: "empty",
         reactKey: "empty",
         messageId: "empty",
-        scrollAnchor: false,
       },
     ])
   })

@@ -14,11 +14,6 @@ export function pathSlotKey(slotIndex: number): string {
   return `slot:${slotIndex}`
 }
 
-/** Transcript row boundary rules — messageId + scrollAnchor for MessageScroller. */
-export function isScrollAnchorRole(role: NodeRow["role"]): boolean {
-  return role === "user"
-}
-
 export function transcriptPeekPx(density: "comfortable" | "compact"): number {
   return density === "compact" ? 40 : 64
 }
@@ -42,7 +37,6 @@ export type EmptyTranscriptRow = {
   kind: "empty"
   reactKey: "empty"
   messageId: "empty"
-  scrollAnchor: false
 }
 
 export type PathTranscriptRow = {
@@ -51,7 +45,6 @@ export type PathTranscriptRow = {
   reactKey: string
   slotIndex: number
   messageId: string
-  scrollAnchor: boolean
   node: NodeRow
   /** Live generation for this node, if any. Payload is read in StreamingBubble. */
   liveStreamId: string | null
@@ -61,7 +54,6 @@ export type AfterTipTranscriptRow = {
   kind: "after-tip"
   reactKey: string
   messageId: string
-  scrollAnchor: false
   streamId: string
 }
 
@@ -90,7 +82,6 @@ export function buildTranscriptRows(input: {
       kind: "empty",
       reactKey: "empty",
       messageId: "empty",
-      scrollAnchor: false,
     })
   }
 
@@ -100,7 +91,6 @@ export function buildTranscriptRows(input: {
       reactKey: pathSlotKey(slotIndex),
       slotIndex,
       messageId: node.id,
-      scrollAnchor: isScrollAnchorRole(node.role),
       node,
       liveStreamId: input.streamIdByNodeId.get(node.id) ?? null,
     })
@@ -111,7 +101,6 @@ export function buildTranscriptRows(input: {
       kind: "after-tip",
       reactKey: stream.streamId,
       messageId: afterTipMessageId(stream.streamId, stream),
-      scrollAnchor: false,
       streamId: stream.streamId,
     })
   }

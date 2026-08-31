@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useState, useSyncExternalStore } from "react"
 import type { ChatRow } from "@/lib/types"
 import { parseJson } from "@/lib/domain"
 import {
@@ -8,6 +8,20 @@ import {
   parseProviderModelsJson,
 } from "@/lib/provider-models"
 import type { ModelConfigLocal, ProviderSummary } from "./types"
+
+const subscribeBrowserValue = () => () => {}
+const readBrowserTimeZone = () =>
+  Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
+const readServerTimeZone = () => null
+
+/** Returns null for the server and hydrating renders, then the browser zone. */
+export function useBrowserTimeZone(): string | null {
+  return useSyncExternalStore(
+    subscribeBrowserValue,
+    readBrowserTimeZone,
+    readServerTimeZone
+  )
+}
 
 export function seedDraftModelConfig(
   chats: ChatRow[],

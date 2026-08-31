@@ -10,6 +10,7 @@ import {
 } from "@/lib/prompt-stack"
 import type { NodeRow, Parts } from "@/lib/types"
 import type { PdfAnalysis } from "@/lib/pdf-analysis"
+import { idleSinceFromPath, normalizeTimeZone } from "@/lib/prompt-macros"
 
 export const TOKEN_ESTIMATE_TOOLTIP =
   "Approximate. Actual usage depends on model tokenizer."
@@ -271,6 +272,10 @@ export type AssembleContextPreviewInput = {
   /** The selected model receives PDFs either as bytes or extracted text. */
   pdfInputMode?: "native" | "extracted"
   mcpServerInstructionsText?: string
+  /** Browser IANA time zone used for prompt macro expansion. */
+  timeZone?: string
+  /** Time represented by the preview. Defaults to the assembly time. */
+  now?: Date
 }
 
 export function assembleContextPreview(
@@ -297,6 +302,11 @@ export function assembleContextPreview(
     stack: resolved.stack,
     pathMessages,
     mcpServerInstructionsText: input.mcpServerInstructionsText,
+    macroContext: {
+      now: input.now ?? new Date(),
+      timeZone: normalizeTimeZone(input.timeZone),
+      idleSince: idleSinceFromPath(contextNodes),
+    },
   })
   const preview = summarizeAssembledContext({
     system: assembled.system,

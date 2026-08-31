@@ -1,5 +1,10 @@
 import type { ModelMessage } from "ai"
 import { z } from "zod"
+import {
+  defaultMacroContext,
+  expandPromptMacros,
+  type MacroContext,
+} from "@/lib/prompt-macros"
 
 export const DEFAULT_PROMPT_STACK_ID = "default"
 export const DEFAULT_HISTORY_MODULE_ID = "chat-history"
@@ -99,6 +104,15 @@ export function defaultPromptStack(): PromptStackDocument {
         name: "System",
         enabled: true,
         body: "You are a helpful assistant.",
+        placement: "relative",
+        role: "system",
+      },
+      {
+        id: "default-date",
+        kind: "prompt",
+        name: "Date",
+        enabled: true,
+        body: "Current date: {{isodate}} ({{weekday}}).",
         placement: "relative",
         role: "system",
       },
@@ -308,8 +322,11 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n))
 }
 
-function messageFromPrompt(mod: PromptModule): ModelMessage | null {
-  const text = mod.body.trim()
+function messageFromPrompt(
+  mod: PromptModule,
+  macroContext: MacroContext
+): ModelMessage | null {
+  const text = expandPromptMacros(mod.body, macroContext).trim()
   if (!text) return null
   const role = mod.role
   if (role === "system") return { role: "system", content: text }
@@ -335,7 +352,8 @@ type TaggedMessage = {
 
 function injectInChatTagged(
   pathMessages: ModelMessage[],
-  stack: PromptStackDocument
+  stack: PromptStackDocument,
+  macroContext: MacroContext
 ): TaggedMessage[] {
   const historyEnabled = stack.modules.some(
     (m) => m.kind === "history" && m.enabled
@@ -348,7 +366,7 @@ function injectInChatTagged(
   for (const mod of stack.modules) {
     if (mod.kind !== "prompt" || !mod.enabled || mod.placement !== "in_chat")
       continue
-    const msg = messageFromPrompt(mod)
+    const msg = messageFromPrompt(mod, macroContext)
     if (!msg) continue
     const depth = mod.depth ?? 0
     const idx = clamp(n - depth, 0, n)
@@ -374,9 +392,14 @@ function assembleTagged(options: {
   stack: PromptStackDocument
   pathMessages: ModelMessage[]
   mcpServerInstructionsText?: string
+  macroContext: MacroContext
 }): TaggedMessage[] {
   const stack = normalizePromptStack(options.stack)
-  const injectedHistory = injectInChatTagged(options.pathMessages, stack)
+  const injectedHistory = injectInChatTagged(
+    options.pathMessages,
+    stack,
+    options.macroContext
+  )
   const out: TaggedMessage[] = []
 
   for (const mod of stack.modules) {
@@ -404,7 +427,7 @@ function assembleTagged(options: {
       continue
     }
     if (mod.placement === "in_chat") continue
-    const msg = messageFromPrompt(mod)
+    const msg = messageFromPrompt(mod, options.macroContext)
     if (!msg) continue
     out.push({ message: msg, source: "stack", moduleId: mod.id })
   }
@@ -504,8 +527,13 @@ export function assemblePromptContext(options: {
   pathMessages: ModelMessage[]
   /** MCP server initialize instructions when this module is enabled. */
   mcpServerInstructionsText?: string
+  /** Dynamic values used to expand prompt-module macros. */
+  macroContext?: MacroContext
 }): AssemblePromptContextResult {
-  const tagged = assembleTagged(options)
+  const tagged = assembleTagged({
+    ...options,
+    macroContext: defaultMacroContext(options.macroContext),
+  })
   const warnings = collectWarnings(tagged)
   const { system, turns, demotedModuleIds } = peelAndDemote(tagged)
   return {

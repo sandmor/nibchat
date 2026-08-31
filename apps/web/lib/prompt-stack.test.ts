@@ -186,9 +186,50 @@ describe("invariants", () => {
       readStackJson(promptStackToJson(defaultPromptStack())).modules[0]?.kind
     ).toBe("prompt")
   })
+
+  it("seeds an editable Date module in new default stacks", () => {
+    expect(defaultPromptStack().modules).toContainEqual(
+      expect.objectContaining({
+        id: "default-date",
+        name: "Date",
+        body: "Current date: {{isodate}} ({{weekday}}).",
+      })
+    )
+  })
 })
 
 describe("assemblePromptContext", () => {
+  it("expands prompt bodies without rewriting MCP instructions", () => {
+    const result = assemblePromptContext({
+      pathMessages: [],
+      stack: stack([
+        {
+          id: "date",
+          kind: "prompt",
+          name: "Date",
+          enabled: true,
+          body: "Today is {{isodate}}.",
+          placement: "relative",
+          role: "system",
+        },
+        {
+          id: "mcp",
+          kind: "mcp-instructions",
+          name: "MCP server instructions",
+          enabled: true,
+        },
+      ]),
+      mcpServerInstructionsText: "Keep {{isodate}} literal.",
+      macroContext: {
+        now: new Date("2026-04-16T09:28:00.000Z"),
+        timeZone: "America/Bogota",
+      },
+    })
+    expect(result.system).toBe(
+      "Today is 2026-04-16.\n\nKeep {{isodate}} literal."
+    )
+  })
+
   it("peels leading system relative into system string", () => {
     const result = assemblePromptContext({
       pathMessages: path,

@@ -41,7 +41,7 @@ import { replayReasoningEnabled } from "@/lib/reasoning-replay"
 import { useTRPC } from "@/lib/trpc-react"
 import type { NodeRow } from "@/lib/types"
 import type { ComposerDraft } from "./conversation-session-store"
-import { useMediaMdUp } from "./hooks"
+import { useBrowserTimeZone, useMediaMdUp } from "./hooks"
 
 export type { AssembledContextPreviewData }
 
@@ -117,9 +117,15 @@ function useContextPreviewGraph() {
   return graph
 }
 
-function useAssembledContextPreview(contextParentId: string | null) {
+const HYDRATION_PREVIEW_NOW = new Date(0)
+
+function useAssembledContextPreview(
+  contextParentId: string | null,
+  refreshedAt: Date | null
+) {
   const graph = useContextPreviewGraph()
   const trpc = useTRPC()
+  const timeZone = useBrowserTimeZone()
   const settingsQuery = useQuery(trpc.workspace.getSettings.queryOptions())
   const surfacesQuery = useQuery(
     trpc.workspace.listApprovedMcpSurfaces.queryOptions()
@@ -153,8 +159,17 @@ function useAssembledContextPreview(contextParentId: string | null) {
       ),
       pdfInputMode,
       mcpServerInstructionsText,
+      timeZone: timeZone ?? undefined,
+      now: timeZone ? (refreshedAt ?? new Date()) : HYDRATION_PREVIEW_NOW,
     })
-  }, [graph, contextParentId, settingsQuery.data, surfacesQuery.data])
+  }, [
+    graph,
+    contextParentId,
+    refreshedAt,
+    settingsQuery.data,
+    surfacesQuery.data,
+    timeZone,
+  ])
 }
 
 const LAYER_BAR_CLASS: Record<ContextPreviewLayer["id"], string> = {
@@ -402,7 +417,8 @@ export function ContextPreviewStrip({
 }) {
   const mdUp = useMediaMdUp()
   const [open, setOpen] = useState(false)
-  const data = useAssembledContextPreview(contextParentId)
+  const [refreshedAt, setRefreshedAt] = useState<Date | null>(null)
+  const data = useAssembledContextPreview(contextParentId, refreshedAt)
   const merged = mergeDraftSummary(data.summary, draft)
   const segments = formatCompactSegments(merged)
   const label = segments.map((segment) => segment.text).join(" · ")
@@ -431,9 +447,14 @@ export function ContextPreviewStrip({
   const triggerClass =
     "w-full truncate rounded-md px-2 py-1 text-left text-[11px] text-muted-foreground hover:bg-muted/50 hover:text-foreground"
 
+  function setPreviewOpen(nextOpen: boolean) {
+    if (nextOpen) setRefreshedAt(new Date())
+    setOpen(nextOpen)
+  }
+
   if (mdUp) {
     return (
-      <Popover open={open} onOpenChange={setOpen}>
+      <Popover open={open} onOpenChange={setPreviewOpen}>
         <TooltipProvider delay={400}>
           <WithTooltip label={TOKEN_ESTIMATE_TOOLTIP}>
             <PopoverTrigger
@@ -467,13 +488,13 @@ export function ContextPreviewStrip({
         type="button"
         className={triggerClass}
         aria-label="Context preview"
-        onClick={() => setOpen(true)}
+        onClick={() => setPreviewOpen(true)}
       >
         {label}
       </button>
       <ContextPreviewDialog
         open={open}
-        onOpenChange={setOpen}
+        onOpenChange={setPreviewOpen}
         title="Next send"
       >
         {panel}

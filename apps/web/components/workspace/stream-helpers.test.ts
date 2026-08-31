@@ -64,6 +64,7 @@ describe("shouldSoftFollow", () => {
   it("soft-follows continue from empty tip when still on that chat", () => {
     const body: StreamRequestBody = {
       chatId: "c1",
+      timeZone: "America/Bogota",
       intent: "continue",
       parentNodeId: null,
       content: "hi",
@@ -74,6 +75,7 @@ describe("shouldSoftFollow", () => {
   it("does not soft-follow after navigating to another chat", () => {
     const body: StreamRequestBody = {
       chatId: "c1",
+      timeZone: "America/Bogota",
       intent: "continue",
       parentNodeId: null,
       content: "hi",
@@ -84,6 +86,7 @@ describe("shouldSoftFollow", () => {
   it("soft-follows continue when tip is still the parent", () => {
     const body: StreamRequestBody = {
       chatId: "c1",
+      timeZone: "America/Bogota",
       intent: "continue",
       parentNodeId: "u1",
       content: "hi",
@@ -97,6 +100,7 @@ describe("shouldSoftFollow", () => {
   it("soft-follows resume when the assistant is still on the path", () => {
     const body: StreamRequestBody = {
       chatId: "c1",
+      timeZone: "America/Bogota",
       intent: "resume",
       assistantNodeId: "a1",
       toolResults: [{ toolCallId: "t1", output: [] }],

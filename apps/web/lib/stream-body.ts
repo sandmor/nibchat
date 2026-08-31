@@ -1,5 +1,12 @@
 import { z } from "zod"
 import { attachmentReferenceSchema } from "@/lib/agent/parts"
+import { isSupportedTimeZone } from "@/lib/prompt-macros"
+
+const timeZoneSchema = z
+  .string()
+  .min(1)
+  .max(100)
+  .refine(isSupportedTimeZone, "Unsupported time zone")
 
 export const streamBodySchema = z.discriminatedUnion("intent", [
   z.object({
@@ -9,16 +16,19 @@ export const streamBodySchema = z.discriminatedUnion("intent", [
     content: z.string(),
     /** Resource references resolved and snapshotted by the server at send time. */
     attachments: z.array(attachmentReferenceSchema).max(20).optional(),
+    timeZone: timeZoneSchema,
   }),
   z.object({
     intent: z.literal("regenerate"),
     chatId: z.string().min(1),
     assistantNodeId: z.string().min(1),
+    timeZone: timeZoneSchema,
   }),
   z.object({
     intent: z.literal("generate"),
     chatId: z.string().min(1),
     parentNodeId: z.string().min(1),
+    timeZone: timeZoneSchema,
   }),
   z.object({
     intent: z.literal("resume"),
@@ -33,6 +43,7 @@ export const streamBodySchema = z.discriminatedUnion("intent", [
         })
       )
       .min(1),
+    timeZone: timeZoneSchema,
   }),
 ])
 

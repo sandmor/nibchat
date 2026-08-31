@@ -96,6 +96,7 @@ import {
   shouldSoftFollow,
   streamPlacement,
   viewPathFromCache,
+  type StreamRequestInput,
   type StreamRequestBody,
 } from "./stream-helpers"
 
@@ -616,7 +617,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   }
 
   async function runStream(
-    body: StreamRequestBody,
+    body: StreamRequestInput,
     options?: {
       modelConfig?: ModelConfigLocal
       /** Called after the stream is registered (response ok + startStream). */
@@ -641,10 +642,14 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     try {
       const controller = new AbortController()
       streamId = crypto.randomUUID()
+      const requestBody: StreamRequestBody = {
+        ...body,
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      }
       const response = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify(requestBody),
         signal: controller.signal,
       })
       if (!response.ok) {

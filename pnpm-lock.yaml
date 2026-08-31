@@ -110,6 +110,9 @@ importers:
       culori:
         specifier: ^4.0.2
         version: 4.0.2
+      dayjs:
+        specifier: ^1.11.21
+        version: 1.11.21
       katex:
         specifier: ^0.18.1
         version: 0.18.1

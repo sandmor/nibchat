@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 import {
   DndContext,
   closestCenter,
@@ -50,9 +50,23 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
+import {
+  builtInMacroDefinitions,
+  createMacroRegistry,
+  defaultMacroContext,
+  expandPromptMacros,
+  macroPickerEntries,
+  normalizeTimeZone,
+  type MacroDefinition,
+} from "@/lib/prompt-macros"
 import { useTRPC } from "@/lib/trpc-react"
 import {
   createEmptyModule,
@@ -64,6 +78,7 @@ import {
   type PromptStackDocument,
   type StackModule,
 } from "@/lib/prompt-stack"
+import { useBrowserTimeZone } from "../hooks"
 
 const PLACEMENTS: ModulePlacement[] = ["relative", "in_chat"]
 
@@ -255,8 +270,9 @@ export function PromptStackSettings() {
         <CardTitle>Prompt stacks</CardTitle>
         <CardDescription>
           Ordered modules that build model context. Reorder Chat history like
-          any other row; inject with Relative or In chat depth. Edits apply
-          everywhere this stack is used.
+          any other row; inject with Relative or In chat depth. Prompt bodies
+          can expand date and time macros at send time. Edits apply everywhere
+          this stack is used.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -467,6 +483,122 @@ function sortableStyle(
     transform: CSS.Translate.toString(transform),
     transition,
   }
+}
+
+function PromptModuleBodyEditor({
+  value,
+  onChange,
+  macros = builtInMacroDefinitions,
+}: {
+  value: string
+  onChange: (body: string) => void
+  macros?: readonly MacroDefinition[]
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const browserTimeZone = useBrowserTimeZone()
+  const timeZone = browserTimeZone ? normalizeTimeZone(browserTimeZone) : null
+  const registry = useMemo(() => createMacroRegistry(macros), [macros])
+  const entries = useMemo(() => macroPickerEntries(macros), [macros])
+  const expanded = useMemo(() => {
+    if (!timeZone) return value
+    return expandPromptMacros(
+      value,
+      defaultMacroContext({ timeZone }),
+      registry
+    )
+  }, [registry, timeZone, value])
+  const catalogContext = useMemo(() => {
+    if (!timeZone) return null
+    const now = new Date()
+    return defaultMacroContext({
+      now,
+      timeZone,
+      idleSince: new Date(now.getTime() - 2 * 60 * 60 * 1000),
+    })
+  }, [timeZone])
+  const showPreview = timeZone !== null && expanded !== value
+
+  function insertSnippet(snippet: string) {
+    const el = textareaRef.current
+    const start = el?.selectionStart ?? value.length
+    const end = el?.selectionEnd ?? value.length
+    const next = value.slice(0, start) + snippet + value.slice(end)
+    const cursor = start + snippet.length
+    onChange(next)
+    requestAnimationFrame(() => {
+      const node = textareaRef.current
+      if (!node) return
+      node.focus()
+      node.setSelectionRange(cursor, cursor)
+    })
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <Textarea
+        ref={textareaRef}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        rows={3}
+        placeholder="Module body…"
+        className="text-sm"
+      />
+      <div className="flex items-start gap-2">
+        {showPreview ? (
+          <p className="line-clamp-2 min-w-0 flex-1 text-xs text-muted-foreground">
+            <span className="mr-1 text-[11px] tracking-wide text-muted-foreground/80 uppercase">
+              Sends as
+            </span>
+            {expanded}
+          </p>
+        ) : null}
+        <Popover>
+          <PopoverTrigger
+            render={
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                className="ml-auto shrink-0"
+                aria-label="Insert prompt macro"
+              />
+            }
+          >
+            Macros
+          </PopoverTrigger>
+          <PopoverContent
+            align="end"
+            className="w-[min(20rem,calc(100vw-2rem))] gap-1 p-2"
+          >
+            <ul className="flex max-h-[min(18rem,50vh)] flex-col overflow-y-auto">
+              {entries.map((entry) => (
+                <li key={entry.name}>
+                  <button
+                    type="button"
+                    title={entry.summary}
+                    className="flex w-full items-baseline justify-between gap-3 rounded-lg px-2 py-1.5 text-left hover:bg-muted/70"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => insertSnippet(entry.snippet)}
+                  >
+                    <span className="font-mono text-[11px]">{entry.name}</span>
+                    <span className="min-w-0 truncate text-xs text-muted-foreground">
+                      {catalogContext
+                        ? expandPromptMacros(
+                            entry.snippet,
+                            catalogContext,
+                            registry
+                          )
+                        : entry.snippet}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </PopoverContent>
+        </Popover>
+      </div>
+    </div>
+  )
 }
 
 function SortableHistoryModule({
@@ -700,12 +832,9 @@ function SortablePromptModule({
               some providers.
             </p>
           ) : null}
-          <Textarea
+          <PromptModuleBodyEditor
             value={mod.body}
-            onChange={(e) => onChange({ body: e.target.value })}
-            rows={3}
-            placeholder="Module body…"
-            className="text-sm"
+            onChange={(body) => onChange({ body })}
           />
         </div>
       </div>

@@ -7,7 +7,7 @@ import type { GenerationPayload } from "@/lib/generation-streams/events"
 import { resolveActivePath } from "@/lib/domain"
 import type { WorkspaceData } from "@/lib/workspace-cache"
 
-export type StreamRequestBody =
+export type StreamRequestInput =
   | {
       chatId: string
       intent: "continue"
@@ -31,6 +31,9 @@ export type StreamRequestBody =
       assistantNodeId: string
       toolResults: Array<{ toolCallId: string; output: unknown }>
     }
+
+/** Complete wire payload sent to the generation route. */
+export type StreamRequestBody = StreamRequestInput & { timeZone: string }
 
 export function viewPathFromCache(
   queryClient: QueryClient,
@@ -84,7 +87,7 @@ export function isViewingChat(
  * soft-follow paths.
  */
 export function shouldSoftFollow(
-  body: StreamRequestBody,
+  body: StreamRequestInput,
   path: NodeRow[],
   selectedChatId: string | null,
   pathname?: string | null

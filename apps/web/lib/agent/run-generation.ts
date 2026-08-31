@@ -33,6 +33,7 @@ import {
   assemblePromptContext,
   type PromptStackDocument,
 } from "@/lib/prompt-stack"
+import { idleSinceFromPath, normalizeTimeZone } from "@/lib/prompt-macros"
 import { prepareMcpTools } from "@/lib/mcp"
 import { assertPdfFallbackAvailable } from "@/lib/pdf-input"
 import type { NodeRow, ToolInvocationPart } from "@/lib/types"
@@ -59,6 +60,8 @@ export type GenerationSetup = {
   config: ModelConfig
   languageModel: LanguageModel
   promptStack: PromptStackDocument
+  /** Browser IANA time zone supplied for prompt macro expansion. */
+  timeZone: string
   requestSignal: AbortSignal
   allNodes: NodeRow[]
   previousMetadata?: Record<string, unknown>
@@ -97,6 +100,7 @@ export async function createGenerationResponse(
     config,
     languageModel,
     promptStack,
+    timeZone,
     requestSignal,
     allNodes,
     previousMetadata,
@@ -231,6 +235,11 @@ export async function createGenerationResponse(
       stack: promptStack,
       pathMessages,
       mcpServerInstructionsText: mcp.instructionsText,
+      macroContext: {
+        now: new Date(),
+        timeZone: normalizeTimeZone(timeZone),
+        idleSince: idleSinceFromPath(contextNodes),
+      },
     })
 
     let orderedParts: Parts = [...seedParts]

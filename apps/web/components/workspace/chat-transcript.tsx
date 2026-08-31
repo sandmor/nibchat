@@ -22,6 +22,8 @@ import {
   isScrollTargetMounted,
   LIVE_ROW_CLASS,
   mountedTranscriptMessageIds,
+  TRANSCRIPT_COLUMN_MAX_WIDTH,
+  TRANSCRIPT_SCROLL_TO_END_INSET,
   transcriptPeekPx,
 } from "./chat-transcript-helpers"
 import { PathRewriteViewportPin } from "./transcript-viewport-pin"
@@ -177,7 +179,7 @@ export function ChatTranscript({
             aria-busy={ariaBusy}
             className={cn("mx-auto w-full max-w-none min-w-0", contentPad)}
             style={{
-              maxWidth: "var(--message-width, 48rem)",
+              maxWidth: TRANSCRIPT_COLUMN_MAX_WIDTH,
             }}
           >
             {rows.map((row) => {
@@ -234,7 +236,10 @@ export function ChatTranscript({
             })}
           </MessageScrollerContent>
         </MessageScrollerViewport>
-        <MessageScrollerButton data-testid="chat-scroll-to-end" />
+        <MessageScrollerButton
+          data-testid="chat-scroll-to-end"
+          style={{ insetInlineEnd: TRANSCRIPT_SCROLL_TO_END_INSET }}
+        />
       </MessageScroller>
     </MessageScrollerProvider>
   )

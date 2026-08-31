@@ -18,6 +18,15 @@ export function transcriptPeekPx(density: "comfortable" | "compact"): number {
   return density === "compact" ? 40 : 64
 }
 
+/** Centered linear column width. */
+export const TRANSCRIPT_COLUMN_MAX_WIDTH = "var(--message-width, 48rem)"
+
+/**
+ * Jump-to-end sits in the right gutter, just outside the column.
+ * Floor keeps it on-pane (and clear of the scrollbar) when there is no gutter.
+ */
+export const TRANSCRIPT_SCROLL_TO_END_INSET = `max(1.5rem, env(safe-area-inset-right, 0px), calc((100% - ${TRANSCRIPT_COLUMN_MAX_WIDTH}) / 2 - 2.75rem))`
+
 /**
  * Route-level chat identity for MPA soft-nav (not pending draft create ids).
  * Soft-nav reuses ChatView between /chat/[id] pages; state must reset here.

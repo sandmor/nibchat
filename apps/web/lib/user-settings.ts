@@ -13,6 +13,13 @@ import {
   readStackJson,
   type PromptStackDocument,
 } from "@/lib/prompt-stack"
+import {
+  builtInToolsToJson,
+  defaultBuiltInToolsPrefs,
+  normalizeBuiltInToolsDisabled,
+  parseBuiltInToolsJson,
+  type BuiltInToolsPrefs,
+} from "@/lib/agent/tools/catalog"
 
 /** Ensure a newly-created account has private settings/library rows. */
 export async function ensureUserSettings(userId: string) {
@@ -65,6 +72,7 @@ export async function ensureUserSettings(userId: string) {
       dark_theme_id: darkThemeId,
       default_prompt_stack_id: defaultPromptStackId,
       theme_mode: "system" as const,
+      builtin_tools_json: builtInToolsToJson(defaultBuiltInToolsPrefs),
       created_at: timestamp,
       updated_at: timestamp,
     }
@@ -94,13 +102,15 @@ export async function getUserSettings(userId: string) {
     .execute()
   return {
     ...prefs,
-    themes: themes.map((theme): ThemeRecord => ({
-      id: theme.id,
-      name: theme.name,
-      document: parseAppearance(parseJson(theme.document_json, {})),
-      created_at: theme.created_at,
-      updated_at: theme.updated_at,
-    })),
+    themes: themes.map(
+      (theme): ThemeRecord => ({
+        id: theme.id,
+        name: theme.name,
+        document: parseAppearance(parseJson(theme.document_json, {})),
+        created_at: theme.created_at,
+        updated_at: theme.updated_at,
+      })
+    ),
     promptStacks: promptStacks.map((stack) => ({
       id: stack.id,
       name: stack.name,
@@ -128,7 +138,11 @@ export async function setUserThemeSlots(
     throw new Error("Theme not found")
   await db
     .updateTable("user_preferences")
-    .set({ light_theme_id: lightThemeId, dark_theme_id: darkThemeId, updated_at: now() })
+    .set({
+      light_theme_id: lightThemeId,
+      dark_theme_id: darkThemeId,
+      updated_at: now(),
+    })
     .where("user_id", "=", userId)
     .execute()
   return { lightThemeId, darkThemeId }
@@ -144,4 +158,35 @@ export async function setUserThemeMode(
     .set({ theme_mode: themeMode, updated_at: now() })
     .where("user_id", "=", userId)
     .execute()
+}
+
+export async function getBuiltInToolsPrefs(
+  userId: string
+): Promise<BuiltInToolsPrefs> {
+  await ensureUserSettings(userId)
+  const row = await db
+    .selectFrom("user_preferences")
+    .select("builtin_tools_json")
+    .where("user_id", "=", userId)
+    .executeTakeFirstOrThrow()
+  return parseBuiltInToolsJson(row.builtin_tools_json)
+}
+
+export async function setBuiltInToolsPrefs(
+  userId: string,
+  disabled: readonly string[]
+): Promise<BuiltInToolsPrefs> {
+  await ensureUserSettings(userId)
+  const prefs: BuiltInToolsPrefs = {
+    disabled: normalizeBuiltInToolsDisabled(disabled),
+  }
+  await db
+    .updateTable("user_preferences")
+    .set({
+      builtin_tools_json: builtInToolsToJson(prefs),
+      updated_at: now(),
+    })
+    .where("user_id", "=", userId)
+    .execute()
+  return prefs
 }

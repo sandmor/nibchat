@@ -22,7 +22,10 @@ describe("parseBackup", () => {
           title: "t",
           selected_root_node_id: null,
           model_config_json: "{}",
-          view_state_json: chatViewStateToJson({ mode: "linear", camera: null }),
+          view_state_json: chatViewStateToJson({
+            mode: "linear",
+            camera: null,
+          }),
           created_at: "t",
           updated_at: "t",
         },
@@ -65,7 +68,10 @@ describe("parseBackup", () => {
           title: null,
           selected_root_node_id: null,
           model_config_json: "{}",
-          view_state_json: chatViewStateToJson({ mode: "linear", camera: null }),
+          view_state_json: chatViewStateToJson({
+            mode: "linear",
+            camera: null,
+          }),
           created_at: "t",
           updated_at: "t",
         },
@@ -80,6 +86,40 @@ describe("parseBackup", () => {
       providerId: "p1",
       model: "fast",
     })
+  })
+
+  it("requires builtin_tools_json on user preferences", () => {
+    const base = {
+      user_id: "u1",
+      light_theme_id: "light",
+      dark_theme_id: "dark",
+      default_prompt_stack_id: "stack",
+      theme_mode: "system" as const,
+      created_at: "t",
+      updated_at: "t",
+    }
+    expect(() =>
+      parseBackup({
+        version: 1,
+        chats: [],
+        nodes: [],
+        userPreferences: [base],
+      })
+    ).toThrow()
+    const withField = parseBackup({
+      version: 1,
+      chats: [],
+      nodes: [],
+      userPreferences: [
+        {
+          ...base,
+          builtin_tools_json: JSON.stringify({ disabled: ["question"] }),
+        },
+      ],
+    })
+    expect(withField.userPreferences[0]?.builtin_tools_json).toBe(
+      JSON.stringify({ disabled: ["question"] })
+    )
   })
 
   it("requires a context-exclusion flag for every message node", () => {

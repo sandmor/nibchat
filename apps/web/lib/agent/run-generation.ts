@@ -12,7 +12,8 @@ import {
   upsertToolInvocation,
   type Parts,
 } from "@/lib/agent/parts"
-import { nibchatTools } from "@/lib/agent/tools"
+import { reservedBuiltInToolNames, selectNibchatTools } from "@/lib/agent/tools"
+import { getBuiltInToolsPrefs } from "@/lib/user-settings"
 import {
   beginResumeAssistant,
   finalizeStreamingAssistant,
@@ -225,10 +226,14 @@ export async function createGenerationResponse(
     )
     // Tools always register from global MCP profiles; this stack module only
     // injects server initialize instructions (if any) at its stack position.
-    const mcp = await prepareMcpTools({
-      includeInstructionsText: mcpServerInstructionsEnabled,
-      reservedToolNames: Object.keys(nibchatTools),
-    })
+    const [mcp, builtInPrefs] = await Promise.all([
+      prepareMcpTools({
+        includeInstructionsText: mcpServerInstructionsEnabled,
+        reservedToolNames: reservedBuiltInToolNames,
+      }),
+      getBuiltInToolsPrefs(userId),
+    ])
+    const builtInTools = selectNibchatTools(builtInPrefs.disabled)
     for (const warning of mcp.warnings ?? [])
       console.warn("[nibchat/mcp]", warning)
     const { system: systemPrompt, messages } = assemblePromptContext({
@@ -320,7 +325,7 @@ export async function createGenerationResponse(
       model: languageModel,
       system: systemPrompt,
       messages,
-      tools: { ...mcp.tools, ...nibchatTools },
+      tools: { ...mcp.tools, ...builtInTools },
       stopWhen: stepCountIs(MAX_STEPS),
       abortSignal,
       temperature: config.temperature,

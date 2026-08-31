@@ -78,6 +78,7 @@ import {
 } from "@/lib/backup-archive"
 import { completeOnboarding } from "@/lib/identity/adapters/kysely-instance"
 import { validateAttachmentSignature } from "@/lib/file-signatures"
+import { parseBuiltInToolsJson } from "@/lib/agent/tools/catalog"
 import {
   ensureUserSettings,
   getUserSettings,
@@ -1211,7 +1212,10 @@ export async function deleteNode(
 }
 
 /** A deleted anchor cannot be restored meaningfully, but its view mode can. */
-async function clearDeletedTreeCamera(chatId: string, deletedIds: ReadonlySet<string>) {
+async function clearDeletedTreeCamera(
+  chatId: string,
+  deletedIds: ReadonlySet<string>
+) {
   const chat = await db
     .selectFrom("chats")
     .select("view_state_json")
@@ -1437,8 +1441,8 @@ export async function updateProvider(
       ...(profile.clearApiKey
         ? { api_key: null }
         : profile.apiKey !== undefined
-        ? { api_key: profile.apiKey || null }
-        : {}),
+          ? { api_key: profile.apiKey || null }
+          : {}),
       api_key_env: profile.clearApiKey ? null : profile.apiKeyEnv || null,
       models_json: providerModelsToJson(parseProviderModels(profile.models)),
       updated_at: now(),
@@ -1787,7 +1791,24 @@ export async function getInstanceSettings(userId: string) {
     lightThemeId: prefs.light_theme_id,
     darkThemeId: prefs.dark_theme_id,
     themeMode: prefs.theme_mode,
+    builtInTools: parseBuiltInToolsJson(prefs.builtin_tools_json),
     titleModelConfig: await getTitleModelConfig(),
+  }
+}
+
+function preferenceInsertValues(
+  prefs: Backup["userPreferences"][number],
+  userId: string
+) {
+  return {
+    user_id: userId,
+    light_theme_id: prefs.light_theme_id,
+    dark_theme_id: prefs.dark_theme_id,
+    default_prompt_stack_id: prefs.default_prompt_stack_id,
+    theme_mode: prefs.theme_mode,
+    builtin_tools_json: prefs.builtin_tools_json,
+    created_at: prefs.created_at,
+    updated_at: prefs.updated_at,
   }
 }
 
@@ -2053,14 +2074,15 @@ function validateMultiUserBackup(
       throw new Error(`Backup node ${node.id} references an unknown chat`)
   }
   const nodes = new Set(backup.nodes.map((node) => node.id))
-  const nodeChatIds = new Map(backup.nodes.map((node) => [node.id, node.chat_id]))
+  const nodeChatIds = new Map(
+    backup.nodes.map((node) => [node.id, node.chat_id])
+  )
   for (const chat of backup.chats) {
     const state = parseChatViewState(chat.view_state_json)
-    if (
-      state.camera &&
-      nodeChatIds.get(state.camera.anchorNodeId) !== chat.id
-    )
-      throw new Error("Backup chat view references a node outside its conversation")
+    if (state.camera && nodeChatIds.get(state.camera.anchorNodeId) !== chat.id)
+      throw new Error(
+        "Backup chat view references a node outside its conversation"
+      )
   }
   const attachments = new Set(
     backup.attachments.map((attachment) => attachment.id)
@@ -2196,16 +2218,14 @@ async function restoreMultiUserBackup(
     if (!ownerPrefs) throw new Error("Backup owner is missing preferences")
     await trx
       .insertInto("user_preferences")
-      .values({
-        ...ownerPrefs,
-        user_id: ownerId,
-      })
+      .values(preferenceInsertValues(ownerPrefs, ownerId))
       .onConflict((oc) =>
         oc.column("user_id").doUpdateSet({
           light_theme_id: ownerPrefs.light_theme_id,
           dark_theme_id: ownerPrefs.dark_theme_id,
           default_prompt_stack_id: ownerPrefs.default_prompt_stack_id,
           theme_mode: ownerPrefs.theme_mode,
+          builtin_tools_json: ownerPrefs.builtin_tools_json,
           updated_at: ownerPrefs.updated_at,
         })
       )
@@ -2277,7 +2297,10 @@ async function restoreMultiUserBackup(
         (prefs) => prefs.user_id === sourceUser.id
       )
       if (prefs)
-        await trx.insertInto("user_preferences").values(prefs).execute()
+        await trx
+          .insertInto("user_preferences")
+          .values(preferenceInsertValues(prefs, sourceUser.id))
+          .execute()
       for (const chat of userChats) {
         await trx
           .insertInto("chats")

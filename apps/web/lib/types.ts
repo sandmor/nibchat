@@ -289,6 +289,8 @@ export interface DB {
     dark_theme_id: string
     default_prompt_stack_id: string
     theme_mode: "system" | "light" | "dark"
+    /** `{ disabled: string[] }` JSON. Empty disabled list means all tools on. */
+    builtin_tools_json: string
     created_at: string
     updated_at: string
   }

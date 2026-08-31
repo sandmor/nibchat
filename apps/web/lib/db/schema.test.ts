@@ -40,11 +40,7 @@ describe("applySchema", () => {
       .execute()
     const instance = await db
       .selectFrom("instance")
-      .select([
-        "id",
-        "title_model_config_json",
-        "onboarding_completed_at",
-      ])
+      .select(["id", "title_model_config_json", "onboarding_completed_at"])
       .where("id", "=", 1)
       .executeTakeFirst()
     expect(instance?.title_model_config_json).toBeNull()
@@ -69,6 +65,12 @@ describe("applySchema", () => {
     )
     expect(instanceColumns.map((column) => column.name)).toContain(
       "onboarding_completed_at"
+    )
+    const prefColumns = sqlite
+      .prepare("pragma table_info(user_preferences)")
+      .all() as Array<{ name: string; notnull: number }>
+    expect(prefColumns).toContainEqual(
+      expect.objectContaining({ name: "builtin_tools_json", notnull: 1 })
     )
     await db.destroy()
     sqlite.close()

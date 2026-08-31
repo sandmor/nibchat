@@ -56,7 +56,7 @@ import {
   updateMcpProfile,
 } from "@/lib/mcp"
 import { messageEditSegmentSchema } from "@/lib/agent/parts"
-import { setUserThemeMode } from "@/lib/user-settings"
+import { setUserThemeMode, setBuiltInToolsPrefs } from "@/lib/user-settings"
 import { chatViewStateSchema } from "@/lib/chat-view-state"
 import { db } from "@/lib/db"
 import {
@@ -597,6 +597,11 @@ export const appRouter = t.router({
       .mutation(async ({ ctx, input }) => {
         await setUserThemeMode(ctx.user.id, input.themeMode)
         return { ok: true as const }
+      }),
+    setBuiltInTools: userProcedure
+      .input(z.object({ disabled: z.array(z.string().min(1).max(64)).max(32) }))
+      .mutation(async ({ ctx, input }) => {
+        return await setBuiltInToolsPrefs(ctx.user.id, input.disabled)
       }),
     listPromptStacks: userProcedure.query(({ ctx }) =>
       listPromptStacks(ctx.user.id)

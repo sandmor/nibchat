@@ -1420,6 +1420,20 @@ describe("multi-user restore", () => {
       .where("id", "=", "gn")
       .executeTakeFirst()
     expect(guestNode?.id).toBe("gn")
+    const guestPrefs = await db
+      .selectFrom("user_preferences")
+      .select("builtin_tools_json")
+      .where("user_id", "=", "src-guest")
+      .executeTakeFirstOrThrow()
+    expect(guestPrefs.builtin_tools_json).toBe(
+      JSON.stringify({ disabled: ["question"] })
+    )
+    const ownerPrefs = await db
+      .selectFrom("user_preferences")
+      .select("builtin_tools_json")
+      .where("user_id", "=", userId)
+      .executeTakeFirstOrThrow()
+    expect(ownerPrefs.builtin_tools_json).toBe(JSON.stringify({ disabled: [] }))
   })
 
   it("rolls back owner rows when guest restore fails", async () => {
@@ -1625,7 +1639,8 @@ function fixturePrefs(
   ownerId: string,
   light: string,
   dark: string,
-  stack: string
+  stack: string,
+  builtinToolsJson = JSON.stringify({ disabled: [] })
 ) {
   return {
     user_id: ownerId,
@@ -1633,6 +1648,7 @@ function fixturePrefs(
     dark_theme_id: dark,
     default_prompt_stack_id: stack,
     theme_mode: "system" as const,
+    builtin_tools_json: builtinToolsJson,
     created_at: "t",
     updated_at: "t",
   }
@@ -1689,7 +1705,13 @@ function multiUserBackup(guestEmail: string) {
     promptStacks: [fixtureStack("os", owner), fixtureStack("gs", guest)],
     userPreferences: [
       fixturePrefs(owner, "ot-light", "ot-dark", "os"),
-      fixturePrefs(guest, "gt-light", "gt-dark", "gs"),
+      fixturePrefs(
+        guest,
+        "gt-light",
+        "gt-dark",
+        "gs",
+        JSON.stringify({ disabled: ["question"] })
+      ),
     ],
     chats: [fixtureChat("oc", owner), fixtureChat("gc", guest)],
     nodes: [fixtureNode("on", "oc"), fixtureNode("gn", "gc")],

@@ -49,6 +49,7 @@ import { displayChatTitle } from "@/lib/chat-title"
 import type { Appearance, ThemeRecord } from "@/lib/appearance"
 import { defaultAppearance, motionTransition } from "@/lib/appearance"
 import type { PromptStackDocument } from "@/lib/prompt-stack"
+import type { BuiltInToolsPrefs } from "@/lib/agent/tools/catalog"
 import { useAppearanceStore } from "@/lib/appearance-store"
 import { activeThemeId } from "@/lib/theme-slot"
 import { useThemeSlot } from "@/components/theme-provider"
@@ -97,6 +98,7 @@ type InstanceSettings = {
     updated_at: string
   }>
   titleModelConfig: { providerId: string; model: string } | null
+  builtInTools: BuiltInToolsPrefs
 }
 
 export function WorkspaceShell({

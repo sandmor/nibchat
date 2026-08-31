@@ -4,6 +4,7 @@ import type { ProviderSummary } from "../types"
 import { ProviderSettings } from "./providers"
 import { TitleModelSettings } from "./title-model"
 import { PromptStackSettings } from "./prompt-stacks"
+import { BuiltInToolsSettings } from "./builtin-tools"
 import { BackupSettings } from "./backup"
 import { AppearanceSettings } from "./appearance"
 import { McpSettings } from "./mcp"
@@ -27,7 +28,7 @@ export function SettingsPanel({
         <h1 className="mt-1 text-xl font-semibold">
           {isOwner
             ? "Providers, MCP, prompts, appearance & users"
-            : "Appearance & prompt stacks"}
+            : "Appearance, tools & prompt stacks"}
         </h1>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
@@ -46,6 +47,7 @@ export function SettingsPanel({
             </>
           )}
           <PromptStackSettings />
+          <BuiltInToolsSettings />
           {isOwner && (
             <>
               <BackupSettings />

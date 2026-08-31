@@ -123,7 +123,10 @@ const userBackupSchema = z.object({
   email: z.string(),
   emailVerified: z.union([z.boolean(), z.number().transform(Boolean)]),
   role: z.string().nullable().optional(),
-  banned: z.union([z.boolean(), z.number().transform(Boolean)]).nullable().optional(),
+  banned: z
+    .union([z.boolean(), z.number().transform(Boolean)])
+    .nullable()
+    .optional(),
   banReason: z.string().nullable().optional(),
   banExpires: z.string().nullable().optional(),
   createdAt: z.string(),
@@ -136,6 +139,7 @@ const userPreferencesSchema = z.object({
   dark_theme_id: z.string(),
   default_prompt_stack_id: z.string(),
   theme_mode: z.enum(["system", "light", "dark"]),
+  builtin_tools_json: z.string(),
   created_at: z.string(),
   updated_at: z.string(),
 })

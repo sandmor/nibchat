@@ -12,7 +12,7 @@ export type SlotMotion = {
 /**
  * Crossfade between successive contents of one path depth slot.
  *
- * The slot shell (MessageScrollerItem) stays mounted; only the keyed layer
+ * The virtual row shell stays mounted; only the keyed layer
  * changes. Layout (absolute exit stacking) is applied via style so Motion
  * never tweens non-animatable `position`/`inset` from "auto". Exit layers are
  * inert to pointer and AT — present layer is the only interactive body.

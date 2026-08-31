@@ -2,11 +2,12 @@ import type { NodeRow } from "@/lib/types"
 
 /**
  * Dual identity for path rows (do not collapse these):
- * - reactKey  = path slot (depth). Stable across sibling branch switches so the
- *   MessageScroller item shell does not remount; SlotCrossfade owns content motion.
- * - messageId = node (or stream) id for MessageScroller scroll / jump.
+ * - slot index / {@link pathSlotKey} = virtualizer item key (depth). Stable
+ *   across sibling branch switches so the row shell does not remount;
+ *   SlotCrossfade owns content motion.
+ * - messageId = node (or stream) id for virtual scroll / jump lookup.
  *
- * Never use node id as the React list key for path rows.
+ * Never use node id as the virtualizer item key for path rows.
  * Live rows carry a stream id only — token text stays in the stream buffer.
  */
 
@@ -14,8 +15,21 @@ export function pathSlotKey(slotIndex: number): string {
   return `slot:${slotIndex}`
 }
 
+/** Previous-item peek when jumping to a row (`scrollPaddingStart`). */
 export function transcriptPeekPx(density: "comfortable" | "compact"): number {
   return density === "compact" ? 40 : 64
+}
+
+/**
+ * Inputs that invalidate every virtualizer item size. Path identity is not one
+ * of them: slot shells remeasure on {@link transcriptRowContentKey}, and wiping
+ * the cache on a rewrite jumps a scrolled-away viewport.
+ */
+export function transcriptMeasurementLayoutKey(
+  density: "comfortable" | "compact",
+  messageActionCaptions: boolean
+): string {
+  return `${density}:${messageActionCaptions ? "captions" : "plain"}`
 }
 
 /** Centered linear column width. */
@@ -47,23 +61,13 @@ export function chatReaderDisposalTarget(
     : null
 }
 
-/**
- * Disable content-visibility on height-churning stream rows so measure/follow
- * stay stable while tokens and markdown reflow.
- */
-export const LIVE_ROW_CLASS =
-  "[content-visibility:visible] [contain-intrinsic-size:none]"
-
 export type EmptyTranscriptRow = {
   kind: "empty"
-  reactKey: "empty"
   messageId: "empty"
 }
 
 export type PathTranscriptRow = {
   kind: "path"
-  /** React list key — depth slot, not node id */
-  reactKey: string
   slotIndex: number
   messageId: string
   node: NodeRow
@@ -73,7 +77,6 @@ export type PathTranscriptRow = {
 
 export type AfterTipTranscriptRow = {
   kind: "after-tip"
-  reactKey: string
   messageId: string
   streamId: string
 }
@@ -82,6 +85,36 @@ export type TranscriptRow =
   | EmptyTranscriptRow
   | PathTranscriptRow
   | AfterTipTranscriptRow
+
+/**
+ * Conservative first-pass sizes for rows without a width-specific cache.
+ * User messages are usually one or two lines; assistant output wraps much
+ * taller, especially on narrow canvases.
+ */
+export function transcriptEstimatedRowHeight(
+  row: TranscriptRow | undefined,
+  width: number
+): number {
+  if (row?.kind === "path" && row.node.role === "user") return 160
+  if (
+    row?.kind === "after-tip" ||
+    (row?.kind === "path" && row.node.role === "assistant")
+  ) {
+    return width > 0 && width <= 512 ? 544 : 384
+  }
+  return 256
+}
+
+/** Identity for a slot's present body. Changes on sibling rewrite, not depth. */
+export function transcriptRowContentKey(row: TranscriptRow): string {
+  if (row.kind === "path") {
+    return row.liveStreamId
+      ? `stream:${row.liveStreamId}`
+      : `node:${row.node.id}`
+  }
+  if (row.kind === "after-tip") return `stream:${row.streamId}`
+  return "empty"
+}
 
 export function afterTipMessageId(
   streamId: string,
@@ -101,7 +134,6 @@ export function buildTranscriptRows(input: {
   if (input.showEmpty) {
     rows.push({
       kind: "empty",
-      reactKey: "empty",
       messageId: "empty",
     })
   }
@@ -109,7 +141,6 @@ export function buildTranscriptRows(input: {
   input.activePath.forEach((node, slotIndex) => {
     rows.push({
       kind: "path",
-      reactKey: pathSlotKey(slotIndex),
       slotIndex,
       messageId: node.id,
       node,
@@ -120,7 +151,6 @@ export function buildTranscriptRows(input: {
   for (const stream of input.afterTipStreams) {
     rows.push({
       kind: "after-tip",
-      reactKey: stream.streamId,
       messageId: afterTipMessageId(stream.streamId, stream),
       streamId: stream.streamId,
     })
@@ -129,15 +159,12 @@ export function buildTranscriptRows(input: {
   return rows
 }
 
-/** messageIds currently rendered — for scroll-target mount gating. */
-export function mountedTranscriptMessageIds(rows: TranscriptRow[]): string[] {
-  return rows.map((row) => row.messageId)
-}
-
-export function isScrollTargetMounted(
-  scrollTargetId: string | null,
-  mountedIds: readonly string[]
-): boolean {
-  if (!scrollTargetId) return false
-  return mountedIds.includes(scrollTargetId)
+/** Index for a durable node/stream id, regardless of whether its row is mounted. */
+export function transcriptRowIndex(
+  messageId: string | null,
+  rows: readonly TranscriptRow[]
+): number | null {
+  if (!messageId) return null
+  const index = rows.findIndex((row) => row.messageId === messageId)
+  return index === -1 ? null : index
 }

@@ -13,7 +13,7 @@ import {
 
 test.describe.configure({ mode: "serial" })
 
-test.describe("message scroller transcript", () => {
+test.describe("chat transcript", () => {
   let context: BrowserContext
   let page: Page
   let llm: MockLlm
@@ -48,6 +48,9 @@ test.describe("message scroller transcript", () => {
 
     const viewport = page.getByTestId("chat-transcript-viewport")
     await expect(viewport).toBeVisible()
+    const transcriptList = viewport.locator(':scope > [role="list"]')
+    await expect(transcriptList).toBeVisible()
+    await expect(viewport.locator('[role="log"]')).toHaveCount(0)
 
     llm.release()
 
@@ -135,16 +138,64 @@ test.describe("message scroller transcript", () => {
     const viewport = page.getByTestId("chat-transcript-viewport")
     await expect(viewport).toBeVisible()
 
-    const lastUser = page
+    const userMessages = page
       .locator("article")
       .filter({ has: page.getByText("user", { exact: true }) })
-      .last()
+    const resizeTarget = userMessages.nth(1)
+    const lastUser = userMessages.last()
 
     await viewport.dispatchEvent("wheel", { deltaY: -400 })
-    await lastUser.evaluate((el) => {
+    await resizeTarget.evaluate((el) => {
       el.scrollIntoView({ block: "center", inline: "nearest" })
     })
 
+    const distanceFromEnd = await viewport.evaluate(
+      (el) => el.scrollHeight - el.clientHeight - el.scrollTop
+    )
+    expect(distanceFromEnd).toBeGreaterThan(80)
+
+    const visibleAnchor = await viewport.evaluate((el) => {
+      const viewportRect = el.getBoundingClientRect()
+      const rows = [...el.querySelectorAll<HTMLElement>("[data-index]")]
+      const anchor = rows.find((row) => {
+        const rect = row.getBoundingClientRect()
+        return rect.bottom > viewportRect.top && rect.top < viewportRect.bottom
+      })
+      if (!anchor) return null
+      return {
+        index: anchor.dataset.index,
+        offset: anchor.getBoundingClientRect().top - viewportRect.top,
+      }
+    })
+    expect(visibleAnchor).not.toBeNull()
+
+    await viewport.locator(':scope > [role="list"]').evaluate((el) => {
+      ;(el as HTMLElement).style.setProperty("--message-width", "30rem")
+    })
+
+    await expect
+      .poll(async () => {
+        if (!visibleAnchor?.index) return Number.POSITIVE_INFINITY
+        const anchorRow = viewport.locator(
+          `[data-index="${visibleAnchor.index}"]`
+        )
+        if ((await anchorRow.count()) === 0) return Number.POSITIVE_INFINITY
+        return anchorRow.evaluate((row, expectedOffset) => {
+          const transcriptViewport = row.closest(
+            '[data-testid="chat-transcript-viewport"]'
+          )
+          if (!transcriptViewport) return Number.POSITIVE_INFINITY
+          const actualOffset =
+            row.getBoundingClientRect().top -
+            transcriptViewport.getBoundingClientRect().top
+          return Math.abs(actualOffset - expectedOffset)
+        }, visibleAnchor.offset)
+      })
+      .toBeLessThan(2)
+
+    await lastUser.evaluate((el) => {
+      el.scrollIntoView({ block: "center", inline: "nearest" })
+    })
     const scrollBefore = await viewport.evaluate((el) => el.scrollTop)
     expect(scrollBefore).toBeGreaterThan(80)
 

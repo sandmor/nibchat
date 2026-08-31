@@ -294,9 +294,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   /** Placement only. Token text lives in buffers; StreamingBubble reads those. */
   const streamMetas = useStreamStore((state) => state.streams)
   const stoppingBuffers = useStreamStore(
-    useShallow((state) =>
-      collectStoppingBuffers(state.streams, state.buffers)
-    )
+    useShallow((state) => collectStoppingBuffers(state.streams, state.buffers))
   )
 
   const applyStreamEnd = useCallback(
@@ -1462,6 +1460,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
               animate={animate}
               transition={transition}
               messageActionCaptions={appearance.messageActions.captions}
+              editingNodeIds={editingNodeIds}
               scrollTargetId={scrollTargetId}
               onScrollTargetConsumed={consumeScrollTarget}
               findLocateKey={find.locateKey}

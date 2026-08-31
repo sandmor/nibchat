@@ -9,6 +9,7 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react"
+import { useShallow } from "zustand/react/shallow"
 import { AnimatePresence } from "motion/react"
 import { useRouter } from "next/navigation"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
@@ -37,11 +38,19 @@ import {
 import { cn } from "@/lib/utils"
 import { parseJson, resolveActivePath } from "@/lib/domain"
 import { displayChatTitle } from "@/lib/chat-title"
-import { chatStreamEntries, useStreamStore } from "@/lib/stream-store"
+import {
+  abortChatStreamReaders,
+  chatStreamEntries,
+  collectStoppingBuffers,
+  hasLiveStreamReader,
+  useStreamStore,
+} from "@/lib/stream-store"
 import { useTRPC } from "@/lib/trpc-react"
 import {
+  hydrateStreamingNodeParts,
   patchChatTitle,
   patchChatViewState,
+  patchNodeFromStreamParts,
   patchSelection,
   workspaceInput,
   type WorkspaceData,
@@ -81,7 +90,10 @@ import {
   useTreeDraftSlotSignature,
 } from "./conversation-session-store"
 import { ImageViewer } from "./image-viewer"
-import { chatRouteIdentity } from "./chat-transcript-helpers"
+import {
+  chatReaderDisposalTarget,
+  chatRouteIdentity,
+} from "./chat-transcript-helpers"
 import { useWorkspaceChrome } from "./shell"
 import { DocumentTitle } from "@/components/document-title"
 import {
@@ -92,10 +104,15 @@ import {
 import { analyzePdf } from "@/lib/pdf-analysis-client"
 import type { PdfAnalysis } from "@/lib/pdf-analysis"
 import {
+  applyStoppingStreamPatches,
+  followGenerationStream,
+  planStreamEnd,
   readStreamEvents,
+  shouldFollowGeneration,
   shouldSoftFollow,
   streamPlacement,
   viewPathFromCache,
+  type StreamEndReason,
   type StreamRequestInput,
   type StreamRequestBody,
 } from "./stream-helpers"
@@ -161,9 +178,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const [viewStateIdentity, setViewStateIdentity] = useState(chatIdentity)
   const viewStatesRef = useRef(new Map([[chatIdentity, viewState]]))
   const pendingViewStatesRef = useRef(new Map<string, ChatViewState>())
-  const viewPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null
-  )
+  const viewPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const viewPersistingRef = useRef(false)
   const viewSaveErrorShownRef = useRef(false)
   // React can preserve this client component across soft navigation. Resetting
@@ -197,8 +212,6 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const boundChatIdentityRef = useRef<string | null>(null)
   const aliveRef = useRef(true)
   const disposalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  /** Followers survive workspace refreshes until their own stream settles. */
-  const discoveredFollowersRef = useRef(new Map<string, AbortController>())
   /** Removed uploads can finish after their chip is gone; delete their server row. */
   const cancelledUploadIds = useRef(new Set<string>())
   const consumeScrollTarget = useCallback(() => setScrollTargetId(null), [])
@@ -230,7 +243,6 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     if (selectedChatId !== null) selectedChatIdRef.current = selectedChatId
   }, [selectedChatId])
   useEffect(() => {
-    const discoveredFollowers = discoveredFollowersRef.current
     if (disposalTimerRef.current) clearTimeout(disposalTimerRef.current)
     disposalTimerRef.current = null
     aliveRef.current = true
@@ -241,9 +253,11 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       // effects can remount without deleting a live draft.
       disposalTimerRef.current = setTimeout(() => {
         if (aliveRef.current) return
-        for (const controller of discoveredFollowers.values())
-          controller.abort()
-        discoveredFollowers.clear()
+        // Drop local readers only. The producer keeps running; the next visit
+        // sees activeGenerations and follows from the stored cursor. A draft's
+        // pending chat is the destination of router.replace, not a chat being
+        // left; its existing reader must survive the page handoff.
+        abortChatStreamReaders([chatReaderDisposalTarget(bound)])
         if (bound) disposeSessionChat(bound === "draft" ? null : bound)
       }, 0)
     }
@@ -258,6 +272,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     setScrollTargetId(null)
     if (previous) {
       const previousChatId = previous === "draft" ? null : previous
+      if (previousChatId) abortChatStreamReaders([previousChatId])
       disposeSessionChat(previousChatId)
     }
     setPickerSlot(composerSlotId(selectedChatId, "linear", null))
@@ -271,11 +286,66 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
 
   const startStream = useStreamStore((state) => state.start)
   const applyStreamEvent = useStreamStore((state) => state.applyEvent)
+  const setStreamCursor = useStreamStore((state) => state.setCursor)
   const attachController = useStreamStore((state) => state.attachController)
+  const detachController = useStreamStore((state) => state.detachController)
   const stopStream = useStreamStore((state) => state.stop)
   const finishStream = useStreamStore((state) => state.finish)
   /** Placement only. Token text lives in buffers; StreamingBubble reads those. */
   const streamMetas = useStreamStore((state) => state.streams)
+  const stoppingBuffers = useStreamStore(
+    useShallow((state) =>
+      collectStoppingBuffers(state.streams, state.buffers)
+    )
+  )
+
+  const applyStreamEnd = useCallback(
+    (
+      streamId: string,
+      reason: StreamEndReason,
+      controller?: AbortController
+    ) => {
+      const store = useStreamStore.getState()
+      const meta = store.streams[streamId]
+      if (!meta) {
+        if (controller) detachController(streamId, controller)
+        finishStream(streamId)
+        return
+      }
+      const cached = queryClient.getQueryData<WorkspaceData>(
+        trpc.workspace.get.queryKey({ chatId: meta.chatId })
+      )
+      const parts = store.buffers[streamId]?.parts ?? []
+      const plan = planStreamEnd({
+        reason,
+        stopping: Boolean(meta.stopping),
+        nodeStatus: cached?.nodes.find((row) => row.id === meta.nodeId)?.status,
+        hasParts: parts.length > 0,
+      })
+      if (plan.keepStore) {
+        detachController(streamId, controller)
+        return
+      }
+      if (plan.write === "aborted") {
+        queryClient.setQueriesData<WorkspaceData>(
+          trpc.workspace.get.queryFilter(),
+          (old) => patchNodeFromStreamParts(old, meta.nodeId, parts, "aborted")
+        )
+      } else if (plan.write === "hydrate") {
+        queryClient.setQueriesData<WorkspaceData>(
+          trpc.workspace.get.queryFilter(),
+          (old) => hydrateStreamingNodeParts(old, meta.nodeId, parts)
+        )
+      }
+      if (plan.dropOverlay) finishStream(streamId)
+      if (plan.invalidate) {
+        void queryClient.invalidateQueries({
+          queryKey: trpc.workspace.get.queryKey({ chatId: meta.chatId }),
+        })
+      }
+    },
+    [detachController, finishStream, queryClient, trpc.workspace.get]
+  )
 
   const workspaceKeyInput = workspaceInput(selectedChatId)
   const workspaceQuery = useQuery({
@@ -289,76 +359,75 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     initialData: chromeProviders,
   })
 
-  const data: WorkspaceData = workspaceQuery.data ?? initial
+  const workspace = workspaceQuery.data ?? initial
+  const data: WorkspaceData = useMemo(
+    () =>
+      applyStoppingStreamPatches(workspace, streamMetas, stoppingBuffers) ??
+      workspace,
+    [stoppingBuffers, streamMetas, workspace]
+  )
   const providers = providersQuery.data ?? chromeProviders
   const knownChats = data.chats
 
   // Reload/navigation discovery only: a currently-open peer is intentionally
   // not notified until its normal workspace query is refreshed.
   useEffect(() => {
-    for (const generation of data.activeGenerations) {
+    const store = useStreamStore.getState()
+    const nodesById = new Map(workspace.nodes.map((row) => [row.id, row]))
+    const activeIds = new Set(
+      workspace.activeGenerations.map((generation) => generation.generationId)
+    )
+
+    for (const generation of workspace.activeGenerations) {
+      const streamId = generation.generationId
       if (
-        discoveredFollowersRef.current.has(generation.generationId) ||
-        useStreamStore.getState().streams[generation.generationId]
+        !shouldFollowGeneration({
+          streamId,
+          node: nodesById.get(generation.nodeId),
+          controllers: store.controllers,
+          stream: store.streams[streamId],
+        })
       )
         continue
       const controller = new AbortController()
-      discoveredFollowersRef.current.set(generation.generationId, controller)
-      startStream(generation.generationId, {
+      startStream(streamId, {
         nodeId: generation.nodeId,
         chatId: generation.chatId,
         parentNodeId: generation.parentNodeId,
       })
-      attachController(generation.generationId, controller)
-      void (async () => {
-        let cursor: string | null = null
-        let attempt = 0
-        while (!controller.signal.aborted) {
-          const suffix = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""
-          const response = await fetch(
-            `/api/chat/stream/${encodeURIComponent(generation.generationId)}${suffix}`,
-            { signal: controller.signal }
-          ).catch(() => null)
-          if (response?.status === 404 || response?.status === 410) return
-          if (!response?.ok || !response.body) {
-            await new Promise((resolve) =>
-              setTimeout(resolve, Math.min(5_000, 250 * 2 ** attempt++))
-            )
-            continue
-          }
-          attempt = 0
-          try {
-            await readStreamEvents(response.body, {
-              onEvent: (event) =>
-                applyStreamEvent(generation.generationId, event),
-              onCursor: (next) => {
-                cursor = next
-              },
-            })
-            return
-          } catch {
-            // Reattach with the cursor advanced only after the reducer applied it.
-          }
-        }
-      })().finally(() => {
-        discoveredFollowersRef.current.delete(generation.generationId)
-        finishStream(generation.generationId)
-        if (controller.signal.aborted) return
-        void queryClient.invalidateQueries({
-          queryKey: trpc.workspace.get.queryKey({
-            chatId: generation.chatId,
-          }),
-        })
+      attachController(streamId, controller)
+      void followGenerationStream({
+        streamId,
+        signal: controller.signal,
+        cursor: useStreamStore.getState().cursors[streamId] ?? null,
+        onEvent: (event) => applyStreamEvent(streamId, event),
+        onCursor: (cursor) => setStreamCursor(streamId, cursor),
+      }).then((result) => {
+        applyStreamEnd(streamId, result, controller)
       })
     }
+
+    const wanted = new Set<string>()
+    for (const id of [selectedChatId, pendingChatId, workspace.chat?.id]) {
+      if (id) wanted.add(id)
+    }
+    for (const [streamId, meta] of Object.entries(store.streams)) {
+      if (!wanted.has(meta.chatId)) continue
+      if (activeIds.has(streamId)) continue
+      if (hasLiveStreamReader(store.controllers, streamId)) continue
+      applyStreamEnd(streamId, "gone")
+    }
   }, [
+    applyStreamEnd,
     applyStreamEvent,
     attachController,
-    data.activeGenerations,
-    finishStream,
-    queryClient,
+    pendingChatId,
+    selectedChatId,
+    setStreamCursor,
     startStream,
-    trpc.workspace.get,
+    workspace.activeGenerations,
+    workspace.chat?.id,
+    workspace.nodes,
   ])
 
   const activeModelConfig: ModelConfigLocal = data.chat
@@ -471,7 +540,9 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     [flushChatViewState, queryClient, trpc.workspace.get]
   )
 
-  const setPersistedView = useCallback<Dispatch<SetStateAction<"linear" | "tree">>>(
+  const setPersistedView = useCallback<
+    Dispatch<SetStateAction<"linear" | "tree">>
+  >(
     (next) => {
       const current =
         viewStatesRef.current.get(chatIdentity) ?? DEFAULT_CHAT_VIEW_STATE
@@ -639,8 +710,9 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     let streamId: string | undefined
     if (aliveRef.current) setInFlightCount((n) => n + 1)
     let failed = false
+    let endReason: StreamEndReason = "gone"
+    const controller = new AbortController()
     try {
-      const controller = new AbortController()
       streamId = crypto.randomUUID()
       const requestBody: StreamRequestBody = {
         ...body,
@@ -687,53 +759,28 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       // Reading the response stream is an independent real-time boundary.
       // Start it before any query refetch or selection mutation so unrelated
       // cache latency can never delay first-token rendering.
-      let lastCursor: string | null = null
+      const liveStreamId = streamId
       const read = (body: ReadableStream<Uint8Array>) =>
         readStreamEvents(body, {
-          onEvent: (event) => applyStreamEvent(streamId!, event),
-          onCursor: (cursor) => {
-            lastCursor = cursor
-          },
+          onEvent: (event) => applyStreamEvent(liveStreamId, event),
+          onCursor: (cursor) => setStreamCursor(liveStreamId, cursor),
         })
       const streamRead = (async () => {
-        if (!response.body) return
-        try {
-          await read(response.body)
-        } catch (initialError) {
-          // The producer is independent of this reader. Resume the same
-          // server-owned generation without replaying already applied chunks.
-          for (let attempt = 0; attempt < 3; attempt += 1) {
-            controller.signal.throwIfAborted()
-            await new Promise((resolve) =>
-              setTimeout(resolve, 250 * (attempt + 1))
-            )
-            controller.signal.throwIfAborted()
-            const cursor = lastCursor
-              ? `?cursor=${encodeURIComponent(lastCursor)}`
-              : ""
-            let resumed: Response
-            try {
-              resumed = await fetch(
-                `/api/chat/stream/${encodeURIComponent(streamId!)}${cursor}`,
-                { signal: controller.signal }
-              )
-            } catch (resumeError) {
-              if (controller.signal.aborted) throw resumeError
-              // A failed reattachment is transient independently of the
-              // producer; consume this attempt and try the same cursor again.
-              continue
-            }
-            if (resumed.status === 404) return
-            if (!resumed.ok || !resumed.body) continue
-            try {
-              await read(resumed.body)
-              return
-            } catch {
-              // Try the next cursor-based attachment.
-            }
+        if (response.body) {
+          try {
+            await read(response.body)
+          } catch {
+            if (controller.signal.aborted) return "aborted" as const
           }
-          throw initialError
         }
+        if (controller.signal.aborted) return "aborted" as const
+        return followGenerationStream({
+          streamId: liveStreamId,
+          signal: controller.signal,
+          cursor: useStreamStore.getState().cursors[liveStreamId] ?? null,
+          onEvent: (event) => applyStreamEvent(liveStreamId, event),
+          onCursor: (cursor) => setStreamCursor(liveStreamId, cursor),
+        })
       })()
 
       const reconcileWorkspace = async () => {
@@ -779,23 +826,34 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
         })
       }
 
-      await Promise.all([streamRead, reconcileWorkspace()])
-      await queryClient.invalidateQueries({
-        queryKey: trpc.workspace.get.queryKey({ chatId: body.chatId }),
-      })
+      const [readerResult] = await Promise.all([
+        streamRead,
+        reconcileWorkspace(),
+      ])
+      endReason = readerResult === "aborted" ? "aborted" : "gone"
     } catch (error) {
-      if (!(error instanceof DOMException && error.name === "AbortError")) {
-        failed = true
-        if (aliveRef.current) {
-          toast.error(error instanceof Error ? error.message : "Stream failed")
+      const stopping = streamId
+        ? Boolean(useStreamStore.getState().streams[streamId]?.stopping)
+        : false
+      if (controller.signal.aborted) {
+        endReason = "aborted"
+      } else {
+        endReason = "failed"
+        if (!stopping) {
+          failed = true
+          if (aliveRef.current) {
+            toast.error(
+              error instanceof Error ? error.message : "Stream failed"
+            )
+          }
+          await queryClient.invalidateQueries({
+            queryKey: trpc.workspace.get.queryKey({ chatId: body.chatId }),
+          })
         }
-        await queryClient.invalidateQueries({
-          queryKey: trpc.workspace.get.queryKey({ chatId: body.chatId }),
-        })
       }
     } finally {
       if (aliveRef.current) setInFlightCount((n) => Math.max(0, n - 1))
-      if (streamId) finishStream(streamId)
+      if (streamId) applyStreamEnd(streamId, endReason, controller)
     }
     return !failed
   }

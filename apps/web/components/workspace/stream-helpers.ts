@@ -1,11 +1,16 @@
 import type { QueryClient } from "@tanstack/react-query"
-import type {
-  AttachmentReference,
-  NodeRow,
-} from "@/lib/types"
+import type { AttachmentReference, MessageStatus, NodeRow } from "@/lib/types"
 import type { GenerationPayload } from "@/lib/generation-streams/events"
 import { resolveActivePath } from "@/lib/domain"
-import type { WorkspaceData } from "@/lib/workspace-cache"
+import {
+  hasLiveStreamReader,
+  type StreamBuffer,
+  type StreamMeta,
+} from "@/lib/stream-store"
+import {
+  patchNodeFromStreamParts,
+  type WorkspaceData,
+} from "@/lib/workspace-cache"
 
 export type StreamRequestInput =
   | {
@@ -130,6 +135,154 @@ export function streamPlacement(
   if (tip.selected_child_id != null && tip.selected_child_id !== stream.nodeId)
     return "hidden"
   return "after-tip"
+}
+
+export function shouldFollowGeneration(input: {
+  streamId: string
+  node: NodeRow | undefined
+  controllers: Record<string, AbortController>
+  stream: StreamMeta | undefined
+}): boolean {
+  if (hasLiveStreamReader(input.controllers, input.streamId)) return false
+  if (input.node && input.node.status !== "streaming") return false
+  return true
+}
+
+/**
+ * Re-apply cancelled stream buffers onto workspace data so a refetch that still
+ * lists the generation as live cannot flash the empty streaming shell.
+ * Leaves `activeGenerations` intact so discovery can re-attach after leave.
+ */
+export function applyStoppingStreamPatches(
+  data: WorkspaceData | undefined,
+  streams: Record<string, StreamMeta>,
+  buffers: Record<string, StreamBuffer>
+): WorkspaceData | undefined {
+  if (!data) return data
+  let next = data
+  for (const [streamId, meta] of Object.entries(streams)) {
+    if (!meta.stopping) continue
+    next =
+      patchNodeFromStreamParts(
+        next,
+        meta.nodeId,
+        buffers[streamId]?.parts ?? [],
+        "aborted",
+        { preserveActiveGenerations: true }
+      ) ?? next
+  }
+  return next
+}
+
+export type StreamEndReason = "aborted" | "gone" | "failed"
+
+export type StreamEndPlan = {
+  keepStore: boolean
+  write: "none" | "aborted" | "hydrate"
+  dropOverlay: boolean
+  invalidate: boolean
+}
+
+/**
+ * Decide overlay vs cache writes from a reader end. The client never claims
+ * complete/error; those come from workspace refetch after the run is gone.
+ */
+export function planStreamEnd(input: {
+  reason: StreamEndReason
+  stopping: boolean
+  nodeStatus: MessageStatus | undefined
+  hasParts: boolean
+}): StreamEndPlan {
+  if (input.reason === "aborted") {
+    return {
+      keepStore: true,
+      write: "none",
+      dropOverlay: false,
+      invalidate: false,
+    }
+  }
+  if (input.stopping && input.nodeStatus === "streaming") {
+    return {
+      keepStore: false,
+      write: "aborted",
+      dropOverlay: true,
+      invalidate: true,
+    }
+  }
+  if (!input.stopping && input.nodeStatus === "streaming" && input.hasParts) {
+    return {
+      keepStore: false,
+      write: "hydrate",
+      dropOverlay: true,
+      invalidate: true,
+    }
+  }
+  return {
+    keepStore: false,
+    write: "none",
+    dropOverlay: true,
+    invalidate: true,
+  }
+}
+
+export type FollowGenerationResult = "aborted" | "gone"
+
+function sleepMs(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve()
+  return new Promise((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timer)
+      resolve()
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    signal.addEventListener("abort", onAbort, { once: true })
+  })
+}
+
+/**
+ * Attach to a server-owned generation, resuming from `cursor`.
+ * Abort returns immediately — it is not a failed attach that should back off.
+ */
+export async function followGenerationStream(input: {
+  streamId: string
+  signal: AbortSignal
+  cursor: string | null
+  onEvent: (event: GenerationPayload) => void
+  onCursor: (cursor: string) => void
+}): Promise<FollowGenerationResult> {
+  let cursor = input.cursor
+  let attempt = 0
+  while (!input.signal.aborted) {
+    const suffix = cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""
+    const response = await fetch(
+      `/api/chat/stream/${encodeURIComponent(input.streamId)}${suffix}`,
+      { signal: input.signal }
+    ).catch(() => null)
+    if (input.signal.aborted) return "aborted"
+    if (response?.status === 404 || response?.status === 410) return "gone"
+    if (!response?.ok || !response.body) {
+      await sleepMs(Math.min(5_000, 250 * 2 ** attempt++), input.signal)
+      continue
+    }
+    attempt = 0
+    try {
+      await readStreamEvents(response.body, {
+        onEvent: input.onEvent,
+        onCursor: (next) => {
+          cursor = next
+          input.onCursor(next)
+        },
+      })
+      if (input.signal.aborted) return "aborted"
+      // Clean SSE end is not generation complete — re-attach until 404/410.
+    } catch {
+      if (input.signal.aborted) return "aborted"
+    }
+  }
+  return "aborted"
 }
 
 export type StreamEventHandlers = {

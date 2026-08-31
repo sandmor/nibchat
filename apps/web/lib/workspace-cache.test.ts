@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest"
-import { patchChatTitle, type WorkspaceData } from "@/lib/workspace-cache"
+import {
+  hydrateStreamingNodeParts,
+  patchChatTitle,
+  patchNodeFromStreamParts,
+  type WorkspaceData,
+} from "@/lib/workspace-cache"
 
 function sample(chatId: string, title: string): WorkspaceData {
   return {
@@ -31,6 +36,145 @@ function sample(chatId: string, title: string): WorkspaceData {
     activeGenerations: [],
   }
 }
+
+function streamingAssistant(
+  data: WorkspaceData,
+  extras?: { parts?: Array<{ type: "text"; text: string }> }
+): WorkspaceData {
+  data.nodes = [
+    {
+      id: "a1",
+      chat_id: "c1",
+      parent_id: "u1",
+      role: "assistant",
+      status: "streaming",
+      selected_child_id: null,
+      parts_json: JSON.stringify(extras?.parts ?? []),
+      search_text: "",
+      metadata_json: "{}",
+      excluded_from_context: false,
+      created_at: "",
+      updated_at: "",
+    },
+  ]
+  data.activeGenerations = [
+    {
+      generationId: "g1",
+      nodeId: "a1",
+      chatId: "c1",
+      parentNodeId: "u1",
+      startedAt: "",
+    },
+  ]
+  return data
+}
+
+describe("patchNodeFromStreamParts", () => {
+  it("writes aborted partials as stopped and clears the generation", () => {
+    const next = patchNodeFromStreamParts(
+      streamingAssistant(sample("c1", "Chat")),
+      "a1",
+      [{ type: "text", text: "Hello" }],
+      "aborted"
+    )
+    expect(next?.nodes[0]?.status).toBe("stopped")
+    expect(JSON.parse(next?.nodes[0]?.parts_json ?? "[]")).toEqual([
+      { type: "text", text: "Hello" },
+    ])
+    expect(next?.activeGenerations).toEqual([])
+  })
+
+  it("writes a finished buffer as complete", () => {
+    const next = patchNodeFromStreamParts(
+      streamingAssistant(sample("c1", "Chat")),
+      "a1",
+      [{ type: "text", text: "Done" }],
+      "complete"
+    )
+    expect(next?.nodes[0]?.status).toBe("complete")
+    expect(JSON.parse(next?.nodes[0]?.parts_json ?? "[]")).toEqual([
+      { type: "text", text: "Done" },
+    ])
+    expect(next?.activeGenerations).toEqual([])
+  })
+
+  it("keeps pending client tools as awaiting_input when aborted", () => {
+    const next = patchNodeFromStreamParts(
+      streamingAssistant(sample("c1", "Chat")),
+      "a1",
+      [
+        {
+          type: "tool-invocation",
+          toolCallId: "c1",
+          toolName: "question",
+          state: "input-available",
+          input: { questions: [] },
+        },
+      ],
+      "aborted"
+    )
+    expect(next?.nodes[0]?.status).toBe("awaiting_input")
+  })
+
+  it("does not clobber a node that is already complete", () => {
+    const data = streamingAssistant(sample("c1", "Chat"))
+    data.nodes[0] = {
+      ...data.nodes[0]!,
+      status: "complete",
+      parts_json: JSON.stringify([{ type: "text", text: "Server" }]),
+    }
+    const next = patchNodeFromStreamParts(
+      data,
+      "a1",
+      [{ type: "text", text: "Stale" }],
+      "complete"
+    )
+    expect(next).toBe(data)
+    expect(JSON.parse(next?.nodes[0]?.parts_json ?? "[]")).toEqual([
+      { type: "text", text: "Server" },
+    ])
+  })
+
+  it("does not clobber a node that is already stopped", () => {
+    const data = streamingAssistant(sample("c1", "Chat"))
+    data.nodes[0] = { ...data.nodes[0]!, status: "stopped" }
+    const next = patchNodeFromStreamParts(
+      data,
+      "a1",
+      [{ type: "text", text: "Stale" }],
+      "aborted"
+    )
+    expect(next).toBe(data)
+  })
+})
+
+describe("hydrateStreamingNodeParts", () => {
+  it("copies parts without changing status or generations", () => {
+    const next = hydrateStreamingNodeParts(
+      streamingAssistant(sample("c1", "Chat")),
+      "a1",
+      [{ type: "text", text: "Hello" }]
+    )
+    expect(next?.nodes[0]?.status).toBe("streaming")
+    expect(JSON.parse(next?.nodes[0]?.parts_json ?? "[]")).toEqual([
+      { type: "text", text: "Hello" },
+    ])
+    expect(next?.activeGenerations).toHaveLength(1)
+  })
+
+  it("is a no-op when the node is already complete", () => {
+    const data = streamingAssistant(sample("c1", "Chat"))
+    data.nodes[0] = {
+      ...data.nodes[0]!,
+      status: "complete",
+      parts_json: JSON.stringify([{ type: "text", text: "Done" }]),
+    }
+    const next = hydrateStreamingNodeParts(data, "a1", [
+      { type: "text", text: "Stale" },
+    ])
+    expect(next).toBe(data)
+  })
+})
 
 describe("patchChatTitle", () => {
   it("patches list and active chat title", () => {

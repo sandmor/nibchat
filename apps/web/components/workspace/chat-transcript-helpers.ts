@@ -27,6 +27,18 @@ export function chatRouteIdentity(selectedChatId: string | null): string {
 }
 
 /**
+ * Reader cleanup follows the route being left, never a chat created while the
+ * draft route hands off to /chat/[id]. That pending chat is the destination.
+ */
+export function chatReaderDisposalTarget(
+  boundChatIdentity: string | null
+): string | null {
+  return boundChatIdentity && boundChatIdentity !== "draft"
+    ? boundChatIdentity
+    : null
+}
+
+/**
  * Disable content-visibility on height-churning stream rows so measure/follow
  * stay stable while tokens and markdown reflow.
  */

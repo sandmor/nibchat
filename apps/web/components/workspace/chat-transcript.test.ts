@@ -3,6 +3,7 @@ import type { NodeRow } from "@/lib/types"
 import {
   afterTipMessageId,
   buildTranscriptRows,
+  chatReaderDisposalTarget,
   chatRouteIdentity,
   isScrollTargetMounted,
   mountedTranscriptMessageIds,
@@ -55,6 +56,12 @@ describe("chat route identity", () => {
   it("uses draft until a selected chat id exists", () => {
     expect(chatRouteIdentity(null)).toBe("draft")
     expect(chatRouteIdentity("chat-1")).toBe("chat-1")
+  })
+
+  it("does not dispose a draft reader handoff target", () => {
+    expect(chatReaderDisposalTarget(null)).toBeNull()
+    expect(chatReaderDisposalTarget("draft")).toBeNull()
+    expect(chatReaderDisposalTarget("chat-1")).toBe("chat-1")
   })
 })
 

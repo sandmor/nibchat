@@ -1,12 +1,18 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import {
+  applyStoppingStreamPatches,
+  followGenerationStream,
   isViewingChat,
+  planStreamEnd,
   readStreamEvents,
+  shouldFollowGeneration,
   shouldSoftFollow,
   streamPlacement,
   type StreamRequestBody,
 } from "./stream-helpers"
 import type { NodeRow, ToolInvocationPart } from "@/lib/types"
+import type { StreamMeta } from "@/lib/stream-store"
+import type { WorkspaceData } from "@/lib/workspace-cache"
 
 function node(id: string): NodeRow {
   return {
@@ -177,7 +183,9 @@ describe("readStreamEvents", () => {
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(encoder.encode("id: 42\n"))
-        controller.enqueue(encoder.encode('data: {"type":"text-delta","delta":"x"}\n\n'))
+        controller.enqueue(
+          encoder.encode('data: {"type":"text-delta","delta":"x"}\n\n')
+        )
         controller.close()
       },
     })
@@ -194,11 +202,23 @@ describe("readStreamEvents", () => {
       sseBody([
         {
           type: "tool-upsert",
-          tool: { type: "tool-invocation", toolCallId: "c1", toolName: "question", state: "input-streaming", input: {} },
+          tool: {
+            type: "tool-invocation",
+            toolCallId: "c1",
+            toolName: "question",
+            state: "input-streaming",
+            input: {},
+          },
         },
         {
           type: "tool-upsert",
-          tool: { type: "tool-invocation", toolCallId: "c1", toolName: "question", state: "input-available", input: { questions: [] } },
+          tool: {
+            type: "tool-invocation",
+            toolCallId: "c1",
+            toolName: "question",
+            state: "input-available",
+            input: { questions: [] },
+          },
         },
       ]),
       {
@@ -213,5 +233,289 @@ describe("readStreamEvents", () => {
       state: "input-available",
       toolName: "question",
     })
+  })
+})
+
+describe("planStreamEnd", () => {
+  it("keeps the store when the local reader is aborted", () => {
+    expect(
+      planStreamEnd({
+        reason: "aborted",
+        stopping: false,
+        nodeStatus: "streaming",
+        hasParts: true,
+      })
+    ).toEqual({
+      keepStore: true,
+      write: "none",
+      dropOverlay: false,
+      invalidate: false,
+    })
+    expect(
+      planStreamEnd({
+        reason: "aborted",
+        stopping: true,
+        nodeStatus: "streaming",
+        hasParts: true,
+      }).keepStore
+    ).toBe(true)
+  })
+
+  it("writes aborted when a stopping stream is gone and still streaming", () => {
+    expect(
+      planStreamEnd({
+        reason: "gone",
+        stopping: true,
+        nodeStatus: "streaming",
+        hasParts: true,
+      })
+    ).toEqual({
+      keepStore: false,
+      write: "aborted",
+      dropOverlay: true,
+      invalidate: true,
+    })
+  })
+
+  it("does not write when gone and the node is already terminal", () => {
+    expect(
+      planStreamEnd({
+        reason: "gone",
+        stopping: false,
+        nodeStatus: "complete",
+        hasParts: true,
+      })
+    ).toEqual({
+      keepStore: false,
+      write: "none",
+      dropOverlay: true,
+      invalidate: true,
+    })
+  })
+
+  it("hydrates parts when a live stream is gone and still streaming", () => {
+    expect(
+      planStreamEnd({
+        reason: "gone",
+        stopping: false,
+        nodeStatus: "streaming",
+        hasParts: true,
+      })
+    ).toEqual({
+      keepStore: false,
+      write: "hydrate",
+      dropOverlay: true,
+      invalidate: true,
+    })
+  })
+
+  it("drops without hydrate when gone with an empty buffer", () => {
+    expect(
+      planStreamEnd({
+        reason: "failed",
+        stopping: false,
+        nodeStatus: "streaming",
+        hasParts: false,
+      }).write
+    ).toBe("none")
+  })
+})
+
+describe("shouldFollowGeneration", () => {
+  it("follows a stopping run that has no live reader", () => {
+    expect(
+      shouldFollowGeneration({
+        streamId: "s1",
+        node: { ...node("a1"), status: "streaming" },
+        controllers: {},
+        stream: {
+          nodeId: "a1",
+          chatId: "c1",
+          parentNodeId: "u1",
+          startedAt: 1,
+          stopping: true,
+        },
+      })
+    ).toBe(true)
+  })
+
+  it("does not follow while a reader is attached", () => {
+    const controller = new AbortController()
+    expect(
+      shouldFollowGeneration({
+        streamId: "s1",
+        node: { ...node("a1"), status: "streaming" },
+        controllers: { s1: controller },
+        stream: undefined,
+      })
+    ).toBe(false)
+  })
+
+  it("does not follow a node that is already complete", () => {
+    expect(
+      shouldFollowGeneration({
+        streamId: "s1",
+        node: { ...node("a1"), status: "complete" },
+        controllers: {},
+        stream: undefined,
+      })
+    ).toBe(false)
+  })
+})
+
+describe("applyStoppingStreamPatches", () => {
+  it("paints aborted parts and keeps activeGenerations", () => {
+    const data: WorkspaceData = {
+      chats: [],
+      chat: null,
+      nodes: [{ ...node("a1"), role: "assistant", status: "streaming" }],
+      activeGenerations: [
+        {
+          generationId: "g1",
+          nodeId: "a1",
+          chatId: "c1",
+          parentNodeId: "u1",
+          startedAt: "",
+        },
+      ],
+    }
+    const streams: Record<string, StreamMeta> = {
+      g1: {
+        nodeId: "a1",
+        chatId: "c1",
+        parentNodeId: "u1",
+        startedAt: 1,
+        stopping: true,
+      },
+    }
+    const next = applyStoppingStreamPatches(data, streams, {
+      g1: { parts: [{ type: "text", text: "Hello" }] },
+    })
+    expect(next?.nodes[0]?.status).toBe("stopped")
+    expect(JSON.parse(next?.nodes[0]?.parts_json ?? "[]")).toEqual([
+      { type: "text", text: "Hello" },
+    ])
+    expect(next?.activeGenerations).toHaveLength(1)
+  })
+})
+
+describe("followGenerationStream", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("reattaches after a clean SSE end and returns gone on 410", async () => {
+    const encoder = new TextEncoder()
+    const events: unknown[] = []
+    let calls = 0
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        calls += 1
+        if (calls === 1) {
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(
+                  encoder.encode(
+                    'id: 1\ndata: {"type":"text-delta","delta":"Hi"}\n\n'
+                  )
+                )
+                controller.close()
+              },
+            }),
+            { status: 200 }
+          )
+        }
+        return new Response(null, { status: 410 })
+      })
+    )
+    const result = await followGenerationStream({
+      streamId: "g1",
+      signal: new AbortController().signal,
+      cursor: null,
+      onEvent: (event) => events.push(event),
+      onCursor: () => {},
+    })
+    expect(result).toBe("gone")
+    expect(calls).toBe(2)
+    expect(events).toEqual([{ type: "text-delta", delta: "Hi" }])
+  })
+
+  it("does not treat the first body close as complete", async () => {
+    const encoder = new TextEncoder()
+    const events: unknown[] = []
+    let calls = 0
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        calls += 1
+        if (calls === 1) {
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(
+                  encoder.encode(
+                    'id: 1\ndata: {"type":"text-delta","delta":"Hel"}\n\n'
+                  )
+                )
+                controller.close()
+              },
+            }),
+            { status: 200 }
+          )
+        }
+        if (calls === 2) {
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(
+                  encoder.encode(
+                    'id: 2\ndata: {"type":"text-delta","delta":"lo"}\n\n'
+                  )
+                )
+                controller.close()
+              },
+            }),
+            { status: 200 }
+          )
+        }
+        return new Response(null, { status: 404 })
+      })
+    )
+    const result = await followGenerationStream({
+      streamId: "g1",
+      signal: new AbortController().signal,
+      cursor: null,
+      onEvent: (event) => events.push(event),
+      onCursor: () => {},
+    })
+    expect(result).toBe("gone")
+    expect(calls).toBe(3)
+    expect(events).toEqual([
+      { type: "text-delta", delta: "Hel" },
+      { type: "text-delta", delta: "lo" },
+    ])
+  })
+
+  it("returns aborted when cancelled during a failed attach", async () => {
+    const controller = new AbortController()
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const signal = init?.signal
+        if (signal?.aborted) throw new DOMException("Aborted", "AbortError")
+        queueMicrotask(() => controller.abort())
+        return new Response(null, { status: 500 })
+      })
+    )
+    const result = await followGenerationStream({
+      streamId: "g1",
+      signal: controller.signal,
+      cursor: null,
+      onEvent: () => {},
+      onCursor: () => {},
+    })
+    expect(result).toBe("aborted")
   })
 })

@@ -1,4 +1,9 @@
-import type { ChatRow, NodeRow } from "@/lib/types"
+import {
+  resolveStreamTerminalOutcome,
+  searchTextFromParts,
+  terminalStatusForParts,
+} from "@/lib/agent/parts"
+import type { ChatRow, NodeRow, Parts } from "@/lib/types"
 import { chatViewStateToJson, type ChatViewState } from "@/lib/chat-view-state"
 
 export type WorkspaceData = {
@@ -108,6 +113,69 @@ export function patchContextExcluded(
     ...data,
     nodes: data.nodes.map((node) =>
       node.id === nodeId ? { ...node, excluded_from_context: excluded } : node
+    ),
+  }
+}
+
+/**
+ * Apply a live stream buffer onto the durable node so dropping the overlay
+ * does not flash the empty streaming shell ("Thinking…").
+ * No-op when the node is already terminal — leftover buffers must not clobber it.
+ */
+export function patchNodeFromStreamParts(
+  data: WorkspaceData | undefined,
+  nodeId: string,
+  parts: Parts,
+  outcome: "complete" | "awaiting_input" | "aborted" | "error",
+  options?: { preserveActiveGenerations?: boolean }
+): WorkspaceData | undefined {
+  if (!data) return data
+  const node = data.nodes.find((row) => row.id === nodeId)
+  if (!node || node.status !== "streaming") return data
+  const resolved = resolveStreamTerminalOutcome(outcome, parts)
+  const status = terminalStatusForParts(resolved, parts)
+  return {
+    ...data,
+    nodes: data.nodes.map((row) =>
+      row.id === nodeId
+        ? {
+            ...row,
+            parts_json: JSON.stringify(parts),
+            search_text: searchTextFromParts(parts),
+            status,
+            updated_at: new Date().toISOString(),
+          }
+        : row
+    ),
+    activeGenerations: options?.preserveActiveGenerations
+      ? data.activeGenerations
+      : data.activeGenerations.filter((run) => run.nodeId !== nodeId),
+  }
+}
+
+/**
+ * Copy buffer parts onto a still-streaming node without claiming a terminal
+ * status. Discovery can keep following until the server drops the run.
+ */
+export function hydrateStreamingNodeParts(
+  data: WorkspaceData | undefined,
+  nodeId: string,
+  parts: Parts
+): WorkspaceData | undefined {
+  if (!data) return data
+  const node = data.nodes.find((row) => row.id === nodeId)
+  if (!node || node.status !== "streaming") return data
+  return {
+    ...data,
+    nodes: data.nodes.map((row) =>
+      row.id === nodeId
+        ? {
+            ...row,
+            parts_json: JSON.stringify(parts),
+            search_text: searchTextFromParts(parts),
+            updated_at: new Date().toISOString(),
+          }
+        : row
     ),
   }
 }

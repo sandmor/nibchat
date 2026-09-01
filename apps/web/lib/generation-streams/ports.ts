@@ -18,6 +18,8 @@ export type GenerationStreamMeta = {
 export type GenerationStreamSnapshot = {
   state: GenerationStoreState
   cancelled: boolean
+  /** Retained during the short post-close drain window for authenticated replay. */
+  meta: GenerationStreamMeta | null
 }
 
 export type GenerationProducer = {
@@ -45,6 +47,8 @@ export interface GenerationStreamPort {
   inspect(generationId: string): Promise<GenerationStreamSnapshot>
   requestCancel(generationId: string): Promise<void>
   isCancelled(generationId: string): Promise<boolean>
+  /** Atomically append the durable terminal event and close the producer. */
+  complete(producer: GenerationProducer, terminal: GenerationPayload): Promise<string>
   close(producer: GenerationProducer): Promise<void>
   replay(generationId: string): Promise<GenerationEvent[]>
   /** Best-effort cleanup used when terminal persistence cannot complete. */

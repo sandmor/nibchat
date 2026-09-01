@@ -52,9 +52,15 @@ export function decideGenerationAttach(input: {
   run: { state: GenerationRunState; startedAt: string } | null
   snapshot: { state: GenerationStoreState }
   now?: number
+  /**
+   * Chat owner may replay a closed store after finalization deletes the
+   * durable run. Callers must already have authorized that owner.
+   */
+  replay?: boolean
 }): GenerationAttachDecision {
-  if (!input.run) return "gone"
   if (input.snapshot.state === "open") return "subscribe"
+  if (input.snapshot.state === "closed" && input.replay) return "subscribe"
+  if (!input.run) return "gone"
   if (input.snapshot.state === "closed" || input.snapshot.state === "orphaned")
     return "unavailable"
   if (input.run.state === "starting") {

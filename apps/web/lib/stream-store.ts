@@ -14,6 +14,8 @@ export type StreamMeta = {
   startedAt: number
   /** User cancelled the producer; overlay hides while the reader waits for SSE end. */
   stopping?: boolean
+  /** Reader reached a terminal endpoint; hide it and block stale rediscovery. */
+  settled?: boolean
 }
 
 export type StreamBuffer = {
@@ -48,6 +50,9 @@ type StreamState = {
   detachController: (streamId: string, controller?: AbortController) => void
   /** Cancel the producer. Local abort is only for leaving a chat. */
   stop: (streamId: string) => void
+  /** Preserve the final overlay and block rediscovery until workspace confirms it. */
+  settle: (streamId: string) => void
+  /** Permanently collect stream metadata and payload. */
   finish: (streamId: string) => void
 }
 
@@ -68,6 +73,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
               ...value,
               startedAt: existing.startedAt,
               stopping: existing.stopping,
+              settled: existing.settled,
             },
           },
         }
@@ -130,6 +136,23 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       method: "DELETE",
     })
   },
+  settle: (streamId) =>
+    set((state) => {
+      const meta = state.streams[streamId]
+      if (!meta || meta.settled) return state
+      const controllers = { ...state.controllers }
+      const cursors = { ...state.cursors }
+      delete controllers[streamId]
+      delete cursors[streamId]
+      return {
+        streams: {
+          ...state.streams,
+          [streamId]: { ...meta, settled: true },
+        },
+        controllers,
+        cursors,
+      }
+    }),
   finish: (streamId) =>
     set((state) => {
       const streams = { ...state.streams }

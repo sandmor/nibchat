@@ -23,7 +23,7 @@ export type TranscriptHeightLayout = {
 
 type TranscriptHeightEntry = TranscriptHeightIdentity &
   Omit<TranscriptHeightLayout, "width"> & {
-    width: number
+    widthBucket: number
     height: number
   }
 
@@ -87,18 +87,31 @@ export class TranscriptHeightCache {
     layout: TranscriptHeightLayout
   ): number | undefined {
     if (!identity) return
-    const entry = this.entries.get(identity.messageId)
-    if (
-      !entry ||
-      !sameRevision(entry.revision, identity.revision) ||
-      (layout.width != null && entry.width !== layout.width) ||
-      entry.density !== layout.density ||
-      entry.messageActionCaptions !== layout.messageActionCaptions ||
-      entry.edge !== layout.edge
-    ) {
-      return
-    }
+    const match =
+      layout.width == null
+        ? [...this.entries.entries()]
+            .reverse()
+            .find(
+              ([, entry]) =>
+                entry.messageId === identity.messageId &&
+                sameRevision(entry.revision, identity.revision) &&
+                entry.density === layout.density &&
+                entry.messageActionCaptions === layout.messageActionCaptions &&
+                entry.edge === layout.edge
+            )
+        : (() => {
+            const widthBucket = bucketWidth(layout.width)
+            const key = entryKey(identity, { ...layout, width: widthBucket })
+            const entry = this.entries.get(key)
+            return entry ? ([key, entry] as const) : undefined
+          })()
+    if (!match) return
 
+    // Reads are LRU touches as well: returning to a prior width should retain
+    // its exact measurement rather than evicting it behind cold entries.
+    const [key, entry] = match
+    this.entries.delete(key)
+    this.entries.set(key, entry)
     return entry.height
   }
 
@@ -114,11 +127,17 @@ export class TranscriptHeightCache {
     )
       return
 
-    this.entries.delete(identity.messageId)
-    this.entries.set(identity.messageId, {
+    const widthBucket = bucketWidth(layout.width)
+    const key = entryKey(identity, { ...layout, width: widthBucket })
+    const previous = this.entries.get(key)
+    this.entries.delete(key)
+    this.entries.set(key, {
       ...identity,
-      ...layout,
-      height,
+      ...omitWidth(layout),
+      widthBucket,
+      // A bucket can include a slightly narrower viewport. Retain the largest
+      // measured result so the first estimate never clips short.
+      height: Math.max(previous?.height ?? 0, height),
     })
 
     while (this.entries.size > this.maxEntries) {
@@ -126,6 +145,37 @@ export class TranscriptHeightCache {
       if (oldest == null) break
       this.entries.delete(oldest)
     }
+  }
+}
+
+function bucketWidth(width: number) {
+  return Math.floor(width / 8) * 8
+}
+
+function entryKey(
+  identity: TranscriptHeightIdentity,
+  layout: Omit<TranscriptHeightLayout, "width"> & { width: number }
+) {
+  return [
+    identity.messageId,
+    identity.revision.status,
+    identity.revision.updated_at,
+    identity.revision.partsLength,
+    identity.revision.metadataLength,
+    layout.width,
+    layout.density,
+    layout.messageActionCaptions ? "captions" : "plain",
+    layout.edge,
+  ].join("|")
+}
+
+function omitWidth(
+  layout: Omit<TranscriptHeightLayout, "width"> & { width: number }
+): Omit<TranscriptHeightLayout, "width"> {
+  return {
+    density: layout.density,
+    messageActionCaptions: layout.messageActionCaptions,
+    edge: layout.edge,
   }
 }
 

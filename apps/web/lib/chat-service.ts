@@ -853,6 +853,12 @@ export type StreamFinalizeInput = {
   previousMetadata?: Record<string, unknown>
 }
 
+/** Canonical durable snapshot for the terminal generation transport event. */
+export type StreamFinalization = {
+  result: StreamFinalizeResult
+  node: NodeRow | null
+}
+
 /**
  * Update parts/status only while the node is in an allowed in-flight status.
  * Returns false if the row is missing or already finalized (or cascade-deleted).
@@ -1016,6 +1022,28 @@ export async function finalizeStreamingAssistant(
     .where("id", "=", input.nodeId)
     .execute()
   return finishRun("complete")
+}
+
+/**
+ * Finalize then read the durable row used by connected clients for an atomic
+ * renderer handoff. Terminal failures intentionally carry no speculative row.
+ */
+export async function finalizeStreamingAssistantWithSnapshot(
+  input: StreamFinalizeInput
+): Promise<StreamFinalization> {
+  const result = await finalizeStreamingAssistant(input)
+  if (
+    result === "deleted" ||
+    result === "missing" ||
+    result === "superseded"
+  )
+    return { result, node: null }
+  const node = await db
+    .selectFrom("message_nodes")
+    .selectAll()
+    .where("id", "=", input.nodeId)
+    .executeTakeFirst()
+  return { result, node: node ? normalizeNodeRow(node as NodeRow) : null }
 }
 
 /** Lazy reconciliation: never treat an adapter outage as a lost producer. */

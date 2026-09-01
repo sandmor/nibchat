@@ -99,14 +99,33 @@ describe("TranscriptHeightCache", () => {
     expect(transcriptHeightEdge(2, 3)).toBe("last")
   })
 
-  it("evicts the least-recently-measured message", () => {
+  it("retains independent measurements for multiple width buckets", () => {
+    const cache = new TranscriptHeightCache()
+    const identity = transcriptHeightIdentity(row("a1"))
+    cache.set(identity, { ...layout, width: 768 }, 432)
+    cache.set(identity, { ...layout, width: 640 }, 560)
+
+    expect(cache.get(identity, { ...layout, width: 768 })).toBe(432)
+    expect(cache.get(identity, { ...layout, width: 640 })).toBe(560)
+  })
+
+  it("uses the largest measurement in a width bucket", () => {
+    const cache = new TranscriptHeightCache()
+    const identity = transcriptHeightIdentity(row("a1"))
+    cache.set(identity, { ...layout, width: 767 }, 432)
+    cache.set(identity, { ...layout, width: 760 }, 480)
+
+    expect(cache.get(identity, { ...layout, width: 763 })).toBe(480)
+  })
+
+  it("refreshes entries on reads before LRU eviction", () => {
     const cache = new TranscriptHeightCache(2)
     const a = transcriptHeightIdentity(row("a"))
     const b = transcriptHeightIdentity(row("b"))
     const c = transcriptHeightIdentity(row("c"))
     cache.set(a, { ...layout, width: 768 }, 100)
     cache.set(b, { ...layout, width: 768 }, 200)
-    cache.set(a, { ...layout, width: 768 }, 100)
+    expect(cache.get(a, layout)).toBe(100)
 
     cache.set(c, { ...layout, width: 768 }, 300)
 

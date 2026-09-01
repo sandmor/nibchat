@@ -29,6 +29,15 @@ async function ownedRun(generationId: string, userId: string) {
     .executeTakeFirst()
 }
 
+async function ownsChat(chatId: string, userId: string) {
+  return db
+    .selectFrom("chats")
+    .select("id")
+    .where("id", "=", chatId)
+    .where("user_id", "=", userId)
+    .executeTakeFirst()
+}
+
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 export async function GET(
@@ -44,7 +53,6 @@ export async function GET(
   const deadline = Date.now() + GENERATION_ATTACH_WAIT_MS
   for (;;) {
     const run = await ownedRun(generationId, user.id)
-    if (!run) return new Response(null, { status: 404 })
 
     let snapshot
     try {
@@ -52,17 +60,31 @@ export async function GET(
     } catch (error) {
       console.warn("[nibchat/generation-attach] store unavailable", error)
       if (Date.now() >= deadline)
-        return new Response(null, { status: 425, headers: { "retry-after": "1" } })
+        return new Response(null, {
+          status: 425,
+          headers: { "retry-after": "1" },
+        })
       await pause(GENERATION_ATTACH_POLL_MS)
       continue
     }
 
+    // Finalization removes the durable run before publishing the terminal
+    // event. The store retains trusted stream metadata for a short drain
+    // window, letting the message owner replay that last event.
+    const streamOwner = snapshot.meta
+      ? await ownsChat(snapshot.meta.chatId, user.id)
+      : null
+    if (!run && !streamOwner) return new Response(null, { status: 404 })
+
     const decision = decideGenerationAttach({
-      run: {
-        state: run.state as GenerationRunState,
-        startedAt: run.started_at,
-      },
+      run: run
+        ? {
+            state: run.state as GenerationRunState,
+            startedAt: run.started_at,
+          }
+        : null,
       snapshot,
+      replay: Boolean(streamOwner),
     })
     if (decision === "subscribe") {
       const response = generationSseResponse(
@@ -76,7 +98,10 @@ export async function GET(
     if (decision === "gone") return new Response(null, { status: 404 })
     if (decision === "unavailable") return new Response(null, { status: 410 })
     if (Date.now() >= deadline)
-      return new Response(null, { status: 425, headers: { "retry-after": "1" } })
+      return new Response(null, {
+        status: 425,
+        headers: { "retry-after": "1" },
+      })
     await pause(GENERATION_ATTACH_POLL_MS)
   }
 }
@@ -90,9 +115,9 @@ export async function DELETE(
   const run = await ownedRun(generationId, user.id)
   if (!run) return new Response(null, { status: 404 })
   await requestGenerationCancellation(generationId)
-  await generationStreamStore.requestCancel(generationId).catch((error) =>
-    console.error("[nibchat/generation-cancel]", error)
-  )
+  await generationStreamStore
+    .requestCancel(generationId)
+    .catch((error) => console.error("[nibchat/generation-cancel]", error))
   abortGenerations([run.node_id])
   return new Response(null, { status: 202 })
 }

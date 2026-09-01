@@ -52,6 +52,7 @@ import {
   patchChatViewState,
   patchNodeFromStreamParts,
   patchSelection,
+  patchTerminalGeneration,
   workspaceInput,
   type WorkspaceData,
 } from "@/lib/workspace-cache"
@@ -116,6 +117,10 @@ import {
   type StreamRequestInput,
   type StreamRequestBody,
 } from "./stream-helpers"
+import type { GenerationTerminalPayload } from "@/lib/generation-streams/events"
+import { prepareStaticMarkdown } from "@/lib/static-markdown"
+import { normalizeLatexDelimiters } from "@/lib/normalize-latex-delimiters"
+import { coalesceAdjacentTextParts } from "@/lib/agent/parts"
 
 type Props = {
   mode: "draft" | "chat"
@@ -290,6 +295,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const attachController = useStreamStore((state) => state.attachController)
   const detachController = useStreamStore((state) => state.detachController)
   const stopStream = useStreamStore((state) => state.stop)
+  const settleStream = useStreamStore((state) => state.settle)
   const finishStream = useStreamStore((state) => state.finish)
   /** Placement only. Token text lives in buffers; StreamingBubble reads those. */
   const streamMetas = useStreamStore((state) => state.streams)
@@ -335,14 +341,71 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
           (old) => hydrateStreamingNodeParts(old, meta.nodeId, parts)
         )
       }
-      if (plan.dropOverlay) finishStream(streamId)
+      if (plan.dropOverlay) settleStream(streamId)
       if (plan.invalidate) {
         void queryClient.invalidateQueries({
           queryKey: trpc.workspace.get.queryKey({ chatId: meta.chatId }),
         })
       }
     },
-    [detachController, finishStream, queryClient, trpc.workspace.get]
+    [
+      detachController,
+      finishStream,
+      queryClient,
+      settleStream,
+      trpc.workspace.get,
+    ]
+  )
+
+  const applyTerminalHandoff = useCallback(
+    async (
+      streamId: string,
+      terminal: GenerationTerminalPayload,
+      controller?: AbortController
+    ) => {
+      const store = useStreamStore.getState()
+      const meta = store.streams[streamId]
+      if (!meta) return
+      const node = terminal.node
+      if (node && (node.id !== meta.nodeId || node.chat_id !== meta.chatId)) {
+        // Never let a stale/replayed terminal overwrite another generation.
+        applyStreamEnd(streamId, "gone", controller)
+        return
+      }
+      if (node) {
+        const parts = coalesceAdjacentTextParts(
+          parseJson(node.parts_json, [])
+        )
+        for (const part of parts) {
+          if (part.type !== "text" && part.type !== "reasoning") continue
+          prepareStaticMarkdown(normalizeLatexDelimiters(part.text, false))
+        }
+      }
+      // A reconciliation started while this generation was still streaming can
+      // resolve after the terminal event. Cancel its exact query before this
+      // authoritative snapshot reaches the cache so the stale result is ignored.
+      await queryClient.cancelQueries({
+        queryKey: trpc.workspace.get.queryKey({ chatId: meta.chatId }),
+        exact: true,
+      })
+      queryClient.setQueriesData<WorkspaceData>(
+        trpc.workspace.get.queryFilter(),
+        (old) =>
+          patchTerminalGeneration(old, {
+            generationId: streamId,
+            node,
+            chatId: meta.chatId,
+            nodeId: meta.nodeId,
+          })
+      )
+      finishStream(streamId)
+      if (!node || terminal.result === "superseded" || terminal.result === "missing") {
+        void queryClient.invalidateQueries({
+          queryKey: trpc.workspace.get.queryKey({ chatId: meta.chatId }),
+        })
+      }
+    },
+    [applyStreamEnd, finishStream, queryClient, trpc.workspace.get]
   )
 
   const workspaceKeyInput = workspaceInput(selectedChatId)
@@ -400,8 +463,10 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
         cursor: useStreamStore.getState().cursors[streamId] ?? null,
         onEvent: (event) => applyStreamEvent(streamId, event),
         onCursor: (cursor) => setStreamCursor(streamId, cursor),
-      }).then((result) => {
-        applyStreamEnd(streamId, result, controller)
+      }).then(async (result) => {
+        if (typeof result === "object")
+          await applyTerminalHandoff(streamId, result.terminal, controller)
+        else applyStreamEnd(streamId, result, controller)
       })
     }
 
@@ -412,13 +477,19 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     for (const [streamId, meta] of Object.entries(store.streams)) {
       if (!wanted.has(meta.chatId)) continue
       if (activeIds.has(streamId)) continue
+      if (meta.settled) {
+        finishStream(streamId)
+        continue
+      }
       if (hasLiveStreamReader(store.controllers, streamId)) continue
       applyStreamEnd(streamId, "gone")
     }
   }, [
     applyStreamEnd,
+    applyTerminalHandoff,
     applyStreamEvent,
     attachController,
+    finishStream,
     pendingChatId,
     selectedChatId,
     setStreamCursor,
@@ -709,6 +780,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     if (aliveRef.current) setInFlightCount((n) => n + 1)
     let failed = false
     let endReason: StreamEndReason = "gone"
+    let terminalHandled = false
     const controller = new AbortController()
     try {
       streamId = crypto.randomUUID()
@@ -766,7 +838,8 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       const streamRead = (async () => {
         if (response.body) {
           try {
-            await read(response.body)
+            const terminal = await read(response.body)
+            if (terminal) return { type: "terminal", terminal } as const
           } catch {
             if (controller.signal.aborted) return "aborted" as const
           }
@@ -824,11 +897,17 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
         })
       }
 
-      const [readerResult] = await Promise.all([
-        streamRead,
-        reconcileWorkspace(),
-      ])
-      endReason = readerResult === "aborted" ? "aborted" : "gone"
+      const reconcile = reconcileWorkspace()
+      const readerResult = await streamRead
+      if (typeof readerResult === "object") {
+        await applyTerminalHandoff(
+          liveStreamId,
+          readerResult.terminal,
+          controller
+        )
+        terminalHandled = true
+      } else endReason = readerResult === "aborted" ? "aborted" : "gone"
+      await reconcile
     } catch (error) {
       const stopping = streamId
         ? Boolean(useStreamStore.getState().streams[streamId]?.stopping)
@@ -851,7 +930,8 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       }
     } finally {
       if (aliveRef.current) setInFlightCount((n) => Math.max(0, n - 1))
-      if (streamId) applyStreamEnd(streamId, endReason, controller)
+      if (streamId && !terminalHandled)
+        applyStreamEnd(streamId, endReason, controller)
     }
     return !failed
   }

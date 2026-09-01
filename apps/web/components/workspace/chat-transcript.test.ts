@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import type { Range } from "@tanstack/react-virtual"
 import type { NodeRow } from "@/lib/types"
 import {
   afterTipMessageId,
@@ -6,17 +7,21 @@ import {
   chatReaderDisposalTarget,
   chatRouteIdentity,
   pathSlotKey,
+  transcriptGeometryChanged,
   transcriptEstimatedRowHeight,
   transcriptMeasurementLayoutKey,
   transcriptPeekPx,
+  transcriptRangeExtractor,
   transcriptRowContentKey,
   transcriptRowIndex,
+  transcriptRowMeasurementKey,
 } from "./chat-transcript-helpers"
 
 function node(
   id: string,
   role: NodeRow["role"] = "user",
-  parent_id: string | null = null
+  parent_id: string | null = null,
+  overrides: Partial<NodeRow> = {}
 ): NodeRow {
   return {
     id,
@@ -31,6 +36,7 @@ function node(
     status: "complete",
     created_at: "",
     updated_at: "",
+    ...overrides,
   }
 }
 
@@ -75,6 +81,51 @@ describe("transcript row mapping", () => {
       )
     ).toBe(384)
     expect(transcriptEstimatedRowHeight(undefined, 768)).toBe(256)
+  })
+
+  it("grows conservative estimates for long Markdown and rich parts", () => {
+    const markdown = Array.from({ length: 80 }, () => "a wrapped line").join(
+      "\n"
+    )
+    const rich = buildTranscriptRows({
+      activePath: [
+        node("a-rich", "assistant", null, {
+          parts_json: JSON.stringify([
+            { type: "text", text: `${markdown}\n\`\`\`ts\ncode\n\`\`\`` },
+            {
+              type: "tool-invocation",
+              toolCallId: "tool-1",
+              toolName: "test",
+              state: "output-available",
+              input: {},
+            },
+          ]),
+        }),
+      ],
+      ...noStreams,
+      showEmpty: false,
+    })[0]
+    expect(transcriptEstimatedRowHeight(rich, 768)).toBeGreaterThan(1_500)
+    expect(transcriptEstimatedRowHeight(rich, 480)).toBeGreaterThanOrEqual(
+      transcriptEstimatedRowHeight(rich, 768)
+    )
+  })
+
+  it("keeps short chats eager and windows only long chats", () => {
+    const short: Range = { startIndex: 4, endIndex: 7, overscan: 10, count: 40 }
+    expect(transcriptRangeExtractor(short, new Set([0, 39]))).toEqual(
+      Array.from({ length: 40 }, (_, index) => index)
+    )
+
+    const long: Range = {
+      startIndex: 20,
+      endIndex: 24,
+      overscan: 10,
+      count: 41,
+    }
+    const indexes = transcriptRangeExtractor(long, new Set([0, 40]))
+    expect(indexes).toEqual(expect.arrayContaining([0, 40, 20, 24]))
+    expect(indexes).not.toHaveLength(41)
   })
 })
 
@@ -141,6 +192,21 @@ describe("buildTranscriptRows dual identity", () => {
     }
   })
 
+  it("detects durable slot replacement but ignores an unchanged path", () => {
+    const before = buildTranscriptRows({
+      activePath: [node("u1"), node("a1", "assistant", "u1")],
+      ...noStreams,
+      showEmpty: false,
+    })
+    const after = buildTranscriptRows({
+      activePath: [node("u1"), node("a2", "assistant", "u1")],
+      ...noStreams,
+      showEmpty: false,
+    })
+    expect(transcriptGeometryChanged(before, before)).toBe(false)
+    expect(transcriptGeometryChanged(before, after)).toBe(true)
+  })
+
   it("growing the path appends a new slot without renaming prior keys", () => {
     const short = buildTranscriptRows({
       activePath: [node("u1")],
@@ -173,8 +239,30 @@ describe("buildTranscriptRows dual identity", () => {
     expect(rows[1]?.kind).toBe("path")
     if (rows[1]?.kind === "path") {
       expect(rows[1].liveStreamId).toBe("s1")
-      expect(transcriptRowContentKey(rows[1])).toBe("stream:s1")
+      expect(transcriptRowContentKey(rows[1])).toBe("node:a1")
     }
+  })
+
+  it("keeps the same content key for live-to-static renderer handoff", () => {
+    const activePath = [node("u1"), node("a1", "assistant", "u1")]
+    const live = buildTranscriptRows({
+      activePath,
+      streamIdByNodeId: new Map([["a1", "s1"]]),
+      afterTipStreams: [],
+      showEmpty: false,
+    })
+    const complete = buildTranscriptRows({
+      activePath,
+      ...noStreams,
+      showEmpty: false,
+    })
+
+    expect(transcriptRowContentKey(live[1]!)).toBe(
+      transcriptRowContentKey(complete[1]!)
+    )
+    expect(transcriptRowMeasurementKey(live[1]!)).not.toBe(
+      transcriptRowMeasurementKey(complete[1]!)
+    )
   })
 
   it("after-tip rows use stream/node id for messageId", () => {

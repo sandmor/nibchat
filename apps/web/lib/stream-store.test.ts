@@ -49,6 +49,30 @@ describe("stream identity vs payload", () => {
     expect(useStreamStore.getState().buffers).toEqual({})
   })
 
+  it("settles a terminal reader until workspace confirms collection", () => {
+    const { start, applyEvent, attachController, settle, finish } =
+      useStreamStore.getState()
+    start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null })
+    applyEvent("s1", { type: "text-delta", delta: "Hello" })
+    attachController("s1", new AbortController())
+
+    settle("s1")
+    expect(useStreamStore.getState().streams.s1?.settled).toBe(true)
+    expect(useStreamStore.getState().controllers.s1).toBeUndefined()
+    expect(useStreamStore.getState().buffers.s1?.parts).toEqual([
+      { type: "text", text: "Hello" },
+    ])
+    expect(
+      chatStreamEntries(useStreamStore.getState().streams, ["c1"]).map(
+        ([streamId]) => streamId
+      )
+    ).toEqual(["s1"])
+
+    finish("s1")
+    expect(useStreamStore.getState().streams.s1).toBeUndefined()
+    expect(useStreamStore.getState().buffers.s1).toBeUndefined()
+  })
+
   it("does not reset an existing buffer when start is called again", () => {
     const { start, applyEvent } = useStreamStore.getState()
     start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null })

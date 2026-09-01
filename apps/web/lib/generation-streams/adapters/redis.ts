@@ -29,7 +29,11 @@ const PAGE_SIZE = 100
 type Meta = GenerationStreamMeta & RedisGenerationMeta
 
 function asString(value: unknown): string | null {
-  return typeof value === "string" ? value : value == null ? null : String(value)
+  return typeof value === "string"
+    ? value
+    : value == null
+      ? null
+      : String(value)
 }
 
 /** Shared adapter: one command executor, no per-subscriber connections. */
@@ -131,7 +135,7 @@ export class RedisGenerationStreamPort implements GenerationStreamPort {
 
   private async fenced(
     producer: GenerationProducer,
-    operation: "append" | "heartbeat" | "close",
+    operation: "append" | "heartbeat" | "close" | "complete",
     payload?: unknown
   ) {
     const id = producer.generationId
@@ -156,6 +160,16 @@ export class RedisGenerationStreamPort implements GenerationStreamPort {
         redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[4]))
         if redis.call('EXISTS', KEYS[4]) == 1 then redis.call('PEXPIRE', KEYS[4], tonumber(ARGV[4])) end
         return 'ok'
+      end
+      if ARGV[2] == 'complete' then
+        local cursor = redis.call('XADD', KEYS[3], '*', 'payload', ARGV[3])
+        meta.seq = (tonumber(meta.seq) or 0) + 1
+        meta.status = 'closed'
+        redis.call('SET', KEYS[1], cjson.encode(meta), 'PX', tonumber(ARGV[6]))
+        redis.call('DEL', KEYS[2])
+        redis.call('PEXPIRE', KEYS[3], tonumber(ARGV[6]))
+        if redis.call('EXISTS', KEYS[4]) == 1 then redis.call('PEXPIRE', KEYS[4], tonumber(ARGV[6])) end
+        return cursor
       end
       meta.status = 'closed'
       redis.call('SET', KEYS[1], cjson.encode(meta), 'PX', tonumber(ARGV[6]))
@@ -197,15 +211,34 @@ export class RedisGenerationStreamPort implements GenerationStreamPort {
     await this.fenced(producer, "close")
   }
 
+  async complete(
+    producer: GenerationProducer,
+    terminal: GenerationEvent["payload"]
+  ) {
+    this.stopLease(producer.generationId)
+    return String(await this.fenced(producer, "complete", terminal))
+  }
+
   async inspect(generationId: string): Promise<GenerationStreamSnapshot> {
     const meta = await this.getMeta(generationId)
-    if (!meta) return { state: "missing", cancelled: false }
+    if (!meta) return { state: "missing", cancelled: false, meta: null }
     const cancelled = await this.isCancelled(generationId)
-    if (meta.status === "closed") return { state: "closed", cancelled }
+    const streamMeta = {
+      generationId: meta.generationId,
+      nodeId: meta.nodeId,
+      chatId: meta.chatId,
+      parentNodeId: meta.parentNodeId,
+    }
+    if (meta.status === "closed")
+      return { state: "closed", cancelled, meta: streamMeta }
     const live = asString(
       await this.redis.send(["GET", this.key(generationId, "lease")])
     )
-    return { state: live === meta.token ? "open" : "orphaned", cancelled }
+    return {
+      state: live === meta.token ? "open" : "orphaned",
+      cancelled,
+      meta: streamMeta,
+    }
   }
 
   async *subscribe(
@@ -219,7 +252,9 @@ export class RedisGenerationStreamPort implements GenerationStreamPort {
       pollMs: GENERATION_REDIS_IDLE_POLL_MS,
       readMeta: () => this.getMeta(generationId),
       readLease: async () =>
-        asString(await this.redis.send(["GET", this.key(generationId, "lease")])),
+        asString(
+          await this.redis.send(["GET", this.key(generationId, "lease")])
+        ),
       readPage: (cursor) => this.readPage(generationId, cursor),
     })
   }
@@ -242,7 +277,11 @@ export class RedisGenerationStreamPort implements GenerationStreamPort {
   }
 
   async isCancelled(generationId: string) {
-    return Number(await this.redis.send(["EXISTS", this.key(generationId, "cancel")])) > 0
+    return (
+      Number(
+        await this.redis.send(["EXISTS", this.key(generationId, "cancel")])
+      ) > 0
+    )
   }
 
   async discard(generationId: string) {

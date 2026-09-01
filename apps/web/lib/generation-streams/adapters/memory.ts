@@ -8,6 +8,7 @@ import type {
 } from "@/lib/generation-streams/ports"
 
 type Entry = {
+  meta: GenerationStreamMeta
   token: string
   next: number
   events: GenerationEvent[]
@@ -37,6 +38,7 @@ export class MemoryGenerationStreamPort implements GenerationStreamPort {
       throw new Error("Generation stream already exists")
     const token = crypto.randomUUID()
     this.entries.set(meta.generationId, {
+      meta,
       token,
       next: 1,
       events: [],
@@ -93,6 +95,7 @@ export class MemoryGenerationStreamPort implements GenerationStreamPort {
     return {
       state: entry ? (entry.closed ? "closed" : "open") : "missing",
       cancelled: entry?.cancelled ?? false,
+      meta: entry?.meta ?? null,
     }
   }
 
@@ -112,6 +115,18 @@ export class MemoryGenerationStreamPort implements GenerationStreamPort {
       this.entries.get(generationId)?.cancelled === true ||
       this.pendingCancels.has(generationId)
     )
+  }
+
+  async complete(producer: GenerationProducer, terminal: GenerationEvent["payload"]) {
+    const entry = this.entries.get(producer.generationId)
+    if (!entry || entry.closed || entry.token !== producer.token)
+      throw new Error("Generation stream is not active")
+    const cursor = String(entry.next++)
+    entry.events.push({ cursor, payload: terminal })
+    entry.closed = true
+    for (const wake of entry.waiters) wake()
+    setTimeout(() => this.entries.delete(producer.generationId), 5_000)
+    return cursor
   }
 
   async close(producer: GenerationProducer) {

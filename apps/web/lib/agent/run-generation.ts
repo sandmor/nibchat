@@ -16,7 +16,7 @@ import { reservedBuiltInToolNames, selectNibchatTools } from "@/lib/agent/tools"
 import { getBuiltInToolsPrefs } from "@/lib/user-settings"
 import {
   beginResumeAssistant,
-  finalizeStreamingAssistant,
+  finalizeStreamingAssistantWithSnapshot,
   restoreAwaitingInput,
 } from "@/lib/chat-service"
 import { ancestorPath, parseJson } from "@/lib/domain"
@@ -122,6 +122,18 @@ export async function createGenerationResponse(
   let claimSucceeded = false
   let producerHandle: GenerationProducer | null = null
   let producerGuards: { stop: () => void } | null = null
+  let terminalPublished = false
+  const publishTerminal = async (terminal: {
+    result: "complete" | "awaiting_input" | "stopped" | "deleted" | "error" | "missing" | "superseded"
+    node: NodeRow | null
+  }) => {
+    if (!producerHandle || terminalPublished) return
+    await generationStreamStore.complete(producerHandle, {
+      type: "terminal",
+      ...terminal,
+    })
+    terminalPublished = true
+  }
 
   const respond = (body: Response) => {
     const withHeaders = new Headers(body.headers)
@@ -172,7 +184,7 @@ export async function createGenerationResponse(
     })
     if (!(await activateGenerationRun(generationId))) {
       generation.abort()
-      await finalizeStreamingAssistant({
+      const terminal = await finalizeStreamingAssistantWithSnapshot({
         nodeId: assistant.id,
         generationId,
         outcome: "aborted",
@@ -182,9 +194,12 @@ export async function createGenerationResponse(
           ...(previousMetadata ?? {}),
         },
       })
+      await publishTerminal(terminal).catch((error) =>
+        console.warn("[nibchat/generation-terminal]", error)
+      )
       producerGuards.stop()
       producerGuards = null
-      await generationStreamStore.close(producerHandle)
+      if (!terminalPublished) await generationStreamStore.close(producerHandle)
       dropRegistration()
       return respond(
         generationSseResponse(
@@ -300,7 +315,7 @@ export async function createGenerationResponse(
       if (resolved === "complete" && parts.length === 0) {
         parts = [{ type: "text", text: "" }]
       }
-      await finalizeStreamingAssistant({
+      const terminal = await finalizeStreamingAssistantWithSnapshot({
         nodeId: assistant.id,
         generationId,
         outcome: resolved,
@@ -314,6 +329,9 @@ export async function createGenerationResponse(
           ...(previousMetadata ?? {}),
         },
       })
+      await publishTerminal(terminal).catch((error) =>
+        console.warn("[nibchat/generation-terminal]", error)
+      )
       if (afterFinalize) {
         void afterFinalize({ outcome: resolved, parts }).catch((error) => {
           console.warn("[nibchat/generation]", error)
@@ -479,7 +497,8 @@ export async function createGenerationResponse(
           producerGuards = null
           // Terminal assistant persistence is performed by the AI SDK callbacks
           // above before its provider stream completes.
-          if (producerHandle) await generationStreamStore.close(producerHandle)
+          if (producerHandle && !terminalPublished)
+            await generationStreamStore.close(producerHandle)
         }
       },
     })
@@ -503,20 +522,23 @@ export async function createGenerationResponse(
     }
     if (!claimSucceeded) {
       try {
-        await finalizeStreamingAssistant({
+        const terminal = await finalizeStreamingAssistantWithSnapshot({
           nodeId: assistant.id,
           generationId,
           outcome: "error",
           parts: seedParts,
           error: formatProviderError(error),
         })
+        await publishTerminal(terminal).catch((terminalError) =>
+          console.warn("[nibchat/generation-terminal]", terminalError)
+        )
       } catch (finalizeError) {
         console.error("[nibchat/stream] setup finalization", finalizeError)
       }
     }
     dropRegistration()
     producerGuards?.stop()
-    if (producerHandle)
+    if (producerHandle && !terminalPublished)
       await generationStreamStore.close(producerHandle).catch(() => {})
     throw error
   }

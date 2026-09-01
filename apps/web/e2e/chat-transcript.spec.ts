@@ -118,6 +118,143 @@ test.describe("chat transcript", () => {
       .toBe(true)
   })
 
+  test("hands a completed stream to static Markdown without an intermediate frame", async () => {
+    await openNewChat(page)
+
+    const reply = `HANDOFF_START
+
+${Array.from(
+  { length: 24 },
+  (_, index) =>
+    `Paragraph ${index}: enough Markdown text to exercise wrapping and message measurement.`
+).join("\n\n")}
+
+| Name | Value |
+| --- | ---: |
+| alpha | 1 |
+| beta | 2 |
+
+\`\`\`ts startLine=12
+const handoff = "stable"
+console.log(handoff)
+\`\`\`
+
+HANDOFF_END`
+
+    llm.enqueue({ text: reply, hold: true })
+    await sendMessage(page, "measure the renderer handoff")
+    await expect(streamingMarkers(page)).toHaveCount(1, { timeout: 15_000 })
+
+    await page.evaluate(() => {
+      const root = globalThis as typeof globalThis & {
+        __handoffProbe?: {
+          samples: Array<{
+            at: number
+            frameGap: number
+            renderer: string | null
+            thinking: boolean
+            hasContent: boolean
+            streamMarker: boolean
+          }>
+          stop: () => void
+        }
+      }
+      let running = true
+      let previousAt = performance.now()
+      let previousSignature = ""
+      const samples: Array<{
+        at: number
+        frameGap: number
+        renderer: string | null
+        thinking: boolean
+        hasContent: boolean
+        streamMarker: boolean
+      }> = []
+
+      const sample = (at: number) => {
+        const assistants = document.querySelectorAll<HTMLElement>(
+          '[data-slot-layer="present"] article[data-theme-target="message-assistant"]'
+        )
+        const assistant = assistants.item(assistants.length - 1)
+        const renderer =
+          assistant
+            ?.querySelector<HTMLElement>("[data-markdown-renderer]")
+            ?.getAttribute("data-markdown-renderer") ?? null
+        const thinking = [
+          ...document.querySelectorAll<HTMLElement>("[data-markdown-renderer]"),
+        ].some(
+          (element) =>
+            element.getClientRects().length > 0 &&
+            element.textContent?.trim() === "Thinking…"
+        )
+        const hasContent = Boolean(
+          assistant?.textContent?.includes("HANDOFF_START")
+        )
+        const streamMarker = Boolean(
+          assistant?.textContent?.includes("assistant · streaming")
+        )
+        const frameGap = at - previousAt
+        previousAt = at
+        const signature = `${renderer}:${thinking}:${hasContent}:${streamMarker}`
+        if (signature !== previousSignature || frameGap >= 32) {
+          previousSignature = signature
+          samples.push({
+            at,
+            frameGap,
+            renderer,
+            thinking,
+            hasContent,
+            streamMarker,
+          })
+        }
+        if (running) requestAnimationFrame(sample)
+      }
+      requestAnimationFrame(sample)
+      root.__handoffProbe = {
+        samples,
+        stop: () => {
+          running = false
+        },
+      }
+    })
+
+    llm.release()
+    const finalMarkdown = page
+      .locator('[data-markdown-renderer="marked"]')
+      .filter({ hasText: "HANDOFF_END" })
+    await expect(finalMarkdown).toBeVisible({ timeout: 30_000 })
+    await page.waitForTimeout(250)
+
+    const samples = await page.evaluate(() => {
+      const root = globalThis as typeof globalThis & {
+        __handoffProbe?: {
+          samples: Array<{
+            at: number
+            frameGap: number
+            renderer: string | null
+            thinking: boolean
+            hasContent: boolean
+            streamMarker: boolean
+          }>
+          stop: () => void
+        }
+      }
+      root.__handoffProbe?.stop()
+      return root.__handoffProbe?.samples ?? []
+    })
+    const firstMarked = samples.findIndex(
+      (sample) => sample.renderer === "marked"
+    )
+    expect(firstMarked).toBeGreaterThan(0)
+    const firstContent = samples.findIndex((sample) => sample.hasContent)
+    expect(firstContent).toBeGreaterThan(0)
+    expect(samples.slice(firstContent).some((sample) => sample.thinking)).toBe(
+      false
+    )
+    expect(samples[firstMarked - 1]?.renderer).toBe("streamdown")
+    expect(samples[firstMarked - 1]?.streamMarker).toBe(true)
+  })
+
   test("edit-as-branch keeps the edited slot in view", async () => {
     await openNewChat(page)
 

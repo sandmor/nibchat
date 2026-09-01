@@ -10,10 +10,8 @@ import {
 } from "react"
 import { motion } from "motion/react"
 import {
-  defaultRangeExtractor,
   measureElement as measureVirtualElement,
   useVirtualizer,
-  type Range,
 } from "@tanstack/react-virtual"
 import { ArrowDown02Icon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
@@ -30,9 +28,12 @@ import {
   TRANSCRIPT_COLUMN_MAX_WIDTH,
   TRANSCRIPT_SCROLL_TO_END_INSET,
   transcriptEstimatedRowHeight,
+  transcriptGeometryChanged,
   transcriptMeasurementLayoutKey,
   transcriptPeekPx,
-  transcriptRowContentKey,
+  transcriptRangeExtractor,
+  transcriptRowMeasurementKey,
+  TRANSCRIPT_OVERSCAN,
   type TranscriptRow,
 } from "./chat-transcript-helpers"
 import {
@@ -42,7 +43,7 @@ import {
 } from "./transcript-height-cache"
 
 /** Distance from the bottom at which the transcript still follows live growth. */
-const TRANSCRIPT_LIVE_EDGE_PX = 8
+const TRANSCRIPT_LIVE_EDGE_PX = 64
 const EMPTY_EDITING_NODE_IDS: ReadonlySet<string> = new Set()
 
 function transcriptRowSpacing(
@@ -142,6 +143,7 @@ function VirtualChatTranscript({
     [rows]
   )
   const rowsRef = useRef(rows)
+  const previousRowsRef = useRef(rows)
   const densityRef = useRef(density)
   const messageActionCaptionsRef = useRef(messageActionCaptions)
   rowsRef.current = rows
@@ -162,13 +164,8 @@ function VirtualChatTranscript({
   }, [editingNodeIds, focusedIndex, rowIndexByMessageId, rows])
 
   const rangeExtractor = useCallback(
-    (range: Range) => {
-      const indexes = new Set(defaultRangeExtractor(range))
-      for (const index of retainedIndexes) {
-        if (index >= 0 && index < range.count) indexes.add(index)
-      }
-      return [...indexes].sort((a, b) => a - b)
-    },
+    (range: Parameters<typeof transcriptRangeExtractor>[0]) =>
+      transcriptRangeExtractor(range, retainedIndexes),
     [retainedIndexes]
   )
 
@@ -223,7 +220,7 @@ function VirtualChatTranscript({
     followOnAppend: true,
     scrollPaddingStart: transcriptPeekPx(density),
     scrollEndThreshold: TRANSCRIPT_LIVE_EDGE_PX,
-    overscan: 6,
+    overscan: TRANSCRIPT_OVERSCAN,
     rangeExtractor,
     directDomUpdates: true,
     // Measurement happens from ref callbacks and layout effects; React 19
@@ -266,17 +263,12 @@ function VirtualChatTranscript({
 
     virtualizer.measure()
 
-    // A full reset discards even the mounted sizes. Re-read those rows now so
-    // restoring the anchor does not depend on a later ResizeObserver delivery.
+    // A full reset discards even mounted sizes. Re-read them through the public
+    // measurement API so the restored anchor never waits for ResizeObserver.
     for (const element of canvas.querySelectorAll<HTMLDivElement>(
       ":scope > [data-index]"
     )) {
-      const index = virtualizer.indexFromElement(element)
-      if (index < 0) continue
-      virtualizer.resizeItem(
-        index,
-        virtualizer.options.measureElement(element, undefined, virtualizer)
-      )
+      virtualizer.measureElement(element)
     }
 
     if (wasAtEnd) {
@@ -285,6 +277,9 @@ function VirtualChatTranscript({
     }
 
     if (!anchor) return
+    // getVirtualItems rebuilds the full measurement list. The anchored row
+    // may have left the overscan window after offscreen estimates changed.
+    void virtualizer.getVirtualItems()
     const nextAnchor = virtualizer.measurementsCache[anchor.index]
     if (!nextAnchor) return
     virtualizer.scrollToOffset(nextAnchor.start + anchor.offsetWithinRow, {
@@ -318,6 +313,17 @@ function VirtualChatTranscript({
     observer.observe(canvas)
     return () => observer.disconnect()
   }, [measurePreservingVisibleAnchor])
+
+  // Slot keys deliberately survive a sibling branch replacement. That avoids a
+  // content crossfade remount, but it also means TanStack cannot infer that an
+  // offscreen slot's old height belongs to a different message. Reset durable
+  // geometry before paint; streaming token growth remains ResizeObserver-owned.
+  useLayoutEffect(() => {
+    const previousRows = previousRowsRef.current
+    previousRowsRef.current = rows
+    if (!transcriptGeometryChanged(previousRows, rows)) return
+    measurePreservingVisibleAnchor()
+  }, [measurePreservingVisibleAnchor, rows])
 
   // Density and action captions change every row. Path rewrites do not: the
   // slot shell remeasures on contentKey so a scrolled-away viewport stays put.
@@ -480,13 +486,13 @@ function TranscriptVirtualRow({
   children: ReactNode
 }) {
   const rowRef = useRef<HTMLDivElement>(null)
-  const contentKey = transcriptRowContentKey(row)
+  const measurementKey = transcriptRowMeasurementKey(row)
 
   // A sibling replacement reuses the shell, so its callback ref does not run.
   // Measure synchronously before paint; ResizeObserver handles later reflows.
   useLayoutEffect(() => {
     measureElement(rowRef.current)
-  }, [contentKey, measureElement])
+  }, [measurementKey, measureElement])
 
   return (
     <div

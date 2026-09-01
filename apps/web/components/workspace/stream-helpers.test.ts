@@ -144,6 +144,25 @@ describe("streamPlacement", () => {
 })
 
 describe("readStreamEvents", () => {
+  it("returns the durable terminal event instead of waiting for a refetch", async () => {
+    const terminal = await readStreamEvents(
+      sseBody([
+        { type: "text-delta", delta: "done" },
+        {
+          type: "terminal",
+          result: "complete",
+          node: { ...node("a1"), role: "assistant", parts_json: '[{"type":"text","text":"done"}]' },
+        },
+      ]),
+      { onEvent: () => {} }
+    )
+    expect(terminal).toMatchObject({
+      type: "terminal",
+      result: "complete",
+      node: { id: "a1" },
+    })
+  })
+
   it("forwards ordered generation events", async () => {
     const events: unknown[] = []
     await readStreamEvents(
@@ -322,6 +341,23 @@ describe("planStreamEnd", () => {
 })
 
 describe("shouldFollowGeneration", () => {
+  it("does not rediscover a stream settled ahead of workspace refresh", () => {
+    expect(
+      shouldFollowGeneration({
+        streamId: "s1",
+        node: { ...node("a1"), status: "streaming" },
+        controllers: {},
+        stream: {
+          nodeId: "a1",
+          chatId: "c1",
+          parentNodeId: "u1",
+          startedAt: 1,
+          settled: true,
+        },
+      })
+    ).toBe(false)
+  })
+
   it("follows a stopping run that has no live reader", () => {
     expect(
       shouldFollowGeneration({
@@ -440,6 +476,28 @@ describe("followGenerationStream", () => {
     expect(result).toBe("gone")
     expect(calls).toBe(2)
     expect(events).toEqual([{ type: "text-delta", delta: "Hi" }])
+  })
+
+  it("stops reconnecting as soon as it receives a terminal event", async () => {
+    const fetch = vi.fn(async () =>
+      new Response(
+        sseBody([{ type: "terminal", result: "complete", node: null }]),
+        { status: 200 }
+      )
+    )
+    vi.stubGlobal("fetch", fetch)
+    const result = await followGenerationStream({
+      streamId: "g1",
+      signal: new AbortController().signal,
+      cursor: null,
+      onEvent: () => {},
+      onCursor: () => {},
+    })
+    expect(result).toMatchObject({
+      type: "terminal",
+      terminal: { result: "complete" },
+    })
+    expect(fetch).toHaveBeenCalledTimes(1)
   })
 
   it("does not treat the first body close as complete", async () => {

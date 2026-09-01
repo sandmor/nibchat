@@ -428,6 +428,263 @@
   white-space: nowrap;
 }
 
+/* Completed messages are Marked HTML, not a React element tree. Keep its
+   semantic elements visually aligned with Streamdown's streaming output. */
+.markdown-static {
+  min-width: 0;
+}
+
+.markdown-static > :first-child {
+  margin-top: 0;
+}
+
+.markdown-static > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-static > * + * {
+  margin-top: 1rem;
+}
+
+.markdown-static :where(h1, h2, h3, h4, h5, h6) {
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+.markdown-static h1 {
+  font-size: 1.875rem;
+}
+
+.markdown-static h2 {
+  font-size: 1.5rem;
+}
+
+.markdown-static h3 {
+  font-size: 1.25rem;
+}
+
+.markdown-static h4 {
+  font-size: 1.125rem;
+}
+
+.markdown-static :where(ul, ol) {
+  padding-left: 1.5rem;
+}
+
+.markdown-static ul {
+  list-style: disc;
+}
+
+.markdown-static ol {
+  list-style: decimal;
+}
+
+.markdown-static li + li {
+  margin-top: 0.25rem;
+}
+
+.markdown-static :where(blockquote) {
+  margin-block: 1rem;
+  border-left: 4px solid
+    color-mix(in oklab, var(--palette-muted) 50%, transparent);
+  padding-left: 1rem;
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+
+.markdown-static :where(hr) {
+  margin-block: 1.5rem;
+  border-color: var(--border);
+}
+
+.markdown-static :where(p > code, li > code, td > code, th > code) {
+  border-radius: 0.25rem;
+  background: var(--muted);
+  padding: 0.125rem 0.375rem;
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+}
+
+/* One document-level popup services every cached Markdown action. It uses the
+   same foreground/background tokens and silhouette as TooltipContent, so theme
+   customization applies without mounting a React tooltip per control. */
+[data-markdown-tooltip-popup] {
+  position: fixed;
+  z-index: 50;
+  display: inline-flex;
+  width: fit-content;
+  max-width: min(20rem, calc(100vw - 1rem));
+  align-items: center;
+  gap: 0.375rem;
+  border-radius: calc(var(--radius) * 1.8);
+  background: var(--foreground);
+  color: var(--background);
+  padding: 0.375rem 0.75rem;
+  font-size: 0.75rem;
+  line-height: 1rem;
+  pointer-events: none;
+  animation-duration: var(--motion-effective-duration);
+  animation-fill-mode: both;
+  animation-timing-function: var(--motion-ease);
+}
+
+[data-markdown-tooltip-popup][data-state="open"] {
+  animation-name: markdown-tooltip-in;
+}
+
+[data-markdown-tooltip-popup][data-state="closed"] {
+  animation-name: markdown-tooltip-out;
+}
+
+[data-markdown-tooltip-popup][data-side="top"] {
+  --markdown-tooltip-enter-y: 0.5rem;
+}
+
+[data-markdown-tooltip-popup][data-side="bottom"] {
+  --markdown-tooltip-enter-y: -0.5rem;
+}
+
+[data-markdown-tooltip-popup]::after {
+  position: absolute;
+  left: 50%;
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 2px;
+  background: var(--foreground);
+  content: "";
+  transform: translateX(-50%) rotate(45deg);
+}
+
+[data-markdown-tooltip-popup][data-side="top"]::after {
+  bottom: -0.3125rem;
+}
+
+[data-markdown-tooltip-popup][data-side="bottom"]::after {
+  top: -0.3125rem;
+}
+
+@keyframes markdown-tooltip-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--markdown-tooltip-enter-y, 0)) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes markdown-tooltip-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+}
+
+/* Copy/download menus for cached Markdown tables. Native <details> cannot play
+   an exit animation, so the popup is portaled and uses the same enter/exit
+   silhouette as DropdownMenu / TooltipContent. */
+[data-markdown-menu-popup] {
+  position: fixed;
+  z-index: 50;
+  min-width: 120px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: var(--background);
+  color: var(--foreground);
+  box-shadow:
+    0 10px 15px -3px rgb(0 0 0 / 0.1),
+    0 4px 6px -4px rgb(0 0 0 / 0.1);
+  transform-origin: top right;
+  animation-duration: var(--motion-effective-duration);
+  animation-fill-mode: both;
+  animation-timing-function: var(--motion-ease);
+}
+
+[data-markdown-menu-popup][data-state="open"] {
+  animation-name: markdown-menu-in;
+}
+
+[data-markdown-menu-popup][data-state="closed"] {
+  animation-name: markdown-menu-out;
+  pointer-events: none;
+}
+
+[data-markdown-menu-popup] button {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  cursor: pointer;
+  transition: background-color var(--motion-effective-duration)
+    var(--motion-ease);
+}
+
+[data-markdown-menu-popup] button:hover {
+  background: color-mix(in oklab, var(--muted) 40%, transparent);
+}
+
+@keyframes markdown-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes markdown-menu-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+}
+
+.markdown-static [data-markdown-code-block] pre[data-line-numbers] {
+  counter-reset: markdown-line calc(var(--markdown-start-line, 1) - 1);
+}
+
+.markdown-static [data-markdown-code-block] pre[data-line-numbers] code {
+  display: block;
+  white-space: pre;
+}
+
+.markdown-static
+  [data-markdown-code-block]
+  pre[data-line-numbers]
+  [data-markdown-code-line] {
+  display: block;
+  padding-left: 3.5rem;
+  position: relative;
+}
+
+.markdown-static
+  [data-markdown-code-block]
+  pre[data-line-numbers]
+  [data-markdown-code-line]::before {
+  color: var(--muted-foreground);
+  content: counter(markdown-line);
+  counter-increment: markdown-line;
+  left: 0;
+  position: absolute;
+  text-align: right;
+  width: 2.25rem;
+}
+
 /* Streamdown paints a card, then another card for the code. Dissolve that
    chrome; markdown.tsx supplies a single topbar + outline instead. */
 .markdown-content [data-streamdown="code-block"] {

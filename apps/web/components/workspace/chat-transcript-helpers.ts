@@ -1,4 +1,11 @@
-import type { NodeRow } from "@/lib/types"
+import { defaultRangeExtractor, type Range } from "@tanstack/react-virtual"
+import { parseJson } from "@/lib/domain"
+import type { NodeRow, Parts } from "@/lib/types"
+
+/** Chats at or below this size keep every row mounted for instant scrolling. */
+export const TRANSCRIPT_EAGER_ROW_LIMIT = 40
+/** Extra rows on each side of the visible window for long transcripts. */
+export const TRANSCRIPT_OVERSCAN = 10
 
 /**
  * Dual identity for path rows (do not collapse these):
@@ -21,15 +28,33 @@ export function transcriptPeekPx(density: "comfortable" | "compact"): number {
 }
 
 /**
- * Inputs that invalidate every virtualizer item size. Path identity is not one
- * of them: slot shells remeasure on {@link transcriptRowContentKey}, and wiping
- * the cache on a rewrite jumps a scrolled-away viewport.
+ * Inputs that invalidate every virtualizer item size. Durable path rewrites
+ * are handled separately through {@link transcriptRowGeometryKey}; this key is
+ * for layout settings that affect every row.
  */
 export function transcriptMeasurementLayoutKey(
   density: "comfortable" | "compact",
   messageActionCaptions: boolean
 ): string {
   return `${density}:${messageActionCaptions ? "captions" : "plain"}`
+}
+
+/**
+ * Keep interactive rows mounted, and avoid windowing entirely for ordinary
+ * short conversations without creating a second transcript implementation.
+ */
+export function transcriptRangeExtractor(
+  range: Range,
+  retainedIndexes: ReadonlySet<number>
+): number[] {
+  if (range.count <= TRANSCRIPT_EAGER_ROW_LIMIT)
+    return Array.from({ length: range.count }, (_, index) => index)
+
+  const indexes = new Set(defaultRangeExtractor(range))
+  for (const index of retainedIndexes) {
+    if (index >= 0 && index < range.count) indexes.add(index)
+  }
+  return [...indexes].sort((a, b) => a - b)
 }
 
 /** Centered linear column width. */
@@ -95,25 +120,137 @@ export function transcriptEstimatedRowHeight(
   row: TranscriptRow | undefined,
   width: number
 ): number {
-  if (row?.kind === "path" && row.node.role === "user") return 160
+  if (row?.kind === "path" && row.node.role === "user") {
+    return Math.max(160, transcriptContentEstimate(row.node.parts_json, width))
+  }
   if (
     row?.kind === "after-tip" ||
     (row?.kind === "path" && row.node.role === "assistant")
   ) {
-    return width > 0 && width <= 512 ? 544 : 384
+    const minimum = width > 0 && width <= 512 ? 544 : 384
+    return row?.kind === "path"
+      ? Math.max(minimum, transcriptContentEstimate(row.node.parts_json, width))
+      : minimum
   }
   return 256
 }
 
-/** Identity for a slot's present body. Changes on sibling rewrite, not depth. */
+/**
+ * A deliberately cheap, upward-biased estimate for unmeasured static rows.
+ * Exact geometry still comes from ResizeObserver once a row is mounted.
+ */
+function transcriptContentEstimate(partsJson: string, width: number): number {
+  const widthBucket = Math.floor(Math.max(width, 320) / 8) * 8
+  const key = `${widthBucket}:${partsJson}`
+  const cached = transcriptEstimateCache.get(key)
+  if (cached != null) {
+    transcriptEstimateCache.delete(key)
+    transcriptEstimateCache.set(key, cached)
+    return cached
+  }
+
+  const parsed = parseJson<unknown>(partsJson, [])
+  const parts = Array.isArray(parsed) ? (parsed as Parts) : []
+  const charactersPerLine = Math.max(24, Math.floor((widthBucket - 96) / 8))
+  let textLines = 0
+  let codeBlocks = 0
+  let tableRows = 0
+  let reasoningParts = 0
+  let richParts = 0
+
+  for (const part of parts) {
+    if (part.type === "text") {
+      const lines = part.text.split("\n")
+      textLines += lines.reduce(
+        (total, line) =>
+          total + Math.max(1, Math.ceil(line.length / charactersPerLine)),
+        0
+      )
+      codeBlocks += (part.text.match(/^```/gm)?.length ?? 0) / 2
+      tableRows += part.text
+        .split("\n")
+        .filter((line) => /^\s*\|.*\|\s*$/.test(line)).length
+    } else if (part.type === "reasoning") {
+      reasoningParts += 1
+    } else {
+      richParts += 1
+    }
+  }
+
+  const estimate = Math.ceil(
+    96 +
+      textLines * 24 +
+      codeBlocks * 48 +
+      tableRows * 36 +
+      reasoningParts * 56 +
+      richParts * 96
+  )
+  transcriptEstimateCache.set(key, estimate)
+  while (transcriptEstimateCache.size > 4_000) {
+    const oldest = transcriptEstimateCache.keys().next().value
+    if (oldest == null) break
+    transcriptEstimateCache.delete(oldest)
+  }
+  return estimate
+}
+
+const transcriptEstimateCache = new Map<string, number>()
+
+/**
+ * Identity for a slot's logical message. Renderer handoff is deliberately not
+ * part of this key: Streamdown -> static HTML must replace in one commit rather
+ * than crossfading two renderers for the same node.
+ */
 export function transcriptRowContentKey(row: TranscriptRow): string {
   if (row.kind === "path") {
-    return row.liveStreamId
-      ? `stream:${row.liveStreamId}`
-      : `node:${row.node.id}`
+    return `node:${row.node.id}`
   }
   if (row.kind === "after-tip") return `stream:${row.streamId}`
   return "empty"
+}
+
+/**
+ * Paint revisions that need a synchronous virtual-row measurement. Unlike the
+ * content key, this distinguishes the live and static renderers without
+ * causing an enter/exit animation between them.
+ */
+export function transcriptRowMeasurementKey(row: TranscriptRow): string {
+  if (row.kind === "path") {
+    return `${transcriptRowContentKey(row)}:${row.liveStreamId ? "live" : "static"}`
+  }
+  return transcriptRowContentKey(row)
+}
+
+/**
+ * A durable row change requires rebuilding virtual geometry even when the
+ * depth-based item key intentionally keeps the DOM shell alive. Streaming
+ * token growth is excluded: ResizeObserver measures that row continuously.
+ */
+export function transcriptRowGeometryKey(row: TranscriptRow): string {
+  if (row.kind === "path") {
+    const { node } = row
+    return [
+      `node:${node.id}`,
+      row.liveStreamId ? "live" : "static",
+      node.status,
+      node.updated_at,
+      node.parts_json.length,
+      node.metadata_json.length,
+    ].join(":")
+  }
+  return transcriptRowContentKey(row)
+}
+
+export function transcriptGeometryChanged(
+  previousRows: readonly TranscriptRow[],
+  nextRows: readonly TranscriptRow[]
+): boolean {
+  if (previousRows.length !== nextRows.length) return true
+  return previousRows.some(
+    (row, index) =>
+      transcriptRowGeometryKey(row) !==
+      transcriptRowGeometryKey(nextRows[index]!)
+  )
 }
 
 export function afterTipMessageId(

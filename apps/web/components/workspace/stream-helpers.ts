@@ -1,6 +1,9 @@
 import type { QueryClient } from "@tanstack/react-query"
 import type { AttachmentReference, MessageStatus, NodeRow } from "@/lib/types"
-import type { GenerationPayload } from "@/lib/generation-streams/events"
+import type {
+  GenerationPayload,
+  GenerationTerminalPayload,
+} from "@/lib/generation-streams/events"
 import { resolveActivePath } from "@/lib/domain"
 import {
   hasLiveStreamReader,
@@ -142,6 +145,7 @@ export function shouldFollowGeneration(input: {
   controllers: Record<string, AbortController>
   stream: StreamMeta | undefined
 }): boolean {
+  if (input.stream?.settled) return false
   if (hasLiveStreamReader(input.controllers, input.streamId)) return false
   if (input.node && input.node.status !== "streaming") return false
   return true
@@ -183,8 +187,8 @@ export type StreamEndPlan = {
 }
 
 /**
- * Decide overlay vs cache writes from a reader end. The client never claims
- * complete/error; those come from workspace refetch after the run is gone.
+ * Fallback policy for a reader that ended without an authoritative terminal
+ * event. Normal completion is handled directly from that terminal snapshot.
  */
 export function planStreamEnd(input: {
   reason: StreamEndReason
@@ -224,7 +228,10 @@ export function planStreamEnd(input: {
   }
 }
 
-export type FollowGenerationResult = "aborted" | "gone"
+export type FollowGenerationResult =
+  | "aborted"
+  | "gone"
+  | { type: "terminal"; terminal: GenerationTerminalPayload }
 
 function sleepMs(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve()
@@ -268,7 +275,7 @@ export async function followGenerationStream(input: {
     }
     attempt = 0
     try {
-      await readStreamEvents(response.body, {
+      const terminal = await readStreamEvents(response.body, {
         onEvent: input.onEvent,
         onCursor: (next) => {
           cursor = next
@@ -276,6 +283,7 @@ export async function followGenerationStream(input: {
         },
       })
       if (input.signal.aborted) return "aborted"
+      if (terminal) return { type: "terminal", terminal }
       // Clean SSE end is not generation complete — re-attach until 404/410.
     } catch {
       if (input.signal.aborted) return "aborted"
@@ -295,7 +303,7 @@ export type StreamEventHandlers = {
 export async function readStreamEvents(
   body: ReadableStream<Uint8Array>,
   handlers: StreamEventHandlers
-): Promise<void> {
+): Promise<GenerationTerminalPayload | null> {
   const reader = body.getReader()
   const decoder = new TextDecoder()
   let carry = ""
@@ -313,10 +321,10 @@ export async function readStreamEvents(
         if (!raw || raw === "[DONE]") continue
         try {
           const event = JSON.parse(raw) as GenerationPayload
-          if (event.type === "error")
-            throw new Error(
-              event.errorText || "An error occurred while generating."
-            )
+          if (event.type === "terminal") {
+            if (eventCursor) handlers.onCursor?.(eventCursor)
+            return event
+          }
           handlers.onEvent(event)
           if (eventCursor) handlers.onCursor?.(eventCursor)
           eventCursor = undefined
@@ -326,4 +334,5 @@ export async function readStreamEvents(
         }
       }
   }
+  return null
 }

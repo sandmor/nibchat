@@ -3,6 +3,7 @@ import {
   hydrateStreamingNodeParts,
   patchChatTitle,
   patchNodeFromStreamParts,
+  patchTerminalGeneration,
   type WorkspaceData,
 } from "@/lib/workspace-cache"
 
@@ -172,6 +173,104 @@ describe("hydrateStreamingNodeParts", () => {
     const next = hydrateStreamingNodeParts(data, "a1", [
       { type: "text", text: "Stale" },
     ])
+    expect(next).toBe(data)
+  })
+})
+
+describe("patchTerminalGeneration", () => {
+  it("replaces the streaming node and drops the generation", () => {
+    const done = {
+      ...streamingAssistant(sample("c1", "Chat")).nodes[0]!,
+      status: "complete" as const,
+      parts_json: JSON.stringify([{ type: "text", text: "Done" }]),
+    }
+    const next = patchTerminalGeneration(
+      streamingAssistant(sample("c1", "Chat")),
+      {
+        generationId: "g1",
+        node: done,
+        chatId: "c1",
+        nodeId: "a1",
+      }
+    )
+    expect(next?.nodes).toEqual([done])
+    expect(next?.activeGenerations).toEqual([])
+  })
+
+  it("inserts a missing node in created-at order", () => {
+    const data = sample("c1", "Chat")
+    data.nodes = [
+      {
+        id: "u1",
+        chat_id: "c1",
+        parent_id: null,
+        role: "user",
+        status: "complete",
+        selected_child_id: "a1",
+        parts_json: "[]",
+        search_text: "",
+        metadata_json: "{}",
+        excluded_from_context: false,
+        created_at: "2026-01-01T00:00:00.000Z",
+        updated_at: "2026-01-01T00:00:00.000Z",
+      },
+    ]
+    data.activeGenerations = [
+      {
+        generationId: "g1",
+        nodeId: "a1",
+        chatId: "c1",
+        parentNodeId: "u1",
+        startedAt: "",
+      },
+    ]
+    const assistant = {
+      id: "a1",
+      chat_id: "c1",
+      parent_id: "u1",
+      role: "assistant" as const,
+      status: "complete" as const,
+      selected_child_id: null,
+      parts_json: JSON.stringify([{ type: "text", text: "Hi" }]),
+      search_text: "Hi",
+      metadata_json: "{}",
+      excluded_from_context: false,
+      created_at: "2026-01-01T00:00:01.000Z",
+      updated_at: "2026-01-01T00:00:01.000Z",
+    }
+    const next = patchTerminalGeneration(data, {
+      generationId: "g1",
+      node: assistant,
+      chatId: "c1",
+      nodeId: "a1",
+    })
+    expect(next?.nodes.map((row) => row.id)).toEqual(["u1", "a1"])
+    expect(next?.nodes[1]).toEqual(assistant)
+    expect(next?.activeGenerations).toEqual([])
+  })
+
+  it("removes the node when the terminal snapshot is empty", () => {
+    const next = patchTerminalGeneration(
+      streamingAssistant(sample("c1", "Chat")),
+      {
+        generationId: "g1",
+        node: null,
+        chatId: "c1",
+        nodeId: "a1",
+      }
+    )
+    expect(next?.nodes).toEqual([])
+    expect(next?.activeGenerations).toEqual([])
+  })
+
+  it("leaves a different chat's cache alone", () => {
+    const data = streamingAssistant(sample("c1", "Chat"))
+    const next = patchTerminalGeneration(data, {
+      generationId: "g1",
+      node: null,
+      chatId: "other",
+      nodeId: "a1",
+    })
     expect(next).toBe(data)
   })
 })

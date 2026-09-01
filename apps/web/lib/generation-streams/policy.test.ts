@@ -84,6 +84,13 @@ describe("decideGenerationAttach", () => {
         now,
       })
     ).toBe("subscribe")
+    expect(
+      decideGenerationAttach({
+        run: null,
+        snapshot: { state: "open" },
+        now,
+      })
+    ).toBe("subscribe")
   })
 
   it("asks the client to retry during the starting hand-off", () => {
@@ -126,11 +133,44 @@ describe("decideGenerationAttach", () => {
     ).toBe("unavailable")
   })
 
-  it("reports gone when the durable run has been removed", () => {
+  it("reports gone when the durable run and store are both gone", () => {
     expect(
       decideGenerationAttach({
         run: null,
-        snapshot: { state: "open" },
+        snapshot: { state: "missing" },
+        now,
+      })
+    ).toBe("gone")
+    expect(
+      decideGenerationAttach({
+        run: null,
+        snapshot: { state: "orphaned" },
+        now,
+      })
+    ).toBe("gone")
+  })
+
+  it("replays a closed store only when the caller is draining", () => {
+    expect(
+      decideGenerationAttach({
+        run: null,
+        snapshot: { state: "closed" },
+        replay: true,
+        now,
+      })
+    ).toBe("subscribe")
+    expect(
+      decideGenerationAttach({
+        run: { state: "active", startedAt: startedAt(1_000) },
+        snapshot: { state: "closed" },
+        replay: true,
+        now,
+      })
+    ).toBe("subscribe")
+    expect(
+      decideGenerationAttach({
+        run: null,
+        snapshot: { state: "closed" },
         now,
       })
     ).toBe("gone")

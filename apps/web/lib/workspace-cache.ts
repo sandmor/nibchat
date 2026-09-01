@@ -179,3 +179,25 @@ export function hydrateStreamingNodeParts(
     ),
   }
 }
+
+/** Apply the server's terminal snapshot without waiting for a workspace fetch. */
+export function patchTerminalGeneration(
+  data: WorkspaceData | undefined,
+  input: { generationId: string; node: NodeRow | null; chatId: string; nodeId: string }
+): WorkspaceData | undefined {
+  if (!data || data.chat?.id !== input.chatId) return data
+  const nodes = input.node
+    ? data.nodes.some((row) => row.id === input.node!.id)
+      ? data.nodes.map((row) => (row.id === input.node!.id ? input.node! : row))
+      : [...data.nodes, input.node!].sort((a, b) =>
+          a.created_at.localeCompare(b.created_at)
+        )
+    : data.nodes.filter((row) => row.id !== input.nodeId)
+  return {
+    ...data,
+    nodes,
+    activeGenerations: data.activeGenerations.filter(
+      (run) => run.generationId !== input.generationId
+    ),
+  }
+}

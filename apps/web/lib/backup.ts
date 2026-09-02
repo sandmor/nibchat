@@ -17,7 +17,7 @@ const chatRowSchema = z
         return false
       }
     }, "Invalid chat view state"),
-    prompt_stack_id: z.string().nullable().optional(),
+    prompt_stack_id: z.string().nullable(),
     created_at: z.string(),
     updated_at: z.string(),
   })
@@ -122,13 +122,10 @@ const userBackupSchema = z.object({
   name: z.string(),
   email: z.string(),
   emailVerified: z.union([z.boolean(), z.number().transform(Boolean)]),
-  role: z.string().nullable().optional(),
-  banned: z
-    .union([z.boolean(), z.number().transform(Boolean)])
-    .nullable()
-    .optional(),
-  banReason: z.string().nullable().optional(),
-  banExpires: z.string().nullable().optional(),
+  role: z.string().nullable(),
+  banned: z.union([z.boolean(), z.number().transform(Boolean)]).nullable(),
+  banReason: z.string().nullable(),
+  banExpires: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 })

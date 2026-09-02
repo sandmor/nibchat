@@ -142,7 +142,8 @@ describe("catalog synchronization", () => {
           { id: "off", name: "Off" },
           { id: "alias", name: "Original" },
         ]),
-        "native"
+        "native",
+        true
       )
     ).toEqual([
       {
@@ -182,7 +183,8 @@ describe("catalog synchronization", () => {
           },
         ],
         catalogNameMap([{ id: "off", name: "Off" }]),
-        "native"
+        "native",
+        true
       )
     ).toEqual([
       {
@@ -191,6 +193,34 @@ describe("catalog synchronization", () => {
         enabled: false,
         source: "catalog",
         pdfInput: "extracted",
+      },
+    ])
+  })
+
+  it("removes protocol overrides for fixed-protocol provider kinds", () => {
+    expect(
+      modelsToPersist(
+        [
+          {
+            id: "claude",
+            label: "Claude",
+            enabled: true,
+            source: "catalog",
+            pdfInput: "native",
+            protocol: "chat",
+          },
+        ],
+        catalogNameMap([{ id: "claude", name: "Claude" }]),
+        "native",
+        false
+      )
+    ).toEqual([
+      {
+        id: "claude",
+        label: "Claude",
+        enabled: true,
+        source: "catalog",
+        pdfInput: "native",
       },
     ])
   })

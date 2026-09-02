@@ -89,9 +89,9 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
     .onConflict((oc) => oc.column("id").doNothing())
     .execute()
 
-  // Legacy streaming rows from before generation_runs have no owner and cannot
-  // be resumed. Rows with a run are reconciled by the selected stream adapter;
-  // this must not invalidate a healthy Redis-backed run on another instance.
+  // Streaming rows without a generation_runs owner cannot be resumed after a
+  // process restart. Rows with a run are reconciled by the selected stream
+  // adapter; this must not invalidate a healthy Redis-backed run elsewhere.
   await db
     .updateTable("message_nodes")
     .set({ status: "error", updated_at: new Date().toISOString() })

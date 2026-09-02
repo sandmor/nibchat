@@ -1,5 +1,39 @@
 import { describe, expect, it, vi } from "vitest"
-import { discoverOllamaModels } from "@/lib/provider-catalog"
+import {
+  discoverOllamaModels,
+  protocolFromCatalogEntry,
+  publicCatalogModels,
+} from "@/lib/provider-catalog"
+
+describe("compatible provider catalog protocols", () => {
+  it("recognizes only Responses and Chat adapters", () => {
+    expect(
+      protocolFromCatalogEntry({
+        api: {
+          npm: "@ai-sdk/open-responses",
+          url: "https://example.test/v1/responses",
+        },
+      })
+    ).toEqual({
+      protocol: "responses",
+      endpoint: "https://example.test/v1/responses",
+    })
+    expect(
+      protocolFromCatalogEntry({
+        api: {
+          npm: "@ai-sdk/openai-compatible",
+          url: "https://example.test/v1/chat/completions",
+        },
+      })
+    ).toEqual({
+      protocol: "chat",
+      endpoint: "https://example.test/v1/chat/completions",
+    })
+    expect(
+      protocolFromCatalogEntry({ api: { npm: "@ai-sdk/anthropic" } })
+    ).toEqual({})
+  })
+})
 
 describe("Ollama catalog discovery", () => {
   it("uses native tags and omits auth for a local daemon", async () => {
@@ -31,13 +65,11 @@ describe("Ollama catalog discovery", () => {
   })
 
   it("adds bearer auth and reports provider errors", async () => {
-    const fetchFn = vi
-      .fn<typeof fetch>()
-      .mockResolvedValue(
-        new Response(JSON.stringify({ error: "invalid API key" }), {
-          status: 401,
-        })
-      )
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ error: "invalid API key" }), {
+        status: 401,
+      })
+    )
     await expect(
       discoverOllamaModels(
         { name: "Ollama Cloud", base_url: "https://ollama.com" },

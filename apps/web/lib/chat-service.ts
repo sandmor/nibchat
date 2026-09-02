@@ -887,6 +887,13 @@ async function updateStreamingNode(
   return Number(result.numUpdatedRows ?? 0) > 0
 }
 
+function persistAssistantMetadata(
+  previous: Record<string, unknown>,
+  fields: Record<string, unknown>
+) {
+  return JSON.stringify({ ...previous, ...fields })
+}
+
 /**
  * Single write path for stream terminal outcomes.
  * Idempotent: only mutates rows still in `fromStatuses` (default streaming).
@@ -948,12 +955,12 @@ export async function finalizeStreamingAssistant(
     await db
       .updateTable("message_nodes")
       .set({
-        metadata_json: JSON.stringify({
-          ...previous,
+        metadata_json: persistAssistantMetadata(previous, {
           ...(config?.providerId != null
             ? { provider: config.providerId }
             : {}),
           ...(config?.model != null ? { model: config.model } : {}),
+          ...(config ? { generationConfig: config } : {}),
           ...(input.error != null ? { error: input.error } : {}),
           errorAt: new Date().toISOString(),
         }),
@@ -975,8 +982,7 @@ export async function finalizeStreamingAssistant(
     await db
       .updateTable("message_nodes")
       .set({
-        metadata_json: JSON.stringify({
-          ...previous,
+        metadata_json: persistAssistantMetadata(previous, {
           ...(config?.providerId != null
             ? { provider: config.providerId }
             : {}),
@@ -986,7 +992,7 @@ export async function finalizeStreamingAssistant(
             ? { finishReason: input.finishReason }
             : {}),
           ...(input.usage !== undefined ? { usage: input.usage } : {}),
-          ...(config ? { params: config } : {}),
+          ...(config ? { generationConfig: config } : {}),
         }),
         updated_at: now(),
       })
@@ -1006,8 +1012,7 @@ export async function finalizeStreamingAssistant(
   await db
     .updateTable("message_nodes")
     .set({
-      metadata_json: JSON.stringify({
-        ...previous,
+      metadata_json: persistAssistantMetadata(previous, {
         ...(config?.providerId != null ? { provider: config.providerId } : {}),
         ...(config?.model != null ? { model: config.model } : {}),
         finishedAt: new Date().toISOString(),
@@ -1015,7 +1020,7 @@ export async function finalizeStreamingAssistant(
           ? { finishReason: input.finishReason }
           : {}),
         ...(input.usage !== undefined ? { usage: input.usage } : {}),
-        ...(config ? { params: config } : {}),
+        ...(config ? { generationConfig: config } : {}),
       }),
       updated_at: now(),
     })
@@ -1032,11 +1037,7 @@ export async function finalizeStreamingAssistantWithSnapshot(
   input: StreamFinalizeInput
 ): Promise<StreamFinalization> {
   const result = await finalizeStreamingAssistant(input)
-  if (
-    result === "deleted" ||
-    result === "missing" ||
-    result === "superseded"
-  )
+  if (result === "deleted" || result === "missing" || result === "superseded")
     return { result, node: null }
   const node = await db
     .selectFrom("message_nodes")
@@ -1401,6 +1402,7 @@ type ProviderProfileInput = {
     enabled: boolean
     source: "catalog" | "custom"
     pdfInput: "native" | "extracted"
+    protocol?: "auto" | "responses" | "chat"
   }>
 }
 

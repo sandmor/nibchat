@@ -55,15 +55,11 @@ async function deleteUserByEmail(email: string) {
 }
 
 async function promoteOwner(userId: string) {
-  try {
-    await db
-      .updateTable("user")
-      .set({ role: "admin" })
-      .where("id", "=", userId)
-      .execute()
-  } catch {
-    /* Older schemas are upgraded by the next migration pass. */
-  }
+  await db
+    .updateTable("user")
+    .set({ role: "admin" })
+    .where("id", "=", userId)
+    .execute()
 }
 
 /**

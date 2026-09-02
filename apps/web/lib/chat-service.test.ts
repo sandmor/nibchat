@@ -1604,6 +1604,8 @@ function fixtureUser(id: string, email: string, role: string) {
     emailVerified: true,
     role,
     banned: false,
+    banReason: null,
+    banExpires: null,
     createdAt: "t",
     updatedAt: "t",
   }
@@ -1662,6 +1664,7 @@ function fixtureChat(id: string, ownerId: string) {
     selected_root_node_id: null,
     model_config_json: "{}",
     view_state_json: '{"mode":"linear","camera":null}',
+    prompt_stack_id: null,
     created_at: "t",
     updated_at: "t",
   }

@@ -14,6 +14,7 @@ import {
 import { Separator } from "@/components/ui/separator"
 import { Badge } from "@/components/ui/badge"
 import { useTRPC } from "@/lib/trpc-react"
+import { motionTransition, shouldAnimate } from "@/lib/appearance"
 import {
   asProviderKind,
   providerKindLabel,
@@ -29,6 +30,8 @@ import {
   type ProviderModel,
 } from "@/lib/provider-models"
 import type { ProviderSummary } from "../types"
+import { usePrefersReducedMotion } from "../hooks"
+import { useWorkspaceChrome } from "../shell"
 import { ProviderProfileFields } from "./provider-fields"
 import { ProviderModelsEditor } from "./provider-models"
 
@@ -50,6 +53,10 @@ export function ProviderSettings({
 }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
+  const { appearance } = useWorkspaceChrome()
+  const prefersReduced = usePrefersReducedMotion()
+  const animate = shouldAnimate(appearance.motion, prefersReduced)
+  const transition = motionTransition(appearance.motion)
   const [form, setForm] = useState(emptyForm)
   const [models, setModels] = useState<ProviderModel[]>([])
   const [catalog, setCatalog] = useState<CatalogModel[]>([])
@@ -121,7 +128,8 @@ export function ProviderSettings({
       models: modelsToPersist(
         models,
         catalogNameMap(catalog),
-        defaultPdfInputForProviderKind(form.kind)
+        defaultPdfInputForProviderKind(form.kind),
+        form.kind === "openai-compatible" || form.kind === "ollama"
       ),
       baseUrl: form.baseUrl,
       apiKey: form.apiKey || undefined,
@@ -153,11 +161,14 @@ export function ProviderSettings({
         >
           <ProviderModelsEditor
             providerId={editingId}
+            providerKind={form.kind}
             models={models}
             catalog={catalog}
             defaultPdfInput={defaultPdfInputForProviderKind(form.kind)}
             onModelsChange={setModels}
             onCatalogChange={handleCatalogChange}
+            animate={animate}
+            transition={transition}
           />
         </ProviderProfileFields>
         <div className="flex gap-2">

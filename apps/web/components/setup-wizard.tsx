@@ -339,7 +339,8 @@ function ProviderFlow({
       models: modelsToPersist(
         models,
         catalogNameMap(catalog),
-        defaultPdfInputForProviderKind(kind)
+        defaultPdfInputForProviderKind(kind),
+        kind === "openai-compatible" || kind === "ollama"
       ),
     }
   }
@@ -485,6 +486,7 @@ function ProviderFlow({
 
       <ProviderModelsEditor
         providerId={providerId || null}
+        providerKind={kind}
         models={models}
         catalog={catalog}
         defaultPdfInput={defaultPdfInputForProviderKind(kind)}
@@ -493,6 +495,8 @@ function ProviderFlow({
         onLoadingChange={setCatalogLoading}
         disabled={finish.isPending}
         refreshOnMount
+        animate={animate}
+        transition={transition}
       />
 
       <TitleModelSection

@@ -6,7 +6,12 @@ import {
 } from "@/lib/app-session"
 import { parseJson } from "@/lib/domain"
 import { jsonError } from "@/lib/http-error"
-import { discoverOllamaModels } from "@/lib/provider-catalog"
+import {
+  discoverOllamaModels,
+  protocolFromCatalogEntry,
+  publicCatalogModels,
+  type CatalogModel,
+} from "@/lib/provider-catalog"
 
 export const runtime = "nodejs"
 
@@ -40,19 +45,19 @@ export async function GET(request: Request) {
       .where("provider_id", "=", profile.id)
       .executeTakeFirst()
     if (!url.searchParams.has("refresh") && cached) {
-      const cachedModels = parseJson<Array<{ id: string; name: string }>>(
+      const cachedModels = parseJson<CatalogModel[]>(
         cached.models_json,
         []
       )
       return Response.json({
-        models: cachedModels,
+        models: publicCatalogModels(cachedModels),
         cachedAt: cached.refreshed_at,
       })
     }
     // Discovery performs an authenticated server-side request to the provider.
     // Regular users may read an existing catalog, but must never cause one.
     if (!isOwner) return Response.json({ models: [] })
-    let discovered: Array<{ id: string; name: string }> = []
+    let discovered: CatalogModel[] = []
     let discoverySucceeded = false
     const apiKey =
       profile.api_key ??
@@ -75,11 +80,22 @@ export async function GET(request: Request) {
       )
       if (response.ok) {
         discoverySucceeded = true
-        const payload = (await response.json()) as {
-          data?: Array<{ id?: string }>
-        }
+        const payload = (await response.json()) as { data?: Array<unknown> }
         discovered = (payload.data ?? []).flatMap((model) =>
-          model.id ? [{ id: model.id, name: model.id }] : []
+          model &&
+          typeof model === "object" &&
+          typeof (model as { id?: unknown }).id === "string"
+            ? [
+                {
+                  id: (model as { id: string }).id,
+                  name:
+                    typeof (model as { name?: unknown }).name === "string"
+                      ? (model as { name: string }).name
+                      : (model as { id: string }).id,
+                  ...protocolFromCatalogEntry(model),
+                },
+              ]
+            : []
         )
       }
     }
@@ -117,7 +133,7 @@ export async function GET(request: Request) {
         )
         .execute()
     return Response.json({
-      models: discovered,
+      models: publicCatalogModels(discovered),
       cachedAt: discoverySucceeded
         ? new Date().toISOString()
         : (cached?.refreshed_at ?? null),

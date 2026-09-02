@@ -1,5 +1,7 @@
 export type ProviderModelSource = "catalog" | "custom"
 export type PdfInputMode = "native" | "extracted"
+/** The wire protocol chosen for this model. `auto` follows provider catalog data. */
+export type ModelProtocolPreference = "auto" | "responses" | "chat"
 
 /** A user preference. Catalog entries are sparse; custom entries are always stored. */
 export type ProviderModel = {
@@ -8,6 +10,7 @@ export type ProviderModel = {
   enabled: boolean
   source: ProviderModelSource
   pdfInput: PdfInputMode
+  protocol?: ModelProtocolPreference
 }
 
 export type ProviderModelDocument = {
@@ -15,7 +18,11 @@ export type ProviderModelDocument = {
   preferences: ProviderModel[]
 }
 
-export type CatalogModel = { id: string; name: string }
+export type CatalogModel = {
+  id: string
+  name: string
+  protocol?: Exclude<ModelProtocolPreference, "auto">
+}
 export type ModelVisibilityFilter = "all" | "on" | "off"
 
 export function defaultPdfInputForProviderKind(kind: string): PdfInputMode {
@@ -34,10 +41,20 @@ export function parseProviderCatalogPayload(payload: unknown): {
   const models = Array.isArray(record.models)
     ? record.models.flatMap((model) => {
         if (!model || typeof model !== "object") return []
-        const entry = model as { id?: unknown; name?: unknown }
+        const entry = model as {
+          id?: unknown
+          name?: unknown
+          protocol?: unknown
+        }
         if (typeof entry.id !== "string" || !entry.id) return []
         const name = typeof entry.name === "string" ? entry.name.trim() : ""
-        return [{ id: entry.id, name: name || entry.id }]
+        return [
+          {
+            id: entry.id,
+            name: name || entry.id,
+            ...(isProtocol(entry.protocol) ? { protocol: entry.protocol } : {}),
+          },
+        ]
       })
     : []
   const error =
@@ -75,6 +92,7 @@ export function parseProviderModels(raw: unknown): ProviderModel[] {
       enabled?: unknown
       source?: unknown
       pdfInput?: unknown
+      protocol?: unknown
     }
     const id = trimId(record.id)
     if (
@@ -91,6 +109,9 @@ export function parseProviderModels(raw: unknown): ProviderModel[] {
       enabled: record.enabled === true,
       source: record.source,
       pdfInput: record.pdfInput,
+      ...(isProtocolPreference(record.protocol)
+        ? { protocol: record.protocol }
+        : {}),
     })
   }
   return models
@@ -195,7 +216,8 @@ export function mergeCatalogWithSaved(
 export function modelsToPersist(
   models: ProviderModel[],
   catalogNames: ReadonlyMap<string, string>,
-  defaultPdfInput: PdfInputMode
+  defaultPdfInput: PdfInputMode,
+  supportsProtocolRouting: boolean
 ): ProviderModel[] {
   return models
     .filter((model) => {
@@ -204,10 +226,29 @@ export function modelsToPersist(
       return (
         model.enabled ||
         model.label !== catalogNames.get(model.id) ||
-        model.pdfInput !== defaultPdfInput
+        model.pdfInput !== defaultPdfInput ||
+        (supportsProtocolRouting &&
+          model.protocol !== undefined &&
+          model.protocol !== "auto")
       )
     })
-    .map((model) => ({ ...model, label: trimLabel(model.label, model.id) }))
+    .map((model) => {
+      const normalized = { ...model, label: trimLabel(model.label, model.id) }
+      if (!supportsProtocolRouting) delete normalized.protocol
+      return normalized
+    })
+}
+
+function isProtocol(
+  value: unknown
+): value is Exclude<ModelProtocolPreference, "auto"> {
+  return value === "responses" || value === "chat"
+}
+
+function isProtocolPreference(
+  value: unknown
+): value is ModelProtocolPreference {
+  return value === "auto" || isProtocol(value)
 }
 
 export function filterProviderModels(
@@ -249,7 +290,13 @@ export function upsertCustomModel(
     return {
       status: "added",
       models: [
-        { id, label: id, enabled: true, source: "custom", pdfInput },
+        {
+          id,
+          label: id,
+          enabled: true,
+          source: "custom",
+          pdfInput,
+        },
         ...models,
       ],
     }

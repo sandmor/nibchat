@@ -11,7 +11,6 @@ import {
   mergeStoredValues,
   mcpProfileInputSchema,
   namespaceFromDisplayName,
-  normalizeKvEntry,
   normalizeKvEntries,
   resolveKvEntries,
   resolveTemplateValue,
@@ -101,18 +100,14 @@ describe("namespaceFromDisplayName", () => {
 })
 
 describe("env templates", () => {
-  it("migrates legacy valueEnv to template value", () => {
+  it("keeps name and value and drops unknown fields", () => {
     expect(
-      normalizeKvEntry({ name: "Authorization", valueEnv: "MCP_TOKEN" })
-    ).toEqual({ name: "Authorization", value: "${MCP_TOKEN}" })
-  })
-
-  it("normalizeKvEntries strips valueEnv once migrated", () => {
-    const entries = normalizeKvEntries([
-      { name: "A", valueEnv: "FOO" },
-      { name: "B", value: "literal" },
-    ])
-    expect(entries).toEqual([
+      normalizeKvEntries([
+        { name: "A", value: "${FOO}", extra: true },
+        { name: "B", value: "literal" },
+        { name: "" },
+      ])
+    ).toEqual([
       { name: "A", value: "${FOO}" },
       { name: "B", value: "literal" },
     ])

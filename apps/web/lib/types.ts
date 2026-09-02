@@ -13,8 +13,22 @@ export type MessageStatus =
   | "error"
   | "awaiting_input"
 
-export type TextPart = { type: "text"; text: string }
-export type ReasoningPart = { type: "reasoning"; text: string }
+type ProviderPartMetadata = Record<string, unknown>
+
+export type TextPart = {
+  type: "text"
+  text: string
+  /** Live stream item identity; stripped before the part is persisted. */
+  streamId?: string
+  providerMetadata?: ProviderPartMetadata
+}
+export type ReasoningPart = {
+  type: "reasoning"
+  text: string
+  streamId?: string
+  /** Includes opaque encrypted reasoning needed for stateless replay. */
+  providerMetadata?: ProviderPartMetadata
+}
 export type ToolInvocationState =
   | "input-streaming"
   | "input-available"
@@ -28,6 +42,7 @@ export type ToolInvocationPart = {
   input: unknown
   output?: unknown
   errorText?: string
+  providerMetadata?: ProviderPartMetadata
 }
 
 /** A source selected in the composer, before the server snapshots its content. */

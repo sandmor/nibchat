@@ -50,12 +50,17 @@ describe("applySchema", () => {
       .all() as Array<{
       name: string
       notnull: number
+      dflt_value: string | null
     }>
     expect(chatColumns).toContainEqual(
       expect.objectContaining({ name: "title", notnull: 0 })
     )
     expect(chatColumns).toContainEqual(
-      expect.objectContaining({ name: "view_state_json", notnull: 1 })
+      expect.objectContaining({
+        name: "view_state_json",
+        notnull: 1,
+        dflt_value: null,
+      })
     )
     const instanceColumns = sqlite
       .prepare("pragma table_info(instance)")
@@ -68,9 +73,17 @@ describe("applySchema", () => {
     )
     const prefColumns = sqlite
       .prepare("pragma table_info(user_preferences)")
-      .all() as Array<{ name: string; notnull: number }>
+      .all() as Array<{
+      name: string
+      notnull: number
+      dflt_value: string | null
+    }>
     expect(prefColumns).toContainEqual(
-      expect.objectContaining({ name: "builtin_tools_json", notnull: 1 })
+      expect.objectContaining({
+        name: "builtin_tools_json",
+        notnull: 1,
+        dflt_value: `'{"disabled":[]}'`,
+      })
     )
     await db.destroy()
     sqlite.close()

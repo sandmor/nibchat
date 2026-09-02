@@ -26,14 +26,14 @@ describe("stream identity vs payload", () => {
     start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null })
     const metasBefore = useStreamStore.getState().streams
     const buffersBefore = useStreamStore.getState().buffers
-    applyEvent("s1", { type: "text-delta", delta: "Hel" })
-    applyEvent("s1", { type: "text-delta", delta: "lo" })
-    applyEvent("s1", { type: "reasoning-delta", delta: "think" })
+    applyEvent("s1", { type: "text-delta", id: "t1", delta: "Hel" })
+    applyEvent("s1", { type: "text-delta", id: "t1", delta: "lo" })
+    applyEvent("s1", { type: "reasoning-delta", id: "r1", delta: "think" })
     expect(useStreamStore.getState().streams).toBe(metasBefore)
     expect(useStreamStore.getState().buffers).not.toBe(buffersBefore)
     expect(useStreamStore.getState().buffers.s1?.parts).toEqual([
-      { type: "text", text: "Hello" },
-      { type: "reasoning", text: "think" },
+      { type: "text", text: "Hello", streamId: "t1" },
+      { type: "reasoning", text: "think", streamId: "r1" },
     ])
   })
 
@@ -53,14 +53,14 @@ describe("stream identity vs payload", () => {
     const { start, applyEvent, attachController, settle, finish } =
       useStreamStore.getState()
     start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null })
-    applyEvent("s1", { type: "text-delta", delta: "Hello" })
+    applyEvent("s1", { type: "text-delta", id: "t1", delta: "Hello" })
     attachController("s1", new AbortController())
 
     settle("s1")
     expect(useStreamStore.getState().streams.s1?.settled).toBe(true)
     expect(useStreamStore.getState().controllers.s1).toBeUndefined()
     expect(useStreamStore.getState().buffers.s1?.parts).toEqual([
-      { type: "text", text: "Hello" },
+      { type: "text", text: "Hello", streamId: "t1" },
     ])
     expect(
       chatStreamEntries(useStreamStore.getState().streams, ["c1"]).map(
@@ -76,12 +76,12 @@ describe("stream identity vs payload", () => {
   it("does not reset an existing buffer when start is called again", () => {
     const { start, applyEvent } = useStreamStore.getState()
     start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null })
-    applyEvent("s1", { type: "text-delta", delta: "Hello" })
+    applyEvent("s1", { type: "text-delta", id: "t1", delta: "Hello" })
     const buffersBefore = useStreamStore.getState().buffers
     start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: "p1" })
     expect(useStreamStore.getState().buffers).toBe(buffersBefore)
     expect(useStreamStore.getState().buffers.s1?.parts).toEqual([
-      { type: "text", text: "Hello" },
+      { type: "text", text: "Hello", streamId: "t1" },
     ])
     expect(useStreamStore.getState().streams.s1?.parentNodeId).toBe("p1")
   })
@@ -90,13 +90,13 @@ describe("stream identity vs payload", () => {
     const { start, applyEvent, attachController, detachController } =
       useStreamStore.getState()
     start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null })
-    applyEvent("s1", { type: "text-delta", delta: "Hello" })
+    applyEvent("s1", { type: "text-delta", id: "t1", delta: "Hello" })
     const controller = new AbortController()
     attachController("s1", controller)
     detachController("s1")
     expect(useStreamStore.getState().controllers.s1).toBeUndefined()
     expect(useStreamStore.getState().buffers.s1?.parts).toEqual([
-      { type: "text", text: "Hello" },
+      { type: "text", text: "Hello", streamId: "t1" },
     ])
     expect(useStreamStore.getState().streams.s1).toBeDefined()
   })
@@ -109,7 +109,7 @@ describe("stream identity vs payload", () => {
     const { start, applyEvent, attachController, stop } =
       useStreamStore.getState()
     start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null })
-    applyEvent("s1", { type: "text-delta", delta: "Hello" })
+    applyEvent("s1", { type: "text-delta", id: "t1", delta: "Hello" })
     const controller = new AbortController()
     attachController("s1", controller)
     stop("s1")
@@ -117,7 +117,7 @@ describe("stream identity vs payload", () => {
     expect(controller.signal.aborted).toBe(false)
     expect(useStreamStore.getState().controllers.s1).toBe(controller)
     expect(useStreamStore.getState().buffers.s1?.parts).toEqual([
-      { type: "text", text: "Hello" },
+      { type: "text", text: "Hello", streamId: "t1" },
     ])
   })
 
@@ -125,7 +125,7 @@ describe("stream identity vs payload", () => {
     const { start, applyEvent } = useStreamStore.getState()
     start("a", { nodeId: "n1", chatId: "c1", parentNodeId: null })
     start("b", { nodeId: "n2", chatId: "c2", parentNodeId: null })
-    applyEvent("a", { type: "text-delta", delta: "nope" })
+    applyEvent("a", { type: "text-delta", id: "t1", delta: "nope" })
     expect(
       chatStreamEntries(useStreamStore.getState().streams, ["c1", null]).map(
         ([id]) => id
@@ -174,7 +174,7 @@ describe("stream identity vs payload", () => {
     const { start, applyEvent, attachController } = useStreamStore.getState()
     start("a", { nodeId: "n1", chatId: "c1", parentNodeId: null })
     start("b", { nodeId: "n2", chatId: "c2", parentNodeId: null })
-    applyEvent("a", { type: "text-delta", delta: "Hello" })
+    applyEvent("a", { type: "text-delta", id: "t1", delta: "Hello" })
     const keep = new AbortController()
     const drop = new AbortController()
     attachController("a", drop)
@@ -185,7 +185,7 @@ describe("stream identity vs payload", () => {
     expect(useStreamStore.getState().controllers.a).toBeUndefined()
     expect(useStreamStore.getState().controllers.b).toBe(keep)
     expect(useStreamStore.getState().buffers.a?.parts).toEqual([
-      { type: "text", text: "Hello" },
+      { type: "text", text: "Hello", streamId: "t1" },
     ])
     expect(useStreamStore.getState().streams.a).toBeDefined()
   })
@@ -198,7 +198,7 @@ describe("stream identity vs payload", () => {
     const { start, applyEvent, attachController, stop } =
       useStreamStore.getState()
     start("a", { nodeId: "n1", chatId: "c1", parentNodeId: null })
-    applyEvent("a", { type: "text-delta", delta: "Hello" })
+    applyEvent("a", { type: "text-delta", id: "t1", delta: "Hello" })
     const controller = new AbortController()
     attachController("a", controller)
     stop("a")
@@ -207,7 +207,7 @@ describe("stream identity vs payload", () => {
     expect(useStreamStore.getState().controllers.a).toBeUndefined()
     expect(useStreamStore.getState().streams.a?.stopping).toBe(true)
     expect(useStreamStore.getState().buffers.a?.parts).toEqual([
-      { type: "text", text: "Hello" },
+      { type: "text", text: "Hello", streamId: "t1" },
     ])
   })
 

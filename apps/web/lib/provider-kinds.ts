@@ -37,7 +37,9 @@ export function isProviderKind(value: string): value is ProviderKind {
 }
 
 export function asProviderKind(value: string): ProviderKind {
-  return isProviderKind(value) ? value : "openai-compatible"
+  if (!isProviderKind(value))
+    throw new Error(`Unknown provider kind "${value}"`)
+  return value
 }
 
 export function providerKindLabel(kind: string) {

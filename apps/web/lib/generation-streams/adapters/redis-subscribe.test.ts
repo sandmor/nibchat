@@ -4,7 +4,7 @@ import type { GenerationEvent } from "@/lib/generation-streams/ports"
 
 const text = (cursor: string, delta: string): GenerationEvent => ({
   cursor,
-  payload: { type: "text-delta", delta },
+  payload: { type: "text-delta", id: cursor, delta },
 })
 
 describe("followRedisGenerationLog", () => {
@@ -31,7 +31,8 @@ describe("followRedisGenerationLog", () => {
 
     const run = (async () => {
       for await (const event of follow) {
-        if (event.payload.type === "text-delta") received.push(event.payload.delta)
+        if (event.payload.type === "text-delta")
+          received.push(event.payload.delta)
         if (received.length === 2) seq = 3
         if (received.length === 3) lease = null
       }
@@ -55,8 +56,7 @@ describe("followRedisGenerationLog", () => {
         leaseReads += 1
         return "tok"
       },
-      readPage: async () =>
-        events.length ? [] : [text("1", "done")],
+      readPage: async () => (events.length ? [] : [text("1", "done")]),
     })) {
       if (event.payload.type === "text-delta") events.push(event.payload.delta)
     }

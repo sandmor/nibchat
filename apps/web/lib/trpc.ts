@@ -142,6 +142,7 @@ const providerModelSchema = z.object({
   enabled: z.boolean(),
   source: z.enum(["catalog", "custom"]),
   pdfInput: z.enum(["native", "extracted"]),
+  protocol: z.enum(["auto", "responses", "chat"]).optional(),
 })
 const providerInputSchema = z.object({
   name: z.string().min(1).max(120),

@@ -21,13 +21,6 @@ export { buildMcpInstructionsText }
 /** Matches `${ENV_NAME}` template tokens inside header/env values. */
 export const ENV_TEMPLATE_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g
 
-const kvEntryRawSchema = z.object({
-  name: z.string().min(1).max(200),
-  value: z.string().max(10_000).optional(),
-  /** @deprecated Migrated to `${valueEnv}` templates on read. */
-  valueEnv: z.string().min(1).max(200).optional(),
-})
-
 export const mcpKvEntrySchema = z.object({
   name: z.string().min(1).max(200),
   /** May embed `${ENV_NAME}` templates. Omit/empty on update keeps stored secret. */
@@ -36,29 +29,12 @@ export const mcpKvEntrySchema = z.object({
 
 export type McpKvEntry = z.infer<typeof mcpKvEntrySchema>
 
-/** Convert legacy `valueEnv` rows and strip deprecated fields. */
-export function normalizeKvEntry(
-  raw: z.infer<typeof kvEntryRawSchema>
-): McpKvEntry {
-  if (
-    raw.valueEnv &&
-    (raw.value == null || raw.value === "") &&
-    !/\$\{[A-Za-z_][A-Za-z0-9_]*\}/.test(raw.value ?? "")
-  ) {
-    return { name: raw.name, value: `\${${raw.valueEnv}}` }
-  }
-  return {
-    name: raw.name,
-    ...(raw.value != null ? { value: raw.value } : {}),
-  }
-}
-
 export function normalizeKvEntries(raw: unknown): McpKvEntry[] {
   if (!Array.isArray(raw)) return []
   return raw.flatMap((item) => {
-    const parsed = kvEntryRawSchema.safeParse(item)
+    const parsed = mcpKvEntrySchema.safeParse(item)
     if (!parsed.success) return []
-    return [normalizeKvEntry(parsed.data)]
+    return [parsed.data]
   })
 }
 
@@ -880,9 +856,7 @@ export type PrepareMcpToolsOptions = {
  * Instructions text is independent of tool registration (stack module).
  * Tool execute reloads the profile from the DB so pool config stays current.
  */
-export async function prepareMcpTools(
-  options: PrepareMcpToolsOptions = {}
-) {
+export async function prepareMcpTools(options: PrepareMcpToolsOptions = {}) {
   const includeInstructionsText = options.includeInstructionsText === true
   const reserved = new Set(options.reservedToolNames ?? [])
   const profiles = await getEnabledMcpProfiles()

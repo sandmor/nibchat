@@ -7,6 +7,7 @@ import {
 import type { Parts } from "@/lib/agent/parts"
 import { getAttachedAttachment, readAttachment } from "@/lib/attachments"
 import type { NodeRow } from "@/lib/types"
+import type { ResponsesReplayTarget } from "@/lib/providers"
 
 /**
  * Generation path: load image bytes and embed them as file parts.
@@ -14,6 +15,7 @@ import type { NodeRow } from "@/lib/types"
 export async function buildEmbeddedModelMessages(options: {
   nodes: NodeRow[]
   replayReasoning: boolean
+  responsesReplay?: ResponsesReplayTarget
   pdfInputMode: "native" | "extracted"
 }) {
   const binaries = new Map<string, EmbeddedBinaryAttachment>()
@@ -41,6 +43,7 @@ export async function buildEmbeddedModelMessages(options: {
   return buildModelMessages({
     nodes: options.nodes,
     replayReasoning: options.replayReasoning,
+    responsesReplay: options.responsesReplay,
     pdfInputMode: options.pdfInputMode,
     resolveBinaryAttachment: (part) => {
       const file = binaries.get(part.id)

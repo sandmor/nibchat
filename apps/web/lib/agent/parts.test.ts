@@ -553,6 +553,62 @@ describe("buildModelMessages", () => {
     expect(messages[0]?.role).toBe("assistant")
   })
 
+  it("replays provider metadata only to its originating Responses profile", () => {
+    const part = {
+      type: "text" as const,
+      text: "Original answer",
+      providerMetadata: { openai: { itemId: "msg_stored" } },
+    }
+    const stored = {
+      ...node("a1", "assistant", [part]),
+      metadata_json: JSON.stringify({
+        provider: "openai-profile",
+        model: "gpt-5",
+        responsesProviderOptionsKey: "openai",
+      }),
+    }
+    const options = {
+      replayReasoning: true,
+      responsesReplay: {
+        providerId: "openai-profile",
+        model: "gpt-5",
+        providerOptionsKey: "openai",
+      },
+    }
+    expect(
+      buildModelMessages({ nodes: [stored], ...options })[0]
+    ).toMatchObject({
+      content: [{ providerOptions: { openai: { itemId: "msg_stored" } } }],
+    })
+
+    const unattributed = { ...stored, metadata_json: "{}" }
+    expect(
+      buildModelMessages({ nodes: [unattributed], ...options })[0]
+    ).toMatchObject({
+      content: [{ type: "text", text: "Original answer" }],
+    })
+    expect(
+      buildModelMessages({ nodes: [unattributed], ...options })[0]
+    ).not.toMatchObject({
+      content: [{ providerOptions: expect.anything() }],
+    })
+
+    const edited = {
+      ...stored,
+      metadata_json: JSON.stringify({
+        provenance: "owner-edited",
+        provider: "openai-profile",
+        model: "gpt-5",
+        responsesProviderOptionsKey: "openai",
+      }),
+    }
+    expect(
+      buildModelMessages({ nodes: [edited], ...options })[0]
+    ).not.toMatchObject({
+      content: [{ providerOptions: expect.anything() }],
+    })
+  })
+
   it("expands user attachment parts ahead of text for the model", async () => {
     const messages = buildModelMessages({
       nodes: [

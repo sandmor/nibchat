@@ -8,10 +8,10 @@ describe("replayReasoningEnabled", () => {
     expect(replayReasoningEnabled("openai", false)).toBe(false)
   })
 
-  it("defaults off for compatible endpoints", () => {
-    expect(replayReasoningEnabled("openai-compatible", undefined)).toBe(false)
+  it("defaults on for compatible endpoints", () => {
+    expect(replayReasoningEnabled("openai-compatible", undefined)).toBe(true)
     expect(replayReasoningEnabled("openai-compatible", true)).toBe(true)
-    expect(replayReasoningEnabled("ollama", undefined)).toBe(false)
+    expect(replayReasoningEnabled("ollama", undefined)).toBe(true)
     expect(replayReasoningEnabled("ollama", true)).toBe(true)
   })
 

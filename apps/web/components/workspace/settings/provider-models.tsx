@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react"
+import { AnimatePresence, motion } from "motion/react"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
@@ -15,6 +16,12 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import { usePrefersReducedMotion } from "@/components/workspace/hooks"
+import {
+  defaultAppearance,
+  motionTransition,
+  shouldAnimate,
+} from "@/lib/appearance"
 import { cn } from "@/lib/utils"
 import {
   filterProviderModels,
@@ -27,6 +34,16 @@ import {
   type ProviderModel,
 } from "@/lib/provider-models"
 
+type MotionTween = {
+  duration: number
+  ease: [number, number, number, number]
+}
+
+const MODELS_HELP =
+  "Only enabled models appear in the chat picker. Aliases are labels, not API ids. For PDFs, File sends the original and Text sends extracted text."
+const PROTOCOL_HELP =
+  "API type chooses Chat Completions or the Responses API; Auto follows the catalog."
+
 const VISIBILITY_ITEMS: { id: ModelVisibilityFilter; label: string }[] = [
   { id: "all", label: "All" },
   { id: "on", label: "On" },
@@ -37,8 +54,17 @@ const PDF_INPUT_ITEMS: { id: ProviderModel["pdfInput"]; label: string }[] = [
   { id: "native", label: "File" },
   { id: "extracted", label: "Text" },
 ]
+const PROTOCOL_ITEMS = [
+  { id: "auto", label: "Auto" },
+  { id: "responses", label: "Responses" },
+  { id: "chat", label: "Chat" },
+] as const
 
 const quietToggleItemClassName = "h-6 min-w-6 px-2.5 text-xs"
+
+function kindSupportsProtocol(kind: string) {
+  return kind === "openai-compatible" || kind === "ollama"
+}
 
 function firstSelected<T extends string>(
   items: readonly { id: T }[],
@@ -57,6 +83,10 @@ function ModelRow({
   onToggle,
   onAlias,
   onPdfInput,
+  onProtocol,
+  showProtocol,
+  animate,
+  transition,
   onRemove,
 }: {
   model: ProviderModel
@@ -65,8 +95,13 @@ function ModelRow({
   onToggle: (enabled: boolean) => void
   onAlias: (label: string) => void
   onPdfInput: (pdfInput: "native" | "extracted") => void
+  onProtocol: (protocol: "auto" | "responses" | "chat") => void
+  showProtocol: boolean
+  animate: boolean
+  transition: MotionTween
   onRemove: () => void
 }) {
+  const motionTween = animate ? transition : { duration: 0 }
   return (
     <div
       className={cn(
@@ -82,7 +117,7 @@ function ModelRow({
         onCheckedChange={onToggle}
         aria-label={`Show ${model.id} in chats`}
       />
-      <div className="min-w-0 flex-1 space-y-1.5">
+      <div className="min-w-0 flex-1">
         <p className="truncate font-mono text-[12px] leading-tight text-muted-foreground">
           {model.id}
           {custom ? (
@@ -91,7 +126,7 @@ function ModelRow({
             </span>
           ) : null}
         </p>
-        <div className="flex items-center gap-1.5">
+        <div className="mt-1.5 flex min-w-0 flex-nowrap items-center gap-1.5 overflow-hidden">
           <Input
             value={model.label}
             onChange={(event) => onAlias(event.target.value)}
@@ -128,13 +163,53 @@ function ModelRow({
             ))}
           </ToggleGroup>
         </div>
+        <AnimatePresence initial={false}>
+          {showProtocol ? (
+            <motion.div
+              key="api-type"
+              initial={animate ? { height: 0, opacity: 0 } : false}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={animate ? { height: 0, opacity: 0 } : { height: 0 }}
+              transition={motionTween}
+              className="overflow-hidden"
+            >
+              <div className="mt-1.5 flex min-w-0 flex-nowrap items-center justify-between gap-2 overflow-hidden">
+                <p className="shrink-0 text-[11px] leading-none text-muted-foreground">
+                  API type
+                </p>
+                <ToggleGroup
+                  value={[model.protocol ?? "auto"]}
+                  onValueChange={(next) => {
+                    const id = firstSelected(PROTOCOL_ITEMS, next)
+                    if (id) onProtocol(id)
+                  }}
+                  disabled={disabled}
+                  size="sm"
+                  spacing={1}
+                  className="shrink-0"
+                  aria-label={`API type for ${model.id}`}
+                >
+                  {PROTOCOL_ITEMS.map((item) => (
+                    <ToggleGroupItem
+                      key={item.id}
+                      value={item.id}
+                      className={quietToggleItemClassName}
+                    >
+                      {item.label}
+                    </ToggleGroupItem>
+                  ))}
+                </ToggleGroup>
+              </div>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
       </div>
       {custom ? (
         <Button
           type="button"
           size="xs"
           variant="ghost"
-          className="mt-0.5 text-muted-foreground"
+          className="mt-0.5 shrink-0 text-muted-foreground"
           disabled={disabled}
           onClick={onRemove}
         >
@@ -147,6 +222,7 @@ function ModelRow({
 
 export function ProviderModelsEditor({
   providerId,
+  providerKind,
   models,
   catalog,
   onModelsChange,
@@ -155,8 +231,11 @@ export function ProviderModelsEditor({
   onLoadingChange,
   disabled = false,
   refreshOnMount = false,
+  animate: animateProp,
+  transition: transitionProp,
 }: {
   providerId: string | null
+  providerKind: string
   models: ProviderModel[]
   catalog: CatalogModel[]
   onModelsChange: (models: ProviderModel[]) => void
@@ -165,11 +244,24 @@ export function ProviderModelsEditor({
   onLoadingChange?: (loading: boolean) => void
   disabled?: boolean
   refreshOnMount?: boolean
+  animate?: boolean
+  transition?: MotionTween
 }) {
   const [query, setQuery] = useState("")
   const [visibility, setVisibility] = useState<ModelVisibilityFilter>("all")
   const [customId, setCustomId] = useState("")
   const [loading, setLoading] = useState(() => Boolean(providerId))
+  const supportsProtocol = kindSupportsProtocol(providerKind)
+  const [showAdvanced, setShowAdvanced] = useState(
+    () =>
+      supportsProtocol &&
+      models.some((model) => model.protocol && model.protocol !== "auto")
+  )
+  const showProtocol = supportsProtocol && showAdvanced
+  const prefersReduced = usePrefersReducedMotion()
+  const fallbackMotion = defaultAppearance().motion
+  const animate = animateProp ?? shouldAnimate(fallbackMotion, prefersReduced)
+  const transition = transitionProp ?? motionTransition(fallbackMotion)
   const modelsRef = useRef(models)
   const abortRef = useRef<AbortController | null>(null)
   const refreshOnMountRef = useRef(refreshOnMount)
@@ -206,14 +298,24 @@ export function ProviderModelsEditor({
 
   const virtualItems = virtualizer.getVirtualItems()
   useLayoutEffect(() => {
-    if (sampleHeightRef.current != null || virtualItems.length === 0) return
+    if (virtualItems.length === 0) return
     const row = scrollRef.current?.querySelector("[data-index]")
     if (!(row instanceof HTMLElement)) return
-    const height = row.getBoundingClientRect().height
-    if (height <= 0) return
-    sampleHeightRef.current = height
-    setSampleHeight(height)
-  }, [virtualItems.length])
+    const applyHeight = (raw: number) => {
+      const height = Math.round(raw)
+      if (height <= 0 || sampleHeightRef.current === height) return
+      sampleHeightRef.current = height
+      setSampleHeight(height)
+      virtualizerRef.current.measure()
+    }
+    applyHeight(row.getBoundingClientRect().height)
+    const observer = new ResizeObserver((entries) => {
+      const box = entries[0]?.borderBoxSize?.[0]
+      applyHeight(box?.blockSize ?? entries[0]?.contentRect.height ?? 0)
+    })
+    observer.observe(row)
+    return () => observer.disconnect()
+  }, [showProtocol, virtualItems.length])
 
   useEffect(() => {
     onLoadingChange?.(loading)
@@ -291,19 +393,50 @@ export function ProviderModelsEditor({
   return (
     <div className="space-y-3 sm:col-span-2">
       <div className="flex flex-wrap items-end justify-between gap-2">
-        <div>
+        <div className="min-w-0">
           <Label>Models in chats</Label>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Only enabled models appear in the chat picker. Aliases are labels,
-            not API ids. For PDFs, File sends the original and Text sends
-            extracted text.
+          <p className="mt-1 text-xs text-pretty text-muted-foreground">
+            {MODELS_HELP}
+          </p>
+          <AnimatePresence initial={false}>
+            {showProtocol ? (
+              <motion.p
+                key="protocol-help"
+                initial={animate ? { height: 0, opacity: 0 } : false}
+                animate={{ height: "auto", opacity: 1 }}
+                exit={animate ? { height: 0, opacity: 0 } : { height: 0 }}
+                transition={animate ? transition : { duration: 0 }}
+                className="overflow-hidden text-xs text-pretty text-muted-foreground"
+              >
+                <span className="block pt-1">{PROTOCOL_HELP}</span>
+              </motion.p>
+            ) : null}
+          </AnimatePresence>
+        </div>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          {supportsProtocol ? (
+            <div className="flex items-center gap-2">
+              <Switch
+                id="provider-models-advanced"
+                size="sm"
+                checked={showAdvanced}
+                disabled={disabled}
+                onCheckedChange={setShowAdvanced}
+              />
+              <Label
+                htmlFor="provider-models-advanced"
+                className="text-xs font-normal text-muted-foreground"
+              >
+                Advanced
+              </Label>
+            </div>
+          ) : null}
+          <p className="text-xs text-muted-foreground">
+            {enabledCount} on
+            {models.length ? ` · ${models.length} listed` : ""}
+            {catalog.length ? ` · ${catalog.length} in catalog` : ""}
           </p>
         </div>
-        <p className="text-xs text-muted-foreground">
-          {enabledCount} on
-          {models.length ? ` · ${models.length} listed` : ""}
-          {catalog.length ? ` · ${catalog.length} in catalog` : ""}
-        </p>
       </div>
 
       <div className="flex flex-col gap-2 rounded-xl bg-muted/40 p-3 ring-1 ring-foreground/8">
@@ -442,6 +575,23 @@ export function ProviderModelsEditor({
                           )
                         )
                       }
+                      onProtocol={(protocol) =>
+                        onModelsChange(
+                          models.map((entry) =>
+                            entry.id === model.id
+                              ? {
+                                  ...entry,
+                                  ...(protocol === "auto"
+                                    ? { protocol: undefined }
+                                    : { protocol }),
+                                }
+                              : entry
+                          )
+                        )
+                      }
+                      showProtocol={showProtocol}
+                      animate={animate}
+                      transition={transition}
                       onRemove={() =>
                         onModelsChange(removeCustomModel(models, model.id))
                       }

@@ -12,19 +12,19 @@ describe("MemoryGenerationStreamPort", () => {
   it("replays ordered events independently to multiple subscribers", async () => {
     const store = new MemoryGenerationStreamPort()
     const producer = await store.open(meta)
-    await store.append(producer, { type: "text-delta", delta: "one" })
-    await store.append(producer, { type: "text-delta", delta: "two" })
+    await store.append(producer, { type: "text-delta", id: "t1", delta: "one" })
+    await store.append(producer, { type: "text-delta", id: "t1", delta: "two" })
     const controller = new AbortController()
     const reader = store
       .subscribe("g1", null, controller.signal)
       [Symbol.asyncIterator]()
     expect((await reader.next()).value).toMatchObject({
       cursor: "1",
-      payload: { type: "text-delta", delta: "one" },
+      payload: { type: "text-delta", id: "t1", delta: "one" },
     })
     expect((await reader.next()).value).toMatchObject({
       cursor: "2",
-      payload: { type: "text-delta", delta: "two" },
+      payload: { type: "text-delta", id: "t1", delta: "two" },
     })
     const second = store
       .subscribe("g1", "1", controller.signal)
@@ -36,7 +36,7 @@ describe("MemoryGenerationStreamPort", () => {
   it("records cancellation without dropping buffered events", async () => {
     const store = new MemoryGenerationStreamPort()
     const producer = await store.open(meta)
-    await store.append(producer, { type: "text-delta", delta: "one" })
+    await store.append(producer, { type: "text-delta", id: "t1", delta: "one" })
     await store.requestCancel("g1")
     expect(await store.isCancelled("g1")).toBe(true)
     const controller = new AbortController()
@@ -44,7 +44,7 @@ describe("MemoryGenerationStreamPort", () => {
       .subscribe("g1", null, controller.signal)
       [Symbol.asyncIterator]()
     expect((await reader.next()).value).toMatchObject({
-      payload: { type: "text-delta", delta: "one" },
+      payload: { type: "text-delta", id: "t1", delta: "one" },
     })
     controller.abort()
   })
@@ -56,14 +56,18 @@ describe("MemoryGenerationStreamPort", () => {
     const producer = await store.open(meta)
     expect(await store.isCancelled("g1")).toBe(true)
     await expect(
-      store.append(producer, { type: "text-delta", delta: "one" })
+      store.append(producer, { type: "text-delta", id: "t1", delta: "one" })
     ).rejects.toThrow("cancelled")
   })
 
   it("ends a subscriber after it drains a closed stream", async () => {
     const store = new MemoryGenerationStreamPort()
     const producer = await store.open(meta)
-    await store.append(producer, { type: "text-delta", delta: "done" })
+    await store.append(producer, {
+      type: "text-delta",
+      id: "t1",
+      delta: "done",
+    })
     await store.close(producer)
     const reader = store
       .subscribe("g1", null, new AbortController().signal)
@@ -92,7 +96,11 @@ describe("MemoryGenerationStreamPort", () => {
   it("lets a late subscriber drain the terminal event after complete", async () => {
     const store = new MemoryGenerationStreamPort()
     const producer = await store.open(meta)
-    await store.append(producer, { type: "text-delta", delta: "done" })
+    await store.append(producer, {
+      type: "text-delta",
+      id: "t1",
+      delta: "done",
+    })
     await store.complete(producer, {
       type: "terminal",
       result: "complete",

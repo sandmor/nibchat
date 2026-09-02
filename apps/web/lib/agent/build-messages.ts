@@ -7,6 +7,7 @@ import {
   type Parts,
 } from "@/lib/agent/parts"
 import type { NodeRow, ToolInvocationPart } from "@/lib/types"
+import type { ResponsesReplayTarget } from "@/lib/providers"
 
 function nodePartsLocal(node: NodeRow): Parts {
   return parseJson<Parts>(node.parts_json, [])
@@ -27,6 +28,8 @@ export type ResolveBinaryAttachment = (
 export type BuildMessagesOptions = {
   nodes: NodeRow[]
   replayReasoning: boolean
+  /** Responses metadata is replayable only to its originating provider/model. */
+  responsesReplay?: ResponsesReplayTarget
   pdfInputMode?: "native" | "extracted"
   resolveBinaryAttachment?: ResolveBinaryAttachment
 }
@@ -50,6 +53,7 @@ export function buildModelMessages(
     const parts = filterPartsForModel(node, nodePartsLocal(node), {
       replayReasoning: options.replayReasoning,
       metadata,
+      responsesReplay: options.responsesReplay,
     })
     if (parts.length === 0) continue
 
@@ -101,7 +105,10 @@ export function buildModelMessages(
     }
 
     if (node.role === "assistant") {
-      appendAssistantWithTools(messages, parts)
+      appendAssistantWithTools(messages, parts, {
+        metadata,
+        responsesReplay: options.responsesReplay,
+      })
     }
   }
 
@@ -114,6 +121,7 @@ function filterPartsForModel(
   opts: {
     replayReasoning: boolean
     metadata: Record<string, unknown>
+    responsesReplay?: ResponsesReplayTarget
   }
 ): Parts {
   return parts.filter((part) => {
@@ -133,15 +141,27 @@ function filterPartsForModel(
  * One assistant node may contain interleaved text/reasoning/tools.
  * We emit assistant tool-calls then tool-result messages for completed tools.
  */
-function appendAssistantWithTools(messages: ModelMessage[], parts: Parts) {
+function appendAssistantWithTools(
+  messages: ModelMessage[],
+  parts: Parts,
+  context: {
+    metadata: Record<string, unknown>
+    responsesReplay?: ResponsesReplayTarget
+  }
+) {
   type AssistantChunk =
-    | { type: "reasoning"; text: string }
-    | { type: "text"; text: string }
+    | {
+        type: "reasoning"
+        text: string
+        providerOptions?: Record<string, unknown>
+      }
+    | { type: "text"; text: string; providerOptions?: Record<string, unknown> }
     | {
         type: "tool-call"
         toolCallId: string
         toolName: string
         input: unknown
+        providerOptions?: Record<string, unknown>
       }
 
   let assistantContent: AssistantChunk[] = []
@@ -150,17 +170,40 @@ function appendAssistantWithTools(messages: ModelMessage[], parts: Parts) {
     messages.push({
       role: "assistant",
       content: assistantContent.map((chunk) => {
-        if (chunk.type === "reasoning")
-          return { type: "reasoning" as const, text: chunk.text }
-        if (chunk.type === "text")
-          return { type: "text" as const, text: chunk.text }
+        if (chunk.type === "reasoning") {
+          const providerOptions = sanitizeProviderMetadata(
+            chunk.providerOptions,
+            context
+          )
+          return {
+            type: "reasoning" as const,
+            text: chunk.text,
+            ...(providerOptions ? { providerOptions } : {}),
+          }
+        }
+        if (chunk.type === "text") {
+          const providerOptions = sanitizeProviderMetadata(
+            chunk.providerOptions,
+            context
+          )
+          return {
+            type: "text" as const,
+            text: chunk.text,
+            ...(providerOptions ? { providerOptions } : {}),
+          }
+        }
+        const providerOptions = sanitizeProviderMetadata(
+          chunk.providerOptions,
+          context
+        )
         return {
           type: "tool-call" as const,
           toolCallId: chunk.toolCallId,
           toolName: chunk.toolName,
           input: chunk.input,
+          ...(providerOptions ? { providerOptions } : {}),
         }
-      }),
+      }) as never,
     })
     assistantContent = []
   }
@@ -186,12 +229,24 @@ function appendAssistantWithTools(messages: ModelMessage[], parts: Parts) {
   for (const part of parts) {
     if (part.type === "reasoning") {
       flushToolResults()
-      assistantContent.push({ type: "reasoning", text: part.text })
+      assistantContent.push({
+        type: "reasoning",
+        text: part.text,
+        ...(part.providerMetadata
+          ? { providerOptions: part.providerMetadata }
+          : {}),
+      })
       continue
     }
     if (part.type === "text") {
       flushToolResults()
-      assistantContent.push({ type: "text", text: part.text })
+      assistantContent.push({
+        type: "text",
+        text: part.text,
+        ...(part.providerMetadata
+          ? { providerOptions: part.providerMetadata }
+          : {}),
+      })
       continue
     }
     if (isToolInvocationPart(part)) {
@@ -200,6 +255,7 @@ function appendAssistantWithTools(messages: ModelMessage[], parts: Parts) {
         toolCallId: part.toolCallId,
         toolName: part.toolName,
         input: part.input,
+        providerOptions: part.providerMetadata,
       })
       if (part.state === "output-available" || part.state === "output-error") {
         pendingResults.push(part)
@@ -209,6 +265,35 @@ function appendAssistantWithTools(messages: ModelMessage[], parts: Parts) {
     }
   }
   flushAssistant()
+}
+
+function sanitizeProviderMetadata(
+  value: Record<string, unknown> | undefined,
+  context: {
+    metadata: Record<string, unknown>
+    responsesReplay?: ResponsesReplayTarget
+  }
+) {
+  if (!value) return undefined
+  if (!isReplayOrigin(context)) return undefined
+  const sourceKey = context.metadata.responsesProviderOptionsKey
+  if (typeof sourceKey !== "string" || !context.responsesReplay)
+    return undefined
+  const source = value[sourceKey]
+  return source === undefined
+    ? undefined
+    : { [context.responsesReplay.providerOptionsKey]: source }
+}
+
+function isReplayOrigin(context: {
+  metadata: Record<string, unknown>
+  responsesReplay?: ResponsesReplayTarget
+}) {
+  if (context.metadata.provenance === "owner-edited") return false
+  return (
+    context.metadata.provider === context.responsesReplay?.providerId &&
+    context.metadata.model === context.responsesReplay?.model
+  )
 }
 
 function toolResultText(toolPart: ToolInvocationPart): string {

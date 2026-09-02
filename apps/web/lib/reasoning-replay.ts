@@ -4,7 +4,9 @@ export function replayReasoningEnabled(
   replayReasoning: boolean | undefined
 ): boolean {
   if (!providerKind) return false
-  return providerKind === "openai" || providerKind === "anthropic"
+  return ["openai", "anthropic", "openai-compatible", "ollama"].includes(
+    providerKind
+  )
     ? replayReasoning !== false
     : replayReasoning === true
 }

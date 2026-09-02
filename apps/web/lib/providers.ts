@@ -2,6 +2,8 @@ import "server-only"
 import { createAnthropic } from "@ai-sdk/anthropic"
 import { createOpenAI } from "@ai-sdk/openai"
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
+import { createOpenResponses } from "@ai-sdk/open-responses"
+import { createHash } from "node:crypto"
 import type { LanguageModel } from "ai"
 import { db } from "@/lib/db"
 import { parseJson } from "@/lib/domain"
@@ -11,7 +13,16 @@ import {
   isEnabledModelId,
   parseProviderModelsJson,
 } from "@/lib/provider-models"
+import {
+  isProviderProtocol,
+  type ProviderProtocol,
+  type CatalogModel,
+} from "@/lib/provider-catalog"
 import { replayReasoningEnabled } from "@/lib/reasoning-replay"
+import {
+  openAIResponsesModel,
+  protocolRoutedModel,
+} from "@/lib/openai-responses"
 
 export type ModelConfig = {
   providerId?: string
@@ -23,12 +34,57 @@ export type ModelConfig = {
   presencePenalty?: number
   stopSequences?: string[]
   providerOptions?: Record<string, unknown>
-  /**
-   * OpenAI-compatible providers vary widely in whether they accept native
-   * reasoning message parts. Direct adapters are known to support them; a
-   * compatible endpoint must opt in explicitly.
-   */
+  /** Set false to omit reasoning from replay, even on a Responses endpoint. */
   replayReasoning?: boolean
+}
+
+/** Identifies the only Responses metadata that may be replayed for a turn. */
+export type ResponsesReplayTarget = {
+  providerId: string
+  model: string
+  providerOptionsKey: string
+}
+
+export async function responsesReplayTargetFor(
+  userId: string,
+  config: ModelConfig
+): Promise<ResponsesReplayTarget | undefined> {
+  if (!config.providerId || !config.model) return undefined
+  const profile = await db
+    .selectFrom("provider_profiles")
+    .select(["id", "kind", "name"])
+    .where("id", "=", config.providerId)
+    .where("user_id", "=", userId)
+    .executeTakeFirst()
+  if (!profile || profile.kind === "anthropic") return undefined
+  const configured = parseProviderModelsJson(
+    (
+      await db
+        .selectFrom("provider_profiles")
+        .select("models_json")
+        .where("id", "=", profile.id)
+        .executeTakeFirst()
+    )?.models_json ?? "[]"
+  ).find((entry) => entry.id === config.model)
+  const catalog = await catalogModelFor(profile.id, config.model)
+  const cachedProtocol = effectiveCatalogProtocol(catalog)
+  const protocol =
+    configured?.protocol && configured.protocol !== "auto"
+      ? configured.protocol
+      : (cachedProtocol ?? "responses")
+  // Only the Responses adapters understand encrypted reasoning and item
+  // metadata. Chat receives the portable local transcript.
+  if (protocol !== "responses") return undefined
+  return {
+    providerId: profile.id,
+    model: config.model,
+    providerOptionsKey:
+      profile.kind === "openai"
+        ? "openai"
+        : profile.kind === "ollama"
+          ? "ollama"
+          : profile.name,
+  }
 }
 export async function listProviders() {
   return db
@@ -96,7 +152,7 @@ export async function defaultModelConfig(userId: string): Promise<ModelConfig> {
 export async function modelFor(
   userId: string,
   config: ModelConfig,
-  options?: { requireConfiguredModel?: boolean }
+  options?: { requireConfiguredModel?: boolean; chatId?: string }
 ): Promise<LanguageModel> {
   const profile = config.providerId
     ? await db
@@ -135,25 +191,156 @@ export async function modelFor(
       `Missing API key for provider "${profile.name}". Add a key in Settings${envHint}.`
     )
   }
-  if (profile.kind === "anthropic") return createAnthropic({ apiKey })(model)
-  if (profile.kind === "openai")
-    return createOpenAI({ apiKey, baseURL: profile.base_url ?? undefined })(
-      model
-    )
-  if (profile.kind === "ollama")
-    return createOpenAICompatible({
-      name: "ollama",
-      // Local Ollama hosts do not need a key. More importantly, never send a
-      // credential retained from a Cloud profile to a local/custom endpoint.
-      apiKey: ollamaCloud ? apiKey?.trim() || undefined : undefined,
-      baseURL: ollamaApiUrl(profile.base_url, "v1"),
-      supportsStructuredOutputs: true,
+  if (profile.kind === "anthropic")
+    return createAnthropic({
+      apiKey,
+      ...(profile.base_url ? { baseURL: profile.base_url } : {}),
     })(model)
-  return createOpenAICompatible({
-    name: profile.name,
-    apiKey,
-    baseURL: profile.base_url ?? "",
-  })(model)
+  const providerName = profile.kind === "ollama" ? "ollama" : profile.name
+  const baseURL =
+    profile.kind === "ollama"
+      ? ollamaApiUrl(profile.base_url, "v1")
+      : (profile.base_url ?? undefined)
+  const promptCacheKey =
+    profile.kind === "openai" && options?.chatId
+      ? createHash("sha256")
+          .update(`${userId}\0${profile.id}\0${model}\0${options.chatId}`)
+          .digest("hex")
+      : undefined
+  const responsesApiKey =
+    profile.kind === "ollama" && !ollamaCloud
+      ? undefined
+      : apiKey?.trim() || undefined
+  if (profile.kind === "openai") {
+    const provider = createOpenAI({
+      apiKey: apiKey?.trim(),
+      baseURL,
+    })
+    return openAIResponsesModel({
+      model: provider.responses(model),
+      promptCacheKey,
+      defaultReasoningSummary: isReasoningModel(model),
+    })
+  }
+  const preference = enabledModels.find((item) => item.id === model)?.protocol
+  const catalog = await catalogModelFor(profile.id, model)
+  const cachedProtocol = effectiveCatalogProtocol(catalog)
+  const preferred =
+    preference && preference !== "auto"
+      ? preference
+      : (cachedProtocol ?? "responses")
+  const protocols = orderProtocols(preferred)
+  // A catalog endpoint describes its advertised protocol only. Fallback
+  // adapters start from the configured provider base rather than appending a
+  // second protocol path to that endpoint.
+  const routeBaseFor = (protocol: ProviderProtocol) =>
+    catalog?.endpoint && protocol === cachedProtocol
+      ? catalog.endpoint
+      : baseURL
+  const candidates = protocols.map((protocol) => {
+    const routeBase = routeBaseFor(protocol)
+    if (protocol === "responses")
+      return {
+        protocol,
+        model: createOpenResponses({
+          name: providerName,
+          url: openResponsesUrl(routeBase),
+          apiKey: responsesApiKey,
+        })(model),
+      }
+    return {
+      protocol,
+      model: createOpenAICompatible({
+        name: providerName,
+        apiKey: profile.kind === "ollama" && !ollamaCloud ? undefined : apiKey,
+        baseURL: openChatCompletionsBaseUrl(routeBase),
+        supportsStructuredOutputs: profile.kind === "ollama" ? true : undefined,
+      })(model),
+    }
+  })
+  return protocolRoutedModel({
+    candidates,
+    // An explicit user override is a contract, not a probe.
+    allowFallback: preference === undefined || preference === "auto",
+  })
+}
+
+function openResponsesUrl(baseURL: string | undefined) {
+  const normalized = (baseURL ?? "").replace(/\/+$/, "")
+  return normalized.endsWith("/responses")
+    ? normalized
+    : `${normalized}/responses`
+}
+
+function openChatCompletionsBaseUrl(baseURL: string | undefined) {
+  return (baseURL ?? "").replace(/\/(responses|chat\/completions)\/?$/, "")
+}
+
+function orderProtocols(preferred: ProviderProtocol): ProviderProtocol[] {
+  return preferred === "responses"
+    ? ["responses", "chat"]
+    : ["chat", "responses"]
+}
+
+async function catalogModelFor(providerId: string, modelId: string) {
+  const cached = await db
+    .selectFrom("model_catalog_cache")
+    .select("models_json")
+    .where("provider_id", "=", providerId)
+    .executeTakeFirst()
+  const models = parseJson<CatalogModel[]>(cached?.models_json ?? "[]", [])
+  return models.find((entry) => entry.id === modelId)
+}
+
+function effectiveCatalogProtocol(
+  catalog: CatalogModel | undefined
+): ProviderProtocol | undefined {
+  return isProviderProtocol(catalog?.learnedProtocol)
+    ? catalog.learnedProtocol
+    : isProviderProtocol(catalog?.protocol)
+      ? catalog.protocol
+      : undefined
+}
+
+/** Persist a verified route only after a completed generation; a catalog refresh replaces it. */
+export async function rememberCatalogProtocol(
+  providerId: string,
+  modelId: string,
+  protocol: ProviderProtocol
+) {
+  const row = await db
+    .selectFrom("model_catalog_cache")
+    .select("models_json")
+    .where("provider_id", "=", providerId)
+    .executeTakeFirst()
+  if (!row) return
+  const models = parseJson<CatalogModel[]>(row.models_json, [])
+  const index = models.findIndex((entry) => entry.id === modelId)
+  if (index < 0) return
+  const next = [...models]
+  next[index] = {
+    ...next[index]!,
+    learnedProtocol: protocol,
+    learnedAt: new Date().toISOString(),
+  }
+  await db
+    .updateTable("model_catalog_cache")
+    .set({ models_json: JSON.stringify(next) })
+    .where("provider_id", "=", providerId)
+    .execute()
+}
+
+export function selectedProtocolFor(
+  model: LanguageModel
+): ProviderProtocol | undefined {
+  const selected = (
+    model as LanguageModel & { selectedProtocol?: () => ProviderProtocol }
+  ).selectedProtocol
+  return selected?.()
+}
+
+function isReasoningModel(model: string) {
+  return /^(o[1-4]|gpt-5)(?:$|[-.])/i.test(model)
 }
 
 /** Resolve stale chat selections to the provider's current first enabled model. */

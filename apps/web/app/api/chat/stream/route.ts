@@ -30,7 +30,10 @@ import { formatProviderError } from "@/lib/provider-errors"
 import {
   modelFor,
   pdfInputModeFor,
+  rememberCatalogProtocol,
+  responsesReplayTargetFor,
   resolveModelConfig,
+  selectedProtocolFor,
   type ModelConfig,
 } from "@/lib/providers"
 import { resolveMcpResourceAttachment } from "@/lib/mcp"
@@ -43,11 +46,18 @@ import type { AttachmentReference, NodeRow, Parts } from "@/lib/types"
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-function streamMeta(config: ModelConfig) {
+function streamMeta(
+  config: ModelConfig,
+  responsesReplay?: { providerOptionsKey: string }
+) {
   return {
     provider: config.providerId,
     model: config.model,
+    generationConfig: config,
     startedAt: new Date().toISOString(),
+    ...(responsesReplay
+      ? { responsesProviderOptionsKey: responsesReplay.providerOptionsKey }
+      : {}),
   }
 }
 
@@ -75,7 +85,7 @@ export async function POST(request: Request) {
     if (!chat)
       return Response.json({ error: "Chat not found" }, { status: 404 })
     const savedConfig = parseJson<ModelConfig>(chat.model_config_json, {})
-    const config = await resolveModelConfig(user.id, savedConfig)
+    let config = await resolveModelConfig(user.id, savedConfig)
     if (JSON.stringify(config) !== JSON.stringify(savedConfig))
       await db
         .updateTable("chats")
@@ -85,8 +95,9 @@ export async function POST(request: Request) {
         })
         .where("id", "=", chat.id)
         .execute()
-    const languageModel = await modelFor(user.id, config)
-    const assistantMeta = streamMeta(config)
+    let languageModel = await modelFor(user.id, config, { chatId: chat.id })
+    let responsesReplay = await responsesReplayTargetFor(user.id, config)
+    let assistantMeta = streamMeta(config, responsesReplay)
     const generationId = crypto.randomUUID()
 
     let assistant: NodeRow
@@ -207,6 +218,31 @@ export async function POST(request: Request) {
         )
 
       const currentParts = nodeParts(row)
+      const priorMetadata = parseJson<Record<string, unknown>>(
+        row.metadata_json,
+        {}
+      )
+      const priorConfig = parseGenerationConfig(priorMetadata.generationConfig)
+      if (priorConfig) {
+        // A paused assistant is one generation. Resuming it with a newly
+        // selected provider would create a node whose parts have incompatible
+        // provenance, so retain the original selection.
+        config = priorConfig
+        languageModel = await modelFor(user.id, config, {
+          chatId: chat.id,
+          requireConfiguredModel: true,
+        })
+        responsesReplay = await responsesReplayTargetFor(user.id, config)
+        assistantMeta = streamMeta(config, responsesReplay)
+      }
+      // A resumed tool turn may be finished after the chat selection changed.
+      // Keep its old metadata identity so provider-native replay is disabled
+      // rather than attaching earlier items to the new profile/model.
+      const resumeMetadata =
+        priorMetadata.provider === config.providerId &&
+        priorMetadata.model === config.model
+          ? assistantMeta
+          : {}
       const pending = pendingToolInvocations(currentParts)
       if (pending.length === 0)
         return Response.json(
@@ -293,11 +329,22 @@ export async function POST(request: Request) {
             seedParts,
             config,
             languageModel,
+            responsesReplay,
+            selectedProtocol: () => selectedProtocolFor(languageModel),
+            rememberProtocol:
+              config.providerId && config.model
+                ? (protocol) =>
+                    rememberCatalogProtocol(
+                      config.providerId!,
+                      config.model!,
+                      protocol as "responses" | "chat"
+                    )
+                : undefined,
             promptStack: resolved.stack,
             timeZone: body.timeZone,
             requestSignal: request.signal,
             allNodes,
-            previousMetadata: assistantMeta,
+            previousMetadata: resumeMetadata,
             resumeClaim: { originalParts: currentParts },
             generationId,
           },
@@ -329,6 +376,17 @@ export async function POST(request: Request) {
         seedParts,
         config,
         languageModel,
+        responsesReplay,
+        selectedProtocol: () => selectedProtocolFor(languageModel),
+        rememberProtocol:
+          config.providerId && config.model
+            ? (protocol) =>
+                rememberCatalogProtocol(
+                  config.providerId!,
+                  config.model!,
+                  protocol as "responses" | "chat"
+                )
+            : undefined,
         promptStack: resolved.stack,
         timeZone: body.timeZone,
         requestSignal: request.signal,
@@ -344,6 +402,16 @@ export async function POST(request: Request) {
     if (statusFromError(error) !== 400) return jsonError(error)
     return Response.json({ error: formatProviderError(error) }, { status: 400 })
   }
+}
+
+function parseGenerationConfig(value: unknown): ModelConfig | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined
+  const config = value as ModelConfig
+  return typeof config.providerId === "string" &&
+    typeof config.model === "string"
+    ? config
+    : undefined
 }
 
 function uniqueAttachmentReferences(references: AttachmentReference[]) {

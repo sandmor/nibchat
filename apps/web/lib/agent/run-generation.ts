@@ -2,6 +2,10 @@ import { stepCountIs, streamText, type LanguageModel } from "ai"
 import { generationStreamStore } from "@/lib/generation-streams/default-port"
 import { generationExecutor } from "@/lib/generation-streams/default-port"
 import { generationSseResponse } from "@/lib/generation-streams/http"
+import {
+  reduceGenerationPayload,
+  type GenerationPayload,
+} from "@/lib/generation-streams/events"
 import type { GenerationProducer } from "@/lib/generation-streams/ports"
 import { startProducerGuards } from "@/lib/generation-streams/producer-session"
 import { activateGenerationRun } from "@/lib/generation-runs"
@@ -9,7 +13,6 @@ import { buildEmbeddedModelMessages } from "@/lib/agent/build-messages-embed"
 import {
   partsHavePendingClientTools,
   resolveStreamTerminalOutcome,
-  upsertToolInvocation,
   type Parts,
 } from "@/lib/agent/parts"
 import { reservedBuiltInToolNames, selectNibchatTools } from "@/lib/agent/tools"
@@ -29,6 +32,7 @@ import {
   canReplayReasoning,
   pdfInputModeFor,
   type ModelConfig,
+  type ResponsesReplayTarget,
 } from "@/lib/providers"
 import {
   assemblePromptContext,
@@ -40,6 +44,15 @@ import { assertPdfFallbackAvailable } from "@/lib/pdf-input"
 import type { NodeRow, ToolInvocationPart } from "@/lib/types"
 
 const MAX_STEPS = 20
+
+function withoutTransientStreamIds(parts: Parts): Parts {
+  return parts.map((part) => {
+    if (part.type !== "text" && part.type !== "reasoning") return part
+    const persisted = { ...part }
+    delete persisted.streamId
+    return persisted
+  }) as Parts
+}
 
 export class ResumeClaimError extends Error {
   constructor(
@@ -60,6 +73,9 @@ export type GenerationSetup = {
   seedParts?: Parts
   config: ModelConfig
   languageModel: LanguageModel
+  responsesReplay?: ResponsesReplayTarget
+  selectedProtocol?: () => string | undefined
+  rememberProtocol?: (protocol: string) => Promise<void>
   promptStack: PromptStackDocument
   /** Browser IANA time zone supplied for prompt macro expansion. */
   timeZone: string
@@ -100,6 +116,9 @@ export async function createGenerationResponse(
     seedParts = [],
     config,
     languageModel,
+    responsesReplay,
+    selectedProtocol,
+    rememberProtocol,
     promptStack,
     timeZone,
     requestSignal,
@@ -124,7 +143,14 @@ export async function createGenerationResponse(
   let producerGuards: { stop: () => void } | null = null
   let terminalPublished = false
   const publishTerminal = async (terminal: {
-    result: "complete" | "awaiting_input" | "stopped" | "deleted" | "error" | "missing" | "superseded"
+    result:
+      | "complete"
+      | "awaiting_input"
+      | "stopped"
+      | "deleted"
+      | "error"
+      | "missing"
+      | "superseded"
     node: NodeRow | null
   }) => {
     if (!producerHandle || terminalPublished) return
@@ -234,6 +260,7 @@ export async function createGenerationResponse(
     const pathMessages = await buildEmbeddedModelMessages({
       nodes: contextNodes,
       replayReasoning,
+      responsesReplay,
       pdfInputMode,
     })
     const mcpServerInstructionsEnabled = promptStack.modules.some(
@@ -263,31 +290,28 @@ export async function createGenerationResponse(
     })
 
     let orderedParts: Parts = [...seedParts]
-    let stepText = ""
-    let stepReasoning = ""
+    let nextPartId = 0
+    const activePartIds = new Map<string, string>()
     let settled = false
     // HTTP readers are subscribers only. Explicit server-side cancellation is
     // the sole signal that may stop the provider request.
     const abortSignal = generation.signal
 
-    const flushStepTextReasoning = () => {
-      const reasoning = stepReasoning.trim()
-      if (reasoning)
-        orderedParts = [...orderedParts, { type: "reasoning", text: reasoning }]
-      if (stepText)
-        orderedParts = [...orderedParts, { type: "text", text: stepText }]
-      stepText = ""
-      stepReasoning = ""
-    }
-    const appendEvent = async (
-      event:
-        | { type: "text-delta"; delta: string }
-        | { type: "reasoning-delta"; delta: string }
-        | { type: "tool-upsert"; tool: ToolInvocationPart }
-        | { type: "error"; errorText: string }
-    ) => {
+    const appendEvent = async (event: GenerationPayload) => {
       if (!producerHandle) throw new Error("Generation stream was not opened")
+      orderedParts = reduceGenerationPayload(orderedParts, event)
       await generationStreamStore.append(producerHandle, event)
+    }
+    const localPartId = (type: "text" | "reasoning", providerId: string) => {
+      const key = `${type}\0${providerId}`
+      const current = activePartIds.get(key)
+      if (current) return current
+      const id = `${type}-${++nextPartId}`
+      activePartIds.set(key, id)
+      return id
+    }
+    const closePartId = (type: "text" | "reasoning", providerId: string) => {
+      activePartIds.delete(`${type}\0${providerId}`)
     }
     const cancellationWasRequested = async () => {
       if (generation.signal.aborted) return true
@@ -309,8 +333,7 @@ export async function createGenerationResponse(
     ) => {
       if (settled) return
       settled = true
-      flushStepTextReasoning()
-      let parts = orderedParts
+      let parts = withoutTransientStreamIds(orderedParts)
       const resolved = resolveStreamTerminalOutcome(outcome, parts)
       if (resolved === "complete" && parts.length === 0) {
         parts = [{ type: "text", text: "" }]
@@ -327,11 +350,27 @@ export async function createGenerationResponse(
         previousMetadata: {
           ...parseJson<Record<string, unknown>>(assistant.metadata_json, {}),
           ...(previousMetadata ?? {}),
+          ...(responsesReplay
+            ? {
+                responsesProviderOptionsKey: responsesReplay.providerOptionsKey,
+              }
+            : {}),
+          ...(selectedProtocol?.()
+            ? { providerProtocol: selectedProtocol() }
+            : {}),
         },
       })
       await publishTerminal(terminal).catch((error) =>
         console.warn("[nibchat/generation-terminal]", error)
       )
+      if (
+        rememberProtocol &&
+        (resolved === "complete" || resolved === "awaiting_input") &&
+        selectedProtocol?.()
+      )
+        void rememberProtocol(selectedProtocol()!).catch((error) =>
+          console.warn("[nibchat/protocol-learning]", error)
+        )
       if (afterFinalize) {
         void afterFinalize({ outcome: resolved, parts }).catch((error) => {
           console.warn("[nibchat/generation]", error)
@@ -354,40 +393,101 @@ export async function createGenerationResponse(
       stopSequences: config.stopSequences,
       providerOptions: config.providerOptions as never,
       onChunk: async ({ chunk }) => {
+        if (chunk.type === "text-start") {
+          const providerMetadata = chunk.providerMetadata as
+            | Record<string, unknown>
+            | undefined
+          const id = localPartId("text", chunk.id)
+          await appendEvent({
+            type: "text-start",
+            id,
+            ...(providerMetadata ? { providerMetadata } : {}),
+          })
+        }
         if (chunk.type === "text-delta") {
-          stepText += chunk.text
-          await appendEvent({ type: "text-delta", delta: chunk.text })
+          const providerMetadata = chunk.providerMetadata as
+            | Record<string, unknown>
+            | undefined
+          await appendEvent({
+            type: "text-delta",
+            id: localPartId("text", chunk.id),
+            delta: chunk.text,
+            ...(providerMetadata ? { providerMetadata } : {}),
+          })
+        }
+        if (chunk.type === "text-end") {
+          const providerMetadata = chunk.providerMetadata as
+            | Record<string, unknown>
+            | undefined
+          const id = localPartId("text", chunk.id)
+          await appendEvent({
+            type: "text-end",
+            id,
+            ...(providerMetadata ? { providerMetadata } : {}),
+          })
+          closePartId("text", chunk.id)
+        }
+        if (chunk.type === "reasoning-start") {
+          const providerMetadata = chunk.providerMetadata as
+            | Record<string, unknown>
+            | undefined
+          const id = localPartId("reasoning", chunk.id)
+          await appendEvent({
+            type: "reasoning-start",
+            id,
+            ...(providerMetadata ? { providerMetadata } : {}),
+          })
         }
         if (chunk.type === "reasoning-delta") {
-          stepReasoning += chunk.text
-          await appendEvent({ type: "reasoning-delta", delta: chunk.text })
+          const providerMetadata = chunk.providerMetadata as
+            | Record<string, unknown>
+            | undefined
+          await appendEvent({
+            type: "reasoning-delta",
+            id: localPartId("reasoning", chunk.id),
+            delta: chunk.text,
+            ...(providerMetadata ? { providerMetadata } : {}),
+          })
+        }
+        if (chunk.type === "reasoning-end") {
+          const providerMetadata = chunk.providerMetadata as
+            | Record<string, unknown>
+            | undefined
+          const id = localPartId("reasoning", chunk.id)
+          await appendEvent({
+            type: "reasoning-end",
+            id,
+            ...(providerMetadata ? { providerMetadata } : {}),
+          })
+          closePartId("reasoning", chunk.id)
         }
         if (chunk.type === "tool-input-start") {
-          flushStepTextReasoning()
           const tool = {
             type: "tool-invocation",
             toolCallId: chunk.id,
             toolName: chunk.toolName,
             state: "input-streaming",
             input: {},
+            providerMetadata: chunk.providerMetadata as
+              | Record<string, unknown>
+              | undefined,
           } satisfies ToolInvocationPart
-          orderedParts = upsertToolInvocation(orderedParts, tool)
           await appendEvent({ type: "tool-upsert", tool })
         }
         if (chunk.type === "tool-call") {
-          flushStepTextReasoning()
           const tool = {
             type: "tool-invocation",
             toolCallId: chunk.toolCallId,
             toolName: chunk.toolName,
             state: "input-available",
             input: chunk.input,
+            providerMetadata: (
+              chunk as { providerMetadata?: Record<string, unknown> }
+            ).providerMetadata,
           } satisfies ToolInvocationPart
-          orderedParts = upsertToolInvocation(orderedParts, tool)
           await appendEvent({ type: "tool-upsert", tool })
         }
         if (chunk.type === "tool-result") {
-          flushStepTextReasoning()
           const existing = orderedParts.find(
             (p): p is ToolInvocationPart =>
               p.type === "tool-invocation" && p.toolCallId === chunk.toolCallId
@@ -399,12 +499,13 @@ export async function createGenerationResponse(
             state: "output-available",
             input: existing?.input ?? chunk.input ?? {},
             output: chunk.output,
+            providerMetadata:
+              (chunk as { providerMetadata?: Record<string, unknown> })
+                .providerMetadata ?? existing?.providerMetadata,
           } satisfies ToolInvocationPart
-          orderedParts = upsertToolInvocation(orderedParts, tool)
           await appendEvent({ type: "tool-upsert", tool })
         }
         if (chunk.type === "tool-error") {
-          flushStepTextReasoning()
           const existing = orderedParts.find(
             (p): p is ToolInvocationPart =>
               p.type === "tool-invocation" && p.toolCallId === chunk.toolCallId
@@ -418,14 +519,15 @@ export async function createGenerationResponse(
             state: "output-error",
             input: existing?.input ?? chunk.input ?? {},
             errorText,
+            providerMetadata:
+              (chunk as { providerMetadata?: Record<string, unknown> })
+                .providerMetadata ?? existing?.providerMetadata,
           } satisfies ToolInvocationPart
-          orderedParts = upsertToolInvocation(orderedParts, tool)
           await appendEvent({ type: "tool-upsert", tool })
         }
       },
       onFinish: async ({ usage, finishReason }) => {
         try {
-          flushStepTextReasoning()
           // Prefer awaiting_input when tools are pending even if the tab
           // disconnected (abortSignal set) after the model finished the step.
           if (partsHavePendingClientTools(orderedParts)) {

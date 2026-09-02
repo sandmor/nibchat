@@ -1,6 +1,64 @@
 import { isOllamaCloudUrl, ollamaApiUrl } from "@/lib/ollama"
 
-export type CatalogModel = { id: string; name: string }
+/** Wire protocols supported by OpenAI-compatible provider profiles. */
+export type ProviderProtocol = "responses" | "chat"
+
+export function isProviderProtocol(value: unknown): value is ProviderProtocol {
+  return value === "responses" || value === "chat"
+}
+
+/** Server-only cache payload. Endpoint URLs are deliberately never returned to clients. */
+export type CatalogModel = {
+  id: string
+  name: string
+  protocol?: ProviderProtocol
+  endpoint?: string
+  learnedProtocol?: ProviderProtocol
+  learnedAt?: string
+}
+
+export function publicCatalogModels(models: CatalogModel[]) {
+  return models.map(({ id, name, protocol, learnedProtocol }) => {
+    const effectiveProtocol = isProviderProtocol(learnedProtocol)
+      ? learnedProtocol
+      : isProviderProtocol(protocol)
+        ? protocol
+        : undefined
+    return {
+      id,
+      name,
+      ...(effectiveProtocol ? { protocol: effectiveProtocol } : {}),
+    }
+  })
+}
+
+/**
+ * Model catalogs are provider-controlled configuration. Recognize known AI SDK
+ * adapters, but never dynamically import a package named by a remote catalog.
+ */
+export function protocolFromCatalogEntry(entry: unknown): {
+  protocol?: ProviderProtocol
+  endpoint?: string
+} {
+  if (!entry || typeof entry !== "object") return {}
+  const record = entry as Record<string, unknown>
+  const api = asRecord(record.api) ?? asRecord(record.provider)
+  const npm = typeof api?.npm === "string" ? api.npm : undefined
+  const endpoint = typeof api?.url === "string" ? api.url : undefined
+  const protocol: ProviderProtocol | undefined =
+    npm === "@ai-sdk/open-responses" || npm === "@ai-sdk/openai"
+      ? "responses"
+      : npm === "@ai-sdk/openai-compatible"
+        ? "chat"
+        : undefined
+  return protocol ? { protocol, ...(endpoint ? { endpoint } : {}) } : {}
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined
+}
 
 type OllamaCatalogProfile = {
   name: string

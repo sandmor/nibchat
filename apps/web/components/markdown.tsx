@@ -72,6 +72,24 @@ const MATH_OVERFLOW_HINT = "Scroll horizontally to view the full equation"
 
 type MarkdownNodeProps = { node?: unknown }
 
+function MarkdownSpan({
+  className,
+  node: _node,
+  ...props
+}: ComponentProps<"span"> & MarkdownNodeProps) {
+  void _node
+  if (className?.split(/\s+/).includes("katex-error")) {
+    return (
+      <span
+        aria-hidden="true"
+        className="inline-block min-h-[1em]"
+        data-math-pending=""
+      />
+    )
+  }
+  return <span className={className} {...props} />
+}
+
 function MarkdownLink({
   href,
   className,
@@ -362,9 +380,12 @@ const components: Components = {
   a: MarkdownLink,
   img: MarkdownImage,
   code: MarkdownCode,
+  span: MarkdownSpan,
   table: MarkdownTable,
   thead: MarkdownThead,
 }
+
+const STREAMING_REMEND_OPTIONS = { inlineKatex: true } as const
 
 function setMathOverflow(el: HTMLElement, overflowing: boolean) {
   if (el.hasAttribute("data-math-overflow") === overflowing) return
@@ -792,6 +813,7 @@ export function Markdown({
           linkSafety={{ enabled: false }}
           mode="streaming"
           plugins={plugins}
+          remend={STREAMING_REMEND_OPTIONS}
         >
           {content}
         </Streamdown>

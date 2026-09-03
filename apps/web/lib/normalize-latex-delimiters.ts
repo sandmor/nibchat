@@ -43,6 +43,17 @@ function skipSpaces(source: string, index: number) {
   return index
 }
 
+function withoutIncompleteLatexCommandStart(source: string) {
+  let trailingSlashes = 0
+  for (
+    let cursor = source.length - 1;
+    cursor >= 0 && source[cursor] === "\\";
+    cursor--
+  )
+    trailingSlashes++
+  return trailingSlashes % 2 === 1 ? source.slice(0, -1) : source
+}
+
 /**
  * Index just after a markdown link/image destination that starts at `destStart`
  * (first character after `](` and optional spaces). Returns `destStart` when
@@ -158,12 +169,27 @@ function attachedMultilineDollarBlock(
     )
     if (!/^[ \t]*$/.test(afterDelimiter)) continue
 
-    return { close: cursor }
+    return { close: cursor, delimiterLength: 2 }
   }
 
+  // A streamed closing `$$` can arrive one dollar at a time. Treat a lone,
+  // unescaped terminal dollar as the provisional close instead of passing it
+  // through as TeX content for one render.
+  const terminal = source.length - 1
+  if (
+    streaming &&
+    terminal > openingLineEnd &&
+    source[terminal] === "$" &&
+    source[terminal - 1] !== "$" &&
+    !isEscaped(source, terminal)
+  )
+    return { close: terminal, delimiterLength: 1 }
+
   // Once the opening line is complete, Streamdown can safely repair the
-  // still-incomplete canonical block while the rest of the response arrives.
-  return streaming ? { close: -1 } : undefined
+  // Markdown fence while the rest of the response arrives. The enclosed TeX
+  // can still be incomplete, so the renderer must suppress KaTeX's raw-source
+  // error fallback until a later chunk becomes valid.
+  return streaming ? { close: -1, delimiterLength: 0 } : undefined
 }
 
 /**
@@ -219,7 +245,7 @@ export function normalizeLatexDelimiters(source: string, streaming: boolean) {
         }
         output += source.slice(index + 2, block.close)
         output += "\n$$"
-        index = block.close + 2
+        index = block.close + block.delimiterLength
         continue
       }
     }
@@ -277,7 +303,12 @@ export function normalizeLatexDelimiters(source: string, streaming: boolean) {
       // inline dollar expression. Close the temporary expression locally; the
       // next streamed update replaces it with the real closing delimiter.
       if (streaming) {
-        const expression = source.slice(index + 2)
+        // A chunk can end on the backslash that starts the next TeX command.
+        // Withhold it so it cannot escape the synthetic dollar delimiter.
+        const expression = withoutIncompleteLatexCommandStart(
+          source.slice(index + 2)
+        )
+        if (!expression.trim()) break
         if (opening === "(") output += `$${expression}$`
         else output += `\n\n$$\n${expression.trim()}\n$$\n`
         break

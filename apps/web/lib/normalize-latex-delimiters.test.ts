@@ -75,6 +75,10 @@ a + b = 2 \\\\
 
   it("closes unfinished inline math while streaming", () => {
     expect(normalizeLatexDelimiters("start \\(x^", true)).toBe("start $x^$")
+    expect(normalizeLatexDelimiters("start \\(x + \\", true)).toBe(
+      "start $x + $"
+    )
+    expect(normalizeLatexDelimiters("start \\(\\", true)).toBe("start ")
   })
 
   it("canonicalizes an unfinished attached display block while streaming", () => {
@@ -85,5 +89,16 @@ a + b = 2 \\\\
 \\begin{cases}
 a + b = 2 \\\\
 6a + 7b = 4`)
+  })
+
+  it("treats the first streamed closing dollar as provisional", () => {
+    const source = `$$\\begin{cases}
+a + b = 2 \\\\
+\\end{cases}$`
+    expect(normalizeLatexDelimiters(source, true)).toBe(`$$
+\\begin{cases}
+a + b = 2 \\\\
+\\end{cases}
+$$`)
   })
 })

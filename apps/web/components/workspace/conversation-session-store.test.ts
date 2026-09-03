@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import {
+  composerDraftFromUserParts,
   composerSlotId,
   hasComposerDraft,
   hasMessageEdit,
+  isComposerSending,
   messageEditNodeIdsForChat,
   messageEditSlotId,
   messageEditSlotSignature,
@@ -29,7 +31,7 @@ describe("shouldDeleteUploadedAttachment", () => {
 
 describe("composer session selectors", () => {
   beforeEach(() => {
-    useConversationSessionStore.setState({ drafts: {}, edits: {} })
+    useConversationSessionStore.setState({ drafts: {}, edits: {}, sending: {} })
   })
 
   it("returns the shared empty draft until a slot is written", () => {
@@ -122,7 +124,35 @@ describe("composer session selectors", () => {
 
 describe("message edit session selectors", () => {
   beforeEach(() => {
-    useConversationSessionStore.setState({ drafts: {}, edits: {} })
+    useConversationSessionStore.setState({ drafts: {}, edits: {}, sending: {} })
+  })
+
+  it("prefills MCP attachments as retained snapshots", () => {
+    expect(
+      composerDraftFromUserParts([
+        {
+          type: "attachment",
+          id: "snapshot-1",
+          name: "Usage Guide",
+          content: { kind: "text", text: "Stored body." },
+          source: {
+            kind: "mcp-resource",
+            profileId: "profile-1",
+            profileName: "Docs",
+            uri: "help://usage-guide",
+          },
+        },
+      ]).attachments
+    ).toMatchObject([
+      {
+        reference: {
+          kind: "mcp-resource",
+          profileId: "profile-1",
+          uri: "help://usage-guide",
+          resolution: { kind: "snapshot", id: "snapshot-1" },
+        },
+      },
+    ])
   })
 
   it("keeps the edit slot signature stable when only segment text changes", () => {
@@ -132,11 +162,13 @@ describe("message edit session selectors", () => {
     setEdit(slot, [{ type: "text", text: "a" }])
     const before = messageEditSlotSignature(
       useConversationSessionStore.getState().edits,
+      useConversationSessionStore.getState().drafts,
       "chat-1"
     )
     updateEditSegment(slot, 0, "ab")
     const after = messageEditSlotSignature(
       useConversationSessionStore.getState().edits,
+      useConversationSessionStore.getState().drafts,
       "chat-1"
     )
     expect(after).toBe(before)
@@ -149,6 +181,7 @@ describe("message edit session selectors", () => {
     expect(
       messageEditSlotSignature(
         useConversationSessionStore.getState().edits,
+        useConversationSessionStore.getState().drafts,
         "chat-1"
       )
     ).toBe("")
@@ -157,6 +190,7 @@ describe("message edit session selectors", () => {
     expect(
       messageEditNodeIdsForChat(
         useConversationSessionStore.getState().edits,
+        useConversationSessionStore.getState().drafts,
         "chat-1"
       )
     ).toEqual(new Set(["node-1"]))
@@ -165,6 +199,7 @@ describe("message edit session selectors", () => {
     expect(
       messageEditSlotSignature(
         useConversationSessionStore.getState().edits,
+        useConversationSessionStore.getState().drafts,
         "chat-1"
       )
     ).toBe("")
@@ -185,5 +220,44 @@ describe("message edit session selectors", () => {
     expect(hasComposerDraft(composerSlotId("chat-1", "linear", null))).toBe(
       false
     )
+  })
+
+  it("keeps the edit slot signature stable when only composer draft text changes", () => {
+    const { update } = useConversationSessionStore.getState()
+    const slot = messageEditSlotId("chat-1", "node-1")
+    update(slot, { text: "a" })
+    const before = messageEditSlotSignature(
+      useConversationSessionStore.getState().edits,
+      useConversationSessionStore.getState().drafts,
+      "chat-1"
+    )
+    update(slot, { text: "ab" })
+    const after = messageEditSlotSignature(
+      useConversationSessionStore.getState().edits,
+      useConversationSessionStore.getState().drafts,
+      "chat-1"
+    )
+    expect(after).toBe(before)
+    expect(after).toBe(slot)
+  })
+
+  it("keeps the edit slot signature stable when only sending flips", () => {
+    const { update, setSending } = useConversationSessionStore.getState()
+    const slot = messageEditSlotId("chat-1", "node-1")
+    update(slot, { text: "edit" })
+    const before = messageEditSlotSignature(
+      useConversationSessionStore.getState().edits,
+      useConversationSessionStore.getState().drafts,
+      "chat-1"
+    )
+    setSending(slot, true)
+    expect(isComposerSending(slot)).toBe(true)
+    const after = messageEditSlotSignature(
+      useConversationSessionStore.getState().edits,
+      useConversationSessionStore.getState().drafts,
+      "chat-1"
+    )
+    expect(after).toBe(before)
+    expect(after).toBe(slot)
   })
 })

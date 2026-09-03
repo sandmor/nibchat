@@ -39,6 +39,12 @@ export const attachmentReferenceSchema = z.discriminatedUnion("kind", [
       kind: z.literal("mcp-resource"),
       profileId: z.string().min(1),
       uri: z.string().min(1).max(4_000),
+      resolution: z.discriminatedUnion("kind", [
+        z.object({ kind: z.literal("live") }).strict(),
+        z
+          .object({ kind: z.literal("snapshot"), id: z.string().min(1) })
+          .strict(),
+      ]),
     })
     .strict(),
   z
@@ -161,6 +167,48 @@ export function conversationFindTextFromParts(parts: Parts): string {
     }
   }
   return chunks.join("\n")
+}
+
+/**
+ * Continue sends MCP as explicit live reads or retained snapshots. Snapshot
+ * references must identify an attachment on the validated edit source.
+ */
+export function reuseMcpAttachmentSnapshots(
+  sourceParts: Parts,
+  references: AttachmentReference[]
+): {
+  reused: AttachmentPart[]
+  unresolved: Extract<AttachmentReference, { kind: "mcp-resource" }>[]
+} {
+  const snapshots = new Map<string, AttachmentPart>()
+  for (const part of sourceParts) {
+    if (part.type !== "attachment" || part.source.kind !== "mcp-resource")
+      continue
+    snapshots.set(part.id, part)
+  }
+  const reused: AttachmentPart[] = []
+  const unresolved: Extract<AttachmentReference, { kind: "mcp-resource" }>[] =
+    []
+  for (const reference of references) {
+    if (reference.kind !== "mcp-resource") continue
+    if (reference.resolution.kind === "live") {
+      unresolved.push(reference)
+      continue
+    }
+    const snapshot = snapshots.get(reference.resolution.id)
+    if (!snapshot)
+      throw new Error("Retained MCP attachment snapshot was not found.")
+    if (
+      snapshot.source.kind !== "mcp-resource" ||
+      snapshot.source.profileId !== reference.profileId ||
+      snapshot.source.uri !== reference.uri
+    )
+      throw new Error(
+        "Retained MCP attachment snapshot does not match resource."
+      )
+    reused.push(snapshot)
+  }
+  return { reused, unresolved }
 }
 
 /** How attachment content is presented to the model. */
@@ -414,6 +462,20 @@ export function canEditMessageParts(
   if (partsHavePendingClientTools(parts)) return false
   return editableSegmentsFromParts(parts).some(
     (segment) => segment.type === "text"
+  )
+}
+
+/** User messages edit via the composer: text and/or attachments. */
+export function canEditUserComposer(
+  status: MessageStatus,
+  parts: Parts
+): boolean {
+  if (status === "streaming" || status === "awaiting_input") return false
+  if (partsHavePendingClientTools(parts)) return false
+  return (
+    editableSegmentsFromParts(parts).some(
+      (segment) => segment.type === "text"
+    ) || parts.some((part) => part.type === "attachment")
   )
 }
 

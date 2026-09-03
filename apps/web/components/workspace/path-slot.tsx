@@ -9,7 +9,7 @@
  */
 import type { NodeRow } from "@/lib/types"
 import type { ProviderSummary } from "./types"
-import { Message } from "./message"
+import { Message, type MessageComposerBindings } from "./message"
 import { StreamingBubble } from "./streaming-bubble"
 import { SlotCrossfade } from "./slot-crossfade"
 import {
@@ -27,8 +27,8 @@ export function PathSlot({
   onSelect,
   onChanged,
   onRegenerate,
-  onGenerateUnder,
   onAnswerTools,
+  composer,
 }: {
   row: PathTranscriptRow
   nodes: NodeRow[]
@@ -39,11 +39,11 @@ export function PathSlot({
   onSelect: (parentId: string, childId: string) => void
   onChanged: () => void | Promise<void>
   onRegenerate: (assistantNodeId: string) => void
-  onGenerateUnder: (parentNodeId: string) => void | Promise<void>
   onAnswerTools?: (
     assistantNodeId: string,
     toolResults: Array<{ toolCallId: string; output: unknown }>
   ) => void | Promise<void>
+  composer?: MessageComposerBindings
 }) {
   const liveStreamId = row.liveStreamId
 
@@ -68,8 +68,8 @@ export function PathSlot({
               ? () => onRegenerate(row.node.id)
               : undefined
           }
-          onGenerateUnder={onGenerateUnder}
           onAnswerTools={onAnswerTools}
+          composer={composer}
         />
       )}
     </SlotCrossfade>

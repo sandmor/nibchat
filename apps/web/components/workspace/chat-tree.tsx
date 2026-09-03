@@ -27,7 +27,7 @@ import type { NodeRow } from "@/lib/types"
 import type { ChatViewCamera } from "@/lib/chat-view-state"
 import type { ProviderSummary } from "./types"
 import { ComposeSlot, TreeHandoff, TreePlaque } from "./tree-card"
-import { Message } from "./message"
+import { Message, type MessageComposerBindings } from "./message"
 import { StreamingBubble } from "./streaming-bubble"
 import { collectHandoffs, uniqueHandoffAnchors } from "./tree-handoff"
 import {
@@ -119,11 +119,11 @@ export function ChatTree({
   onLocateHit,
   onChanged,
   onRegenerate,
-  onGenerateUnder,
   onAnswerTools,
   onStop,
   initialCamera = null,
   onCameraChange,
+  composer,
 }: {
   nodes: NodeRow[]
   activePath: NodeRow[]
@@ -154,7 +154,6 @@ export function ChatTree({
   onHandoffComplete?: (anchor: string | null) => void
   onChanged: () => void | Promise<void>
   onRegenerate: (id: string) => void
-  onGenerateUnder: (id: string) => void
   onAnswerTools: (
     id: string,
     results: Array<{ toolCallId: string; output: unknown }>
@@ -162,6 +161,7 @@ export function ChatTree({
   onStop: () => void
   initialCamera?: ChatViewCamera | null
   onCameraChange?: (camera: ChatViewCamera | null) => void
+  composer?: MessageComposerBindings
 }) {
   const viewportRef = useRef<HTMLDivElement>(null)
   const worldRef = useRef<HTMLDivElement>(null)
@@ -471,10 +471,7 @@ export function ChatTree({
 
     const world = worldRef.current
     const measured = world
-      ? readTreeCardSizes(
-          sizes,
-          world.querySelectorAll("[data-tree-size]")
-        )
+      ? readTreeCardSizes(sizes, world.querySelectorAll("[data-tree-size]"))
       : sizes
     if (measured !== sizes) {
       setSizes(measured)
@@ -978,8 +975,8 @@ export function ChatTree({
                   messageActionCaptions={messageActionCaptions}
                   onChanged={onChanged}
                   onRegenerate={onRegenerate}
-                  onGenerateUnder={onGenerateUnder}
                   onAnswerTools={onAnswerTools}
+                  composer={composer}
                 />
               )}
             </motion.div>
@@ -1045,8 +1042,8 @@ export function ChatTree({
                   messageActionCaptions={messageActionCaptions}
                   onChanged={onChanged}
                   onRegenerate={onRegenerate}
-                  onGenerateUnder={onGenerateUnder}
                   onAnswerTools={onAnswerTools}
+                  composer={composer}
                 />
               }
               onComplete={() => finishHandoff(handoff.anchor)}
@@ -1321,8 +1318,8 @@ const TreeMessage = memo(function TreeMessage({
   messageActionCaptions,
   onChanged,
   onRegenerate,
-  onGenerateUnder,
   onAnswerTools,
+  composer,
 }: {
   node: NodeRow
   nodes: NodeRow[]
@@ -1330,11 +1327,11 @@ const TreeMessage = memo(function TreeMessage({
   messageActionCaptions: boolean
   onChanged: () => void | Promise<void>
   onRegenerate: (id: string) => void
-  onGenerateUnder: (id: string) => void
   onAnswerTools: (
     id: string,
     results: Array<{ toolCallId: string; output: unknown }>
   ) => void
+  composer?: MessageComposerBindings
 }) {
   return (
     <Message
@@ -1348,8 +1345,8 @@ const TreeMessage = memo(function TreeMessage({
       onRegenerate={
         node.role === "assistant" ? () => onRegenerate(node.id) : undefined
       }
-      onGenerateUnder={onGenerateUnder}
       onAnswerTools={onAnswerTools}
+      composer={composer}
     />
   )
 })

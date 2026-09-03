@@ -30,6 +30,7 @@ import { TooltipProvider, WithTooltip } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import {
   useComposerDraft,
+  useComposerSending,
   useConversationSessionStore,
   type ComposerAttachment,
   type ComposerDraft,
@@ -64,6 +65,7 @@ export type ConversationComposerProps = {
   onOpenPrompts: () => void
   onStop?: () => void
   onRevealContextMessage?: (nodeId: string) => void
+  sendLabel?: string
 }
 
 export type SessionComposerProps = Omit<
@@ -91,6 +93,7 @@ export function SessionComposer(props: SessionComposerProps) {
       animate={props.animate}
       showContextPreview={props.showContextPreview}
       contextParentId={props.contextParentId}
+      sendLabel={props.sendLabel}
       latestRef={latestRef}
     />
   )
@@ -107,6 +110,7 @@ const SessionComposerLeaf = memo(function SessionComposerLeaf({
   animate,
   showContextPreview,
   contextParentId,
+  sendLabel,
   latestRef,
 }: {
   slot: string
@@ -119,9 +123,11 @@ const SessionComposerLeaf = memo(function SessionComposerLeaf({
   animate?: boolean
   showContextPreview?: boolean
   contextParentId?: string | null
+  sendLabel?: string
   latestRef: { current: SessionComposerProps }
 }) {
   const draft = useComposerDraft(slot)
+  const slotSending = useComposerSending(slot)
   const update = useConversationSessionStore((state) => state.update)
   const onTextChange = useCallback(
     (text: string) => update(slot, { text }),
@@ -153,10 +159,11 @@ const SessionComposerLeaf = memo(function SessionComposerLeaf({
       variant={variant}
       mcpAvailable={mcpAvailable}
       streaming={streaming}
-      submitting={submitting}
+      submitting={Boolean(submitting) || slotSending}
       animate={animate}
       showContextPreview={showContextPreview}
       contextParentId={contextParentId}
+      sendLabel={sendLabel}
       onTextChange={onTextChange}
       onSend={actions.onSend}
       onCancel={actions.onCancel}
@@ -197,6 +204,7 @@ export function ConversationComposer({
   onOpenPrompts,
   onStop,
   onRevealContextMessage,
+  sendLabel = "Send",
 }: ConversationComposerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [mcpMenuOpen, setMcpMenuOpen] = useState(false)
@@ -367,6 +375,7 @@ export function ConversationComposer({
         menuOpen={mcpMenuOpen}
         onChange={onTextChange}
         onSend={send}
+        onCancel={onCancel}
         onFiles={onFiles}
         onCollapse={() => setExpanded(false)}
       />
@@ -537,7 +546,7 @@ export function ConversationComposer({
                 className="size-4"
               />
             )}
-            Send
+            {sendLabel}
           </Button>
         </div>
       </div>
@@ -555,6 +564,7 @@ function ComposerField({
   menuOpen,
   onChange,
   onSend,
+  onCancel,
   onFiles,
   onCollapse,
 }: {
@@ -567,6 +577,7 @@ function ComposerField({
   menuOpen: boolean
   onChange: (text: string) => void
   onSend: () => void
+  onCancel?: () => void
   onFiles: (files: File[] | FileList) => void
   onCollapse: () => void
 }) {
@@ -614,9 +625,17 @@ function ComposerField({
         onKeyDown={(event) => {
           if (event.defaultPrevented || event.nativeEvent.isComposing) return
           if (event.key === "Escape") {
-            if (menuOpen || !expanded) return
+            if (menuOpen) return
+            if (expanded) {
+              event.preventDefault()
+              event.stopPropagation()
+              onCollapse()
+              return
+            }
+            if (!onCancel) return
             event.preventDefault()
-            onCollapse()
+            event.stopPropagation()
+            onCancel()
             return
           }
           if (event.key === "Enter" && !event.shiftKey) {
@@ -626,6 +645,7 @@ function ComposerField({
           }
         }}
         placeholder={placeholder}
+        aria-label={placeholder}
         onPaste={(event) => {
           const files = Array.from(event.clipboardData.files)
           if (files.length) {

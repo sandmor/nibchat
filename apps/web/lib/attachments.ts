@@ -119,7 +119,6 @@ export async function resolveUploadedAttachments(
     .selectAll()
     .where("user_id", "=", userId)
     .where("id", "in", ids)
-    .where("claimed_at", "is", null)
     .execute()
   if (rows.length !== ids.length)
     throw new Error("One or more file uploads are unavailable")
@@ -182,15 +181,36 @@ export async function claimUploadedAttachments(
       : []
   )
   if (!ids.length) return
-  const result = await trx
-    .updateTable("attachments")
-    .set({ claimed_at: new Date().toISOString() })
+  const rows = await trx
+    .selectFrom("attachments")
+    .select(["id", "claimed_at"])
     .where("user_id", "=", userId)
-    .where("claimed_at", "is", null)
     .where("id", "in", ids)
-    .executeTakeFirst()
-  if (Number(result.numUpdatedRows ?? 0) !== ids.length)
-    throw new Error("One or more image uploads were already used")
+    .execute()
+  if (rows.length !== ids.length)
+    throw new Error("One or more file uploads are unavailable")
+  const unclaimed = rows
+    .filter((row) => row.claimed_at == null)
+    .map((row) => row.id)
+  if (unclaimed.length) {
+    const result = await trx
+      .updateTable("attachments")
+      .set({ claimed_at: new Date().toISOString() })
+      .where("user_id", "=", userId)
+      .where("claimed_at", "is", null)
+      .where("id", "in", unclaimed)
+      .executeTakeFirst()
+    if (Number(result.numUpdatedRows ?? 0) !== unclaimed.length) {
+      const stillThere = await trx
+        .selectFrom("attachments")
+        .select("id")
+        .where("user_id", "=", userId)
+        .where("id", "in", ids)
+        .execute()
+      if (stillThere.length !== ids.length)
+        throw new Error("One or more file uploads are unavailable")
+    }
+  }
   await trx
     .insertInto("message_attachments")
     .values(

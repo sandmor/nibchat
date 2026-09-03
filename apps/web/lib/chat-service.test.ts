@@ -5,7 +5,6 @@ import {
   createBackupArchive,
   createChat,
   createProvider,
-  updateProvider,
   finishSetup,
   getTitleModelConfig,
   createTurn,
@@ -19,7 +18,6 @@ import {
   restoreAwaitingInput,
   restoreBackup,
   setNodeContextExcluded,
-  startGenerate,
   startRegenerate,
   setChatViewState,
 } from "@/lib/chat-service"
@@ -728,35 +726,6 @@ describe("branch stream helpers", () => {
     const ctx = ancestorPath(workspace.nodes, contextLeafId!)
     expect(ctx.map((n) => n.id)).toEqual([firstAssistant.id])
     expect(ctx.every((n) => n.role === "assistant")).toBe(true)
-  })
-
-  it("startGenerate attaches under parent without rewriting view selection", async () => {
-    const chat = await createChat(userId, "Generate test")
-    const userMsg = await insertNode({
-      chatId: chat.id,
-      parentId: null,
-      role: "user",
-      parts: [{ type: "text", text: "hi" }],
-    })
-    const existingChild = await insertNode({
-      chatId: chat.id,
-      parentId: userMsg.id,
-      role: "assistant",
-      parts: [{ type: "text", text: "old" }],
-    })
-    const { assistant, contextLeafId } = await startGenerate(userId, userMsg.id)
-    expect(assistant.parent_id).toBe(userMsg.id)
-    expect(contextLeafId).toBe(userMsg.id)
-    expect(assistant.status).toBe("streaming")
-
-    const workspace = await getWorkspace(userId, { chatId: chat.id })
-    const path = resolveActivePath(
-      workspace.nodes,
-      workspace.chat?.selected_root_node_id ?? null
-    )
-    expect(path.map((n) => n.id)).toEqual([userMsg.id, existingChild.id])
-    const parent = workspace.nodes.find((n) => n.id === userMsg.id)
-    expect(parent?.selected_child_id).toBe(existingChild.id)
   })
 
   it("startRegenerate rejects non-assistant targets", async () => {

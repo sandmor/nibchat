@@ -310,7 +310,7 @@ type InsertableNode = {
   id: string
   chat_id: string
   parent_id: string | null
-  selected_child_id: null
+  selected_child_id: string | null
   role: MessageRole
   parts_json: string
   search_text: string
@@ -349,8 +349,28 @@ function newNode(
 }
 
 /**
+ * User-edit continue: the new turn is a sibling of this node, so MCP snapshots
+ * on it may be copied instead of re-read from the live server.
+ */
+export async function loadEditSourceUserNode(
+  userId: string,
+  chatId: string,
+  nodeId: string,
+  parentId: string | null
+) {
+  const node = await assertNodeOwner(nodeId, userId)
+  if (node.chat_id !== chatId)
+    throw new Error("Edited message is not in this chat")
+  if (node.role !== "user")
+    throw new Error("Only user messages can be edited as a branch")
+  if ((node.parent_id ?? null) !== parentId)
+    throw new Error("Edited message is not under this parent")
+  return node
+}
+
+/**
  * Creates the user message and streaming assistant under an explicit parent.
- * View selection (selected_root / selected_child) is not updated — generation
+ * View selection is unchanged unless `attachSelection` is set — generation
  * placement is purely structural; the client may soft-follow if still on tip.
  */
 export async function createTurn(input: {
@@ -362,6 +382,8 @@ export async function createTurn(input: {
   attachments?: AttachmentPart[]
   assistantMetadata: Record<string, unknown>
   generationId?: string
+  /** Linear user-edit: wire parent → user → assistant in this transaction. */
+  attachSelection?: boolean
 }) {
   if (input.parentId) {
     const parent = await db
@@ -400,6 +422,7 @@ export async function createTurn(input: {
     },
     timestamp
   )
+  if (input.attachSelection) user.selected_child_id = assistant.id
   await db.transaction().execute(async (trx) => {
     await trx.insertInto("message_nodes").values(user).execute()
     await claimUploadedAttachments(input.userId, user.id, attachments, trx)
@@ -410,6 +433,19 @@ export async function createTurn(input: {
         nodeId: assistant.id,
         chatId: assistant.chat_id,
       })
+    if (!input.attachSelection) return
+    if (input.parentId)
+      await trx
+        .updateTable("message_nodes")
+        .set({ selected_child_id: user.id, updated_at: timestamp })
+        .where("id", "=", input.parentId)
+        .execute()
+    else
+      await trx
+        .updateTable("chats")
+        .set({ selected_root_node_id: user.id, updated_at: timestamp })
+        .where("id", "=", input.chatId)
+        .execute()
   })
   return { user, assistant }
 }
@@ -797,30 +833,6 @@ export async function startRegenerate(
   return {
     assistant,
     contextLeafId: original.parent_id as string | null,
-  }
-}
-
-/** New streaming assistant as a child of any parent node. */
-export async function startGenerate(
-  userId: string,
-  parentNodeId: string,
-  generationId?: string,
-  assistantMetadata: Record<string, unknown> = {}
-) {
-  const parent = await assertNodeOwner(parentNodeId, userId)
-  const assistant = await insertNode({
-    chatId: parent.chat_id,
-    parentId: parent.id,
-    role: "assistant",
-    parts: [],
-    status: "streaming",
-    metadata: assistantMetadata,
-    generationId,
-    attachSelection: false,
-  })
-  return {
-    assistant,
-    contextLeafId: parent.id as string,
   }
 }
 

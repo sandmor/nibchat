@@ -51,6 +51,7 @@ export type AttachmentReference =
       kind: "mcp-resource"
       profileId: string
       uri: string
+      resolution: { kind: "live" } | { kind: "snapshot"; id: string }
     }
   | {
       kind: "uploaded-file"

@@ -1,8 +1,11 @@
 "use client"
 
 import { create } from "zustand"
-import type { AttachmentReference } from "@/lib/types"
-import type { MessageEditSegment } from "@/lib/agent/parts"
+import type { AttachmentReference, Parts, TextPart } from "@/lib/types"
+import {
+  coalesceAdjacentTextParts,
+  type MessageEditSegment,
+} from "@/lib/agent/parts"
 import type { PdfAnalysis } from "@/lib/pdf-analysis"
 
 export type ComposerSurface = "linear" | "tree"
@@ -55,12 +58,72 @@ export function messageEditSlotId(chatId: string, nodeId: string) {
   return `${chatId}:edit:${nodeId}`
 }
 
+export function messageEditSlotPrefix(chatId: string) {
+  return `${chatId}:edit:`
+}
+
+/** Prefill an edit composer from a user message. Existing files stay claimed. */
+export function composerDraftFromUserParts(parts: Parts): ComposerDraft {
+  const coalesced = coalesceAdjacentTextParts(parts)
+  const text = coalesced
+    .filter((part): part is TextPart => part.type === "text")
+    .map((part) => part.text)
+    .join("\n\n")
+  const attachments: ComposerAttachment[] = []
+  for (const part of coalesced) {
+    if (part.type !== "attachment") continue
+    if (part.source.kind === "mcp-resource") {
+      attachments.push({
+        name: part.name,
+        claimed: true,
+        reference: {
+          kind: "mcp-resource",
+          profileId: part.source.profileId,
+          uri: part.source.uri,
+          resolution: { kind: "snapshot", id: part.id },
+        },
+      })
+      continue
+    }
+    if (part.content.kind === "binary") {
+      attachments.push({
+        name: part.name,
+        claimed: true,
+        previewUrl: `/api/attachments/${part.content.attachmentId}`,
+        reference: {
+          kind: "uploaded-file",
+          id: part.content.attachmentId,
+        },
+      })
+      continue
+    }
+    if (part.content.kind === "document") {
+      attachments.push({
+        name: part.name,
+        claimed: true,
+        reference: {
+          kind: "uploaded-file",
+          id: part.content.attachmentId,
+        },
+        pdfAnalysis: { version: 1, ...part.content.analysis },
+      })
+    }
+  }
+  return { text, attachments }
+}
+
+export function revokeComposerPreviewUrl(url: string | undefined) {
+  if (url?.startsWith("blob:")) URL.revokeObjectURL(url)
+}
+
 type ConversationSessionState = {
   drafts: Record<string, ComposerDraft>
   edits: Record<string, MessageEditDraft>
+  sending: Record<string, true>
   update: (slot: string, update: Partial<ComposerDraft>) => void
   setEdit: (slot: string, edits: MessageEditDraft) => void
   updateEditSegment: (slot: string, index: number, text: string) => void
+  setSending: (slot: string, sending: boolean) => void
   clear: (slot: string) => void
   clearChat: (chatId: string | null) => void
 }
@@ -73,6 +136,7 @@ export const useConversationSessionStore = create<ConversationSessionState>(
   (set) => ({
     drafts: {},
     edits: {},
+    sending: {},
     update: (slot, update) =>
       set((state) => ({
         drafts: {
@@ -97,13 +161,26 @@ export const useConversationSessionStore = create<ConversationSessionState>(
           },
         }
       }),
+    setSending: (slot, sending) =>
+      set((state) => {
+        if (sending) {
+          if (state.sending[slot]) return state
+          return { sending: { ...state.sending, [slot]: true } }
+        }
+        if (!state.sending[slot]) return state
+        const next = { ...state.sending }
+        delete next[slot]
+        return { sending: next }
+      }),
     clear: (slot) =>
       set((state) => {
         const drafts = { ...state.drafts }
         const edits = { ...state.edits }
+        const sending = { ...state.sending }
         delete drafts[slot]
         delete edits[slot]
-        return { drafts, edits }
+        delete sending[slot]
+        return { drafts, edits, sending }
       }),
     clearChat: (chatId) => {
       const prefix = `${chatId ?? "draft"}:`
@@ -115,6 +192,11 @@ export const useConversationSessionStore = create<ConversationSessionState>(
         ),
         edits: Object.fromEntries(
           Object.entries(state.edits).filter(
+            ([slot]) => !slot.startsWith(prefix)
+          )
+        ),
+        sending: Object.fromEntries(
+          Object.entries(state.sending).filter(
             ([slot]) => !slot.startsWith(prefix)
           )
         ),
@@ -131,6 +213,23 @@ export function readComposerDraft(slot: string): ComposerDraft {
 
 export function hasComposerDraft(slot: string) {
   return Object.hasOwn(useConversationSessionStore.getState().drafts, slot)
+}
+
+export function isComposerSending(slot: string) {
+  return Object.hasOwn(useConversationSessionStore.getState().sending, slot)
+}
+
+/** In-flight send for one slot. Independent of draft text so typing stays cheap. */
+export function useComposerSending(slot: string) {
+  return useConversationSessionStore((state) =>
+    Object.hasOwn(state.sending, slot)
+  )
+}
+
+export function useHasComposerDraft(slot: string) {
+  return useConversationSessionStore((state) =>
+    Object.hasOwn(state.drafts, slot)
+  )
 }
 
 /** One slot's draft. Typing re-renders only this subscriber, not the chat view. */
@@ -196,32 +295,43 @@ export function useHasMessageEdit(slot: string) {
 /**
  * Identity of in-progress message edits for a chat. Stable across keystrokes
  * so the tree canvas can keep those cards live without re-rendering on type.
+ * Includes assistant textarea slots (`edits`) and user-edit composers (`drafts`).
  */
 export function messageEditSlotSignature(
   edits: Record<string, MessageEditDraft>,
+  drafts: Record<string, ComposerDraft>,
   chatId: string | null | undefined
 ): string {
   if (!chatId) return ""
-  const prefix = `${chatId}:edit:`
-  return Object.keys(edits)
-    .filter((slot) => slot.startsWith(prefix))
-    .sort()
-    .join("\0")
+  const prefix = messageEditSlotPrefix(chatId)
+  const keys = new Set<string>()
+  for (const slot of Object.keys(edits)) {
+    if (slot.startsWith(prefix)) keys.add(slot)
+  }
+  for (const slot of Object.keys(drafts)) {
+    if (slot.startsWith(prefix)) keys.add(slot)
+  }
+  return [...keys].sort().join("\0")
 }
 
 export function useMessageEditSlotSignature(chatId: string | null | undefined) {
   return useConversationSessionStore((state) =>
-    messageEditSlotSignature(state.edits, chatId)
+    messageEditSlotSignature(state.edits, state.drafts, chatId)
   )
 }
 
 export function messageEditNodeIdsForChat(
   edits: Record<string, MessageEditDraft>,
+  drafts: Record<string, ComposerDraft>,
   chatId: string
 ): Set<string> {
-  const prefix = `${chatId}:edit:`
+  const prefix = messageEditSlotPrefix(chatId)
   const ids = new Set<string>()
   for (const slot of Object.keys(edits)) {
+    if (!slot.startsWith(prefix)) continue
+    ids.add(slot.slice(prefix.length))
+  }
+  for (const slot of Object.keys(drafts)) {
     if (!slot.startsWith(prefix)) continue
     ids.add(slot.slice(prefix.length))
   }

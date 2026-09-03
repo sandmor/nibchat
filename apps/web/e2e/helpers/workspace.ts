@@ -196,10 +196,10 @@ export async function editUserAsBranch(page: Page, nextText: string) {
   })
   const article = userArticles.last()
   await article.getByRole("button", { name: "Edit as branch" }).click()
-  const textarea = article.getByRole("textbox", { name: "Message text" })
-  await expect(textarea).toBeVisible()
-  await textarea.fill(nextText)
-  await article.getByRole("button", { name: "Save & generate" }).click()
+  const composer = page.getByRole("textbox", { name: "Edit this message…" })
+  await expect(composer).toBeVisible()
+  await composer.fill(nextText)
+  await page.getByRole("button", { name: "Save & generate" }).click()
 }
 
 export async function regenerateAssistant(page: Page) {

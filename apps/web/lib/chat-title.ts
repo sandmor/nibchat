@@ -16,11 +16,12 @@ export function seedChatTitle(message: string, attachmentNames: string[]) {
   return seed.slice(0, TITLE_MAX_CHARS)
 }
 
-/** First `continue` only: skip if already named, else seed now or generate after the reply. */
+/** First non-edit `continue` only: skip if already named, else seed or generate. */
 export function firstTurnTitleAction(
   title: string | null,
-  titleModelConfigured: boolean
+  titleModelConfigured: boolean,
+  editedFromNodeId?: string
 ): "skip" | "seed" | "generate" {
-  if (title != null) return "skip"
+  if (title != null || editedFromNodeId) return "skip"
   return titleModelConfigured ? "generate" : "seed"
 }

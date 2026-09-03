@@ -77,12 +77,16 @@ import { ConversationFindLayer } from "./conversation-find"
 import { ConversationFindBar } from "./conversation-find-bar"
 import { useConversationFindSession } from "./conversation-find-session"
 import { SessionComposer } from "./conversation-composer"
+import { type MessageComposerBindings } from "./message"
 import { ContextPreviewProvider } from "./context-preview"
 import {
   composerSlotId,
   hasComposerDraft,
+  isComposerSending,
   messageEditNodeIdsForChat,
+  messageEditSlotId,
   readComposerDraft,
+  revokeComposerPreviewUrl,
   shouldDeleteUploadedAttachment,
   treeDraftAnchorsForChat,
   type ComposerAttachment,
@@ -151,6 +155,9 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const linearComposerSlot = composerSlotId(selectedChatId, "linear", null)
   const updateSessionDraft = useConversationSessionStore(
     (state) => state.update
+  )
+  const setSessionSending = useConversationSessionStore(
+    (state) => state.setSending
   )
   const clearSessionDraft = useConversationSessionStore((state) => state.clear)
   const clearSessionChat = useConversationSessionStore(
@@ -227,7 +234,8 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       for (const [slot, draft] of Object.entries(drafts)) {
         if (!slot.startsWith(prefix)) continue
         for (const attachment of draft.attachments) {
-          if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl)
+          if (attachment.previewUrl)
+            revokeComposerPreviewUrl(attachment.previewUrl)
           if (attachment.reference.kind !== "uploaded-file") continue
           if (attachment.uploading) {
             cancelledUploadIds.current.add(attachment.reference.id)
@@ -373,9 +381,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
         return
       }
       if (node) {
-        const parts = coalesceAdjacentTextParts(
-          parseJson(node.parts_json, [])
-        )
+        const parts = coalesceAdjacentTextParts(parseJson(node.parts_json, []))
         for (const part of parts) {
           if (part.type !== "text" && part.type !== "reasoning") continue
           prepareStaticMarkdown(normalizeLatexDelimiters(part.text, false))
@@ -399,7 +405,11 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
           })
       )
       finishStream(streamId)
-      if (!node || terminal.result === "superseded" || terminal.result === "missing") {
+      if (
+        !node ||
+        terminal.result === "superseded" ||
+        terminal.result === "missing"
+      ) {
         void queryClient.invalidateQueries({
           queryKey: trpc.workspace.get.queryKey({ chatId: meta.chatId }),
         })
@@ -769,7 +779,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       onWorkspaceReady?: (info: {
         userNodeId: string | null
         assistantNodeId: string
-      }) => void
+      }) => void | Promise<void>
       /** Tree actions must not rewrite the persisted linear-path selection. */
       suppressSelectionFollow?: boolean
     }
@@ -808,14 +818,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       const userNodeId = response.headers.get("X-Nibchat-User-Node")
       // Prefer structural parent from the server; fall back to request body.
       const parentNodeId =
-        parentHeader ??
-        (body.intent === "continue"
-          ? userNodeId
-          : body.intent === "generate"
-            ? body.parentNodeId
-            : body.intent === "resume" || body.intent === "regenerate"
-              ? null
-              : null)
+        parentHeader ?? (body.intent === "continue" ? userNodeId : null)
       startStream(streamId, {
         nodeId,
         chatId: body.chatId,
@@ -891,7 +894,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
         await queryClient.invalidateQueries({
           queryKey: trpc.workspace.get.queryKey({ draft: true }),
         })
-        options?.onWorkspaceReady?.({
+        await options?.onWorkspaceReady?.({
           userNodeId,
           assistantNodeId: nodeId,
         })
@@ -1184,7 +1187,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     const current = readComposerDraft(slot)
     const next = current.attachments.filter((item) => item !== part)
     updateSessionDraft(slot, { attachments: next })
-    if (part.previewUrl) URL.revokeObjectURL(part.previewUrl)
+    if (part.previewUrl) revokeComposerPreviewUrl(part.previewUrl)
     if (
       shouldDeleteUploadedAttachment(part) &&
       part.reference.kind === "uploaded-file"
@@ -1198,15 +1201,6 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       chatId: data.chat.id,
       intent: "regenerate",
       assistantNodeId,
-    })
-  }
-
-  async function streamGenerate(parentNodeId: string) {
-    if (!data.chat) return
-    await runStream({
-      chatId: data.chat.id,
-      intent: "generate",
-      parentNodeId,
     })
   }
 
@@ -1228,8 +1222,24 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     const slot = treeSlot(anchor)
     const draft = readComposerDraft(slot)
     for (const attachment of draft.attachments) {
-      if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl)
+      if (attachment.previewUrl) revokeComposerPreviewUrl(attachment.previewUrl)
       if (mode === "sent") continue
+      removeAttachment(slot, attachment)
+    }
+    clearSessionDraft(slot)
+  }
+
+  function closeEditComposer(
+    node: NodeRow,
+    mode: "discard" | "sent" = "discard"
+  ) {
+    const slot = messageEditSlotId(node.chat_id, node.id)
+    const draft = readComposerDraft(slot)
+    for (const attachment of draft.attachments) {
+      if (mode === "sent") {
+        revokeComposerPreviewUrl(attachment.previewUrl)
+        continue
+      }
       removeAttachment(slot, attachment)
     }
     clearSessionDraft(slot)
@@ -1313,12 +1323,64 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     })
   }
 
-  async function streamTreeGenerate(parentNodeId: string) {
-    if (!data.chat) return
-    await runStream(
-      { chatId: data.chat.id, intent: "generate", parentNodeId },
-      { suppressSelectionFollow: true }
-    )
+  async function streamEditSend(node: NodeRow) {
+    if (!data.chat || !ensureModelReady(activeModelConfig)) return false
+    const slot = messageEditSlotId(node.chat_id, node.id)
+    if (isComposerSending(slot)) return false
+    const draft = readComposerDraft(slot)
+    const content = draft.text.trim()
+    if (!content && draft.attachments.length === 0) return false
+    if (draft.attachments.some((attachment) => attachment.uploading))
+      return false
+    const chatId = data.chat.id
+    const pendingAttachments = [...draft.attachments]
+    setSessionSending(slot, true)
+    updateSessionDraft(slot, {
+      attachments: pendingAttachments.map((item) => ({
+        ...item,
+        claimed: true,
+      })),
+    })
+    return new Promise<boolean>((resolve) => {
+      let started = false
+      let settled = false
+      const finish = (ok: boolean) => {
+        if (settled) return
+        settled = true
+        resolve(ok)
+      }
+      void runStream(
+        {
+          chatId,
+          intent: "continue",
+          parentNodeId: node.parent_id,
+          content,
+          editedFromNodeId: node.id,
+          ...(view === "linear" ? { attachSelection: true } : {}),
+          ...(pendingAttachments.length
+            ? {
+                attachments: pendingAttachments.map((item) => item.reference),
+              }
+            : {}),
+        },
+        {
+          suppressSelectionFollow: true,
+          onStreamStarted: () => {
+            started = true
+          },
+          onWorkspaceReady: () => {
+            closeEditComposer(node, "sent")
+            finish(true)
+          },
+        }
+      ).then(() => {
+        if (!started) {
+          updateSessionDraft(slot, { attachments: pendingAttachments })
+        }
+        if (hasComposerDraft(slot)) setSessionSending(slot, false)
+        finish(started)
+      })
+    })
   }
 
   async function streamTreeRegenerate(assistantNodeId: string) {
@@ -1436,9 +1498,29 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     if (!data.chat || !editSlotSignature) return new Set<string>()
     return messageEditNodeIdsForChat(
       useConversationSessionStore.getState().edits,
+      useConversationSessionStore.getState().drafts,
       data.chat.id
     )
   }, [data.chat, editSlotSignature])
+
+  const messageComposer: MessageComposerBindings = {
+    mcpAvailable: mcpAvailableForGeneration,
+    animate: animate && transition.duration > 0,
+    onSend: streamEditSend,
+    onCancel: (node) => closeEditComposer(node),
+    onFiles: (slot, files) => void uploadFiles(slot, files),
+    onRemoveAttachment: (slot, part) => removeAttachment(slot, part),
+    onPreview: (src, name) => setViewer({ src, name }),
+    onOpenResources: (slot) => {
+      setPickerSlot(slot)
+      setResourcePickerOpen(true)
+    },
+    onOpenPrompts: (slot) => {
+      setPickerSlot(slot)
+      setPromptPickerOpen(true)
+    },
+    onRevealContextMessage: setScrollTargetId,
+  }
 
   return (
     <ContextPreviewProvider
@@ -1560,8 +1642,8 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
               }}
               onChanged={() => invalidateWorkspace()}
               onRegenerate={streamRegenerate}
-              onGenerateUnder={streamGenerate}
               onAnswerTools={streamResume}
+              composer={messageComposer}
             />
           ) : (
             <ChatTree
@@ -1625,8 +1707,8 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
               onOpenDraft={openTreeDraft}
               onChanged={invalidateWorkspace}
               onRegenerate={streamTreeRegenerate}
-              onGenerateUnder={streamTreeGenerate}
               onAnswerTools={streamTreeResume}
+              composer={messageComposer}
               onStop={() =>
                 streamsForActiveChat.forEach(([id]) => stopStream(id))
               }
@@ -1752,6 +1834,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
                                 kind: "mcp-resource" as const,
                                 profileId: surface.profileId,
                                 uri: resource.uri,
+                                resolution: { kind: "live" as const },
                               },
                             },
                           ]

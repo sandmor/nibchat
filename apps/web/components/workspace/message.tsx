@@ -60,16 +60,22 @@ import { useWorkspaceChrome } from "./shell"
 import {
   allPendingResultsReady,
   canEditMessageParts,
+  canEditUserComposer,
   editableSegmentsFromParts,
   pendingToolInvocations,
 } from "@/lib/agent/parts"
 import {
+  composerDraftFromUserParts,
+  hasComposerDraft,
   hasMessageEdit,
   messageEditSlotId,
   useConversationSessionStore,
+  useHasComposerDraft,
   useHasMessageEdit,
   useMessageEdit,
+  type ComposerAttachment,
 } from "./conversation-session-store"
+import { SessionComposer } from "./conversation-composer"
 
 export function MessageAction({
   icon,
@@ -146,6 +152,19 @@ function MoreActionsTrigger({ captions }: { captions: boolean }) {
   return <WithTooltip label="More">{trigger}</WithTooltip>
 }
 
+export type MessageComposerBindings = {
+  mcpAvailable: boolean
+  animate: boolean
+  onSend: (node: NodeRow) => Promise<boolean>
+  onCancel: (node: NodeRow) => void
+  onFiles: (slot: string, files: File[] | FileList) => void
+  onRemoveAttachment: (slot: string, part: ComposerAttachment) => void
+  onPreview: (src: string, name: string) => void
+  onOpenResources: (slot: string) => void
+  onOpenPrompts: (slot: string) => void
+  onRevealContextMessage?: (nodeId: string) => void
+}
+
 export function Message({
   node,
   nodes,
@@ -154,10 +173,10 @@ export function Message({
   onSelect,
   onChanged,
   onRegenerate,
-  onGenerateUnder,
   onAnswerTools,
   presentation = "linear",
   attachSelectionOnEdit = true,
+  composer,
 }: {
   node: NodeRow
   nodes: NodeRow[]
@@ -166,7 +185,6 @@ export function Message({
   onSelect?: (parentId: string, childId: string) => void
   onChanged?: () => void | Promise<void>
   onRegenerate?: () => void
-  onGenerateUnder?: (parentNodeId: string) => void | Promise<void>
   onAnswerTools?: (
     assistantNodeId: string,
     toolResults: Array<{ toolCallId: string; output: unknown }>
@@ -175,6 +193,7 @@ export function Message({
   presentation?: "linear" | "tree"
   /** Tree edits create real branches without changing Linear's selected path. */
   attachSelectionOnEdit?: boolean
+  composer?: MessageComposerBindings
 }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
@@ -182,22 +201,31 @@ export function Message({
   const metadata = parseJson<Record<string, unknown>>(node.metadata_json, {})
   const text = textFromParts(parts)
   const editSlot = messageEditSlotId(node.chat_id, node.id)
+  const editingComposer = useHasComposerDraft(editSlot)
   const editing = useHasMessageEdit(editSlot)
   const edits = useMessageEdit(editSlot)
   const setEdit = useConversationSessionStore((state) => state.setEdit)
+  const update = useConversationSessionStore((state) => state.update)
   const updateEditSegment = useConversationSessionStore(
     (state) => state.updateEditSegment
   )
   const clearEdit = useConversationSessionStore((state) => state.clear)
-  const articleRef = useRef<HTMLElement>(null)
-  const wasEditingRef = useRef(editing)
+  const shellRef = useRef<HTMLElement | null>(null)
+  const setShellRef = (el: HTMLElement | null) => {
+    shellRef.current = el
+  }
+  const liveEdit = editingComposer || editing
+  const wasEditingRef = useRef(liveEdit)
   useEffect(() => {
     const wasEditing = wasEditingRef.current
-    wasEditingRef.current = editing
-    if (wasEditing && !editing)
-      articleRef.current?.focus({ preventScroll: true })
-  }, [editing])
-  const canEditAsBranch = canEditMessageParts(node.status, parts)
+    wasEditingRef.current = liveEdit
+    if (wasEditing && !liveEdit)
+      shellRef.current?.focus({ preventScroll: true })
+  }, [liveEdit])
+  const canEditAsBranch =
+    node.role === "user"
+      ? Boolean(composer) && canEditUserComposer(node.status, parts)
+      : canEditMessageParts(node.status, parts)
   const interactiveTools =
     node.role === "assistant" &&
     node.status === "awaiting_input" &&
@@ -258,15 +286,10 @@ export function Message({
 
   const forkEditMutation = useMutation(
     trpc.workspace.forkEdit.mutationOptions({
-      onSuccess: async (result) => {
+      onSuccess: async () => {
         clearEdit(editSlot)
-        const forked = result.node
-        // Wait for workspace refresh so soft-follow sees the forked tip
-        // (server already attached selection to the new branch).
+        // Wait for workspace refresh so the forked tip is in cache.
         await Promise.resolve(onChanged?.())
-        if (forked.role === "user" && onGenerateUnder) {
-          await onGenerateUnder(forked.id)
-        }
       },
       onError: (error) => toast.error(error.message || "Edit failed"),
     })
@@ -327,6 +350,11 @@ export function Message({
       : null
   const tree = presentation === "tree"
   const beginEdit = () => {
+    if (node.role === "user") {
+      if (!hasComposerDraft(editSlot))
+        update(editSlot, composerDraftFromUserParts(parts))
+      return
+    }
     if (!hasMessageEdit(editSlot)) {
       setEdit(editSlot, editableSegmentsFromParts(parts))
     }
@@ -348,9 +376,46 @@ export function Message({
     edits.some((segment) => segment.type === "text" && segment.text.trim()) &&
     !forkEditMutation.isPending
 
+  if (editingComposer && composer) {
+    return (
+      <div
+        ref={setShellRef}
+        tabIndex={-1}
+        data-find-node={node.id}
+        className={
+          presentation === "linear" ? "ml-auto w-full max-w-[88%]" : undefined
+        }
+      >
+        <SessionComposer
+          slot={editSlot}
+          variant="inline"
+          autoFocus
+          animate={composer.animate}
+          placeholder="Edit this message…"
+          sendLabel="Save & generate"
+          mcpAvailable={composer.mcpAvailable}
+          showContextPreview
+          contextParentId={node.parent_id}
+          onSend={() => {
+            void composer.onSend(node)
+          }}
+          onCancel={() => composer.onCancel(node)}
+          onFiles={(files) => composer.onFiles(editSlot, files)}
+          onRemoveAttachment={(part) =>
+            composer.onRemoveAttachment(editSlot, part)
+          }
+          onPreview={composer.onPreview}
+          onOpenResources={() => composer.onOpenResources(editSlot)}
+          onOpenPrompts={() => composer.onOpenPrompts(editSlot)}
+          onRevealContextMessage={composer.onRevealContextMessage}
+        />
+      </div>
+    )
+  }
+
   return (
     <article
-      ref={articleRef}
+      ref={setShellRef}
       tabIndex={-1}
       data-find-node={node.id}
       {...(node.status === "streaming" ? { "data-find-skip": "" } : {})}
@@ -551,7 +616,7 @@ export function Message({
               disabled={!canSaveEdit}
               onClick={saveEdit}
             >
-              {node.role === "user" ? "Save & generate" : "Save branch"}
+              Save branch
             </Button>
           </div>
         ) : (

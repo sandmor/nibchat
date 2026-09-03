@@ -2,18 +2,20 @@ import { describe, expect, it } from "vitest"
 import { streamBodySchema } from "@/lib/stream-body"
 
 describe("streamBodySchema", () => {
-  it("accepts MCP resource references without client snapshots", () => {
+  it("accepts retained MCP snapshot references", () => {
     expect(
       streamBodySchema.parse({
         intent: "continue",
         chatId: "chat-1",
         timeZone: "America/Bogota",
         content: "",
+        editedFromNodeId: "user-1",
         attachments: [
           {
             kind: "mcp-resource",
             profileId: "profile-1",
             uri: "help://usage-guide",
+            resolution: { kind: "snapshot", id: "part-1" },
           },
         ],
       })
@@ -25,12 +27,14 @@ describe("streamBodySchema", () => {
       streamBodySchema.safeParse({
         intent: "continue",
         chatId: "chat-1",
+        timeZone: "America/Bogota",
         content: "",
         attachments: [
           {
             kind: "mcp-resource",
             profileId: "profile-1",
             uri: "help://usage-guide",
+            resolution: { kind: "live" },
             name: "Usage Guide",
             content: { kind: "text", text: "not accepted" },
           },
@@ -43,7 +47,6 @@ describe("streamBodySchema", () => {
     for (const input of [
       { intent: "continue", chatId: "chat-1", content: "Hi" },
       { intent: "regenerate", chatId: "chat-1", assistantNodeId: "a1" },
-      { intent: "generate", chatId: "chat-1", parentNodeId: "p1" },
       {
         intent: "resume",
         chatId: "chat-1",

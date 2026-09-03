@@ -11,6 +11,33 @@ describe("normalizeLatexDelimiters", () => {
     )
   })
 
+  it("canonicalizes attached delimiters around multiline display math", () => {
+    const source = `$$\\begin{cases}
+a + b = 2 \\\\
+6a + 7b = 4
+\\end{cases}$$`
+    const expected = `$$
+\\begin{cases}
+a + b = 2 \\\\
+6a + 7b = 4
+\\end{cases}
+$$`
+
+    expect(normalizeLatexDelimiters(source, false)).toBe(expected)
+    expect(normalizeLatexDelimiters("$$x^2$$", false)).toBe("$$x^2$$")
+  })
+
+  it("leaves ordinary math unchanged while streaming", () => {
+    const source = `$$x^2$$
+Paragraph with $$y^2$$ and $z$.
+
+$$
+a + b = 2
+$$`
+
+    expect(normalizeLatexDelimiters(source, true)).toBe(source)
+  })
+
   it("leaves escaped delimiters in link and image destinations", () => {
     const link = "[Foo (bar)](https://en.wikipedia.org/wiki/Foo_\\(bar\\))"
     expect(normalizeLatexDelimiters(link, false)).toBe(link)
@@ -38,9 +65,25 @@ describe("normalizeLatexDelimiters", () => {
     expect(normalizeLatexDelimiters("```\n\\(x\\)\n```\n\\(y\\)", false)).toBe(
       "```\n\\(x\\)\n```\n$y$"
     )
+    const attachedBlock = `$$\\begin{cases}
+a + b = 2 \\\\
+\\end{cases}$$`
+    expect(
+      normalizeLatexDelimiters(`\`\`\`latex\n${attachedBlock}\n\`\`\``, false)
+    ).toBe(`\`\`\`latex\n${attachedBlock}\n\`\`\``)
   })
 
   it("closes unfinished inline math while streaming", () => {
     expect(normalizeLatexDelimiters("start \\(x^", true)).toBe("start $x^$")
+  })
+
+  it("canonicalizes an unfinished attached display block while streaming", () => {
+    const source = `$$\\begin{cases}
+a + b = 2 \\\\
+6a + 7b = 4`
+    expect(normalizeLatexDelimiters(source, true)).toBe(`$$
+\\begin{cases}
+a + b = 2 \\\\
+6a + 7b = 4`)
   })
 })

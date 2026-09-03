@@ -6,6 +6,7 @@ import {
   StaticMarkdownCache,
   renderStaticMarkdown,
 } from "@/lib/static-markdown"
+import { normalizeLatexDelimiters } from "@/lib/normalize-latex-delimiters"
 
 describe("static Markdown renderer", () => {
   it("emits cached-HTML controls for code and tables", () => {
@@ -47,6 +48,17 @@ console.log(answer)
     expect(html).not.toContain("<script")
     expect(html).not.toContain("onclick")
     expect(html).not.toContain("javascript:")
+  })
+
+  it("renders normalized multiline KaTeX with attached delimiters", () => {
+    const source = `$$\\begin{cases}
+a + b = 2 \\\\
+6a + 7b = 4
+\\end{cases}$$`
+    const html = renderStaticMarkdown(normalizeLatexDelimiters(source, false))
+
+    expect(html).toContain('class="katex-display"')
+    expect(html).not.toContain("katex-error")
   })
 
   it("shares entries by Markdown source", () => {

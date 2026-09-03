@@ -101,6 +101,72 @@ function endOfAutolink(source: string, index: number) {
 }
 
 /**
+ * Some TeX renderers accept display delimiters attached to multi-line math:
+ *
+ * $$\begin{cases}
+ * a = b
+ * \end{cases}$$
+ *
+ * Streamdown (through remark-math) instead interprets text following an
+ * opening flow fence as metadata, so that form loses `\begin{cases}`. Move
+ * the delimiters onto their own lines before either renderer parses it.
+ */
+function attachedMultilineDollarBlock(
+  source: string,
+  index: number,
+  streaming: boolean
+) {
+  if (
+    !source.startsWith("$$", index) ||
+    source[index + 2] === "$" ||
+    isEscaped(source, index)
+  )
+    return
+
+  const openingLineEnd = source.indexOf("\n", index + 2)
+  if (openingLineEnd === -1) return
+  if (!source.slice(index + 2, openingLineEnd).trim()) return
+
+  // A matching delimiter on the opening line makes this ordinary text math,
+  // even if more Markdown follows on later lines. It is not an attached
+  // multi-line display block.
+  for (let cursor = index + 2; cursor < openingLineEnd - 1; cursor++) {
+    if (
+      source[cursor] === "$" &&
+      source[cursor + 1] === "$" &&
+      source[cursor - 1] !== "$" &&
+      source[cursor + 2] !== "$" &&
+      !isEscaped(source, cursor)
+    )
+      return
+  }
+
+  for (let cursor = openingLineEnd + 1; cursor < source.length - 1; cursor++) {
+    if (
+      source[cursor] !== "$" ||
+      source[cursor + 1] !== "$" ||
+      source[cursor - 1] === "$" ||
+      source[cursor + 2] === "$" ||
+      isEscaped(source, cursor)
+    )
+      continue
+
+    const lineEnd = source.indexOf("\n", cursor + 2)
+    const afterDelimiter = source.slice(
+      cursor + 2,
+      lineEnd === -1 ? source.length : lineEnd
+    )
+    if (!/^[ \t]*$/.test(afterDelimiter)) continue
+
+    return { close: cursor }
+  }
+
+  // Once the opening line is complete, Streamdown can safely repair the
+  // still-incomplete canonical block while the rest of the response arrives.
+  return streaming ? { close: -1 } : undefined
+}
+
+/**
  * Streamdown's math plugin deliberately accepts dollar delimiters only. Models
  * also commonly emit LaTeX's \(...\) and \[...\] forms, so normalize those
  * forms before parsing while preserving code examples, link destinations, and
@@ -139,6 +205,21 @@ export function normalizeLatexDelimiters(source: string, streaming: boolean) {
         output += source.slice(index, end)
         if (lineEnd !== -1) output += "\n"
         index = lineEnd === -1 ? source.length : lineEnd + 1
+        continue
+      }
+    }
+
+    if (lineStart) {
+      const block = attachedMultilineDollarBlock(source, index, streaming)
+      if (block) {
+        output += "$$\n"
+        if (block.close === -1) {
+          output += source.slice(index + 2)
+          break
+        }
+        output += source.slice(index + 2, block.close)
+        output += "\n$$"
+        index = block.close + 2
         continue
       }
     }

@@ -1,4 +1,5 @@
 import { buildModelMessages } from "@/lib/agent/build-messages"
+import { searchTextFromParts } from "@/lib/agent/parts"
 import { ancestorPath, parseJson } from "@/lib/domain"
 import {
   assemblePromptContext,
@@ -261,6 +262,11 @@ export type AssembledContextPreviewData = {
   excludedMessages: ExcludedMessagePreview[]
 }
 
+export type ContextPreviewOverlay = {
+  nodeId: string
+  parts: Parts
+}
+
 export type AssembleContextPreviewInput = {
   nodes: NodeRow[]
   /** Parent the next user message will attach under; ancestors are the path. */
@@ -276,12 +282,40 @@ export type AssembleContextPreviewInput = {
   timeZone?: string
   /** Time represented by the preview. Defaults to the assembly time. */
   now?: Date
+  /**
+   * Simulate the sibling `forkEdit` would insert at this node's path
+   * position: edited parts, owner-edited provenance, complete and included.
+   */
+  overlay?: ContextPreviewOverlay
+}
+
+function overlayContextNodes(
+  nodes: NodeRow[],
+  overlay?: ContextPreviewOverlay
+): NodeRow[] {
+  if (!overlay) return nodes
+  return nodes.map((node) => {
+    if (node.id !== overlay.nodeId) return node
+    const metadata = parseJson<Record<string, unknown>>(node.metadata_json, {})
+    return {
+      ...node,
+      parts_json: JSON.stringify(overlay.parts),
+      search_text: searchTextFromParts(overlay.parts),
+      excluded_from_context: false,
+      status: "complete",
+      metadata_json: JSON.stringify({
+        ...metadata,
+        provenance: "owner-edited",
+      }),
+    }
+  })
 }
 
 export function assembleContextPreview(
   input: AssembleContextPreviewInput
 ): AssembledContextPreviewData {
   const pdfInputMode = input.pdfInputMode ?? "extracted"
+  const nodes = overlayContextNodes(input.nodes, input.overlay)
   const stacksById = new Map(
     input.stacks.map((row) => [row.id, row.stack] as const)
   )
@@ -291,7 +325,7 @@ export function assembleContextPreview(
     stacksById,
   })
   const contextNodes = input.contextParentId
-    ? ancestorPath(input.nodes, input.contextParentId)
+    ? ancestorPath(nodes, input.contextParentId)
     : []
   const pathMessages = buildModelMessages({
     nodes: contextNodes,

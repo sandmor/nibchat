@@ -9,7 +9,7 @@
  */
 import type { NodeRow } from "@/lib/types"
 import type { ProviderSummary } from "./types"
-import { Message, type MessageComposerBindings } from "./message"
+import { Message, type MessageEditorBindings } from "./message"
 import { StreamingBubble } from "./streaming-bubble"
 import { SlotCrossfade } from "./slot-crossfade"
 import {
@@ -28,7 +28,7 @@ export function PathSlot({
   onChanged,
   onRegenerate,
   onAnswerTools,
-  composer,
+  editor,
 }: {
   row: PathTranscriptRow
   nodes: NodeRow[]
@@ -43,7 +43,7 @@ export function PathSlot({
     assistantNodeId: string,
     toolResults: Array<{ toolCallId: string; output: unknown }>
   ) => void | Promise<void>
-  composer?: MessageComposerBindings
+  editor?: MessageEditorBindings
 }) {
   const liveStreamId = row.liveStreamId
 
@@ -69,7 +69,7 @@ export function PathSlot({
               : undefined
           }
           onAnswerTools={onAnswerTools}
-          composer={composer}
+          editor={editor}
         />
       )}
     </SlotCrossfade>

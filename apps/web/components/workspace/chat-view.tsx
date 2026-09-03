@@ -76,13 +76,13 @@ import { composeLayoutAnchor, composeLayoutId } from "./tree-layout"
 import { ConversationFindLayer } from "./conversation-find"
 import { ConversationFindBar } from "./conversation-find-bar"
 import { useConversationFindSession } from "./conversation-find-session"
-import { SessionComposer } from "./conversation-composer"
-import { type MessageComposerBindings } from "./message"
+import { SessionMessageEditor } from "./message-editor"
+import { type MessageEditorBindings } from "./message"
 import { ContextPreviewProvider } from "./context-preview"
 import {
   composerSlotId,
   hasComposerDraft,
-  isComposerSending,
+  isEditorSending,
   messageEditNodeIdsForChat,
   messageEditSlotId,
   readComposerDraft,
@@ -230,10 +230,11 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const disposeSessionChat = useCallback(
     (chatId: string | null) => {
       const prefix = `${chatId ?? "draft"}:`
-      const drafts = useConversationSessionStore.getState().drafts
-      for (const [slot, draft] of Object.entries(drafts)) {
+      const sessions = useConversationSessionStore.getState().sessions
+      for (const [slot, session] of Object.entries(sessions)) {
         if (!slot.startsWith(prefix)) continue
-        for (const attachment of draft.attachments) {
+        if (session.kind !== "user-turn") continue
+        for (const attachment of session.attachments) {
           if (attachment.previewUrl)
             revokeComposerPreviewUrl(attachment.previewUrl)
           if (attachment.reference.kind !== "uploaded-file") continue
@@ -1229,7 +1230,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     clearSessionDraft(slot)
   }
 
-  function closeEditComposer(
+  function closeMessageEdit(
     node: NodeRow,
     mode: "discard" | "sent" = "discard"
   ) {
@@ -1326,7 +1327,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   async function streamEditSend(node: NodeRow) {
     if (!data.chat || !ensureModelReady(activeModelConfig)) return false
     const slot = messageEditSlotId(node.chat_id, node.id)
-    if (isComposerSending(slot)) return false
+    if (isEditorSending(slot)) return false
     const draft = readComposerDraft(slot)
     const content = draft.text.trim()
     if (!content && draft.attachments.length === 0) return false
@@ -1369,7 +1370,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
             started = true
           },
           onWorkspaceReady: () => {
-            closeEditComposer(node, "sent")
+            closeMessageEdit(node, "sent")
             finish(true)
           },
         }
@@ -1482,7 +1483,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const treeDraftAnchors = useMemo(() => {
     if (!data.chat) return new Set<string | null>()
     const anchors = treeDraftAnchorsForChat(
-      useConversationSessionStore.getState().drafts,
+      useConversationSessionStore.getState().sessions,
       data.chat.id
     )
     // Hide the composer in the same render the user node appears, so layout
@@ -1497,17 +1498,16 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const editingNodeIds = useMemo(() => {
     if (!data.chat || !editSlotSignature) return new Set<string>()
     return messageEditNodeIdsForChat(
-      useConversationSessionStore.getState().edits,
-      useConversationSessionStore.getState().drafts,
+      useConversationSessionStore.getState().sessions,
       data.chat.id
     )
   }, [data.chat, editSlotSignature])
 
-  const messageComposer: MessageComposerBindings = {
+  const messageEditor: MessageEditorBindings = {
     mcpAvailable: mcpAvailableForGeneration,
     animate: animate && transition.duration > 0,
     onSend: streamEditSend,
-    onCancel: (node) => closeEditComposer(node),
+    onCancel: (node) => closeMessageEdit(node),
     onFiles: (slot, files) => void uploadFiles(slot, files),
     onRemoveAttachment: (slot, part) => removeAttachment(slot, part),
     onPreview: (src, name) => setViewer({ src, name }),
@@ -1643,7 +1643,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
               onChanged={() => invalidateWorkspace()}
               onRegenerate={streamRegenerate}
               onAnswerTools={streamResume}
-              composer={messageComposer}
+              editor={messageEditor}
             />
           ) : (
             <ChatTree
@@ -1669,7 +1669,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
               renderComposer={(anchor, options) => {
                 const slot = treeSlot(anchor)
                 return (
-                  <SessionComposer
+                  <SessionMessageEditor
                     slot={slot}
                     variant="inline"
                     autoFocus={options.autoFocus}
@@ -1708,7 +1708,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
               onChanged={invalidateWorkspace}
               onRegenerate={streamTreeRegenerate}
               onAnswerTools={streamTreeResume}
-              composer={messageComposer}
+              editor={messageEditor}
               onStop={() =>
                 streamsForActiveChat.forEach(([id]) => stopStream(id))
               }
@@ -1752,7 +1752,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
               className="mx-auto"
               style={{ maxWidth: "var(--composer-width, 48rem)" }}
             >
-              <SessionComposer
+              <SessionMessageEditor
                 slot={linearComposerSlot}
                 animate={animate && transition.duration > 0}
                 placeholder="Message Nibchat…"

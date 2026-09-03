@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type { NodeRow } from "@/lib/types"
 import type { ProviderSummary } from "./types"
-import type { MessageComposerBindings } from "./message"
+import type { MessageEditorBindings } from "./message"
 import { Empty } from "./empty"
 import { PathSlot } from "./path-slot"
 import { StreamingBubble } from "./streaming-bubble"
@@ -91,7 +91,7 @@ export type ChatTranscriptProps = {
     assistantNodeId: string,
     toolResults: Array<{ toolCallId: string; output: unknown }>
   ) => void | Promise<void>
-  composer?: MessageComposerBindings
+  editor?: MessageEditorBindings
 }
 
 export function ChatTranscript(props: ChatTranscriptProps) {
@@ -118,7 +118,7 @@ function VirtualChatTranscript({
   onChanged,
   onRegenerate,
   onAnswerTools,
-  composer,
+  editor,
 }: ChatTranscriptProps) {
   const viewportRef = useRef<HTMLDivElement>(null)
   const transcriptCanvasRef = useRef<HTMLDivElement>(null)
@@ -444,7 +444,7 @@ function VirtualChatTranscript({
                     onChanged={onChanged}
                     onRegenerate={onRegenerate}
                     onAnswerTools={onAnswerTools}
-                    composer={composer}
+                    editor={editor}
                   />
                 )}
               </TranscriptVirtualRow>

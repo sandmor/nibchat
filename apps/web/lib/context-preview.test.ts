@@ -522,4 +522,50 @@ describe("assembleContextPreview", () => {
     expect(preview.missingStackId).toBe("gone")
     expect(preview.source).toBe("fallback")
   })
+
+  it("overlays edited assistant parts onto the path without a draft layer", () => {
+    const user = node("u1", "user", [{ type: "text", text: "ask" }])
+    const assistant = node(
+      "a1",
+      "assistant",
+      [
+        { type: "reasoning", text: "scratch" },
+        { type: "text", text: "old" },
+      ],
+      { parent_id: "u1" }
+    )
+    const stacks = [{ id: "def", stack: defaultPromptStack() }]
+    const baseline = assembleContextPreview({
+      nodes: [user, assistant],
+      contextParentId: "a1",
+      chatStackId: null,
+      defaultStackId: "def",
+      stacks,
+      replayReasoning: true,
+    })
+    const overlayText = "brand new assistant answer that is much longer"
+    const preview = assembleContextPreview({
+      nodes: [user, assistant],
+      contextParentId: "a1",
+      chatStackId: null,
+      defaultStackId: "def",
+      stacks,
+      replayReasoning: true,
+      overlay: {
+        nodeId: "a1",
+        parts: [
+          { type: "reasoning", text: "scratch" },
+          { type: "text", text: overlayText },
+        ],
+      },
+    })
+    expect(preview.summary.layers.some((layer) => layer.id === "draft")).toBe(
+      false
+    )
+    expect(preview.summary.charCount).not.toBe(baseline.summary.charCount)
+    expect(preview.summary.charCount).toBeGreaterThan(preview.system.length)
+    expect(preview.warnings.map((warning) => warning.message)).toContain(
+      "Reasoning replay disabled for edited branches"
+    )
+  })
 })

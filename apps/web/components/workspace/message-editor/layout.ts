@@ -1,21 +1,44 @@
-export type ComposerSurface = "docked" | "inline"
+export type EditorSurface = "docked" | "inline"
+export type EditorPurpose = "compose" | "edit"
+export type EditorPlacement = "linear" | "tree"
+
+const FIELD_MIN = "4.5rem"
 
 /**
- * Compact field: grow with the draft, then scroll. Expanded raises the
- * ceiling so a long write still leaves the transcript or tree readable.
+ * Compact field: grow with the draft, then scroll. Compose keeps a small
+ * ceiling so the transcript stays readable. Message-edit uses a larger cap
+ * because the bubble already owned that space.
  */
-export function composerFieldMinHeight(
-  surface: ComposerSurface,
-  expanded: boolean
-) {
-  if (!expanded) return "4.5rem"
+export function editorFieldMinHeight({
+  purpose,
+  surface,
+  expanded = false,
+}: {
+  purpose: EditorPurpose
+  surface: EditorSurface
+  expanded?: boolean
+}) {
+  if (purpose === "edit" || !expanded) return FIELD_MIN
   return surface === "inline" ? "min(28dvh, 12rem)" : "min(36dvh, 14rem)"
 }
 
-export function composerFieldMaxHeight(
-  surface: ComposerSurface,
-  expanded: boolean
-) {
+export function editorFieldMaxHeight({
+  purpose,
+  surface,
+  placement = "linear",
+  expanded = false,
+}: {
+  purpose: EditorPurpose
+  surface: EditorSurface
+  placement?: EditorPlacement
+  expanded?: boolean
+}) {
+  if (purpose === "edit") {
+    // Tree cards drop their paint cap while editing and measure the live box.
+    // Cap the field so a long answer cannot own the forest.
+    if (placement === "tree") return "min(48dvh, 24rem)"
+    return "min(70dvh, 40rem)"
+  }
   if (expanded) {
     return surface === "inline" ? "min(42dvh, 20rem)" : "min(62dvh, 28rem)"
   }

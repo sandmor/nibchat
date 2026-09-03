@@ -34,6 +34,7 @@ import {
   TOKEN_ESTIMATE_TOOLTIP,
   type AssembledContextPreviewData,
   type ContextPreviewLayer,
+  type ContextPreviewOverlay,
 } from "@/lib/context-preview"
 import { buildMcpInstructionsText } from "@/lib/mcp-instructions"
 import { parseProviderModelsJson } from "@/lib/provider-models"
@@ -121,7 +122,8 @@ const HYDRATION_PREVIEW_NOW = new Date(0)
 
 function useAssembledContextPreview(
   contextParentId: string | null,
-  refreshedAt: Date | null
+  refreshedAt: Date | null,
+  overlay?: ContextPreviewOverlay
 ) {
   const graph = useContextPreviewGraph()
   const trpc = useTRPC()
@@ -161,10 +163,12 @@ function useAssembledContextPreview(
       mcpServerInstructionsText,
       timeZone: timeZone ?? undefined,
       now: timeZone ? (refreshedAt ?? new Date()) : HYDRATION_PREVIEW_NOW,
+      overlay,
     })
   }, [
     graph,
     contextParentId,
+    overlay,
     refreshedAt,
     settingsQuery.data,
     surfacesQuery.data,
@@ -407,26 +411,31 @@ export function ContextPreviewDialog({
 export function ContextPreviewStrip({
   contextParentId,
   draft,
+  overlay,
   streaming,
   onRevealMessage,
 }: {
   contextParentId: string | null
-  draft: ComposerDraft
+  draft?: ComposerDraft
+  overlay?: ContextPreviewOverlay
   streaming?: boolean
   onRevealMessage?: (nodeId: string) => void
 }) {
   const mdUp = useMediaMdUp()
   const [open, setOpen] = useState(false)
   const [refreshedAt, setRefreshedAt] = useState<Date | null>(null)
-  const data = useAssembledContextPreview(contextParentId, refreshedAt)
-  const merged = mergeDraftSummary(data.summary, draft)
+  const data = useAssembledContextPreview(contextParentId, refreshedAt, overlay)
+  const merged = draft
+    ? mergeDraftSummary(data.summary, draft, data.pdfInputMode)
+    : data.summary
   const segments = formatCompactSegments(merged)
   const label = segments.map((segment) => segment.text).join(" · ")
+  const title = overlay ? "This branch" : "Next send"
 
   const panel = (
     <ContextPreviewCompose
       data={data}
-      draft={draft}
+      draft={overlay ? undefined : draft}
       onRevealMessage={
         onRevealMessage
           ? (nodeId) => {
@@ -475,7 +484,7 @@ export function ContextPreviewStrip({
           side="top"
           className="flex max-h-[min(24rem,70vh)] w-[min(22rem,calc(100vw-2rem))] flex-col gap-3 overflow-hidden p-3"
         >
-          <p className="text-xs font-medium">Next send</p>
+          <p className="text-xs font-medium">{title}</p>
           <ContextPreviewWell>{panel}</ContextPreviewWell>
         </PopoverContent>
       </Popover>
@@ -495,7 +504,7 @@ export function ContextPreviewStrip({
       <ContextPreviewDialog
         open={open}
         onOpenChange={setPreviewOpen}
-        title="Next send"
+        title={title}
       >
         {panel}
       </ContextPreviewDialog>

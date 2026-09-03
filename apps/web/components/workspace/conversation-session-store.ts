@@ -28,13 +28,31 @@ export type ComposerDraft = {
 
 export type MessageEditDraft = MessageEditSegment[]
 
-const emptyDraft = (): ComposerDraft => ({ text: "", attachments: [] })
+export type UserTurnSession = {
+  kind: "user-turn"
+  text: string
+  attachments: ComposerAttachment[]
+}
+
+export type PartsSession = {
+  kind: "parts"
+  segments: MessageEditSegment[]
+}
+
+export type MessageEditorSession = UserTurnSession | PartsSession
+
+function emptyUserTurn(): UserTurnSession {
+  return { kind: "user-turn", text: "", attachments: [] }
+}
 
 /**
  * Read-only fallback when a slot has not been created. Selectors must return
  * this same reference so missing slots do not look like updates.
  */
-export const EMPTY_COMPOSER_DRAFT: ComposerDraft = emptyDraft()
+export const EMPTY_COMPOSER_DRAFT: ComposerDraft = {
+  text: "",
+  attachments: [],
+}
 const EMPTY_MESSAGE_EDIT: MessageEditDraft = []
 
 /**
@@ -44,7 +62,7 @@ const EMPTY_MESSAGE_EDIT: MessageEditDraft = []
  * Tree drafts keyed by the parent the plus node sits under.
  *
  * Identity vs payload matches live streams: orchestrators subscribe to which
- * slots exist (`useTreeDraftSlotSignature`); SessionComposer reads one slot.
+ * slots exist (`useTreeDraftSlotSignature`); SessionMessageEditor reads one slot.
  */
 export function composerSlotId(
   chatId: string | null,
@@ -117,12 +135,11 @@ export function revokeComposerPreviewUrl(url: string | undefined) {
 }
 
 type ConversationSessionState = {
-  drafts: Record<string, ComposerDraft>
-  edits: Record<string, MessageEditDraft>
+  sessions: Record<string, MessageEditorSession>
   sending: Record<string, true>
   update: (slot: string, update: Partial<ComposerDraft>) => void
-  setEdit: (slot: string, edits: MessageEditDraft) => void
-  updateEditSegment: (slot: string, index: number, text: string) => void
+  setParts: (slot: string, segments: MessageEditDraft) => void
+  updatePartsSegment: (slot: string, index: number, text: string) => void
   setSending: (slot: string, sending: boolean) => void
   clear: (slot: string) => void
   clearChat: (chatId: string | null) => void
@@ -130,34 +147,48 @@ type ConversationSessionState = {
 
 /**
  * Prefer `useComposerDraft(slot)` or `useTreeDraftSlotSignature(chatId)`.
- * Selecting `state.drafts` re-renders the subscriber on every keystroke.
+ * Selecting `state.sessions` re-renders the subscriber on every keystroke.
  */
 export const useConversationSessionStore = create<ConversationSessionState>(
   (set) => ({
-    drafts: {},
-    edits: {},
+    sessions: {},
     sending: {},
     update: (slot, update) =>
+      set((state) => {
+        const current = state.sessions[slot]
+        if (current && current.kind !== "user-turn") return state
+        const base = current ?? emptyUserTurn()
+        return {
+          sessions: {
+            ...state.sessions,
+            [slot]: {
+              kind: "user-turn",
+              text: update.text ?? base.text,
+              attachments: update.attachments ?? base.attachments,
+            },
+          },
+        }
+      }),
+    setParts: (slot, segments) =>
       set((state) => ({
-        drafts: {
-          ...state.drafts,
-          [slot]: { ...(state.drafts[slot] ?? emptyDraft()), ...update },
+        sessions: {
+          ...state.sessions,
+          [slot]: { kind: "parts", segments },
         },
       })),
-    setEdit: (slot, edits) =>
-      set((state) => ({
-        edits: { ...state.edits, [slot]: edits },
-      })),
-    updateEditSegment: (slot, index, text) =>
+    updatePartsSegment: (slot, index, text) =>
       set((state) => {
-        const current = state.edits[slot]
-        if (!current) return state
+        const current = state.sessions[slot]
+        if (current?.kind !== "parts") return state
         return {
-          edits: {
-            ...state.edits,
-            [slot]: current.map((segment, i) =>
-              i === index ? { ...segment, text } : segment
-            ),
+          sessions: {
+            ...state.sessions,
+            [slot]: {
+              kind: "parts",
+              segments: current.segments.map((segment, i) =>
+                i === index ? { ...segment, text } : segment
+              ),
+            },
           },
         }
       }),
@@ -174,24 +205,17 @@ export const useConversationSessionStore = create<ConversationSessionState>(
       }),
     clear: (slot) =>
       set((state) => {
-        const drafts = { ...state.drafts }
-        const edits = { ...state.edits }
+        const sessions = { ...state.sessions }
         const sending = { ...state.sending }
-        delete drafts[slot]
-        delete edits[slot]
+        delete sessions[slot]
         delete sending[slot]
-        return { drafts, edits, sending }
+        return { sessions, sending }
       }),
     clearChat: (chatId) => {
       const prefix = `${chatId ?? "draft"}:`
       return set((state) => ({
-        drafts: Object.fromEntries(
-          Object.entries(state.drafts).filter(
-            ([slot]) => !slot.startsWith(prefix)
-          )
-        ),
-        edits: Object.fromEntries(
-          Object.entries(state.edits).filter(
+        sessions: Object.fromEntries(
+          Object.entries(state.sessions).filter(
             ([slot]) => !slot.startsWith(prefix)
           )
         ),
@@ -205,38 +229,53 @@ export const useConversationSessionStore = create<ConversationSessionState>(
   })
 )
 
+function readSession(slot: string): MessageEditorSession | undefined {
+  return useConversationSessionStore.getState().sessions[slot]
+}
+
+/** User-turn payload for compose / user-edit send paths. */
 export function readComposerDraft(slot: string): ComposerDraft {
-  return (
-    useConversationSessionStore.getState().drafts[slot] ?? EMPTY_COMPOSER_DRAFT
-  )
+  const session = readSession(slot)
+  if (session?.kind !== "user-turn") return EMPTY_COMPOSER_DRAFT
+  return session
 }
 
 export function hasComposerDraft(slot: string) {
-  return Object.hasOwn(useConversationSessionStore.getState().drafts, slot)
+  return readSession(slot)?.kind === "user-turn"
 }
 
-export function isComposerSending(slot: string) {
+export function hasEditorSession(slot: string) {
+  return Object.hasOwn(useConversationSessionStore.getState().sessions, slot)
+}
+
+export function isEditorSending(slot: string) {
   return Object.hasOwn(useConversationSessionStore.getState().sending, slot)
 }
 
 /** In-flight send for one slot. Independent of draft text so typing stays cheap. */
-export function useComposerSending(slot: string) {
+export function useEditorSending(slot: string) {
   return useConversationSessionStore((state) =>
     Object.hasOwn(state.sending, slot)
   )
 }
 
-export function useHasComposerDraft(slot: string) {
+export function useHasEditorSession(slot: string) {
   return useConversationSessionStore((state) =>
-    Object.hasOwn(state.drafts, slot)
+    Object.hasOwn(state.sessions, slot)
   )
 }
 
-/** One slot's draft. Typing re-renders only this subscriber, not the chat view. */
+/** One slot's user-turn draft. Typing re-renders only this subscriber. */
 export function useComposerDraft(slot: string): ComposerDraft {
-  return useConversationSessionStore(
-    (state) => state.drafts[slot] ?? EMPTY_COMPOSER_DRAFT
-  )
+  return useConversationSessionStore((state) => {
+    const session = state.sessions[slot]
+    if (session?.kind !== "user-turn") return EMPTY_COMPOSER_DRAFT
+    return session
+  })
+}
+
+export function useEditorSession(slot: string): MessageEditorSession | null {
+  return useConversationSessionStore((state) => state.sessions[slot] ?? null)
 }
 
 /**
@@ -244,12 +283,12 @@ export function useComposerDraft(slot: string): ComposerDraft {
  * attachment edits so the canvas can ignore keystrokes.
  */
 export function treeDraftSlotSignature(
-  drafts: Record<string, ComposerDraft>,
+  sessions: Record<string, MessageEditorSession>,
   chatId: string | null | undefined
 ): string {
   if (!chatId) return ""
   const prefix = `${chatId}:tree:`
-  return Object.keys(drafts)
+  return Object.keys(sessions)
     .filter((slot) => slot.startsWith(prefix))
     .sort()
     .join("\0")
@@ -257,17 +296,17 @@ export function treeDraftSlotSignature(
 
 export function useTreeDraftSlotSignature(chatId: string | null | undefined) {
   return useConversationSessionStore((state) =>
-    treeDraftSlotSignature(state.drafts, chatId)
+    treeDraftSlotSignature(state.sessions, chatId)
   )
 }
 
 export function treeDraftAnchorsForChat(
-  drafts: Record<string, ComposerDraft>,
+  sessions: Record<string, MessageEditorSession>,
   chatId: string
 ): Set<string | null> {
   const prefix = `${chatId}:tree:`
   const anchors = new Set<string | null>()
-  for (const slot of Object.keys(drafts)) {
+  for (const slot of Object.keys(sessions)) {
     if (!slot.startsWith(prefix)) continue
     const rest = slot.slice(prefix.length)
     anchors.add(rest === "root" ? null : rest)
@@ -276,62 +315,46 @@ export function treeDraftAnchorsForChat(
 }
 
 export function hasMessageEdit(slot: string) {
-  return Object.hasOwn(useConversationSessionStore.getState().edits, slot)
+  return readSession(slot)?.kind === "parts"
 }
 
-/** One message's in-progress edit. Typing re-renders only this subscriber. */
+/** One message's in-progress part edit. Typing re-renders only this subscriber. */
 export function useMessageEdit(slot: string): MessageEditDraft {
-  return useConversationSessionStore(
-    (state) => state.edits[slot] ?? EMPTY_MESSAGE_EDIT
-  )
-}
-
-export function useHasMessageEdit(slot: string) {
-  return useConversationSessionStore((state) =>
-    Object.hasOwn(state.edits, slot)
-  )
+  return useConversationSessionStore((state) => {
+    const session = state.sessions[slot]
+    return session?.kind === "parts" ? session.segments : EMPTY_MESSAGE_EDIT
+  })
 }
 
 /**
  * Identity of in-progress message edits for a chat. Stable across keystrokes
  * so the tree canvas can keep those cards live without re-rendering on type.
- * Includes assistant textarea slots (`edits`) and user-edit composers (`drafts`).
  */
 export function messageEditSlotSignature(
-  edits: Record<string, MessageEditDraft>,
-  drafts: Record<string, ComposerDraft>,
+  sessions: Record<string, MessageEditorSession>,
   chatId: string | null | undefined
 ): string {
   if (!chatId) return ""
   const prefix = messageEditSlotPrefix(chatId)
-  const keys = new Set<string>()
-  for (const slot of Object.keys(edits)) {
-    if (slot.startsWith(prefix)) keys.add(slot)
-  }
-  for (const slot of Object.keys(drafts)) {
-    if (slot.startsWith(prefix)) keys.add(slot)
-  }
-  return [...keys].sort().join("\0")
+  return Object.keys(sessions)
+    .filter((slot) => slot.startsWith(prefix))
+    .sort()
+    .join("\0")
 }
 
 export function useMessageEditSlotSignature(chatId: string | null | undefined) {
   return useConversationSessionStore((state) =>
-    messageEditSlotSignature(state.edits, state.drafts, chatId)
+    messageEditSlotSignature(state.sessions, chatId)
   )
 }
 
 export function messageEditNodeIdsForChat(
-  edits: Record<string, MessageEditDraft>,
-  drafts: Record<string, ComposerDraft>,
+  sessions: Record<string, MessageEditorSession>,
   chatId: string
 ): Set<string> {
   const prefix = messageEditSlotPrefix(chatId)
   const ids = new Set<string>()
-  for (const slot of Object.keys(edits)) {
-    if (!slot.startsWith(prefix)) continue
-    ids.add(slot.slice(prefix.length))
-  }
-  for (const slot of Object.keys(drafts)) {
+  for (const slot of Object.keys(sessions)) {
     if (!slot.startsWith(prefix)) continue
     ids.add(slot.slice(prefix.length))
   }

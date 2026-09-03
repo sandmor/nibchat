@@ -27,7 +27,7 @@ import type { NodeRow } from "@/lib/types"
 import type { ChatViewCamera } from "@/lib/chat-view-state"
 import type { ProviderSummary } from "./types"
 import { ComposeSlot, TreeHandoff, TreePlaque } from "./tree-card"
-import { Message, type MessageComposerBindings } from "./message"
+import { Message, type MessageEditorBindings } from "./message"
 import { StreamingBubble } from "./streaming-bubble"
 import { collectHandoffs, uniqueHandoffAnchors } from "./tree-handoff"
 import {
@@ -123,7 +123,7 @@ export function ChatTree({
   onStop,
   initialCamera = null,
   onCameraChange,
-  composer,
+  editor,
 }: {
   nodes: NodeRow[]
   activePath: NodeRow[]
@@ -161,7 +161,7 @@ export function ChatTree({
   onStop: () => void
   initialCamera?: ChatViewCamera | null
   onCameraChange?: (camera: ChatViewCamera | null) => void
-  composer?: MessageComposerBindings
+  editor?: MessageEditorBindings
 }) {
   const viewportRef = useRef<HTMLDivElement>(null)
   const worldRef = useRef<HTMLDivElement>(null)
@@ -976,7 +976,7 @@ export function ChatTree({
                   onChanged={onChanged}
                   onRegenerate={onRegenerate}
                   onAnswerTools={onAnswerTools}
-                  composer={composer}
+                  editor={editor}
                 />
               )}
             </motion.div>
@@ -1043,7 +1043,7 @@ export function ChatTree({
                   onChanged={onChanged}
                   onRegenerate={onRegenerate}
                   onAnswerTools={onAnswerTools}
-                  composer={composer}
+                  editor={editor}
                 />
               }
               onComplete={() => finishHandoff(handoff.anchor)}
@@ -1319,7 +1319,7 @@ const TreeMessage = memo(function TreeMessage({
   onChanged,
   onRegenerate,
   onAnswerTools,
-  composer,
+  editor,
 }: {
   node: NodeRow
   nodes: NodeRow[]
@@ -1331,7 +1331,7 @@ const TreeMessage = memo(function TreeMessage({
     id: string,
     results: Array<{ toolCallId: string; output: unknown }>
   ) => void
-  composer?: MessageComposerBindings
+  editor?: MessageEditorBindings
 }) {
   return (
     <Message
@@ -1346,7 +1346,7 @@ const TreeMessage = memo(function TreeMessage({
         node.role === "assistant" ? () => onRegenerate(node.id) : undefined
       }
       onAnswerTools={onAnswerTools}
-      composer={composer}
+      editor={editor}
     />
   )
 })

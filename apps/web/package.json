@@ -45,7 +45,7 @@
     "culori": "^4.0.2",
     "dayjs": "^1.11.21",
     "isomorphic-dompurify": "2.29.0",
-    "katex": "^0.18.1",
+    "katex": "0.16.47",
     "kysely": "^0.29.4",
     "marked": "17.0.6",
     "motion": "^13.0.0",

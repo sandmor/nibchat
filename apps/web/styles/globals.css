@@ -407,7 +407,7 @@
   .katex-display:not(:has(.katex-tag))
   > .katex
   > .katex-html
-  > .katex-base {
+  > .base {
   margin-block: 0.2em;
 }
 

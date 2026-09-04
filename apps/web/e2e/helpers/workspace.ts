@@ -73,7 +73,13 @@ async function ensureMockProviderViaSettingsUi(page: Page, baseUrl: string) {
   }
 
   await page.getByLabel("Base URL").fill(baseUrl)
-  await page.getByLabel("Stored API key").fill("sk-e2e-test-key")
+  const headerName = page.getByLabel("Request headers name 1")
+  const headerValue = page.getByLabel("Request headers value 1")
+  if ((await headerName.count()) === 0) {
+    await page.getByRole("button", { name: "Add header" }).click()
+  }
+  await headerName.fill("Authorization")
+  await headerValue.fill("Bearer sk-e2e-test-key")
   const disableAll = page.getByRole("button", {
     name: "Disable all",
     exact: true,

@@ -28,7 +28,7 @@ import {
   asProviderKind,
   type ProviderKind,
 } from "@/lib/provider-kinds"
-import { isOllamaCloudUrl } from "@/lib/ollama"
+import { defaultProviderHeaders } from "@/lib/provider-config"
 import {
   catalogNameMap,
   defaultPdfInputForProviderKind,
@@ -47,8 +47,10 @@ type SetupProvider = {
   id: string
   name: string
   kind: string
-  base_url: string | null
-  api_key_env: string | null
+  config: {
+    baseUrl?: string
+    headers: Array<{ name: string; value: string }>
+  }
   models_json: string
 }
 
@@ -276,10 +278,15 @@ function ProviderFlow({
     initialProvider?.name ?? PROVIDER_KINDS.openai.name
   )
   const [nameTouched, setNameTouched] = useState(Boolean(initialProvider))
-  const [baseUrl, setBaseUrl] = useState(initialProvider?.base_url ?? "")
-  const [apiKey, setApiKey] = useState("")
-  const [apiKeyEnv, setApiKeyEnv] = useState(initialProvider?.api_key_env ?? "")
-  const [clearApiKey, setClearApiKey] = useState(false)
+  const [baseUrl, setBaseUrl] = useState(initialProvider?.config.baseUrl ?? "")
+  const [headers, setHeaders] = useState(() =>
+    initialProvider
+      ? initialProvider.config.headers.map((header) => ({
+          name: header.name,
+          value: header.value,
+        }))
+      : defaultProviderHeaders("openai")
+  )
   const [providerId, setProviderId] = useState(initialProvider?.id ?? "")
   const [models, setModels] = useState<ProviderModel[]>(() =>
     initialProvider ? parseProviderModelsJson(initialProvider.models_json) : []
@@ -328,14 +335,19 @@ function ProviderFlow({
   const busy =
     finish.isPending || createProvider.isPending || updateProvider.isPending
 
-  function connectPayload(includeKey: boolean) {
+  function connectPayload() {
     return {
       name: displayName.trim(),
       kind,
-      baseUrl: baseUrl.trim() || undefined,
-      apiKey: includeKey ? apiKey.trim() || undefined : undefined,
-      apiKeyEnv: apiKeyEnv.trim() || undefined,
-      clearApiKey: clearApiKey || undefined,
+      config: {
+        ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}),
+        headers: headers
+          .filter((header) => header.name.trim())
+          .map((header) => ({
+            name: header.name.trim(),
+            value: header.value,
+          })),
+      },
       models: modelsToPersist(
         models,
         catalogNameMap(catalog),
@@ -349,11 +361,6 @@ function ProviderFlow({
     if (!displayName.trim()) return "Give this provider a display name."
     if (kind === "openai-compatible" && !baseUrl.trim())
       return "Compatible endpoints need a base URL."
-    const needsKey =
-      kind !== "openai-compatible" &&
-      (kind !== "ollama" || isOllamaCloudUrl(baseUrl))
-    if (needsKey && !providerId && !apiKey.trim() && !apiKeyEnv.trim())
-      return "Add an API key or an environment variable name."
     return ""
   }
 
@@ -364,8 +371,7 @@ function ProviderFlow({
       return
     }
     setError("")
-    const includeKey = Boolean(apiKey.trim())
-    const payload = connectPayload(includeKey)
+    const payload = connectPayload()
     try {
       let id = providerId
       if (id) {
@@ -375,7 +381,6 @@ function ProviderFlow({
         id = created.id
         setProviderId(id)
       }
-      if (includeKey) setApiKey("")
       setCatalogLoading(true)
       onStep("models")
     } catch (err) {
@@ -397,7 +402,7 @@ function ProviderFlow({
     finish.mutate({
       provider: {
         id: providerId || undefined,
-        ...connectPayload(Boolean(apiKey.trim())),
+        ...connectPayload(),
       },
       titleModel: titleOn ? selectedTitleModel : undefined,
     })
@@ -423,16 +428,12 @@ function ProviderFlow({
             name: displayName,
             kind,
             baseUrl,
-            apiKey,
-            apiKeyEnv,
-            clearApiKey,
+            headers,
           }}
           onChange={(next) => {
             setKind(next.kind)
             setBaseUrl(next.baseUrl)
-            setApiKey(next.apiKey)
-            setApiKeyEnv(next.apiKeyEnv)
-            setClearApiKey(Boolean(next.clearApiKey))
+            setHeaders(next.headers)
             if (next.kind !== kind && !nameTouched) {
               setName(PROVIDER_KINDS[next.kind].name)
               return
@@ -441,7 +442,6 @@ function ProviderFlow({
             setName(next.name)
           }}
           kindUi="cards"
-          existing={Boolean(providerId)}
           disabled={busy}
         />
 

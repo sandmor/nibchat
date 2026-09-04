@@ -1,13 +1,19 @@
 "use client"
 
+import { HugeiconsIcon } from "@hugeicons/react"
+import { InformationCircleIcon } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { TooltipProvider, WithTooltip } from "@/components/ui/tooltip"
 
 export type KvEntry = {
   name: string
   value: string
 }
+
+const ENV_TEMPLATE_HELP =
+  "Embed ${ENV_NAME} in a value to resolve it from the server environment at connect time."
 
 export function KvEntriesEditor({
   label,
@@ -16,6 +22,7 @@ export function KvEntriesEditor({
   namePlaceholder = "Name",
   valuePlaceholder = "Value or ${ENV_NAME}",
   addLabel = "Add row",
+  disabled = false,
 }: {
   label: string
   entries: KvEntry[]
@@ -23,10 +30,28 @@ export function KvEntriesEditor({
   namePlaceholder?: string
   valuePlaceholder?: string
   addLabel?: string
+  disabled?: boolean
 }) {
   return (
     <div className="space-y-2 sm:col-span-2">
-      <Label>{label}</Label>
+      <div className="flex items-center gap-1.5">
+        <Label className="mb-0">{label}</Label>
+        <TooltipProvider delay={200}>
+          <WithTooltip side="top" label={ENV_TEMPLATE_HELP}>
+            <button
+              type="button"
+              className="inline-flex size-5 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
+              aria-label={`About ${label.toLowerCase()} environment templates`}
+            >
+              <HugeiconsIcon
+                icon={InformationCircleIcon}
+                className="size-3.5"
+                strokeWidth={2}
+              />
+            </button>
+          </WithTooltip>
+        </TooltipProvider>
+      </div>
       <div className="space-y-2">
         {entries.map((entry, index) => (
           <div key={index} className="flex flex-wrap items-center gap-2">
@@ -39,6 +64,8 @@ export function KvEntriesEditor({
                 onChange(next)
               }}
               placeholder={namePlaceholder}
+              disabled={disabled}
+              aria-label={`${label} name ${index + 1}`}
             />
             <Input
               className="min-w-[12rem] flex-[2]"
@@ -50,12 +77,15 @@ export function KvEntriesEditor({
               }}
               placeholder={valuePlaceholder}
               autoComplete="off"
+              disabled={disabled}
+              aria-label={`${label} value ${index + 1}`}
             />
             <Button
               type="button"
               size="sm"
               variant="ghost"
               onClick={() => onChange(entries.filter((_, i) => i !== index))}
+              disabled={disabled}
             >
               Remove
             </Button>
@@ -67,14 +97,10 @@ export function KvEntriesEditor({
         size="sm"
         variant="secondary"
         onClick={() => onChange([...entries, { name: "", value: "" }])}
+        disabled={disabled}
       >
         {addLabel}
       </Button>
-      <p className="text-xs text-muted-foreground">
-        Values may embed <code>{`\${ENV_NAME}`}</code> templates resolved at
-        connect time. Literal secrets are stored server-side and redacted after
-        save; leave a secret value blank when editing to keep the stored one.
-      </p>
     </div>
   )
 }

@@ -34,14 +34,18 @@ import { usePrefersReducedMotion } from "../hooks"
 import { useWorkspaceChrome } from "../shell"
 import { ProviderProfileFields } from "./provider-fields"
 import { ProviderModelsEditor } from "./provider-models"
+import type { KvEntry } from "./kv-entries"
 
-const emptyForm = {
+const emptyForm: {
+  name: string
+  kind: ProviderKind
+  baseUrl: string
+  headers: KvEntry[]
+} = {
   name: "",
   kind: "openai-compatible" as ProviderKind,
   baseUrl: "",
-  apiKey: "",
-  apiKeyEnv: "",
-  clearApiKey: false,
+  headers: [],
 }
 
 export function ProviderSettings({
@@ -92,7 +96,6 @@ export function ProviderSettings({
     trpc.workspace.createProvider.mutationOptions({
       onSuccess: (result) => {
         toast.success("Provider saved.")
-        setForm((current) => ({ ...current, apiKey: "" }))
         setEditingId(result.id)
         onSaved()
       },
@@ -103,7 +106,6 @@ export function ProviderSettings({
     trpc.workspace.updateProvider.mutationOptions({
       onSuccess: () => {
         toast.success("Provider saved.")
-        setForm((current) => ({ ...current, apiKey: "" }))
         void invalidateTitleModel()
         onSaved()
       },
@@ -131,10 +133,15 @@ export function ProviderSettings({
         defaultPdfInputForProviderKind(form.kind),
         form.kind === "openai-compatible" || form.kind === "ollama"
       ),
-      baseUrl: form.baseUrl,
-      apiKey: form.apiKey || undefined,
-      apiKeyEnv: form.apiKeyEnv || undefined,
-      clearApiKey: form.clearApiKey || undefined,
+      config: {
+        ...(form.baseUrl.trim() ? { baseUrl: form.baseUrl.trim() } : {}),
+        headers: form.headers
+          .filter((header) => header.name.trim())
+          .map((header) => ({
+            name: header.name.trim(),
+            value: header.value,
+          })),
+      },
     }
     if (editingId)
       await updateProvider.mutateAsync({ id: editingId, ...payload })
@@ -146,8 +153,7 @@ export function ProviderSettings({
       <CardHeader>
         <CardTitle>Model providers</CardTitle>
         <CardDescription>
-          Connect an API, then choose which models appear in chats. Store a key
-          here or name an environment variable.
+          Connect an API, then choose which models appear in chats.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -156,8 +162,6 @@ export function ProviderSettings({
           value={form}
           onChange={setForm}
           kindUi="select"
-          existing={Boolean(editingId)}
-          apiKeyLabel="Stored API key"
         >
           <ProviderModelsEditor
             providerId={editingId}
@@ -220,10 +224,12 @@ export function ProviderSettings({
                       setForm({
                         name: provider.name,
                         kind: asProviderKind(provider.kind),
-                        baseUrl: provider.base_url ?? "",
-                        apiKey: "",
-                        apiKeyEnv: provider.api_key_env ?? "",
-                        clearApiKey: false,
+                        baseUrl: provider.config?.baseUrl ?? "",
+                        headers:
+                          provider.config?.headers.map((header) => ({
+                            name: header.name,
+                            value: header.value,
+                          })) ?? [],
                       })
                     }}
                   >

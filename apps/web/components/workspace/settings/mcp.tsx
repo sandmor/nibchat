@@ -88,11 +88,7 @@ type McpProfileListItem = {
   config:
     | {
         url: string
-        headers: Array<{
-          name: string
-          value?: string
-          hasStoredValue?: boolean
-        }>
+        headers: Array<{ name: string; value: string }>
         followRedirects: boolean
         connectTimeoutMs: number
         callTimeoutMs: number
@@ -101,11 +97,7 @@ type McpProfileListItem = {
         command: string
         args: string[]
         cwd?: string
-        env: Array<{
-          name: string
-          value?: string
-          hasStoredValue?: boolean
-        }>
+        env: Array<{ name: string; value: string }>
         connectTimeoutMs: number
         callTimeoutMs: number
       }
@@ -141,16 +133,6 @@ const emptyForm = (): FormState => ({
   callTimeoutMs: "60000",
 })
 
-function entriesFromRedacted(
-  rows: Array<{ name: string; value?: string; hasStoredValue?: boolean }>
-): KvEntry[] {
-  return rows.map((row) => ({
-    name: row.name,
-    // Stored secrets come back empty; blank means "keep previous" on update.
-    value: row.value ?? "",
-  }))
-}
-
 function profileToForm(profile: McpProfileListItem): FormState {
   if ("url" in profile.config) {
     return {
@@ -163,7 +145,7 @@ function profileToForm(profile: McpProfileListItem): FormState {
       command: "",
       args: [],
       cwd: "",
-      headers: entriesFromRedacted(profile.config.headers),
+      headers: profile.config.headers,
       env: [],
       followRedirects: profile.config.followRedirects,
       connectTimeoutMs: String(profile.config.connectTimeoutMs),
@@ -181,7 +163,7 @@ function profileToForm(profile: McpProfileListItem): FormState {
     args: [...profile.config.args],
     cwd: profile.config.cwd ?? "",
     headers: [],
-    env: entriesFromRedacted(profile.config.env),
+    env: profile.config.env,
     followRedirects: false,
     connectTimeoutMs: String(profile.config.connectTimeoutMs),
     callTimeoutMs: String(profile.config.callTimeoutMs),
@@ -196,7 +178,7 @@ function buildPayload(form: FormState) {
       .filter((entry) => entry.name.trim())
       .map((entry) => ({
         name: entry.name.trim(),
-        ...(entry.value !== "" ? { value: entry.value } : {}),
+        value: entry.value,
       }))
 
   if (form.transport === "stdio") {

@@ -213,9 +213,7 @@ export interface ProviderProfilesTable {
   user_id: string
   name: string
   kind: string
-  base_url: string | null
-  api_key: string | null
-  api_key_env: string | null
+  config_json: string
   models_json: string
   created_at: string
   updated_at: string

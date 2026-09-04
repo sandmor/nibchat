@@ -29,6 +29,15 @@ describe("applySchema", () => {
       })
     )
     await db.selectFrom("provider_profiles").select("id").limit(1).execute()
+    const providerColumns = sqlite
+      .prepare("pragma table_info(provider_profiles)")
+      .all() as Array<{ name: string }>
+    expect(providerColumns.map((column) => column.name)).toContain(
+      "config_json"
+    )
+    expect(providerColumns.map((column) => column.name)).not.toContain(
+      "api_key"
+    )
     await db.selectFrom("prompt_stacks").select("id").limit(1).execute()
     await db.selectFrom("themes").select("id").limit(1).execute()
     await db.selectFrom("user").select("id").limit(1).execute()

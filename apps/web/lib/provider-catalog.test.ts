@@ -73,7 +73,7 @@ describe("Ollama catalog discovery", () => {
     await expect(
       discoverOllamaModels(
         { name: "Ollama Cloud", base_url: "https://ollama.com" },
-        "secret",
+        { authorization: "Bearer secret" },
         fetchFn
       )
     ).rejects.toThrow(/HTTP 401.*invalid API key/)
@@ -85,18 +85,20 @@ describe("Ollama catalog discovery", () => {
     )
   })
 
-  it("does not forward a retained Cloud key to a local host", async () => {
+  it("forwards explicitly configured headers to a local host", async () => {
     const fetchFn = vi
       .fn<typeof fetch>()
       .mockResolvedValue(new Response(JSON.stringify({ models: [] })))
     await discoverOllamaModels(
       { name: "Ollama", base_url: "http://gpu.home:11434" },
-      "cloud-secret",
+      { authorization: "Bearer local-secret" },
       fetchFn
     )
     expect(fetchFn).toHaveBeenCalledWith(
       "http://gpu.home:11434/api/tags",
-      expect.objectContaining({ headers: {} })
+      expect.objectContaining({
+        headers: { authorization: "Bearer local-secret" },
+      })
     )
   })
 

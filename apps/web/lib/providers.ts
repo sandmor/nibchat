@@ -7,7 +7,9 @@ import { createHash } from "node:crypto"
 import type { LanguageModel } from "ai"
 import { db } from "@/lib/db"
 import { parseJson } from "@/lib/domain"
-import { isOllamaCloudUrl, ollamaApiUrl } from "@/lib/ollama"
+import { ollamaApiUrl } from "@/lib/ollama"
+import { providerConfigFromJson } from "@/lib/provider-config"
+import { resolveConfigEntries } from "@/lib/config-entries"
 import {
   firstEnabledModelId,
   isEnabledModelId,
@@ -87,19 +89,22 @@ export async function responsesReplayTargetFor(
   }
 }
 export async function listProviders() {
-  return db
+  const rows = await db
     .selectFrom("provider_profiles")
     .select([
       "id",
       "name",
       "kind",
-      "base_url",
-      "api_key_env",
+      "config_json",
       "models_json",
       "created_at",
       "updated_at",
     ])
     .execute()
+  return rows.map(({ config_json, ...row }) => ({
+    ...row,
+    config: providerConfigFromJson(config_json),
+  }))
 }
 
 /** Safe catalog used by regular users to choose an enabled model. */
@@ -111,8 +116,8 @@ export async function listAvailableProviders() {
     .execute()
   return rows.map((row) => ({
     ...row,
-    base_url: null as string | null,
-    api_key_env: null as string | null,
+    // Keep the public shape stable without exposing URLs, header names, or env hints.
+    config: { headers: [] as Array<never> },
   }))
 }
 
@@ -173,48 +178,49 @@ export async function modelFor(
     throw new Error(
       "Choose a provider and model in Settings before sending a message."
     )
-  if (profile.kind === "openai-compatible" && !profile.base_url?.trim()) {
+  const connection = providerConfigFromJson(profile.config_json)
+  if (profile.kind === "openai-compatible" && !connection.baseUrl?.trim()) {
     throw new Error(
       `Provider "${profile.name}" needs a base URL (e.g. your gateway) before it can send requests.`
     )
   }
-  const apiKey =
-    profile.api_key ??
-    (profile.api_key_env ? process.env[profile.api_key_env] : undefined)
-  const ollamaCloud =
-    profile.kind === "ollama" && isOllamaCloudUrl(profile.base_url)
-  if (!apiKey?.trim() && (profile.kind !== "ollama" || ollamaCloud)) {
-    const envHint = profile.api_key_env
-      ? ` or set the ${profile.api_key_env} environment variable`
-      : ""
-    throw new Error(
-      `Missing API key for provider "${profile.name}". Add a key in Settings${envHint}.`
-    )
-  }
-  if (profile.kind === "anthropic")
+  const headers = resolveConfigEntries(connection.headers)
+  if (profile.kind === "anthropic") {
+    const xApiKey = headerValue(headers, "x-api-key")
+    const authorization = headerValue(headers, "authorization")
+    const authToken = bearerToken(authorization)
+    if (!xApiKey && !authToken)
+      throw missingProviderAuth(
+        profile.name,
+        "x-api-key or Bearer Authorization"
+      )
     return createAnthropic({
-      apiKey,
-      ...(profile.base_url ? { baseURL: profile.base_url } : {}),
+      ...(xApiKey ? { apiKey: xApiKey } : { authToken: authToken! }),
+      ...(connection.baseUrl ? { baseURL: connection.baseUrl } : {}),
+      headers: withoutHeaders(
+        headers,
+        xApiKey ? ["x-api-key"] : ["authorization"]
+      ),
     })(model)
+  }
   const providerName = profile.kind === "ollama" ? "ollama" : profile.name
   const baseURL =
     profile.kind === "ollama"
-      ? ollamaApiUrl(profile.base_url, "v1")
-      : (profile.base_url ?? undefined)
+      ? ollamaApiUrl(connection.baseUrl, "v1")
+      : (connection.baseUrl ?? undefined)
   const promptCacheKey =
     profile.kind === "openai" && options?.chatId
       ? createHash("sha256")
           .update(`${userId}\0${profile.id}\0${model}\0${options.chatId}`)
           .digest("hex")
       : undefined
-  const responsesApiKey =
-    profile.kind === "ollama" && !ollamaCloud
-      ? undefined
-      : apiKey?.trim() || undefined
   if (profile.kind === "openai") {
+    const token = bearerToken(headerValue(headers, "authorization"))
+    if (!token) throw missingProviderAuth(profile.name, "Bearer Authorization")
     const provider = createOpenAI({
-      apiKey: apiKey?.trim(),
+      apiKey: token,
       baseURL,
+      headers: withoutHeaders(headers, ["authorization"]),
     })
     return openAIResponsesModel({
       model: provider.responses(model),
@@ -245,15 +251,15 @@ export async function modelFor(
         model: createOpenResponses({
           name: providerName,
           url: openResponsesUrl(routeBase),
-          apiKey: responsesApiKey,
+          headers,
         })(model),
       }
     return {
       protocol,
       model: createOpenAICompatible({
         name: providerName,
-        apiKey: profile.kind === "ollama" && !ollamaCloud ? undefined : apiKey,
         baseURL: openChatCompletionsBaseUrl(routeBase),
+        headers,
         supportsStructuredOutputs: profile.kind === "ollama" ? true : undefined,
       })(model),
     }
@@ -270,6 +276,31 @@ function openResponsesUrl(baseURL: string | undefined) {
   return normalized.endsWith("/responses")
     ? normalized
     : `${normalized}/responses`
+}
+
+function headerValue(headers: Record<string, string>, name: string) {
+  const match = Object.entries(headers).find(
+    ([key]) => key.toLowerCase() === name.toLowerCase()
+  )
+  return match?.[1]
+}
+
+function bearerToken(value: string | undefined) {
+  const match = value?.match(/^Bearer\s+(.+)$/i)
+  return match?.[1]?.trim() || undefined
+}
+
+function withoutHeaders(headers: Record<string, string>, names: string[]) {
+  const blocked = new Set(names.map((name) => name.toLowerCase()))
+  return Object.fromEntries(
+    Object.entries(headers).filter(([name]) => !blocked.has(name.toLowerCase()))
+  )
+}
+
+function missingProviderAuth(name: string, expected: string) {
+  return new Error(
+    `Provider "${name}" needs a resolved ${expected} header. Add it in Settings.`
+  )
 }
 
 function openChatCompletionsBaseUrl(baseURL: string | undefined) {

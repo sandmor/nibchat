@@ -15,36 +15,20 @@ import {
   type AttachmentReference,
 } from "@/lib/types"
 import { buildMcpInstructionsText } from "@/lib/mcp-instructions"
+import {
+  configEntrySchema,
+  preprocessConfigEntries,
+  resolveConfigEntries,
+} from "@/lib/config-entries"
 
 export { buildMcpInstructionsText }
 
-/** Matches `${ENV_NAME}` template tokens inside header/env values. */
-export const ENV_TEMPLATE_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g
-
-export const mcpKvEntrySchema = z.object({
-  name: z.string().min(1).max(200),
-  /** May embed `${ENV_NAME}` templates. Omit/empty on update keeps stored secret. */
-  value: z.string().max(10_000).optional(),
-})
-
-export type McpKvEntry = z.infer<typeof mcpKvEntrySchema>
-
-export function normalizeKvEntries(raw: unknown): McpKvEntry[] {
-  if (!Array.isArray(raw)) return []
-  return raw.flatMap((item) => {
-    const parsed = mcpKvEntrySchema.safeParse(item)
-    if (!parsed.success) return []
-    return [parsed.data]
-  })
-}
-
-function preprocessKvArray(value: unknown) {
-  return normalizeKvEntries(value)
-}
-
 export const httpConfigSchema = z.object({
   url: z.string().url(),
-  headers: z.preprocess(preprocessKvArray, z.array(mcpKvEntrySchema).max(100)),
+  headers: z.preprocess(
+    preprocessConfigEntries,
+    z.array(configEntrySchema).max(100)
+  ),
   followRedirects: z.boolean().default(false),
   connectTimeoutMs: z.number().int().min(500).max(120_000).default(10_000),
   callTimeoutMs: z.number().int().min(500).max(600_000).default(60_000),
@@ -54,7 +38,10 @@ export const stdioConfigSchema = z.object({
   command: z.string().min(1).max(500),
   args: z.array(z.string().max(2_000)).max(100).default([]),
   cwd: z.string().max(2_000).optional(),
-  env: z.preprocess(preprocessKvArray, z.array(mcpKvEntrySchema).max(100)),
+  env: z.preprocess(
+    preprocessConfigEntries,
+    z.array(configEntrySchema).max(100)
+  ),
   connectTimeoutMs: z.number().int().min(500).max(120_000).default(10_000),
   callTimeoutMs: z.number().int().min(500).max(600_000).default(60_000),
 })
@@ -195,110 +182,6 @@ export type McpProfileRow = {
   tool_allowlist_json: string
   created_at: string
   updated_at: string
-}
-
-/**
- * Whether a stored value is safe to return to the client.
- * Template-only / template+short prefix strings are safe; bare secrets are not.
- */
-export function canReturnKvValue(value: string): boolean {
-  if (!value) return true
-  const hasTemplate = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/.test(value)
-  if (!hasTemplate) return false
-  const withoutTemplates = value.replace(ENV_TEMPLATE_RE, "\0")
-  for (const segment of withoutTemplates.split("\0")) {
-    const compact = segment.replace(/[\s\-.,:/=_+@]/g, "")
-    if (/[A-Za-z0-9+/=]{12,}/.test(compact)) return false
-  }
-  return true
-}
-
-export function redactKvEntries(
-  entries: McpKvEntry[]
-): Array<{ name: string; value?: string; hasStoredValue: boolean }> {
-  return entries.map((entry) => {
-    const value = entry.value ?? ""
-    if (!value) return { name: entry.name, hasStoredValue: false }
-    if (canReturnKvValue(value))
-      return { name: entry.name, value, hasStoredValue: false }
-    return { name: entry.name, hasStoredValue: true }
-  })
-}
-
-function redactConfig(config: McpProfileInput["config"]) {
-  return "url" in config
-    ? { ...config, headers: redactKvEntries(config.headers) }
-    : { ...config, env: redactKvEntries(config.env) }
-}
-
-/** Expand `${ENV}` tokens. Returns undefined if any referenced env is missing. */
-export function resolveTemplateValue(
-  value: string,
-  env: Record<string, string | undefined> = process.env
-): string | undefined {
-  let missing = false
-  const resolved = value.replace(ENV_TEMPLATE_RE, (_match, name: string) => {
-    const found = env[name]
-    if (found == null) {
-      missing = true
-      return ""
-    }
-    return found
-  })
-  if (missing) return undefined
-  return resolved
-}
-
-/** Resolve KV entries for HTTP headers or stdio env; omit unresolved templates. */
-export function resolveKvEntries(
-  entries: McpKvEntry[],
-  env: Record<string, string | undefined> = process.env
-): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const entry of entries) {
-    if (entry.value == null || entry.value === "") continue
-    const resolved = resolveTemplateValue(entry.value, env)
-    if (resolved == null) continue
-    out[entry.name] = resolved
-  }
-  return out
-}
-
-export function mergeKvEntries(
-  oldEntries: McpKvEntry[],
-  nextEntries: McpKvEntry[]
-): McpKvEntry[] {
-  const oldByName = new Map(
-    oldEntries.map((entry) => [entry.name.toLowerCase(), entry])
-  )
-  return nextEntries.map((entry) => {
-    if (entry.value !== undefined && entry.value !== "") return entry
-    const previous = oldByName.get(entry.name.toLowerCase())
-    if (previous?.value) return { name: entry.name, value: previous.value }
-    return {
-      name: entry.name,
-      ...(entry.value !== undefined ? { value: entry.value } : {}),
-    }
-  })
-}
-
-export function mergeStoredValues(
-  oldConfig: McpProfileInput["config"],
-  nextConfig: McpProfileInput["config"]
-): McpProfileInput["config"] {
-  if ("url" in oldConfig && "url" in nextConfig) {
-    return {
-      ...nextConfig,
-      headers: mergeKvEntries(oldConfig.headers, nextConfig.headers),
-    }
-  }
-  if (!("url" in oldConfig) && !("url" in nextConfig)) {
-    return {
-      ...nextConfig,
-      env: mergeKvEntries(oldConfig.env, nextConfig.env),
-    }
-  }
-  return nextConfig
 }
 
 /** Keep prior allowlist ∩ live tools; new tools stay off. */
@@ -443,7 +326,6 @@ export async function listMcpProfiles(userId: string) {
     .execute()
   return rows.map(profileFromRow).map((profile) => ({
     ...profile,
-    config: redactConfig(profile.config),
     runtimeSupported: profileSupported(profile),
   }))
 }
@@ -476,18 +358,8 @@ export async function getMcpProfile(
   return row ? profileFromRow(row) : null
 }
 
-/** Portable profile data: keep templates only; drop opaque secrets. */
+/** Portable profile data, including stored header and env values. */
 export function mcpProfileForBackup(profile: McpProfile) {
-  const stripEntries = (entries: McpKvEntry[]) =>
-    entries.map((entry) => {
-      const value = entry.value ?? ""
-      if (value && canReturnKvValue(value)) return { name: entry.name, value }
-      return { name: entry.name }
-    })
-  const config =
-    "url" in profile.config
-      ? { ...profile.config, headers: stripEntries(profile.config.headers) }
-      : { ...profile.config, env: stripEntries(profile.config.env) }
   return {
     id: profile.id,
     user_id: profile.user_id,
@@ -496,7 +368,7 @@ export function mcpProfileForBackup(profile: McpProfile) {
     enabled: profile.enabled,
     transport: profile.transport,
     protocol_mode: profile.protocolMode,
-    config_json: JSON.stringify(config),
+    config_json: JSON.stringify(configForStorage(profile.config)),
     catalog_json: JSON.stringify(profile.catalog),
     tool_allowlist_json: JSON.stringify(profile.toolAllowlist),
     created_at: profile.created_at,
@@ -521,18 +393,12 @@ function configForStorage(config: McpProfileInput["config"]) {
   if ("url" in config) {
     return {
       ...config,
-      headers: config.headers.map(({ name, value }) => ({
-        name,
-        ...(value != null ? { value } : {}),
-      })),
+      headers: config.headers.map(({ name, value }) => ({ name, value })),
     }
   }
   return {
     ...config,
-    env: config.env.map(({ name, value }) => ({
-      name,
-      ...(value != null ? { value } : {}),
-    })),
+    env: config.env.map(({ name, value }) => ({ name, value })),
   }
 }
 
@@ -567,13 +433,11 @@ export async function updateMcpProfile(
   validateRuntime(input)
   const existing = await db
     .selectFrom("mcp_server_profiles")
-    .selectAll()
+    .select("id")
     .where("id", "=", profileId)
     .where("user_id", "=", userId)
     .executeTakeFirst()
   if (!existing) throw new Error("MCP profile not found")
-  const old = profileFromRow(existing)
-  const config = mergeStoredValues(old.config, input.config)
   await db
     .updateTable("mcp_server_profiles")
     .set({
@@ -582,7 +446,7 @@ export async function updateMcpProfile(
       enabled: toDbBool(input.enabled),
       transport: input.transport,
       protocol_mode: input.protocolMode,
-      config_json: JSON.stringify(configForStorage(config)),
+      config_json: JSON.stringify(configForStorage(input.config)),
       updated_at: now(),
     })
     .where("id", "=", profileId)
@@ -730,7 +594,7 @@ async function createClient(profile: McpProfile) {
               (entry): entry is [string, string] => entry[1] != null
             )
           ),
-          ...resolveKvEntries(config.env),
+          ...resolveConfigEntries(config.env),
         },
       }),
       { timeout: config.connectTimeoutMs }
@@ -739,7 +603,7 @@ async function createClient(profile: McpProfile) {
   }
   const config = httpConfigSchema.parse(profile.config)
   const requestInit: RequestInit = {
-    headers: resolveKvEntries(config.headers),
+    headers: resolveConfigEntries(config.headers),
     redirect: config.followRedirects ? "follow" : "error",
   }
   const transport =

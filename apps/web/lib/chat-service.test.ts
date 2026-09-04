@@ -638,7 +638,7 @@ describe("SQLite chat repository", () => {
     const provider = await createProvider(userId, {
       name: `Seed provider ${Date.now()}`,
       kind: "openai-compatible",
-      baseUrl: "http://127.0.0.1:8080/v1",
+      config: { baseUrl: "http://127.0.0.1:8080/v1", headers: [] },
       models: [
         {
           id: "seed-model",
@@ -664,7 +664,9 @@ describe("SQLite chat repository", () => {
       provider: {
         name: `Setup provider ${Date.now()}`,
         kind: "openai",
-        apiKey: "sk-test",
+        config: {
+          headers: [{ name: "Authorization", value: "Bearer sk-test" }],
+        },
         models: [
           {
             id: "gpt-4o",
@@ -1046,6 +1048,7 @@ describe("modelFor preflight", () => {
     const provider = await createProvider(userId, {
       name: `Fallback ${Date.now()}`,
       kind: "openai-compatible",
+      config: { headers: [] },
       models: [
         {
           id: "first",
@@ -1072,6 +1075,7 @@ describe("modelFor preflight", () => {
     const provider = await createProvider(userId, {
       name: `No key ${Date.now()}`,
       kind: "openai",
+      config: { headers: [] },
       models: [
         {
           id: "gpt-4o-mini",
@@ -1084,14 +1088,14 @@ describe("modelFor preflight", () => {
     })
     await expect(
       modelFor(userId, { providerId: provider.id, model: "gpt-4o-mini" })
-    ).rejects.toThrow(/Missing API key/)
+    ).rejects.toThrow(/Authorization header/)
   })
 
   it("requires base URL for openai-compatible", async () => {
     const provider = await createProvider(userId, {
       name: `No base ${Date.now()}`,
       kind: "openai-compatible",
-      apiKey: "sk-test",
+      config: { headers: [] },
       models: [
         {
           id: "local-model",
@@ -1337,8 +1341,12 @@ describe("provider catalog privacy", () => {
     const provider = await createProvider(userId, {
       name: `Catalog privacy ${Date.now()}`,
       kind: "openai-compatible",
-      baseUrl: "http://127.0.0.1:8080/v1",
-      apiKeyEnv: "NIBCHAT_TEST_KEY",
+      config: {
+        baseUrl: "http://127.0.0.1:8080/v1",
+        headers: [
+          { name: "Authorization", value: "Bearer ${NIBCHAT_TEST_KEY}" },
+        ],
+      },
       models: [
         {
           id: "privacy-model",
@@ -1351,11 +1359,10 @@ describe("provider catalog privacy", () => {
     })
     const available = await listAvailableProviders()
     const shared = available.find((row) => row.id === provider.id)
-    expect(shared?.base_url).toBeNull()
-    expect(shared?.api_key_env).toBeNull()
+    expect(shared?.config).toEqual({ headers: [] })
     const owned = (await listProviders()).find((row) => row.id === provider.id)
-    expect(owned?.base_url).toBe("http://127.0.0.1:8080/v1")
-    expect(owned?.api_key_env).toBe("NIBCHAT_TEST_KEY")
+    expect(owned?.config.baseUrl).toBe("http://127.0.0.1:8080/v1")
+    expect(owned?.config.headers[0]?.value).toBe("Bearer ${NIBCHAT_TEST_KEY}")
   })
 })
 

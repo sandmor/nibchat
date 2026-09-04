@@ -18,9 +18,9 @@ export function BackupSettings() {
       <CardHeader>
         <CardTitle>Backup & restore</CardTitle>
         <CardDescription>
-          Downloads a zip with chat metadata and original attachment files. API
-          keys are never included. Restore only works when this instance has
-          zero chats.
+          Downloads a zip with chat metadata and original attachment files.
+          Passwords and sessions are not included. Restore only works when this
+          instance has zero chats.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-wrap gap-2">

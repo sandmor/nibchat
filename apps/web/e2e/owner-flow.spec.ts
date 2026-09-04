@@ -34,7 +34,7 @@ test.describe("owner flow", () => {
       page.getByRole("button", { name: "Skip for now" })
     ).toBeVisible()
 
-    await page.getByLabel("API key").fill("sk-e2e-owner")
+    await page.getByLabel("Request headers value 1").fill("Bearer sk-e2e-owner")
     await page.getByRole("button", { name: "Load models" }).click()
     await expect(page.getByText("Choose models.")).toBeVisible({
       timeout: 30_000,
@@ -153,14 +153,19 @@ test.describe("owner flow", () => {
     await regularPage.goto("/settings")
     await expect(regularPage.getByText("Personal settings")).toBeVisible()
     await expect(regularPage.getByText("Users", { exact: true })).toHaveCount(0)
-    await expect(regularPage.getByText("Providers", { exact: true })).toHaveCount(0)
+    await expect(
+      regularPage.getByText("Providers", { exact: true })
+    ).toHaveCount(0)
 
     await regularPage.getByRole("button", { name: "Ink Dark" }).click()
     const previewThemeId = await regularPage
       .locator("html")
       .getAttribute("data-nibchat-theme-id")
     expect(previewThemeId).toBeTruthy()
-    await regularPage.getByRole("link", { name: /^chats$/i }).first().click()
+    await regularPage
+      .getByRole("link", { name: /^chats$/i })
+      .first()
+      .click()
     await expect(regularPage).toHaveURL(/\/chat\//)
     await expect(regularPage.locator("html")).toHaveAttribute(
       "data-nibchat-theme-id",

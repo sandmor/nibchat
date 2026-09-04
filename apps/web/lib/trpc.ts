@@ -58,6 +58,7 @@ import {
 import { messageEditSegmentSchema } from "@/lib/agent/parts"
 import { setUserThemeMode, setBuiltInToolsPrefs } from "@/lib/user-settings"
 import { chatViewStateSchema } from "@/lib/chat-view-state"
+import { providerConnectionConfigSchema } from "@/lib/provider-config"
 import { db } from "@/lib/db"
 import {
   createManagedUser,
@@ -147,10 +148,7 @@ const providerModelSchema = z.object({
 const providerInputSchema = z.object({
   name: z.string().min(1).max(120),
   kind: z.enum(["openai", "anthropic", "ollama", "openai-compatible"]),
-  baseUrl: z.string().optional(),
-  apiKey: z.string().optional(),
-  apiKeyEnv: z.string().optional(),
-  clearApiKey: z.boolean().optional(),
+  config: providerConnectionConfigSchema,
   models: z.array(providerModelSchema),
 })
 

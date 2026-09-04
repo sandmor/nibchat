@@ -58,7 +58,7 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create index if not exists message_attachments_attachment_idx on message_attachments(attachment_id)`.execute(
     db
   )
-  await sql`create table if not exists provider_profiles (id text primary key, user_id text not null references "user"(id) on delete cascade, name text not null, kind text not null, base_url text, api_key text, api_key_env text, models_json text not null, created_at text not null, updated_at text not null)`.execute(
+  await sql`create table if not exists provider_profiles (id text primary key, user_id text not null references "user"(id) on delete cascade, name text not null, kind text not null, config_json text not null, models_json text not null, created_at text not null, updated_at text not null)`.execute(
     db
   )
   await sql`create table if not exists model_catalog_cache (provider_id text primary key references provider_profiles(id) on delete cascade, models_json text not null, refreshed_at text not null)`.execute(

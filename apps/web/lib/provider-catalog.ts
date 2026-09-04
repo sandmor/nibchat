@@ -1,4 +1,4 @@
-import { isOllamaCloudUrl, ollamaApiUrl } from "@/lib/ollama"
+import { ollamaApiUrl } from "@/lib/ollama"
 
 /** Wire protocols supported by OpenAI-compatible provider profiles. */
 export type ProviderProtocol = "responses" | "chat"
@@ -76,17 +76,14 @@ function messageFromPayload(payload: unknown): string | undefined {
 /** Discover models installed on, or offered by, an Ollama host. */
 export async function discoverOllamaModels(
   profile: OllamaCatalogProfile,
-  apiKey?: string | null,
+  headers: Record<string, string> = {},
   fetchFn: FetchLike = fetch
 ): Promise<CatalogModel[]> {
   const url = ollamaApiUrl(profile.base_url, "api/tags")
-  // A local/custom Ollama server must never receive a key retained from an
-  // earlier Cloud configuration.
-  const token = isOllamaCloudUrl(profile.base_url) ? apiKey?.trim() : undefined
   let response: Response
   try {
     response = await fetchFn(url, {
-      headers: token ? { authorization: `Bearer ${token}` } : {},
+      headers,
       signal: AbortSignal.timeout(8000),
     })
   } catch (error) {

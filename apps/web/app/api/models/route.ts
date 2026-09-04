@@ -5,6 +5,8 @@ import {
   requireUser,
 } from "@/lib/app-session"
 import { parseJson } from "@/lib/domain"
+import { providerConfigFromJson } from "@/lib/provider-config"
+import { resolveConfigEntries } from "@/lib/config-entries"
 import { jsonError } from "@/lib/http-error"
 import {
   discoverOllamaModels,
@@ -45,10 +47,7 @@ export async function GET(request: Request) {
       .where("provider_id", "=", profile.id)
       .executeTakeFirst()
     if (!url.searchParams.has("refresh") && cached) {
-      const cachedModels = parseJson<CatalogModel[]>(
-        cached.models_json,
-        []
-      )
+      const cachedModels = parseJson<CatalogModel[]>(cached.models_json, [])
       return Response.json({
         models: publicCatalogModels(cachedModels),
         cachedAt: cached.refreshed_at,
@@ -59,22 +58,22 @@ export async function GET(request: Request) {
     if (!isOwner) return Response.json({ models: [] })
     let discovered: CatalogModel[] = []
     let discoverySucceeded = false
-    const apiKey =
-      profile.api_key ??
-      (profile.api_key_env ? process.env[profile.api_key_env] : undefined)
+    const config = providerConfigFromJson(profile.config_json)
+    const headers = resolveConfigEntries(config.headers)
     if (profile.kind === "ollama") {
-      discovered = await discoverOllamaModels(profile, apiKey)
+      discovered = await discoverOllamaModels(
+        { name: profile.name, base_url: config.baseUrl ?? null },
+        headers
+      )
       discoverySucceeded = true
-    } else if (profile.kind === "openai-compatible" && profile.base_url) {
+    } else if (profile.kind === "openai-compatible" && config.baseUrl) {
       const response = await fetch(
         new URL(
           "models",
-          profile.base_url.endsWith("/")
-            ? profile.base_url
-            : `${profile.base_url}/`
+          config.baseUrl.endsWith("/") ? config.baseUrl : `${config.baseUrl}/`
         ),
         {
-          headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
+          headers,
           signal: AbortSignal.timeout(8000),
         }
       )

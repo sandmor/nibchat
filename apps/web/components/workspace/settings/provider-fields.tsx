@@ -25,33 +25,31 @@ import {
   isOllamaPresetUrl,
   type OllamaHostMode,
 } from "@/lib/ollama"
+import { defaultProviderHeaders } from "@/lib/provider-config"
 import { cn } from "@/lib/utils"
+import {
+  KvEntriesEditor,
+  type KvEntry,
+} from "@/components/workspace/settings/kv-entries"
 
 export type ProviderProfileFieldsValue = {
   name: string
   kind: ProviderKind
   baseUrl: string
-  apiKey: string
-  apiKeyEnv: string
-  /** Set only after the user explicitly switches Ollama from Cloud to Local. */
-  clearApiKey: boolean
+  headers: KvEntry[]
 }
 
 export function ProviderProfileFields({
   value,
   onChange,
   kindUi,
-  existing = false,
   disabled = false,
-  apiKeyLabel = "API key",
   children,
 }: {
   value: ProviderProfileFieldsValue
   onChange: (value: ProviderProfileFieldsValue) => void
   kindUi: "cards" | "select"
-  existing?: boolean
   disabled?: boolean
-  apiKeyLabel?: string
   children?: ReactNode
 }) {
   const ollama = value.kind === "ollama"
@@ -62,10 +60,6 @@ export function ProviderProfileFields({
     ollama && (cloudChosen || isOllamaCloudUrl(value.baseUrl))
       ? "cloud"
       : "local"
-  const showKeys =
-    !ollama ||
-    ollamaMode === "cloud" ||
-    Boolean(value.apiKey.trim() || value.apiKeyEnv.trim())
   const baseUrlPlaceholder = ollama
     ? ollamaMode === "cloud"
       ? OLLAMA_CLOUD_BASE_URL
@@ -79,25 +73,41 @@ export function ProviderProfileFields({
 
   function setKind(next: ProviderKind) {
     if (next === value.kind) return
+    const currentDefaults = defaultProviderHeaders(value.kind, {
+      ollamaCloud: value.kind === "ollama" && isOllamaCloudUrl(value.baseUrl),
+    })
+    const nextBaseUrl =
+      value.kind === "ollama" && isOllamaPresetUrl(value.baseUrl)
+        ? ""
+        : value.baseUrl
     setCloudChosen(next === "ollama" && isOllamaCloudUrl(value.baseUrl))
     patch({
       kind: next,
-      baseUrl:
-        value.kind === "ollama" && isOllamaPresetUrl(value.baseUrl)
-          ? ""
-          : value.baseUrl,
+      baseUrl: nextBaseUrl,
+      headers:
+        value.headers.length === 0 ||
+        sameHeaders(value.headers, currentDefaults)
+          ? defaultProviderHeaders(next, {
+              ollamaCloud: next === "ollama" && isOllamaCloudUrl(nextBaseUrl),
+            })
+          : value.headers,
     })
   }
 
   function setOllamaMode(mode: OllamaHostMode) {
     setCloudChosen(mode === "cloud")
-    const leavingCloud =
-      isOllamaCloudUrl(value.baseUrl) && mode === "local"
+    const leavingCloud = isOllamaCloudUrl(value.baseUrl) && mode === "local"
+    const enteringCloud = mode === "cloud" && !isOllamaCloudUrl(value.baseUrl)
     patch({
       baseUrl: applyOllamaHostMode(value.baseUrl, mode),
-      ...(leavingCloud
-        ? { apiKey: "", apiKeyEnv: "", clearApiKey: true }
-        : { clearApiKey: false }),
+      headers: leavingCloud
+        ? value.headers.filter((header) => !isAuthorizationHeader(header))
+        : enteringCloud && !value.headers.some(isAuthorizationHeader)
+          ? [
+              ...value.headers,
+              ...defaultProviderHeaders("ollama", { ollamaCloud: true }),
+            ]
+          : value.headers,
     })
   }
 
@@ -209,37 +219,31 @@ export function ProviderProfileFields({
           }
         />
       </div>
-      {showKeys ? (
-        <>
-          <div className="grid gap-1.5">
-            <Label htmlFor="provider-api-key">{apiKeyLabel}</Label>
-            <Input
-              id="provider-api-key"
-              type="password"
-              value={value.apiKey}
-              onChange={(event) => patch({ apiKey: event.target.value })}
-              autoComplete="off"
-              placeholder={
-                existing ? "Leave blank to keep existing" : undefined
-              }
-              disabled={disabled}
-            />
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="provider-api-key-env">
-              Or environment variable
-            </Label>
-            <Input
-              id="provider-api-key-env"
-              value={value.apiKeyEnv}
-              onChange={(event) => patch({ apiKeyEnv: event.target.value })}
-              placeholder={ollama ? "OLLAMA_API_KEY" : "OPENAI_API_KEY"}
-              disabled={disabled}
-            />
-          </div>
-        </>
-      ) : null}
+      <KvEntriesEditor
+        label="Request headers"
+        entries={value.headers}
+        onChange={(headers) => patch({ headers })}
+        namePlaceholder="Authorization"
+        valuePlaceholder="Bearer ${PROVIDER_TOKEN}"
+        addLabel="Add header"
+        disabled={disabled}
+      />
       {children}
     </div>
+  )
+}
+
+function isAuthorizationHeader(header: KvEntry) {
+  return header.name.toLowerCase() === "authorization"
+}
+
+function sameHeaders(left: KvEntry[], right: KvEntry[]) {
+  return (
+    left.length === right.length &&
+    left.every(
+      (header, index) =>
+        header.name === right[index]?.name &&
+        header.value === right[index]?.value
+    )
   )
 }

@@ -50,6 +50,12 @@ import {
   parseProviderModelsJson,
   providerModelsToJson,
 } from "@/lib/provider-models"
+import {
+  providerConfigForStorage,
+  providerConnectionConfigSchema,
+  providerConfigFromJson,
+  type ProviderConnectionConfigInput,
+} from "@/lib/provider-config"
 import { mcpProfileForBackup, profileFromRow } from "@/lib/mcp"
 import {
   appearanceToJson,
@@ -1404,10 +1410,7 @@ async function deleteSingleNodeWithSelectionRepair(
 type ProviderProfileInput = {
   name: string
   kind: "openai" | "anthropic" | "ollama" | "openai-compatible"
-  baseUrl?: string
-  apiKey?: string
-  apiKeyEnv?: string
-  clearApiKey?: boolean
+  config: ProviderConnectionConfigInput
   models: Array<{
     id: string
     label?: string
@@ -1428,9 +1431,11 @@ export async function createProvider(
     user_id: userId,
     name: profile.name,
     kind: profile.kind,
-    base_url: profile.baseUrl || null,
-    api_key: profile.apiKey || null,
-    api_key_env: profile.apiKeyEnv || null,
+    config_json: JSON.stringify(
+      providerConfigForStorage(
+        providerConnectionConfigSchema.parse(profile.config)
+      )
+    ),
     models_json: providerModelsToJson(parseProviderModels(profile.models)),
     created_at: timestamp,
     updated_at: timestamp,
@@ -1479,13 +1484,11 @@ export async function updateProvider(
     .set({
       name: profile.name,
       kind: profile.kind,
-      base_url: profile.baseUrl || null,
-      ...(profile.clearApiKey
-        ? { api_key: null }
-        : profile.apiKey !== undefined
-          ? { api_key: profile.apiKey || null }
-          : {}),
-      api_key_env: profile.clearApiKey ? null : profile.apiKeyEnv || null,
+      config_json: JSON.stringify(
+        providerConfigForStorage(
+          providerConnectionConfigSchema.parse(profile.config)
+        )
+      ),
       models_json: providerModelsToJson(parseProviderModels(profile.models)),
       updated_at: now(),
     })
@@ -1973,9 +1976,7 @@ async function restoreOwnerBackup(
         user_id: userId,
         name: provider.name,
         kind: provider.kind,
-        base_url: provider.base_url ?? null,
-        api_key: null,
-        api_key_env: provider.api_key_env ?? null,
+        config_json: provider.config_json,
         models_json: provider.models_json,
         created_at: provider.created_at,
         updated_at: provider.updated_at,
@@ -2405,18 +2406,14 @@ export async function createBackup() {
   const nodes = rawNodes.map((node) => normalizeNodeRow(node))
   const providers = await db
     .selectFrom("provider_profiles")
-    .select([
-      "id",
-      "user_id",
-      "name",
-      "kind",
-      "base_url",
-      "api_key_env",
-      "models_json",
-      "created_at",
-      "updated_at",
-    ])
+    .selectAll()
     .execute()
+  const providerProfiles = providers.map(({ config_json, ...provider }) => ({
+    ...provider,
+    config_json: JSON.stringify(
+      providerConfigForStorage(providerConfigFromJson(config_json))
+    ),
+  }))
   const promptStacks = await db
     .selectFrom("prompt_stacks")
     .selectAll()
@@ -2489,7 +2486,7 @@ export async function createBackup() {
     nodes,
     attachments,
     messageAttachments,
-    providerProfiles: providers,
+    providerProfiles,
     mcpServerProfiles,
     users: users.map((user) => ({
       id: user.id,

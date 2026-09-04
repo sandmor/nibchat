@@ -2,6 +2,7 @@ import { z } from "zod"
 import { appearanceSchema } from "@/lib/appearance"
 import { isProviderModelsJson } from "@/lib/provider-models"
 import { chatViewStateSchema } from "@/lib/chat-view-state"
+import { providerConnectionConfigSchema } from "@/lib/provider-config"
 
 const chatRowSchema = z
   .object({
@@ -52,8 +53,14 @@ const providerProfileSchema = z
     user_id: z.string(),
     name: z.string(),
     kind: z.string(),
-    base_url: z.string().nullable().optional(),
-    api_key_env: z.string().nullable().optional(),
+    config_json: z.string().refine((value) => {
+      try {
+        return providerConnectionConfigSchema.safeParse(JSON.parse(value))
+          .success
+      } catch {
+        return false
+      }
+    }, "Invalid provider connection configuration"),
     models_json: z.string().refine(isProviderModelsJson, {
       message: "Invalid provider model preferences",
     }),
@@ -141,7 +148,7 @@ const userPreferencesSchema = z.object({
   updated_at: z.string(),
 })
 
-/** Portable snapshot (no API keys, credentials, sessions, or attachment bytes).
+/** Portable snapshot (no passwords, sessions, or attachment bytes).
  * Bytes live next to this manifest in the backup zip. */
 export const backupSchema = z.object({
   version: z.literal(1),

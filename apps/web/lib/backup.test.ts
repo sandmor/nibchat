@@ -48,6 +48,7 @@ describe("parseBackup", () => {
           user_id: "u1",
           name: "Local",
           kind: "openai-compatible",
+          config_json: JSON.stringify({ headers: [] }),
           models_json: '{"version":1,"preferences":[]}',
           created_at: "t",
           updated_at: "t",

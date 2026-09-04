@@ -1,19 +1,13 @@
 import { beforeAll, describe, expect, it } from "vitest"
 import {
   buildMcpInstructionsText,
-  canReturnKvValue,
   createMcpProfile,
   defaultAllowlistSelection,
   diffCatalogTools,
   getEnabledMcpProfiles,
   getMcpProfile,
-  mergeKvEntries,
-  mergeStoredValues,
   mcpProfileInputSchema,
   namespaceFromDisplayName,
-  normalizeKvEntries,
-  resolveKvEntries,
-  resolveTemplateValue,
   safeToolName,
   textFromResourceContents,
   type McpCatalog,
@@ -96,91 +90,6 @@ describe("namespaceFromDisplayName", () => {
     )
     expect(namespaceFromDisplayName("123-git")).toBe("m_123_git")
     expect(namespaceFromDisplayName("  ")).toBe("mcp")
-  })
-})
-
-describe("env templates", () => {
-  it("keeps name and value and drops unknown fields", () => {
-    expect(
-      normalizeKvEntries([
-        { name: "A", value: "${FOO}", extra: true },
-        { name: "B", value: "literal" },
-        { name: "" },
-      ])
-    ).toEqual([
-      { name: "A", value: "${FOO}" },
-      { name: "B", value: "literal" },
-    ])
-  })
-
-  it("resolves template values", () => {
-    expect(resolveTemplateValue("Bearer ${TOKEN}", { TOKEN: "secret" })).toBe(
-      "Bearer secret"
-    )
-    expect(
-      resolveTemplateValue("Bearer ${MISSING}", { OTHER: "x" })
-    ).toBeUndefined()
-  })
-
-  it("resolveKvEntries omits missing templates", () => {
-    expect(
-      resolveKvEntries(
-        [
-          { name: "Authorization", value: "Bearer ${TOKEN}" },
-          { name: "X-Empty", value: "${NOPE}" },
-        ],
-        { TOKEN: "abc" }
-      )
-    ).toEqual({ Authorization: "Bearer abc" })
-  })
-})
-
-describe("redaction", () => {
-  it("allows template-only and short-prefix values", () => {
-    expect(canReturnKvValue("Bearer ${TOKEN}")).toBe(true)
-    expect(canReturnKvValue("${TOKEN}")).toBe(true)
-  })
-
-  it("hides bare secrets", () => {
-    expect(canReturnKvValue("sk-live-supersecrettoken")).toBe(false)
-    expect(canReturnKvValue("plain")).toBe(false)
-  })
-})
-
-describe("merge", () => {
-  it("keeps previous secret when next value is blank", () => {
-    expect(
-      mergeKvEntries(
-        [{ name: "Authorization", value: "secret-token" }],
-        [{ name: "Authorization", value: "" }]
-      )
-    ).toEqual([{ name: "Authorization", value: "secret-token" }])
-  })
-
-  it("merges http configs by headers", () => {
-    const merged = mergeStoredValues(
-      {
-        url: "https://a.example",
-        headers: [{ name: "A", value: "keep-me" }],
-        followRedirects: false,
-        connectTimeoutMs: 10_000,
-        callTimeoutMs: 60_000,
-      },
-      {
-        url: "https://b.example",
-        headers: [{ name: "A" }, { name: "B", value: "new" }],
-        followRedirects: true,
-        connectTimeoutMs: 5_000,
-        callTimeoutMs: 30_000,
-      }
-    )
-    expect("url" in merged && merged.url).toBe("https://b.example")
-    if ("url" in merged) {
-      expect(merged.headers).toEqual([
-        { name: "A", value: "keep-me" },
-        { name: "B", value: "new" },
-      ])
-    }
   })
 })
 

@@ -14,7 +14,7 @@ Every AI chat client has features you love and features you hate. Here you choos
 - Chats are trees, made from messages with sibling branches, path selection, and search across all branches. Our goal is maximum flexibility and non-destructive editing, though the alternative is also possible.
 - No additional services required. SQLite by default; PostgreSQL is optional.
 - Serverless support. Stateful default.
-- Backup / restore (API keys excluded)
+- Backup / restore (passwords and sessions excluded)
 
 ## Setup
 

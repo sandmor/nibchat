@@ -2,8 +2,10 @@ export type ProviderSummary = {
   id: string
   name: string
   kind: string
-  base_url: string | null
-  api_key_env: string | null
+  config: {
+    baseUrl?: string
+    headers: Array<{ name: string; value: string }>
+  }
   models_json: string
   created_at: string
   updated_at: string

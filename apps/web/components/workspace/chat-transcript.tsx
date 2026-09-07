@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import type { NodeRow } from "@/lib/types"
 import type { ProviderSummary } from "./types"
-import type { MessageEditorBindings } from "./message"
+import { Message, type MessageEditorBindings } from "./message"
 import { Empty } from "./empty"
 import { PathSlot } from "./path-slot"
 import { StreamingBubble } from "./streaming-bubble"
@@ -35,6 +35,7 @@ import {
   transcriptRangeExtractor,
   transcriptRowMeasurementKey,
   TRANSCRIPT_OVERSCAN,
+  type AfterTipTranscriptRow,
   type TranscriptRow,
 } from "./chat-transcript-helpers"
 import {
@@ -255,10 +256,20 @@ function VirtualChatTranscript({
     const visibleItem = wasAtEnd
       ? undefined
       : virtualizer.getVirtualItemForOffset(scrollOffset)
+    const visibleElement = visibleItem
+      ? canvas.querySelector<HTMLElement>(
+          `:scope > [data-index="${visibleItem.index}"]`
+        )
+      : null
     const anchor = visibleItem
       ? {
           index: visibleItem.index,
-          offsetWithinRow: scrollOffset - visibleItem.start,
+          // Preserve the painted position, including subpixel layout. The
+          // virtualizer's rounded measurement can already differ by 1–2px.
+          offsetWithinRow: visibleElement
+            ? viewport.getBoundingClientRect().top -
+              visibleElement.getBoundingClientRect().top
+            : scrollOffset - visibleItem.start,
         }
       : null
 
@@ -285,6 +296,27 @@ function VirtualChatTranscript({
     if (!nextAnchor) return
     virtualizer.scrollToOffset(nextAnchor.start + anchor.offsetWithinRow, {
       behavior: "auto",
+    })
+    // Measurement cache positions can round differently from the browser's
+    // final layout by a pixel or two. Correct against the mounted row on the
+    // next frame so a reader's actual visual anchor stays fixed.
+    requestAnimationFrame(() => {
+      // A stale callback will put the old row far from its saved position;
+      // the small-delta limit below rejects it. Legitimate virtualizer resize
+      // adjustments may change scrollTop before this frame, so do not reject
+      // those based on the absolute scroll offset.
+      if (!canvas.isConnected) return
+      const row = canvas.querySelector<HTMLElement>(
+        `:scope > [data-index="${anchor.index}"]`
+      )
+      if (!row) return
+      const actual =
+        row.getBoundingClientRect().top - viewport.getBoundingClientRect().top
+      const expected = -anchor.offsetWithinRow
+      const delta = actual - expected
+      // This pass only compensates rounding, never a changed layout/anchor.
+      if (Math.abs(delta) >= 0.5 && Math.abs(delta) <= 2)
+        viewport.scrollTop += delta
     })
   }, [virtualizer])
 
@@ -339,6 +371,15 @@ function VirtualChatTranscript({
     previousMeasurementLayoutRef.current = measurementLayoutSignature
     measurePreservingVisibleAnchor()
   }, [measurementLayoutSignature, measurePreservingVisibleAnchor])
+
+  // The virtualizer disconnects and reconnects during Strict Mode effect
+  // replay. Reapply the initial position after that reconnect as well.
+  useLayoutEffect(
+    () => () => {
+      didInitialScrollRef.current = false
+    },
+    []
+  )
 
   // Start each chat at its latest row. The keyed child remounts only on chat
   // change, not on path rewrites or streaming updates.
@@ -427,10 +468,18 @@ function VirtualChatTranscript({
                     <Empty providers={providers} />
                   </motion.div>
                 ) : row.kind === "after-tip" ? (
-                  <StreamingBubble
-                    streamId={row.streamId}
+                  <AfterTipSlot
+                    row={row}
+                    nodes={nodes}
+                    providers={providers}
                     animate={animate}
                     transition={transition}
+                    messageActionCaptions={messageActionCaptions}
+                    onSelect={onSelect}
+                    onChanged={onChanged}
+                    onRegenerate={onRegenerate}
+                    onAnswerTools={onAnswerTools}
+                    editor={editor}
                   />
                 ) : (
                   <PathSlot
@@ -461,13 +510,71 @@ function VirtualChatTranscript({
         aria-label="Scroll to end"
         tabIndex={atEnd ? -1 : undefined}
         inert={atEnd ? true : undefined}
-        onClick={() => virtualizer.scrollToEnd({ behavior: "smooth" })}
+        // An explicit jump is a recovery action. Commit it immediately so a
+        // changing stream cannot keep a smooth-scroll target perpetually stale.
+        onClick={() => virtualizer.scrollToEnd({ behavior: "auto" })}
         style={{ insetInlineEnd: TRANSCRIPT_SCROLL_TO_END_INSET }}
         className="absolute bottom-3 z-10 border-border bg-background text-foreground shadow-[var(--tree-shadow-sm)] transition-[translate,scale,opacity] duration-200 hover:bg-muted hover:text-foreground data-[active=false]:pointer-events-none data-[active=false]:translate-y-full data-[active=false]:scale-95 data-[active=false]:opacity-0 data-[active=false]:duration-400 data-[active=false]:ease-[cubic-bezier(0.7,0,0.84,0)] data-[active=true]:translate-y-0 data-[active=true]:scale-100 data-[active=true]:opacity-100 data-[active=true]:ease-[cubic-bezier(0.23,1,0.32,1)] sm:bottom-4"
       >
         <HugeiconsIcon icon={ArrowDown02Icon} strokeWidth={2} />
       </Button>
     </div>
+  )
+}
+
+function AfterTipSlot({
+  row,
+  nodes,
+  providers,
+  animate,
+  transition,
+  messageActionCaptions,
+  onSelect,
+  onChanged,
+  onRegenerate,
+  onAnswerTools,
+  editor,
+}: {
+  row: AfterTipTranscriptRow
+  nodes: NodeRow[]
+  providers: ProviderSummary[]
+  animate: boolean
+  transition: { duration: number; ease: [number, number, number, number] }
+  messageActionCaptions: boolean
+  onSelect: (parentId: string, childId: string) => void
+  onChanged: () => void | Promise<void>
+  onRegenerate: (assistantNodeId: string) => void
+  onAnswerTools?: (
+    assistantNodeId: string,
+    toolResults: Array<{ toolCallId: string; output: unknown }>
+  ) => void | Promise<void>
+  editor?: MessageEditorBindings
+}) {
+  const node = nodes.find((candidate) => candidate.id === row.messageId)
+  if (!node) {
+    return (
+      <StreamingBubble
+        streamId={row.streamId}
+        animate={animate}
+        transition={transition}
+      />
+    )
+  }
+  return (
+    <Message
+      node={node}
+      nodes={nodes}
+      providers={providers}
+      messageActionCaptions={messageActionCaptions}
+      onSelect={onSelect}
+      onChanged={onChanged}
+      onRegenerate={
+        node.role === "assistant" ? () => onRegenerate(node.id) : undefined
+      }
+      onAnswerTools={onAnswerTools}
+      editor={editor}
+      streamId={row.streamId}
+    />
   )
 }
 

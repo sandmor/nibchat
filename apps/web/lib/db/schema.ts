@@ -32,7 +32,9 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create table if not exists chats (id text primary key, user_id text not null references "user"(id) on delete cascade, title text, selected_root_node_id text, model_config_json text not null, view_state_json text not null, prompt_stack_id text, created_at text not null, updated_at text not null)`.execute(
     db
   )
-  await sql`create table if not exists message_nodes (id text primary key, chat_id text not null references chats(id) on delete cascade, parent_id text references message_nodes(id) on delete cascade, selected_child_id text, role text not null, parts_json text not null, search_text text not null, metadata_json text not null, excluded_from_context boolean not null default false, status text not null, created_at text not null, updated_at text not null)`.execute(
+  const sortKeyType =
+    kind === "postgres" ? sql.raw("double precision") : sql.raw("real")
+  await sql`create table if not exists message_nodes (id text primary key, chat_id text not null references chats(id) on delete cascade, parent_id text references message_nodes(id) on delete cascade, selected_child_id text, sort_key ${sortKeyType} not null, revision integer not null default 0, role text not null, parts_json text not null, search_text text not null, metadata_json text not null, excluded_from_context boolean not null default false, status text not null, created_at text not null, updated_at text not null)`.execute(
     db
   )
   await sql`create table if not exists generation_runs (id text primary key, node_id text not null unique references message_nodes(id) on delete cascade, chat_id text not null references chats(id) on delete cascade, started_at text not null, state text not null)`.execute(
@@ -71,7 +73,7 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
     db
   )
 
-  await sql`create index if not exists message_nodes_chat_idx on message_nodes(chat_id, created_at)`.execute(
+  await sql`create index if not exists message_nodes_chat_idx on message_nodes(chat_id, parent_id, sort_key)`.execute(
     db
   )
   await sql`create index if not exists message_nodes_search_idx on message_nodes(chat_id, search_text)`.execute(

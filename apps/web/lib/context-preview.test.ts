@@ -30,6 +30,8 @@ function node(
     chat_id: "c",
     parent_id: null,
     selected_child_id: null,
+    sort_key: 0,
+    revision: 0,
     role,
     parts_json: JSON.stringify(parts),
     search_text: "",

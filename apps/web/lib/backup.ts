@@ -30,6 +30,8 @@ const nodeRowSchema = z
     chat_id: z.string(),
     parent_id: z.string().nullable(),
     selected_child_id: z.string().nullable(),
+    sort_key: z.number(),
+    revision: z.number().int().nonnegative(),
     role: z.enum(["user", "assistant", "system", "tool"]),
     parts_json: z.string(),
     search_text: z.string(),

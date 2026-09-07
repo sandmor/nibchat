@@ -4,28 +4,18 @@ import { useState } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Pdf02Icon } from "@hugeicons/core-free-icons"
 import { Markdown } from "@/components/markdown"
-import { Textarea } from "@/components/ui/textarea"
 import { QuestionToolView } from "@/components/workspace/tools/question-tool"
 import { ImageViewer } from "@/components/workspace/image-viewer"
 import { pdfAttachmentCaption } from "@/lib/pdf-input"
 import type { QuestionAnswers } from "@/lib/agent/tools/question-shared"
-import {
-  coalesceAdjacentTextParts,
-  type MessageEditSegment,
-} from "@/lib/agent/parts"
+import { coalesceAdjacentTextParts } from "@/lib/agent/parts"
 import type { Parts, ToolInvocationPart } from "@/lib/types"
-
-const sourceEditorClass =
-  "min-h-[4.5rem] resize-none rounded-none border-0 bg-transparent px-0 py-0 shadow-none focus-visible:ring-0"
 
 export function MessageParts({
   parts,
   streaming = false,
   interactiveTools,
   onAnswerTool,
-  editing = false,
-  edits,
-  onEditChange,
 }: {
   parts: Parts
   streaming?: boolean
@@ -36,9 +26,6 @@ export function MessageParts({
     toolName: string,
     output: unknown
   ) => void | Promise<void>
-  editing?: boolean
-  edits?: MessageEditSegment[]
-  onEditChange?: (index: number, text: string) => void
 }) {
   const [viewer, setViewer] = useState<{ src: string; name: string } | null>(
     null
@@ -51,71 +38,30 @@ export function MessageParts({
   }
 
   const coalesced = coalesceAdjacentTextParts(parts)
-  const firstEditIndex = coalesced.findIndex(
-    (part) => part.type === "text" || part.type === "reasoning"
-  )
-  let editIndex = 0
 
   return (
     <>
       <div className="flex flex-col gap-3">
         {coalesced.map((part, index) => {
           if (part.type === "reasoning") {
-            const segmentIndex = editIndex++
-            const value = editing
-              ? (edits?.[segmentIndex]?.text ?? part.text)
-              : part.text
             return (
               <details
                 key={`reasoning-${index}`}
                 data-find-skip
-                open={editing ? true : undefined}
                 className="rounded-lg bg-muted p-3 text-xs text-muted-foreground"
               >
                 <summary className="cursor-pointer">Reasoning</summary>
-                {editing ? (
-                  <Textarea
-                    autoFocus={index === firstEditIndex}
-                    aria-label="Reasoning"
-                    value={value}
-                    onChange={(event) =>
-                      onEditChange?.(segmentIndex, event.target.value)
-                    }
-                    rows={3}
-                    className={`${sourceEditorClass} mt-2 text-xs`}
-                  />
-                ) : (
-                  <Markdown
-                    className="mt-2 text-xs"
-                    streaming={streaming}
-                    variant="reasoning"
-                  >
-                    {part.text}
-                  </Markdown>
-                )}
+                <Markdown
+                  className="mt-2 text-xs"
+                  streaming={streaming}
+                  variant="reasoning"
+                >
+                  {part.text}
+                </Markdown>
               </details>
             )
           }
           if (part.type === "text") {
-            const segmentIndex = editIndex++
-            const value = editing
-              ? (edits?.[segmentIndex]?.text ?? part.text)
-              : part.text
-            if (editing) {
-              return (
-                <Textarea
-                  key={`text-${index}`}
-                  autoFocus={index === firstEditIndex}
-                  aria-label="Message text"
-                  value={value}
-                  onChange={(event) =>
-                    onEditChange?.(segmentIndex, event.target.value)
-                  }
-                  rows={4}
-                  className={sourceEditorClass}
-                />
-              )
-            }
             return (
               <Markdown key={`text-${index}`} streaming={streaming}>
                 {part.text || (streaming ? "Thinking…" : "")}
@@ -216,9 +162,7 @@ export function MessageParts({
                 key={part.toolCallId}
                 part={part}
                 interactive={Boolean(
-                  !editing &&
-                  interactiveTools &&
-                  part.state === "input-available"
+                  interactiveTools && part.state === "input-available"
                 )}
                 onAnswerTool={onAnswerTool}
               />

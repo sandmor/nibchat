@@ -9,8 +9,7 @@ import { providerConfigFromJson } from "@/lib/provider-config"
 import { resolveConfigEntries } from "@/lib/config-entries"
 import { jsonError } from "@/lib/http-error"
 import {
-  discoverOllamaModels,
-  protocolFromCatalogEntry,
+  discoverProviderCatalog,
   publicCatalogModels,
   type CatalogModel,
 } from "@/lib/provider-catalog"
@@ -56,86 +55,33 @@ export async function GET(request: Request) {
     // Discovery performs an authenticated server-side request to the provider.
     // Regular users may read an existing catalog, but must never cause one.
     if (!isOwner) return Response.json({ models: [] })
-    let discovered: CatalogModel[] = []
-    let discoverySucceeded = false
     const config = providerConfigFromJson(profile.config_json)
     const headers = resolveConfigEntries(config.headers)
-    if (profile.kind === "ollama") {
-      discovered = await discoverOllamaModels(
-        { name: profile.name, base_url: config.baseUrl ?? null },
-        headers
-      )
-      discoverySucceeded = true
-    } else if (profile.kind === "openai-compatible" && config.baseUrl) {
-      const response = await fetch(
-        new URL(
-          "models",
-          config.baseUrl.endsWith("/") ? config.baseUrl : `${config.baseUrl}/`
-        ),
-        {
-          headers,
-          signal: AbortSignal.timeout(8000),
-        }
-      )
-      if (response.ok) {
-        discoverySucceeded = true
-        const payload = (await response.json()) as { data?: Array<unknown> }
-        discovered = (payload.data ?? []).flatMap((model) =>
-          model &&
-          typeof model === "object" &&
-          typeof (model as { id?: unknown }).id === "string"
-            ? [
-                {
-                  id: (model as { id: string }).id,
-                  name:
-                    typeof (model as { name?: unknown }).name === "string"
-                      ? (model as { name: string }).name
-                      : (model as { id: string }).id,
-                  ...protocolFromCatalogEntry(model),
-                },
-              ]
-            : []
-        )
-      }
-    }
-    if (!discovered.length && profile.kind !== "ollama") {
-      const response = await fetch("https://models.dev/api.json", {
-        signal: AbortSignal.timeout(8000),
+    const discovered = await discoverProviderCatalog(
+      { kind: profile.kind, name: profile.name },
+      { baseUrl: config.baseUrl ?? null },
+      headers
+    )
+    const refreshedAt = new Date().toISOString()
+    // A successful empty discovery is authoritative. A thrown failure must not
+    // erase the last known catalog or prune editor selections.
+    await db
+      .insertInto("model_catalog_cache")
+      .values({
+        provider_id: profile.id,
+        models_json: JSON.stringify(discovered),
+        refreshed_at: refreshedAt,
       })
-      if (response.ok) {
-        discoverySucceeded = true
-        const payload = (await response.json()) as Record<
-          string,
-          { models?: Record<string, { name?: string }> }
-        >
-        const family = profile.kind === "anthropic" ? "anthropic" : "openai"
-        discovered = Object.entries(payload[family]?.models ?? {}).map(
-          ([id, model]) => ({ id, name: model.name ?? id })
-        )
-      }
-    }
-    // A successful empty discovery is authoritative. A total discovery failure
-    // must not erase the last known catalog or prune editor selections.
-    if (discoverySucceeded)
-      await db
-        .insertInto("model_catalog_cache")
-        .values({
-          provider_id: profile.id,
+      .onConflict((oc) =>
+        oc.column("provider_id").doUpdateSet({
           models_json: JSON.stringify(discovered),
-          refreshed_at: new Date().toISOString(),
+          refreshed_at: refreshedAt,
         })
-        .onConflict((oc) =>
-          oc.column("provider_id").doUpdateSet({
-            models_json: JSON.stringify(discovered),
-            refreshed_at: new Date().toISOString(),
-          })
-        )
-        .execute()
+      )
+      .execute()
     return Response.json({
       models: publicCatalogModels(discovered),
-      cachedAt: discoverySucceeded
-        ? new Date().toISOString()
-        : (cached?.refreshed_at ?? null),
+      cachedAt: refreshedAt,
     })
   } catch (error) {
     const authStatus =

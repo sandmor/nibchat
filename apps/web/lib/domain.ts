@@ -1,5 +1,6 @@
-import type { NodeRow, Parts } from "@/lib/types"
 import { textFromParts as textFromPartsImpl } from "@/lib/agent/parts"
+import { siblingSort } from "@/lib/sort-key"
+import type { NodeRow, Parts } from "@/lib/types"
 
 export const id = () => crypto.randomUUID()
 export const now = () => new Date().toISOString()
@@ -22,12 +23,7 @@ export function resolveActivePath(nodes: NodeRow[], rootId: string | null) {
     siblings.push(node)
     children.set(node.parent_id, siblings)
   }
-  for (const siblings of children.values())
-    siblings.sort(
-      (left, right) =>
-        left.created_at.localeCompare(right.created_at) ||
-        left.id.localeCompare(right.id)
-    )
+  for (const siblings of children.values()) siblings.sort(siblingSort)
   let current = rootId ? byId.get(rootId) : children.get(null)?.[0]
   const path: NodeRow[] = []
   const seen = new Set<string>()
@@ -50,8 +46,12 @@ export function resolveActivePath(nodes: NodeRow[], rootId: string | null) {
 export function ancestorPath(nodes: NodeRow[], nodeId: string) {
   const byId = new Map(nodes.map((node) => [node.id, node]))
   const path: NodeRow[] = []
+  const seen = new Set<string>()
   let current = byId.get(nodeId)
   while (current) {
+    if (seen.has(current.id))
+      throw new Error("Message graph contains a cycle")
+    seen.add(current.id)
     path.unshift(current)
     current = current.parent_id ? byId.get(current.parent_id) : undefined
   }

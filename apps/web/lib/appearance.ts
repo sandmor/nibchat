@@ -57,6 +57,28 @@ export const modelPickerSchema = z
 
 export type AppearanceModelPicker = z.infer<typeof modelPickerSchema>
 
+export const messageLayoutSchema = z
+  .object({
+    user: z
+      .object({
+        align: z.enum(["left", "center", "right"]).default("right"),
+        maxWidthPercent: z.number().min(20).max(100).default(88),
+      })
+      .default({ align: "right", maxWidthPercent: 88 }),
+    assistant: z
+      .object({
+        align: z.enum(["left", "center", "right"]).default("left"),
+        maxWidthPercent: z.number().min(20).max(100).default(100),
+      })
+      .default({ align: "left", maxWidthPercent: 100 }),
+  })
+  .default({
+    user: { align: "right", maxWidthPercent: 88 },
+    assistant: { align: "left", maxWidthPercent: 100 },
+  })
+
+export type AppearanceMessageLayout = z.infer<typeof messageLayoutSchema>
+
 const colorValueSchema: z.ZodType<ColorValue> = z.lazy(() =>
   z.union([
     z.object({
@@ -115,6 +137,7 @@ const appearanceBaseSchema = z
     remoteStylesheet: z.string().optional(),
     motion: motionSchema,
     messageActions: messageActionsSchema,
+    messageLayout: messageLayoutSchema,
     modelPicker: modelPickerSchema,
     palette: paletteSchema,
     groups: z.record(z.string(), groupPaintSchema).default({}),

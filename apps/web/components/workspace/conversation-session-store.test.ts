@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import {
+  authoredPartsFromSession,
   composerDraftFromUserParts,
   composerSlotId,
+  clearSubmittedComposerDraft,
   hasComposerDraft,
   hasMessageEdit,
   isEditorSending,
@@ -29,6 +31,42 @@ describe("shouldDeleteUploadedAttachment", () => {
   })
 })
 
+describe("clearSubmittedComposerDraft", () => {
+  it("removes only submitted attachments and unchanged text", () => {
+    const submitted = {
+      name: "sent.png",
+      reference: { kind: "uploaded-file" as const, id: "sent" },
+    }
+    const later = {
+      name: "later.png",
+      reference: { kind: "uploaded-file" as const, id: "later" },
+    }
+    const attachment = {
+      name: "resource",
+      reference: {
+        kind: "mcp-resource" as const,
+        profileId: "profile",
+        uri: "help://resource",
+        resolution: { kind: "live" as const },
+      },
+    }
+    expect(
+      clearSubmittedComposerDraft(
+        { text: "sent plus later", attachments: [submitted, later] },
+        "sent",
+        [submitted]
+      )
+    ).toEqual({ text: "sent plus later", attachments: [later] })
+    expect(
+      clearSubmittedComposerDraft(
+        { text: "sent", attachments: [attachment] },
+        "sent",
+        [attachment]
+      )
+    ).toEqual({ text: "", attachments: [] })
+  })
+})
+
 describe("composer session selectors", () => {
   beforeEach(() => {
     useConversationSessionStore.setState({ sessions: {}, sending: {} })
@@ -40,7 +78,7 @@ describe("composer session selectors", () => {
     expect(hasComposerDraft(slot)).toBe(false)
   })
 
-  it("keeps the tree slot signature stable when only draft text changes", () => {
+  it("keeps the tree slot signature stable when draft contents change", () => {
     const { update } = useConversationSessionStore.getState()
     const slot = composerSlotId("chat-1", "tree", "node-1")
     update(slot, { text: "a" })
@@ -57,16 +95,6 @@ describe("composer session selectors", () => {
     const sessionsAfter = useConversationSessionStore.getState().sessions
     expect(after).toBe(before)
     expect(sessionsAfter).not.toBe(sessionsBefore)
-  })
-
-  it("keeps the tree slot signature stable when attachments change", () => {
-    const { update } = useConversationSessionStore.getState()
-    const slot = composerSlotId("chat-1", "tree", "node-1")
-    update(slot, { text: "hi" })
-    const before = treeDraftSlotSignature(
-      useConversationSessionStore.getState().sessions,
-      "chat-1"
-    )
     update(slot, {
       attachments: [
         {
@@ -155,16 +183,15 @@ describe("message edit session selectors", () => {
     ])
   })
 
-  it("keeps the edit slot signature stable when only segment text changes", () => {
-    const { setParts, updatePartsSegment } =
-      useConversationSessionStore.getState()
+  it("keeps the edit slot signature stable when only part text changes", () => {
+    const { setParts, replacePart } = useConversationSessionStore.getState()
     const slot = messageEditSlotId("chat-1", "node-1")
     setParts(slot, [{ type: "text", text: "a" }])
     const before = messageEditSlotSignature(
       useConversationSessionStore.getState().sessions,
       "chat-1"
     )
-    updatePartsSegment(slot, 0, "ab")
+    replacePart(slot, 0, { type: "text", text: "ab" })
     const after = messageEditSlotSignature(
       useConversationSessionStore.getState().sessions,
       "chat-1"
@@ -217,6 +244,33 @@ describe("message edit session selectors", () => {
     )
   })
 
+  it("converts an assistant draft to a single user text block", () => {
+    const { setSession, convertRole } = useConversationSessionStore.getState()
+    const slot = messageEditSlotId("chat-1", "node-1")
+    setSession(slot, {
+      role: "assistant",
+      parts: [
+        { type: "reasoning", text: "plan" },
+        { type: "text", text: "hello" },
+        {
+          type: "tool-invocation",
+          toolCallId: "c1",
+          toolName: "lookup",
+          state: "output-available",
+          input: {},
+          output: "ok",
+        },
+      ],
+      keys: ["a", "b", "c"],
+      attachments: [],
+    })
+    convertRole(slot, "user")
+    const session = useConversationSessionStore.getState().sessions[slot]
+    expect(session?.role).toBe("user")
+    expect(session?.parts).toHaveLength(1)
+    expect(session?.parts[0]).toMatchObject({ type: "text" })
+  })
+
   it("keeps the edit slot signature stable when only composer draft text changes", () => {
     const { update } = useConversationSessionStore.getState()
     const slot = messageEditSlotId("chat-1", "node-1")
@@ -250,5 +304,49 @@ describe("message edit session selectors", () => {
     )
     expect(after).toBe(before)
     expect(after).toBe(slot)
+  })
+})
+
+describe("authoredPartsFromSession", () => {
+  it("sends sidecar uploads that are not already message parts", () => {
+    const existing = {
+      type: "attachment" as const,
+      id: "kept",
+      name: "kept.png",
+      source: { kind: "upload" as const },
+      content: {
+        kind: "binary" as const,
+        attachmentId: "kept",
+        mediaType: "image/png",
+        byteSize: 1,
+        sha256: "a".repeat(64),
+      },
+    }
+    expect(
+      authoredPartsFromSession({
+        role: "user",
+        parts: [{ type: "text", text: "hi" }, existing],
+        keys: ["t", "a"],
+        attachments: [
+          {
+            name: "kept.png",
+            claimed: true,
+            reference: { kind: "uploaded-file", id: "kept" },
+          },
+          {
+            name: "new.png",
+            reference: { kind: "uploaded-file", id: "new" },
+          },
+          {
+            name: "pending.png",
+            uploading: true,
+            reference: { kind: "uploaded-file", id: "pending" },
+          },
+        ],
+      })
+    ).toEqual({
+      parts: [{ type: "text", text: "hi" }, existing],
+      attachments: [{ kind: "uploaded-file", id: "new" }],
+    })
   })
 })

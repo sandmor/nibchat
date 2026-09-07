@@ -131,6 +131,8 @@ describe("parseBackup", () => {
       chat_id: "c1",
       parent_id: null,
       selected_child_id: null,
+      sort_key: 1,
+      revision: 0,
       role: "user",
       parts_json: "[]",
       search_text: "",
@@ -149,5 +151,32 @@ describe("parseBackup", () => {
         nodes: [{ ...node, excluded_from_context: false }],
       }).nodes[0]?.excluded_from_context
     ).toBe(false)
+  })
+
+  it("requires sort_key and revision on every message node", () => {
+    const node = {
+      id: "n1",
+      chat_id: "c1",
+      parent_id: null,
+      selected_child_id: null,
+      role: "user" as const,
+      parts_json: "[]",
+      search_text: "",
+      metadata_json: "{}",
+      excluded_from_context: false,
+      status: "complete" as const,
+      created_at: "t",
+      updated_at: "t",
+    }
+    expect(() =>
+      parseBackup({ version: 1, chats: [], nodes: [node] })
+    ).toThrow()
+    expect(
+      parseBackup({
+        version: 1,
+        chats: [],
+        nodes: [{ ...node, sort_key: 1024, revision: 0 }],
+      }).nodes[0]
+    ).toEqual(expect.objectContaining({ sort_key: 1024, revision: 0 }))
   })
 })

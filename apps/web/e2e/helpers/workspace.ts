@@ -201,8 +201,8 @@ export async function editUserAsBranch(page: Page, nextText: string) {
     has: page.getByText("user", { exact: true }),
   })
   const article = userArticles.last()
-  await article.getByRole("button", { name: "Edit as branch" }).click()
-  const composer = page.getByRole("textbox", { name: "Edit this message…" })
+  await article.getByRole("button", { name: "Edit", exact: true }).click()
+  const composer = page.getByRole("textbox", { name: "Message text" })
   await expect(composer).toBeVisible()
   await composer.fill(nextText)
   await page.getByRole("button", { name: "Save & generate" }).click()

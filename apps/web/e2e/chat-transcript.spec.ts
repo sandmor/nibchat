@@ -364,4 +364,28 @@ HANDOFF_END`
     const scrollAfter = await viewport.evaluate((el) => el.scrollTop)
     expect(scrollAfter).toBeGreaterThan(80)
   })
+
+  test("edit forks an in-flight assistant as a sibling", async () => {
+    await openNewChat(page)
+    llm.enqueue({ text: "LIVE_PARTIAL_REPLY", holdAfterText: true })
+    await sendMessage(page, "stream then edit")
+    await expect(streamingMarkers(page)).toHaveCount(1, { timeout: 15_000 })
+    await expect(page.getByText("LIVE_PARTIAL_REPLY")).toBeVisible({
+      timeout: 15_000,
+    })
+
+    const streaming = page.locator("article").filter({
+      has: page.getByText("assistant · streaming"),
+    })
+    await streaming.getByRole("button", { name: "Edit", exact: true }).click()
+    const editor = page.getByRole("textbox", { name: "Message text" })
+    await expect(editor).toBeVisible()
+    await editor.fill("FORKED_FROM_STREAM")
+    await page.getByRole("button", { name: "Save branch" }).click()
+    await expect(editor).toHaveCount(0)
+    await expectAssistantText(page, "FORKED_FROM_STREAM")
+    await expect(streamingMarkers(page)).toHaveCount(0)
+
+    llm.release()
+  })
 })

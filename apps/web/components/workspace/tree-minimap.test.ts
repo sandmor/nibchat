@@ -19,6 +19,8 @@ const node = (
   chat_id: "chat",
   parent_id,
   selected_child_id: null,
+  sort_key: 0,
+  revision: 0,
   role,
   parts_json: "[]",
   search_text,

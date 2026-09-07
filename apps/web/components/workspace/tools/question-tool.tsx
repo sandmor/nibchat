@@ -1,10 +1,13 @@
 "use client"
 
 import * as React from "react"
+import { Button } from "@/components/ui/button"
+import { Switch } from "@/components/ui/switch"
 import {
   Questionnaire,
   QuestionnaireActions,
   QuestionnaireChoice,
+  QuestionnaireChoiceDescription,
   QuestionnaireChoices,
   QuestionnaireDescription,
   QuestionnaireError,
@@ -18,6 +21,7 @@ import {
   QuestionnaireTitle,
 } from "@/components/ui/questionnaire"
 import {
+  emptyQuestionInput,
   questionInputSchema,
   type QuestionAnswers,
   type QuestionInput,
@@ -47,6 +51,252 @@ function PreparingQuestions() {
       className="rounded-lg border bg-muted/40 p-3 text-sm text-muted-foreground"
     >
       Preparing questions…
+    </div>
+  )
+}
+
+const editorFieldClass =
+  "w-full min-w-0 resize-none rounded-none border-0 bg-transparent p-0 shadow-none outline-none focus-visible:ring-0"
+
+function patchQuestion(
+  value: QuestionInput,
+  index: number,
+  patch: Partial<QuestionPrompt>
+): QuestionInput {
+  return {
+    questions: value.questions.map((item, i) =>
+      i === index ? { ...item, ...patch } : item
+    ),
+  }
+}
+
+export function QuestionInputEditor({
+  value,
+  onChange,
+  disabled = false,
+}: {
+  value: QuestionInput
+  onChange: (next: QuestionInput) => void
+  disabled?: boolean
+}) {
+  const questions = value.questions
+  return (
+    <div className="grid gap-4">
+      {questions.map((prompt, index) => {
+        const items = [
+          {
+            name: `q${index}`,
+            required: false as const,
+          },
+        ]
+        return (
+          <div key={index} className="rounded-xl border bg-muted/20 p-4">
+            <Questionnaire
+              items={items}
+              onSubmit={(event) => event.preventDefault()}
+            >
+              <QuestionnaireItem
+                name={items[0]!.name}
+                required={false}
+                multiple={prompt.multiple}
+              >
+                <QuestionnaireTitle render={<div />}>
+                  <textarea
+                    aria-label="Question prompt"
+                    placeholder="Question"
+                    rows={2}
+                    disabled={disabled}
+                    value={prompt.question}
+                    onChange={(event) =>
+                      onChange(
+                        patchQuestion(value, index, {
+                          question: event.target.value,
+                        })
+                      )
+                    }
+                    className={`${editorFieldClass} font-heading text-base font-semibold`}
+                  />
+                </QuestionnaireTitle>
+                <QuestionnaireDescription render={<div />}>
+                  <input
+                    aria-label="Question header"
+                    placeholder="Header"
+                    disabled={disabled}
+                    maxLength={30}
+                    value={prompt.header}
+                    onChange={(event) =>
+                      onChange(
+                        patchQuestion(value, index, {
+                          header: event.target.value.slice(0, 30),
+                        })
+                      )
+                    }
+                    className={`${editorFieldClass} text-sm text-muted-foreground`}
+                  />
+                </QuestionnaireDescription>
+                <QuestionnaireChoices>
+                  {prompt.options.map((option, optionIndex) => (
+                    <div key={optionIndex} className="relative">
+                      <QuestionnaireChoice
+                        readOnly
+                        value={`q${index}-o${optionIndex}`}
+                        className="pr-10"
+                      >
+                        <input
+                          aria-label="Choice label"
+                          placeholder="Option"
+                          disabled={disabled}
+                          value={option.label}
+                          onChange={(event) =>
+                            onChange(
+                              patchQuestion(value, index, {
+                                options: prompt.options.map((entry, j) =>
+                                  j === optionIndex
+                                    ? { ...entry, label: event.target.value }
+                                    : entry
+                                ),
+                              })
+                            )
+                          }
+                          className={`${editorFieldClass} font-medium`}
+                        />
+                        <QuestionnaireChoiceDescription>
+                          <input
+                            aria-label="Choice description"
+                            placeholder="Description"
+                            disabled={disabled}
+                            value={option.description}
+                            onChange={(event) =>
+                              onChange(
+                                patchQuestion(value, index, {
+                                  options: prompt.options.map((entry, j) =>
+                                    j === optionIndex
+                                      ? {
+                                          ...entry,
+                                          description: event.target.value,
+                                        }
+                                      : entry
+                                  ),
+                                })
+                              )
+                            }
+                            className={`${editorFieldClass} text-muted-foreground`}
+                          />
+                        </QuestionnaireChoiceDescription>
+                      </QuestionnaireChoice>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-xs"
+                        className="absolute top-2.5 right-2.5 z-10 text-muted-foreground"
+                        aria-label="Remove option"
+                        disabled={disabled || prompt.options.length < 2}
+                        onClick={() =>
+                          onChange(
+                            patchQuestion(value, index, {
+                              options: prompt.options.filter(
+                                (_, j) => j !== optionIndex
+                              ),
+                            })
+                          )
+                        }
+                      >
+                        ×
+                      </Button>
+                    </div>
+                  ))}
+                  {prompt.custom !== false ? (
+                    <QuestionnaireInput
+                      readOnly
+                      tabIndex={-1}
+                      aria-label="Another answer"
+                      placeholder="Type another answer…"
+                    />
+                  ) : null}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="justify-start rounded-4xl border-dashed"
+                    disabled={disabled}
+                    onClick={() =>
+                      onChange(
+                        patchQuestion(value, index, {
+                          options: [
+                            ...prompt.options,
+                            { label: "Option", description: "" },
+                          ],
+                        })
+                      )
+                    }
+                  >
+                    Add option
+                  </Button>
+                </QuestionnaireChoices>
+              </QuestionnaireItem>
+            </Questionnaire>
+            <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Switch
+                  size="sm"
+                  checked={prompt.multiple === true}
+                  disabled={disabled}
+                  onCheckedChange={(checked) =>
+                    onChange(
+                      patchQuestion(value, index, {
+                        multiple: checked === true,
+                      })
+                    )
+                  }
+                />
+                Several answers
+              </label>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Switch
+                  size="sm"
+                  checked={prompt.custom !== false}
+                  disabled={disabled}
+                  onCheckedChange={(checked) =>
+                    onChange(
+                      patchQuestion(value, index, {
+                        custom: checked === true,
+                      })
+                    )
+                  }
+                />
+                Custom answer
+              </label>
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                className="ml-auto text-muted-foreground"
+                disabled={disabled || questions.length < 2}
+                onClick={() =>
+                  onChange({
+                    questions: questions.filter((_, i) => i !== index),
+                  })
+                }
+              >
+                Remove question
+              </Button>
+            </div>
+          </div>
+        )
+      })}
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={disabled}
+        onClick={() =>
+          onChange({
+            questions: [...questions, emptyQuestionInput().questions[0]!],
+          })
+        }
+      >
+        Add question
+      </Button>
     </div>
   )
 }

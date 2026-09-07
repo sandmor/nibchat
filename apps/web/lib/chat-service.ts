@@ -1,15 +1,21 @@
 import "server-only"
 import { createHash } from "node:crypto"
-import { sql, type Transaction } from "kysely"
+import { sql, type Kysely, type Transaction } from "kysely"
 import { db, fromDbBool, toDbBool } from "@/lib/db"
 import { id, now, parseJson, subtreeNodeIds } from "@/lib/domain"
 import {
-  applyMessageEdits,
+  assertPartsAllowedForRole,
+  durableAuthoredParts,
   isEmptyParts,
-  partsHavePendingClientTools,
   searchTextFromParts,
-  type MessageEditSegment,
 } from "@/lib/agent/parts"
+import { hydrateAuthoredParts } from "@/lib/conversation-attachments"
+import {
+  rebalanceSortKeys,
+  siblingSort,
+  sortKeyAfter,
+  sortKeyBetween,
+} from "@/lib/sort-key"
 import { abortGenerations } from "@/lib/active-generations"
 import {
   claimGenerationRecovery,
@@ -26,6 +32,7 @@ import {
   type GenerationRunState,
 } from "@/lib/generation-streams/policy"
 import type {
+  AttachmentReference,
   DB,
   MessageRole,
   MessageStatus,
@@ -98,6 +105,90 @@ function normalizeNodeRow(node: NodeRow): NodeRow {
   }
 }
 
+type SiblingRow = Pick<NodeRow, "id" | "parent_id" | "sort_key" | "created_at">
+
+async function listSiblings(
+  executor: DbExecutor,
+  chatId: string,
+  parentId: string | null,
+  excludeId?: string
+): Promise<SiblingRow[]> {
+  let query = executor
+    .selectFrom("message_nodes")
+    .select(["id", "parent_id", "sort_key", "created_at"])
+    .where("chat_id", "=", chatId)
+  query =
+    parentId == null
+      ? query.where("parent_id", "is", null)
+      : query.where("parent_id", "=", parentId)
+  if (excludeId) query = query.where("id", "!=", excludeId)
+  return (await query.execute()).sort(siblingSort)
+}
+
+const NEW_SORT_SLOT = "__new__"
+
+async function writeSortKeys(
+  trx: Transaction<DB>,
+  keys: Map<string, number>,
+  timestamp: string
+) {
+  for (const [id, sort_key] of keys) {
+    if (id === NEW_SORT_SLOT) continue
+    await trx
+      .updateTable("message_nodes")
+      .set({ sort_key, updated_at: timestamp })
+      .where("id", "=", id)
+      .execute()
+  }
+}
+
+async function allocateSortKey(
+  trx: Transaction<DB>,
+  input: {
+    chatId: string
+    parentId: string | null
+    beforeNodeId?: string
+    excludeId?: string
+  }
+) {
+  const siblings = await listSiblings(
+    trx,
+    input.chatId,
+    input.parentId,
+    input.excludeId
+  )
+  if (!input.beforeNodeId) return sortKeyAfter(siblings.at(-1)?.sort_key)
+  const beforeIndex = siblings.findIndex((row) => row.id === input.beforeNodeId)
+  if (beforeIndex < 0) throw new Error("Insert target is not in this chat")
+  const before = siblings[beforeIndex]!
+  const prior = siblings[beforeIndex - 1]
+  const mid = sortKeyBetween(prior?.sort_key, before.sort_key)
+  if (mid != null) return mid
+  const ids = siblings.map((row) => row.id)
+  ids.splice(beforeIndex, 0, NEW_SORT_SLOT)
+  const keys = rebalanceSortKeys(ids)
+  await writeSortKeys(trx, keys, now())
+  return keys.get(NEW_SORT_SLOT)!
+}
+
+async function prepareAuthoredParts(input: {
+  userId: string
+  role: Extract<MessageRole, "user" | "assistant">
+  parts: Parts
+  attachments?: AttachmentReference[]
+  sourceParts?: Parts
+}) {
+  const parts = await hydrateAuthoredParts({
+    userId: input.userId,
+    parts: durableAuthoredParts(input.parts),
+    attachments: input.attachments,
+    sourceParts: input.sourceParts,
+  })
+  assertPartsAllowedForRole(input.role, parts)
+  if (isEmptyParts(parts)) throw new Error("Message is required")
+  return parts
+}
+
 async function cancelGenerationRuns(nodeIds: Iterable<string>) {
   const ids = [...nodeIds]
   if (!ids.length) return
@@ -106,20 +197,54 @@ async function cancelGenerationRuns(nodeIds: Iterable<string>) {
     .select("id")
     .where("node_id", "in", ids)
     .execute()
+  await requestCancelGenerationRuns(runs.map((run) => run.id))
+}
+
+async function requestCancelGenerationRuns(runIds: Iterable<string>) {
+  const ids = [...runIds]
   await Promise.all(
-    runs.map((run) =>
-      generationStreamStore.requestCancel(run.id).catch((error) => {
+    ids.map((runId) =>
+      generationStreamStore.requestCancel(runId).catch((error) => {
         // Database deletion is authoritative and cascades the run, fencing
         // later terminal writes. Stream-store cancellation is only a prompt
         // best-effort signal to a still-running producer.
-        console.warn("[nibchat/generation-cancel]", run.id, error)
+        console.warn("[nibchat/generation-cancel]", runId, error)
       })
     )
   )
 }
 
-async function assertChatOwner(chatId: string, userId: string) {
-  const chat = await db
+type DbExecutor = Kysely<DB> | Transaction<DB>
+
+/** Acquire the per-chat write lock before reading or changing its graph. */
+async function lockChatMutation(
+  trx: Transaction<DB>,
+  chatId: string,
+  userId?: string
+) {
+  const timestamp = now()
+  const result = userId
+    ? await trx
+        .updateTable("chats")
+        .set({ updated_at: timestamp })
+        .where("id", "=", chatId)
+        .where("user_id", "=", userId)
+        .executeTakeFirst()
+    : await trx
+        .updateTable("chats")
+        .set({ updated_at: timestamp })
+        .where("id", "=", chatId)
+        .executeTakeFirst()
+  if (Number(result.numUpdatedRows ?? 0) !== 1)
+    throw new Error("Chat not found")
+}
+
+async function assertChatOwner(
+  chatId: string,
+  userId: string,
+  executor: DbExecutor = db
+) {
+  const chat = await executor
     .selectFrom("chats")
     .select("id")
     .where("id", "=", chatId)
@@ -129,8 +254,12 @@ async function assertChatOwner(chatId: string, userId: string) {
   return chat
 }
 
-async function assertNodeOwner(nodeId: string, userId: string) {
-  const row = await db
+async function assertNodeOwner(
+  nodeId: string,
+  userId: string,
+  executor: DbExecutor = db
+) {
+  const row = await executor
     .selectFrom("message_nodes")
     .innerJoin("chats", "chats.id", "message_nodes.chat_id")
     .select([
@@ -138,6 +267,8 @@ async function assertNodeOwner(nodeId: string, userId: string) {
       "message_nodes.chat_id",
       "message_nodes.parent_id",
       "message_nodes.selected_child_id",
+      "message_nodes.sort_key",
+      "message_nodes.revision",
       "message_nodes.role",
       "message_nodes.parts_json",
       "message_nodes.search_text",
@@ -243,19 +374,36 @@ export async function createChat(
 }
 
 export async function deleteChat(userId: string, chatId: string) {
-  await assertChatOwner(chatId, userId)
-  const nodeIds = await db
-    .selectFrom("message_nodes")
-    .select("id")
-    .where("chat_id", "=", chatId)
-    .execute()
-  abortGenerations(nodeIds.map((row) => row.id))
-  await cancelGenerationRuns(nodeIds.map((row) => row.id))
-  await db
-    .deleteFrom("chats")
-    .where("id", "=", chatId)
-    .where("user_id", "=", userId)
-    .execute()
+  const deletion = await db.transaction().execute(async (trx) => {
+    await lockChatMutation(trx, chatId, userId)
+    const nodeIds = await trx
+      .selectFrom("message_nodes")
+      .select("id")
+      .where("chat_id", "=", chatId)
+      .execute()
+    const generationRunIds = nodeIds.length
+      ? await trx
+          .selectFrom("generation_runs")
+          .select("id")
+          .where(
+            "node_id",
+            "in",
+            nodeIds.map((node) => node.id)
+          )
+          .execute()
+      : []
+    await trx
+      .deleteFrom("chats")
+      .where("id", "=", chatId)
+      .where("user_id", "=", userId)
+      .execute()
+    return {
+      nodeIds: nodeIds.map((node) => node.id),
+      generationRunIds: generationRunIds.map((run) => run.id),
+    }
+  })
+  abortGenerations(deletion.nodeIds)
+  await requestCancelGenerationRuns(deletion.generationRunIds)
   await cleanupDetachedAttachments()
 }
 
@@ -270,7 +418,13 @@ export async function insertNode(input: {
   generationId?: string
   /** When false, only insert the row — do not rewire view selection. Default true. */
   attachSelection?: boolean
-}) {
+  sortKey?: number
+  trx?: Transaction<DB>
+}): Promise<NodeRow> {
+  if (!input.trx)
+    return db.transaction().execute((trx) => insertNode({ ...input, trx }))
+  await lockChatMutation(input.trx, input.chatId)
+  assertPartsAllowedForRole(input.role, input.parts)
   const timestamp = now()
   const attachSelection = input.attachSelection !== false
   const node = {
@@ -278,6 +432,8 @@ export async function insertNode(input: {
     chat_id: input.chatId,
     parent_id: input.parentId,
     selected_child_id: null,
+    sort_key: input.sortKey ?? 0,
+    revision: 0,
     role: input.role,
     parts_json: JSON.stringify(input.parts),
     search_text: searchTextFromParts(input.parts),
@@ -287,7 +443,13 @@ export async function insertNode(input: {
     created_at: timestamp,
     updated_at: timestamp,
   }
-  await db.transaction().execute(async (trx) => {
+  const persist = async (trx: Transaction<DB>) => {
+    node.sort_key =
+      input.sortKey ??
+      (await allocateSortKey(trx, {
+        chatId: input.chatId,
+        parentId: input.parentId,
+      }))
     await trx.insertInto("message_nodes").values(node).execute()
     if (input.generationId)
       await insertGenerationRun(trx, {
@@ -308,50 +470,158 @@ export async function insertNode(input: {
         .set({ selected_root_node_id: node.id, updated_at: timestamp })
         .where("id", "=", input.chatId)
         .execute()
-  })
+  }
+  await persist(input.trx)
   return node
 }
 
-type InsertableNode = {
-  id: string
-  chat_id: string
-  parent_id: string | null
-  selected_child_id: string | null
-  role: MessageRole
-  parts_json: string
-  search_text: string
-  metadata_json: string
-  excluded_from_context: boolean
-  status: "complete" | "streaming" | "stopped" | "error"
-  created_at: string
-  updated_at: string
+/**
+ * Save one authored conversation message. Generation is deliberately a
+ * separate operation, allowing either role to follow either role.
+ */
+export async function createMessage(input: {
+  userId: string
+  chatId: string
+  parentId: string | null
+  /** Insert immediately before this sibling/root message. */
+  beforeNodeId?: string
+  role: Extract<MessageRole, "user" | "assistant">
+  parts: Parts
+  attachments?: AttachmentReference[]
+  metadata?: Record<string, unknown>
+  /** Opt-in; omitted means the view selection is left unchanged. */
+  attachSelection?: boolean
+  trx?: Transaction<DB>
+}): Promise<NodeRow> {
+  if (!input.trx)
+    return db.transaction().execute((trx) => createMessage({ ...input, trx }))
+  const executor = input.trx
+  await lockChatMutation(input.trx, input.chatId, input.userId)
+  await assertChatOwner(input.chatId, input.userId, executor)
+  let parentId = input.parentId
+  if (input.beforeNodeId) {
+    const before = await assertNodeOwner(
+      input.beforeNodeId,
+      input.userId,
+      executor
+    )
+    if (before.chat_id !== input.chatId)
+      throw new Error("Insert target is not in this chat")
+    parentId = before.parent_id
+  }
+  if (parentId) {
+    const parent = await executor
+      .selectFrom("message_nodes")
+      .select("id")
+      .where("id", "=", parentId)
+      .where("chat_id", "=", input.chatId)
+      .executeTakeFirst()
+    if (!parent) throw new Error("Parent node not found in chat")
+  }
+  const parts = await prepareAuthoredParts({
+    userId: input.userId,
+    role: input.role,
+    parts: input.parts,
+    attachments: input.attachments,
+  })
+  const persist = async (trx: Transaction<DB>) => {
+    const sortKey = await allocateSortKey(trx, {
+      chatId: input.chatId,
+      parentId,
+      beforeNodeId: input.beforeNodeId,
+    })
+    const node = await insertNode({
+      chatId: input.chatId,
+      parentId,
+      role: input.role,
+      parts,
+      metadata: input.metadata,
+      attachSelection: input.attachSelection === true,
+      sortKey,
+      trx,
+    })
+    if (input.role === "user") {
+      const attachments = parts.filter(
+        (part): part is AttachmentPart => part.type === "attachment"
+      )
+      if (attachments.length)
+        await claimUploadedAttachments(input.userId, node.id, attachments, trx)
+    }
+    return node
+  }
+  return persist(input.trx)
 }
 
-function newNode(
-  input: {
-    chatId: string
-    parentId: string | null
-    role: MessageRole
-    parts: Parts
-    metadata?: Record<string, unknown>
-    status?: InsertableNode["status"]
-  },
-  timestamp = now()
-): InsertableNode {
-  return {
-    id: id(),
-    chat_id: input.chatId,
-    parent_id: input.parentId,
-    selected_child_id: null,
-    role: input.role,
-    parts_json: JSON.stringify(input.parts),
-    search_text: searchTextFromParts(input.parts),
-    metadata_json: JSON.stringify(input.metadata ?? {}),
-    excluded_from_context: toDbBool(false),
-    status: input.status ?? "complete",
-    created_at: timestamp,
-    updated_at: timestamp,
+/** Create a streaming assistant message beneath an explicit context leaf. */
+export async function startGeneration(input: {
+  userId: string
+  chatId: string
+  parentId: string | null
+  generationId: string
+  assistantMetadata?: Record<string, unknown>
+  /** Opt-in; omitted means the view selection is left unchanged. */
+  attachSelection?: boolean
+  trx?: Transaction<DB>
+}): Promise<{ assistant: NodeRow; contextLeafId: string | null }> {
+  if (!input.trx)
+    return db.transaction().execute((trx) => startGeneration({ ...input, trx }))
+  const executor = input.trx
+  await lockChatMutation(input.trx, input.chatId, input.userId)
+  await assertChatOwner(input.chatId, input.userId, executor)
+  if (input.parentId) {
+    const parent = await executor
+      .selectFrom("message_nodes")
+      .select("id")
+      .where("id", "=", input.parentId)
+      .where("chat_id", "=", input.chatId)
+      .executeTakeFirst()
+    if (!parent) throw new Error("Parent node not found in chat")
   }
+  const assistant = await insertNode({
+    chatId: input.chatId,
+    parentId: input.parentId,
+    role: "assistant",
+    parts: [],
+    status: "streaming",
+    metadata: input.assistantMetadata,
+    generationId: input.generationId,
+    attachSelection: input.attachSelection === true,
+    trx: input.trx,
+  })
+  return { assistant, contextLeafId: input.parentId }
+}
+
+/** User message + streaming assistant in one transaction. */
+export async function submitUserTurn(input: {
+  userId: string
+  chatId: string
+  parentId: string | null
+  parts: Parts
+  generationId: string
+  assistantMetadata?: Record<string, unknown>
+  attachSelection?: boolean
+}) {
+  return db.transaction().execute(async (trx) => {
+    const user = await createMessage({
+      userId: input.userId,
+      chatId: input.chatId,
+      parentId: input.parentId,
+      role: "user",
+      parts: input.parts,
+      attachSelection: input.attachSelection,
+      trx,
+    })
+    const generation = await startGeneration({
+      userId: input.userId,
+      chatId: input.chatId,
+      parentId: user.id,
+      generationId: input.generationId,
+      assistantMetadata: input.assistantMetadata,
+      attachSelection: input.attachSelection,
+      trx,
+    })
+    return { user, assistant: generation.assistant, contextLeafId: user.id }
+  })
 }
 
 /**
@@ -372,88 +642,6 @@ export async function loadEditSourceUserNode(
   if ((node.parent_id ?? null) !== parentId)
     throw new Error("Edited message is not under this parent")
   return node
-}
-
-/**
- * Creates the user message and streaming assistant under an explicit parent.
- * View selection is unchanged unless `attachSelection` is set — generation
- * placement is purely structural; the client may soft-follow if still on tip.
- */
-export async function createTurn(input: {
-  userId: string
-  chatId: string
-  parentId: string | null
-  content: string
-  /** Optional attachments ahead of the user text (MCP resources, future files). */
-  attachments?: AttachmentPart[]
-  assistantMetadata: Record<string, unknown>
-  generationId?: string
-  /** Linear user-edit: wire parent → user → assistant in this transaction. */
-  attachSelection?: boolean
-}) {
-  if (input.parentId) {
-    const parent = await db
-      .selectFrom("message_nodes")
-      .select("id")
-      .where("id", "=", input.parentId)
-      .where("chat_id", "=", input.chatId)
-      .executeTakeFirst()
-    if (!parent) throw new Error("Parent node not found in chat")
-  }
-  const timestamp = now()
-  const text = input.content.trim()
-  const attachments = input.attachments ?? []
-  if (!text && attachments.length === 0) throw new Error("Message is required")
-  const parts: Parts = [
-    ...attachments,
-    ...(text ? [{ type: "text" as const, text }] : []),
-  ]
-  const user = newNode(
-    {
-      chatId: input.chatId,
-      parentId: input.parentId,
-      role: "user",
-      parts,
-    },
-    timestamp
-  )
-  const assistant = newNode(
-    {
-      chatId: input.chatId,
-      parentId: user.id,
-      role: "assistant",
-      parts: [],
-      status: "streaming",
-      metadata: input.assistantMetadata,
-    },
-    timestamp
-  )
-  if (input.attachSelection) user.selected_child_id = assistant.id
-  await db.transaction().execute(async (trx) => {
-    await trx.insertInto("message_nodes").values(user).execute()
-    await claimUploadedAttachments(input.userId, user.id, attachments, trx)
-    await trx.insertInto("message_nodes").values(assistant).execute()
-    if (input.generationId)
-      await insertGenerationRun(trx, {
-        id: input.generationId,
-        nodeId: assistant.id,
-        chatId: assistant.chat_id,
-      })
-    if (!input.attachSelection) return
-    if (input.parentId)
-      await trx
-        .updateTable("message_nodes")
-        .set({ selected_child_id: user.id, updated_at: timestamp })
-        .where("id", "=", input.parentId)
-        .execute()
-    else
-      await trx
-        .updateTable("chats")
-        .set({ selected_root_node_id: user.id, updated_at: timestamp })
-        .where("id", "=", input.chatId)
-        .execute()
-  })
-  return { user, assistant }
 }
 
 export async function updateNode(
@@ -712,8 +900,20 @@ export async function selectPath(
   chatId: string,
   nodeId: string
 ) {
-  await assertChatOwner(chatId, userId)
-  const nodes = await db
+  return db.transaction().execute(async (trx) => {
+    await lockChatMutation(trx, chatId, userId)
+    return selectPathInTransaction(trx, userId, chatId, nodeId)
+  })
+}
+
+async function selectPathInTransaction(
+  trx: Transaction<DB>,
+  userId: string,
+  chatId: string,
+  nodeId: string
+) {
+  await assertChatOwner(chatId, userId, trx)
+  const nodes = await trx
     .selectFrom("message_nodes")
     .selectAll()
     .where("chat_id", "=", chatId)
@@ -721,99 +921,108 @@ export async function selectPath(
   const byId = new Map(nodes.map((node) => [node.id, node]))
   if (!byId.has(nodeId)) throw new Error("Node not found")
   const path: NodeRow[] = []
+  const seen = new Set<string>()
   let current: NodeRow | undefined = byId.get(nodeId)
   while (current) {
+    if (seen.has(current.id)) throw new Error("Message graph contains a cycle")
+    seen.add(current.id)
     path.unshift(current)
+    if (current.parent_id && !byId.has(current.parent_id))
+      throw new Error("Message graph contains a missing parent")
     current = current.parent_id ? byId.get(current.parent_id) : undefined
   }
   const timestamp = now()
-  await db.transaction().execute(async (trx) => {
-    await trx
-      .updateTable("chats")
-      .set({
-        selected_root_node_id: path[0]?.id ?? null,
-        updated_at: timestamp,
-      })
-      .where("id", "=", chatId)
-      .where("user_id", "=", userId)
-      .execute()
-    for (let index = 0; index < path.length - 1; index++) {
-      const parent = path[index]
-      const child = path[index + 1]
-      if (parent && child)
-        await trx
-          .updateTable("message_nodes")
-          .set({ selected_child_id: child.id, updated_at: timestamp })
-          .where("id", "=", parent.id)
-          .execute()
-    }
+  await trx
+    .updateTable("chats")
+    .set({
+      selected_root_node_id: path[0]?.id ?? null,
+      updated_at: timestamp,
+    })
+    .where("id", "=", chatId)
+    .where("user_id", "=", userId)
+    .execute()
+  for (let index = 0; index < path.length - 1; index++) {
+    const parent = path[index]
+    const child = path[index + 1]
+    if (parent && child)
+      await trx
+        .updateTable("message_nodes")
+        .set({ selected_child_id: child.id, updated_at: timestamp })
+        .where("id", "=", parent.id)
+        .execute()
+  }
+}
+
+/** Branch an authored complete parts document. This is the canonical path for
+ * tool-record editing: it stores history only and never schedules execution. */
+export async function forkMessageParts(input: {
+  userId: string
+  nodeId: string
+  parts: Parts
+  attachments?: AttachmentReference[]
+  role?: Extract<MessageRole, "user" | "assistant">
+  attachSelection?: boolean
+}) {
+  const original = await assertNodeOwner(input.nodeId, input.userId)
+  if (original.status === "awaiting_input")
+    throw new Error("Cannot edit a message that is still in progress.")
+  const role =
+    input.role ??
+    (original.role as Extract<MessageRole, "user" | "assistant">)
+  if (role !== "user" && role !== "assistant")
+    throw new Error("Only user and assistant messages can be edited.")
+  const parts = await prepareAuthoredParts({
+    userId: input.userId,
+    role,
+    parts: input.parts,
+    attachments: input.attachments,
+    sourceParts: nodeParts(original),
+  })
+  return persistForkedMessage({
+    userId: input.userId,
+    original,
+    role,
+    parts,
+    attachSelection: input.attachSelection,
   })
 }
 
-export async function forkEdit(
-  userId: string,
-  nodeId: string,
-  edits: MessageEditSegment[],
-  options: { attachSelection?: boolean } = {}
-) {
-  const original = await assertNodeOwner(nodeId, userId)
-  const originalParts = nodeParts(original)
-  if (
-    original.status === "streaming" ||
-    original.status === "awaiting_input" ||
-    partsHavePendingClientTools(originalParts)
-  ) {
-    throw new Error("Cannot edit a message that is still in progress.")
-  }
-  const parts = applyMessageEdits(originalParts, edits)
-  const timestamp = now()
-  const node = newNode(
-    {
+async function persistForkedMessage(input: {
+  userId: string
+  original: NodeRow
+  parts: Parts
+  role?: Extract<MessageRole, "user" | "assistant">
+  attachSelection?: boolean
+}) {
+  const role =
+    input.role ??
+    (input.original.role as Extract<MessageRole, "user" | "assistant">)
+  return db.transaction().execute(async (trx) => {
+    await lockChatMutation(trx, input.original.chat_id, input.userId)
+    const original = await assertNodeOwner(input.original.id, input.userId, trx)
+    const node = await insertNode({
       chatId: original.chat_id,
       parentId: original.parent_id,
-      role: original.role,
-      parts,
+      role,
+      parts: input.parts,
       metadata: {
         ...parseJson<Record<string, unknown>>(original.metadata_json, {}),
         provenance: "owner-edited",
         editedFrom: original.id,
       },
-    },
-    timestamp
-  )
-  const attachmentIds = parts.flatMap((part) =>
-    part.type === "attachment" &&
-    (part.content.kind === "binary" || part.content.kind === "document")
-      ? [part.content.attachmentId]
-      : []
-  )
-  await db.transaction().execute(async (trx) => {
-    await trx.insertInto("message_nodes").values(node).execute()
-    if (attachmentIds.length)
-      await trx
-        .insertInto("message_attachments")
-        .values(
-          attachmentIds.map((attachment_id) => ({
-            message_node_id: node.id,
-            attachment_id,
-          }))
-        )
-        .execute()
-    if (options.attachSelection === false) return
-    if (node.parent_id)
-      await trx
-        .updateTable("message_nodes")
-        .set({ selected_child_id: node.id, updated_at: timestamp })
-        .where("id", "=", node.parent_id)
-        .execute()
-    else
-      await trx
-        .updateTable("chats")
-        .set({ selected_root_node_id: node.id, updated_at: timestamp })
-        .where("id", "=", node.chat_id)
-        .execute()
+      attachSelection: input.attachSelection,
+      trx,
+    })
+    await claimUploadedAttachments(
+      input.userId,
+      node.id,
+      input.parts.filter(
+        (part): part is AttachmentPart => part.type === "attachment"
+      ),
+      trx
+    )
+    return node
   })
-  return node
 }
 
 /** New streaming assistant as a sibling of an existing assistant (any parent role). */
@@ -823,23 +1032,28 @@ export async function startRegenerate(
   generationId?: string,
   assistantMetadata: Record<string, unknown> = {}
 ) {
-  const original = await assertNodeOwner(assistantNodeId, userId)
-  if (original.role !== "assistant")
-    throw new Error("Only assistant messages can be regenerated.")
-  const assistant = await insertNode({
-    chatId: original.chat_id,
-    parentId: original.parent_id,
-    role: "assistant",
-    parts: [],
-    status: "streaming",
-    metadata: assistantMetadata,
-    generationId,
-    attachSelection: false,
+  const target = await assertNodeOwner(assistantNodeId, userId)
+  return db.transaction().execute(async (trx) => {
+    await lockChatMutation(trx, target.chat_id, userId)
+    const original = await assertNodeOwner(assistantNodeId, userId, trx)
+    if (original.role !== "assistant")
+      throw new Error("Only assistant messages can be regenerated.")
+    const assistant = await insertNode({
+      chatId: original.chat_id,
+      parentId: original.parent_id,
+      role: "assistant",
+      parts: [],
+      status: "streaming",
+      metadata: assistantMetadata,
+      generationId,
+      attachSelection: false,
+      trx,
+    })
+    return {
+      assistant,
+      contextLeafId: original.parent_id as string | null,
+    }
   })
-  return {
-    assistant,
-    contextLeafId: original.parent_id as string | null,
-  }
 }
 
 export type StreamFinalizeOutcome =
@@ -1202,30 +1416,47 @@ export async function restoreAwaitingInput(
 async function deleteStreamingShell(
   nodeId: string
 ): Promise<"deleted" | "missing" | "superseded"> {
-  const node = await db
+  const target = await db
     .selectFrom("message_nodes")
-    .selectAll()
+    .select("chat_id")
     .where("id", "=", nodeId)
     .executeTakeFirst()
-  if (!node) return "missing"
-  if (node.status !== "streaming") return "superseded"
-
-  const children = await db
-    .selectFrom("message_nodes")
-    .select("id")
-    .where("parent_id", "=", node.id)
-    .execute()
-  if (children.length > 0) {
-    console.warn(
-      "[nibchat] deleteStreamingShell: assistant has children; skipping",
-      nodeId
-    )
-    return "superseded"
-  }
-
-  await clearDeletedTreeCamera(node.chat_id, new Set([node.id]))
-  await deleteSingleNodeWithSelectionRepair(node)
-  return "deleted"
+  if (!target) return "missing"
+  return db.transaction().execute(async (trx) => {
+    await lockChatMutation(trx, target.chat_id)
+    const node = await trx
+      .selectFrom("message_nodes")
+      .selectAll()
+      .where("id", "=", nodeId)
+      .executeTakeFirst()
+    if (!node) return "missing"
+    if (node.status !== "streaming") return "superseded"
+    const child = await trx
+      .selectFrom("message_nodes")
+      .select("id")
+      .where("parent_id", "=", node.id)
+      .executeTakeFirst()
+    if (child) return "superseded"
+    const chat = await trx
+      .selectFrom("chats")
+      .select("view_state_json")
+      .where("id", "=", node.chat_id)
+      .executeTakeFirst()
+    if (chat) {
+      const state = parseChatViewState(chat.view_state_json)
+      if (state.camera?.anchorNodeId === node.id)
+        await trx
+          .updateTable("chats")
+          .set({ view_state_json: chatViewStateToJson({ ...state, camera: null }) })
+          .where("id", "=", node.chat_id)
+          .execute()
+    }
+    const timestamp = now()
+    const replacement = await replacementSiblingId(trx, node)
+    await repairSelectionAfterDetach(trx, node, replacement, timestamp)
+    await trx.deleteFrom("message_nodes").where("id", "=", node.id).execute()
+    return "deleted"
+  })
 }
 
 export async function deleteNode(
@@ -1233,37 +1464,26 @@ export async function deleteNode(
   nodeId: string,
   mode: "subtree" | "reparent"
 ) {
-  const node = await assertNodeOwner(nodeId, userId)
-
-  if (mode === "reparent") {
-    abortGenerations([node.id])
-    await cancelGenerationRuns([node.id])
-    await clearDeletedTreeCamera(node.chat_id, new Set([node.id]))
-    await deleteNodeInternal(node.id, node.chat_id, "reparent")
-    await cleanupDetachedAttachments()
-    return
-  }
-
-  // Subtree: abort every live generation under this root, then CASCADE delete.
-  const chatNodes = await db
+  const target = await db
     .selectFrom("message_nodes")
-    .select(["id", "parent_id"])
-    .where("chat_id", "=", node.chat_id)
+    .select("chat_id")
+    .where("id", "=", nodeId)
     .execute()
-  const deletedIds = subtreeNodeIds(chatNodes, node.id)
-  abortGenerations(deletedIds)
-  await cancelGenerationRuns(deletedIds)
-  await clearDeletedTreeCamera(node.chat_id, new Set(deletedIds))
-  await deleteNodeInternal(node.id, node.chat_id, "subtree")
+  const chatId = target[0]?.chat_id
+  if (!chatId) throw new Error("Message not found")
+  const deletion = await deleteNodeInternal(nodeId, chatId, userId, mode)
+  abortGenerations(deletion.nodeIds)
+  await requestCancelGenerationRuns(deletion.generationRunIds)
   await cleanupDetachedAttachments()
 }
 
 /** A deleted anchor cannot be restored meaningfully, but its view mode can. */
 async function clearDeletedTreeCamera(
+  executor: DbExecutor,
   chatId: string,
   deletedIds: ReadonlySet<string>
 ) {
-  const chat = await db
+  const chat = await executor
     .selectFrom("chats")
     .select("view_state_json")
     .where("id", "=", chatId)
@@ -1271,50 +1491,59 @@ async function clearDeletedTreeCamera(
   if (!chat) return
   const state = parseChatViewState(chat.view_state_json)
   if (!state.camera || !deletedIds.has(state.camera.anchorNodeId)) return
-  await db
+  await executor
     .updateTable("chats")
     .set({ view_state_json: chatViewStateToJson({ ...state, camera: null }) })
     .where("id", "=", chatId)
     .execute()
 }
 
-/**
- * Structural delete without ownership checks (used after assertNodeOwner).
- */
+/** Delete under the chat lock and return the exact committed deletion targets. */
 async function deleteNodeInternal(
   nodeId: string,
   chatId: string,
+  userId: string,
   mode: "subtree" | "reparent"
 ) {
-  const node = await db
-    .selectFrom("message_nodes")
-    .selectAll()
-    .where("id", "=", nodeId)
-    .where("chat_id", "=", chatId)
-    .executeTakeFirst()
-  if (!node) return
-
-  const children = await db
-    .selectFrom("message_nodes")
-    .selectAll()
-    .where("parent_id", "=", node.id)
-    .execute()
-  const timestamp = now()
-
-  if (mode === "reparent") {
-    if (children.length !== 1)
-      throw new Error(
-        children.length === 0
-          ? "Reparent requires exactly one child; use subtree delete for a leaf"
-          : "Reparent is only available when the node has exactly one child"
-      )
-    const child = children[0]!
-    await db.transaction().execute(async (trx) => {
-      await trx
-        .updateTable("message_nodes")
-        .set({ parent_id: node.parent_id, updated_at: timestamp })
-        .where("id", "=", child.id)
+  return db.transaction().execute(async (trx) => {
+    await lockChatMutation(trx, chatId, userId)
+    const node = await assertNodeOwner(nodeId, userId, trx)
+    if (node.chat_id !== chatId) throw new Error("Message not found")
+    const deletedIds =
+      mode === "subtree"
+        ? [...subtreeNodeIds(
+            await trx
+              .selectFrom("message_nodes")
+              .select(["id", "parent_id"])
+              .where("chat_id", "=", chatId)
+              .execute(),
+            node.id
+          )]
+        : [node.id]
+    const generationRunIds = deletedIds.length
+      ? await trx
+          .selectFrom("generation_runs")
+          .select("id")
+          .where("node_id", "in", deletedIds)
+          .execute()
+      : []
+    await clearDeletedTreeCamera(trx, chatId, new Set(deletedIds))
+    const timestamp = now()
+    if (mode === "reparent") {
+      const children = await trx
+        .selectFrom("message_nodes")
+        .selectAll()
+        .where("parent_id", "=", node.id)
         .execute()
+      for (const child of children)
+        await trx
+          .updateTable("message_nodes")
+          .set({ parent_id: node.parent_id, updated_at: timestamp })
+          .where("id", "=", child.id)
+          .execute()
+      const selectedChild =
+        children.find((child) => child.id === node.selected_child_id) ??
+        children[0]
       if (node.parent_id) {
         const parent = await trx
           .selectFrom("message_nodes")
@@ -1324,7 +1553,10 @@ async function deleteNodeInternal(
         if (!parent || parent.selected_child_id === node.id)
           await trx
             .updateTable("message_nodes")
-            .set({ selected_child_id: child.id, updated_at: timestamp })
+            .set({
+              selected_child_id: selectedChild?.id ?? null,
+              updated_at: timestamp,
+            })
             .where("id", "=", node.parent_id)
             .execute()
       } else {
@@ -1336,75 +1568,208 @@ async function deleteNodeInternal(
         if (!chat || chat.selected_root_node_id === node.id)
           await trx
             .updateTable("chats")
-            .set({ selected_root_node_id: child.id, updated_at: timestamp })
+            .set({
+              selected_root_node_id: selectedChild?.id ?? null,
+              updated_at: timestamp,
+            })
             .where("id", "=", node.chat_id)
             .execute()
       }
       await trx.deleteFrom("message_nodes").where("id", "=", node.id).execute()
-    })
-    return
-  }
-
-  // Subtree delete (CASCADE removes descendants via FK).
-  await deleteSingleNodeWithSelectionRepair(node)
-}
-
-/** Delete one node and rewire parent/root selection when it was the selected child. */
-async function deleteSingleNodeWithSelectionRepair(
-  node: Pick<NodeRow, "id" | "chat_id" | "parent_id">
-) {
-  const timestamp = now()
-  await db.transaction().execute(async (trx) => {
-    if (node.parent_id) {
-      const parent = await trx
-        .selectFrom("message_nodes")
-        .select(["selected_child_id"])
-        .where("id", "=", node.parent_id)
-        .executeTakeFirst()
-      if (parent?.selected_child_id === node.id) {
-        const siblings = await trx
-          .selectFrom("message_nodes")
-          .select("id")
-          .where("parent_id", "=", node.parent_id)
-          .where("id", "!=", node.id)
-          .orderBy("created_at")
-          .execute()
-        await trx
-          .updateTable("message_nodes")
-          .set({
-            selected_child_id: siblings.at(-1)?.id ?? null,
-            updated_at: timestamp,
-          })
-          .where("id", "=", node.parent_id)
-          .execute()
-      }
-    } else {
-      const chat = await trx
-        .selectFrom("chats")
-        .select("selected_root_node_id")
-        .where("id", "=", node.chat_id)
-        .executeTakeFirst()
-      if (chat?.selected_root_node_id === node.id) {
-        const siblings = await trx
-          .selectFrom("message_nodes")
-          .select("id")
-          .where("chat_id", "=", node.chat_id)
-          .where("parent_id", "is", null)
-          .where("id", "!=", node.id)
-          .orderBy("created_at")
-          .execute()
-        await trx
-          .updateTable("chats")
-          .set({
-            selected_root_node_id: siblings.at(-1)?.id ?? null,
-            updated_at: timestamp,
-          })
-          .where("id", "=", node.chat_id)
-          .execute()
+      return {
+        nodeIds: deletedIds,
+        generationRunIds: generationRunIds.map((run) => run.id),
       }
     }
+    const replacement = await replacementSiblingId(trx, node)
+    await repairSelectionAfterDetach(trx, node, replacement, timestamp)
     await trx.deleteFrom("message_nodes").where("id", "=", node.id).execute()
+    return {
+      nodeIds: deletedIds,
+      generationRunIds: generationRunIds.map((run) => run.id),
+    }
   })
+}
+
+/** Move a message or its full subtree to another position in the same chat. */
+export async function moveNode(input: {
+  userId: string
+  nodeId: string
+  destinationParentId: string | null
+  beforeNodeId?: string
+  subtree: boolean
+}) {
+  const timestamp = now()
+  const target = await db
+    .selectFrom("message_nodes")
+    .select("chat_id")
+    .where("id", "=", input.nodeId)
+    .executeTakeFirst()
+  if (!target) throw new Error("Node not found")
+  let parentChanged = false
+  await db.transaction().execute(async (trx) => {
+    // Lock the chat row before reading the graph. This serializes structural
+    // mutations for this chat on both PostgreSQL and SQLite.
+    await lockChatMutation(trx, target.chat_id, input.userId)
+    const node = await assertNodeOwner(input.nodeId, input.userId, trx)
+    const nodes = await trx
+      .selectFrom("message_nodes")
+      .selectAll()
+      .where("chat_id", "=", node.chat_id)
+      .execute()
+    let destinationParentId = input.destinationParentId
+    if (input.beforeNodeId) {
+      const before = nodes.find((row) => row.id === input.beforeNodeId)
+      if (!before) throw new Error("Insert target not found in chat")
+      destinationParentId = before.parent_id
+    }
+    if (destinationParentId === node.id)
+      throw new Error("A message cannot be its own parent")
+    const descendants = subtreeNodeIds(nodes, node.id)
+    if (destinationParentId && descendants.has(destinationParentId))
+      throw new Error("A message cannot be moved beneath its descendant")
+    if (
+      destinationParentId &&
+      !nodes.some((row) => row.id === destinationParentId)
+    )
+      throw new Error("Destination node not found in chat")
+    parentChanged = (node.parent_id ?? null) !== (destinationParentId ?? null)
+    if (!input.subtree) {
+      const children = nodes.filter((row) => row.parent_id === node.id)
+      for (const child of children)
+        await trx
+          .updateTable("message_nodes")
+          .set({ parent_id: node.parent_id, updated_at: timestamp })
+          .where("id", "=", child.id)
+          .execute()
+    }
+    const sortKey = await allocateSortKey(trx, {
+      chatId: node.chat_id,
+      parentId: destinationParentId,
+      beforeNodeId: input.beforeNodeId,
+      excludeId: node.id,
+    })
+    await trx
+      .updateTable("message_nodes")
+      .set({
+        parent_id: destinationParentId,
+        sort_key: sortKey,
+        ...(!input.subtree ? { selected_child_id: null } : {}),
+        updated_at: timestamp,
+      })
+      .where("id", "=", node.id)
+      .execute()
+    if (!parentChanged) return
+    const replacement = await replacementSiblingId(trx, node)
+    await repairSelectionAfterDetach(trx, node, replacement, timestamp)
+    await selectPathInTransaction(trx, input.userId, node.chat_id, node.id)
+  })
+}
+
+/** Replace a durable message body. Setting a live node complete fences later
+ * stream terminal writes; the caller has already requested producer cancel. */
+export async function replaceMessage(input: {
+  userId: string
+  nodeId: string
+  parts: Parts
+  attachments?: AttachmentReference[]
+  role?: Extract<MessageRole, "user" | "assistant">
+  expectedRevision?: number
+}) {
+  const node = await assertNodeOwner(input.nodeId, input.userId)
+  if (node.status === "awaiting_input")
+    throw new Error("Cannot edit a message that is still in progress.")
+  const role =
+    input.role ?? (node.role as Extract<MessageRole, "user" | "assistant">)
+  if (role !== "user" && role !== "assistant")
+    throw new Error("Only user and assistant messages can be replaced.")
+  const parts = await prepareAuthoredParts({
+    userId: input.userId,
+    role,
+    parts: input.parts,
+    attachments: input.attachments,
+    sourceParts: nodeParts(node),
+  })
+  if (node.status === "streaming") {
+    abortGenerations([node.id])
+    await cancelGenerationRuns([node.id])
+  }
+  await db.transaction().execute(async (trx) => {
+    await trx
+      .deleteFrom("generation_runs")
+      .where("node_id", "=", node.id)
+      .execute()
+    await trx
+      .deleteFrom("message_attachments")
+      .where("message_node_id", "=", node.id)
+      .execute()
+    const result = await trx
+      .updateTable("message_nodes")
+      .set({
+        role,
+        parts_json: JSON.stringify(parts),
+        search_text: searchTextFromParts(parts),
+        status: "complete",
+        revision: node.revision + 1,
+        metadata_json: JSON.stringify({
+          ...parseJson<Record<string, unknown>>(node.metadata_json, {}),
+          provenance: "owner-edited",
+          replacedAt: now(),
+        }),
+        updated_at: now(),
+      })
+      .where("id", "=", node.id)
+      .where("revision", "=", input.expectedRevision ?? node.revision)
+      .executeTakeFirst()
+    if (Number(result.numUpdatedRows ?? 0) !== 1)
+      throw new Error("Message changed before it could be replaced.")
+    await claimUploadedAttachments(
+      input.userId,
+      node.id,
+      parts.filter(
+        (part): part is AttachmentPart => part.type === "attachment"
+      ),
+      trx
+    )
+  })
+  await cleanupDetachedAttachments()
+  return node
+}
+
+async function replacementSiblingId(
+  trx: Transaction<DB>,
+  node: Pick<NodeRow, "id" | "chat_id" | "parent_id">
+) {
+  const siblings = await listSiblings(
+    trx,
+    node.chat_id,
+    node.parent_id,
+    node.id
+  )
+  return siblings.at(-1)?.id ?? null
+}
+
+async function repairSelectionAfterDetach(
+  trx: Transaction<DB>,
+  node: Pick<NodeRow, "id" | "chat_id" | "parent_id">,
+  replacementId: string | null,
+  timestamp: string
+) {
+  if (node.parent_id) {
+    await trx
+      .updateTable("message_nodes")
+      .set({ selected_child_id: replacementId, updated_at: timestamp })
+      .where("id", "=", node.parent_id)
+      .where("selected_child_id", "=", node.id)
+      .execute()
+    return
+  }
+  await trx
+    .updateTable("chats")
+    .set({ selected_root_node_id: replacementId, updated_at: timestamp })
+    .where("id", "=", node.chat_id)
+    .where("selected_root_node_id", "=", node.id)
+    .execute()
 }
 
 type ProviderProfileInput = {
@@ -2189,6 +2554,8 @@ async function insertRestoredMessageNodes(
         chat_id: node.chat_id,
         parent_id: node.parent_id,
         selected_child_id: node.selected_child_id,
+        sort_key: node.sort_key,
+        revision: node.revision,
         role: node.role,
         parts_json: node.parts_json,
         search_text: node.search_text,

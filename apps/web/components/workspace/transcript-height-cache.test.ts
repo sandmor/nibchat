@@ -22,6 +22,8 @@ function row(
       chat_id: "chat-1",
       parent_id: null,
       selected_child_id: null,
+      sort_key: 0,
+      revision: 0,
       role: "assistant",
       parts_json: '[{"type":"text","text":"hello"}]',
       search_text: "hello",

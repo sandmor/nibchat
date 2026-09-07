@@ -1,11 +1,19 @@
 "use client"
 
-import { Fragment, useEffect, useRef, useState } from "react"
+import {
+  Fragment,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
   ArrowLeft01Icon,
+  ArrowMoveUpRightIcon,
   ArrowRight01Icon,
   Copy01Icon,
   Delete02Icon,
@@ -18,6 +26,16 @@ import {
   ViewOffIcon,
 } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
+import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   Dialog,
   DialogContent,
@@ -46,7 +64,7 @@ import { cn } from "@/lib/utils"
 import { copyText } from "@/lib/clipboard"
 import { partsToMarkdown, pathToMarkdown } from "@/lib/message-markdown"
 import type { NodeRow, Parts } from "@/lib/types"
-import { parseJson, textFromParts } from "@/lib/domain"
+import { parseJson, subtreeNodeIds, textFromParts } from "@/lib/domain"
 import {
   parseProviderModelsJson,
   resolveModelLabel,
@@ -59,20 +77,25 @@ import { MessageParts } from "./message-parts"
 import { useWorkspaceChrome } from "./shell"
 import {
   allPendingResultsReady,
-  canEditMessageParts,
-  canEditUserComposer,
-  editableSegmentsFromParts,
+  canEditMessage,
+  durableAuthoredParts,
+  isEmptyParts,
+  messagePartsSchema,
   pendingToolInvocations,
 } from "@/lib/agent/parts"
 import {
-  composerDraftFromUserParts,
+  authoredPartsFromSession,
   hasEditorSession,
   messageEditSlotId,
+  sessionFromMessage,
   useConversationSessionStore,
+  useEditorSession,
   useHasEditorSession,
   type ComposerAttachment,
 } from "./conversation-session-store"
 import { SessionMessageEditor } from "./message-editor"
+import { useStreamBuffer, useStreamStore } from "@/lib/stream-store"
+import { siblingSort } from "@/lib/sort-key"
 
 export function MessageAction({
   icon,
@@ -154,6 +177,7 @@ export type MessageEditorBindings = {
   animate: boolean
   onSend: (node: NodeRow) => Promise<boolean>
   onCancel: (node: NodeRow) => void
+  onFinishEdit?: (node: NodeRow, mode: "sent" | "discard") => void
   onFiles: (slot: string, files: File[] | FileList) => void
   onRemoveAttachment: (slot: string, part: ComposerAttachment) => void
   onPreview: (src: string, name: string) => void
@@ -174,6 +198,7 @@ export function Message({
   presentation = "linear",
   attachSelectionOnEdit = true,
   editor,
+  streamId = null,
 }: {
   node: NodeRow
   nodes: NodeRow[]
@@ -191,16 +216,20 @@ export function Message({
   /** Tree edits create real branches without changing Linear's selected path. */
   attachSelectionOnEdit?: boolean
   editor?: MessageEditorBindings
+  /** Live generation overlay; token text is read from the stream buffer. */
+  streamId?: string | null
 }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const parts = parseJson<Parts>(node.parts_json, [])
+  const streamBuffer = useStreamBuffer(streamId ?? "")
+  const sourceParts = streamId ? streamBuffer.parts : parts
   const metadata = parseJson<Record<string, unknown>>(node.metadata_json, {})
-  const text = textFromParts(parts)
+  const text = textFromParts(sourceParts)
   const editSlot = messageEditSlotId(node.chat_id, node.id)
   const liveEdit = useHasEditorSession(editSlot)
-  const setParts = useConversationSessionStore((state) => state.setParts)
-  const update = useConversationSessionStore((state) => state.update)
+  const editSession = useEditorSession(editSlot)
+  const setSession = useConversationSessionStore((state) => state.setSession)
   const clearEdit = useConversationSessionStore((state) => state.clear)
   const shellRef = useRef<HTMLElement | null>(null)
   const setShellRef = (el: HTMLElement | null) => {
@@ -213,22 +242,40 @@ export function Message({
     if (wasEditing && !liveEdit)
       shellRef.current?.focus({ preventScroll: true })
   }, [liveEdit])
+  const editSourceParts =
+    node.status === "streaming" || streamId
+      ? durableAuthoredParts(sourceParts)
+      : sourceParts
   const canEditAsBranch =
-    node.role === "user"
-      ? Boolean(editor) && canEditUserComposer(node.status, parts)
-      : canEditMessageParts(node.status, parts)
+    canEditMessage(node.status, editSourceParts) &&
+    !isEmptyParts(editSourceParts) &&
+    (node.role === "assistant" || Boolean(editor))
   const interactiveTools =
     node.role === "assistant" &&
     node.status === "awaiting_input" &&
     Boolean(onAnswerTools)
-  const pendingIds = pendingToolInvocations(parts).map((p) => p.toolCallId)
+  const pendingIds = pendingToolInvocations(sourceParts).map((p) => p.toolCallId)
   const siblings = nodes.filter(
     (candidate) =>
       candidate.parent_id === node.parent_id && candidate.role === node.role
   )
+  siblings.sort(siblingSort)
   const index = siblings.findIndex((candidate) => candidate.id === node.id)
+  const teleportBlocked = subtreeNodeIds(nodes, node.id)
+  const teleportTargets = nodes.filter(
+    (candidate) => !teleportBlocked.has(candidate.id)
+  )
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const [teleportOpen, setTeleportOpen] = useState(false)
+  const [teleportDestination, setTeleportDestination] = useState("root")
+  const [teleportSubtree, setTeleportSubtree] = useState(true)
+  const [teleportMode, setTeleportMode] = useState<"reply" | "before">("reply")
+  const [replaceOpen, setReplaceOpen] = useState(false)
+  const moveRepliesId = useId()
+  const dismissReplacement = () => {
+    setReplaceOpen(false)
+  }
   /** Local answers for multi-pending tools before a single resume fires. */
   const [localToolResults, setLocalToolResults] = useState<
     Record<string, unknown>
@@ -241,12 +288,15 @@ export function Message({
     setBoundNodeId(node.id)
     setDetailsOpen(false)
     setDeleteOpen(false)
+    setTeleportOpen(false)
+    setReplaceOpen(false)
+    setTeleportMode("reply")
     setLocalToolResults({})
     setResumeInFlight(false)
   }
 
   // Preview locally submitted tools until the workspace refresh lands.
-  const displayParts: Parts = parts.map((part) => {
+  const displayParts: Parts = sourceParts.map((part) => {
     if (part.type !== "tool-invocation") return part
     if (
       !Object.prototype.hasOwnProperty.call(localToolResults, part.toolCallId)
@@ -262,6 +312,26 @@ export function Message({
   })
 
   const { appearance } = useWorkspaceChrome()
+  const roleLayout =
+    appearance.messageLayout[node.role === "user" ? "user" : "assistant"]
+  const layoutStyle: CSSProperties | undefined =
+    presentation === "tree"
+      ? undefined
+      : {
+          maxWidth: `${roleLayout.maxWidthPercent}%`,
+          marginLeft:
+            roleLayout.align === "right"
+              ? "auto"
+              : roleLayout.align === "center"
+                ? "auto"
+                : undefined,
+          marginRight:
+            roleLayout.align === "left"
+              ? "auto"
+              : roleLayout.align === "center"
+                ? "auto"
+                : undefined,
+        }
   const showIds = appearance.modelPicker.showIds
   const provider = providers.find((p) => p.id === metadata.provider)
   const providerName =
@@ -275,14 +345,25 @@ export function Message({
         ) ?? metadata.model)
       : "—"
 
-  const forkEditMutation = useMutation(
-    trpc.workspace.forkEdit.mutationOptions({
+  const forkMessagePartsMutation = useMutation(
+    trpc.workspace.forkMessageParts.mutationOptions({
       onSuccess: async () => {
-        clearEdit(editSlot)
-        // Wait for workspace refresh so the forked tip is in cache.
+        finishEdit("sent")
         await Promise.resolve(onChanged?.())
       },
-      onError: (error) => toast.error(error.message || "Edit failed"),
+      onError: (error) =>
+        toast.error(error.message || "Could not save message branch"),
+    })
+  )
+  const replaceMessageMutation = useMutation(
+    trpc.workspace.replaceMessage.mutationOptions({
+      onSuccess: async () => {
+        dismissReplacement()
+        finishEdit("sent")
+        await Promise.resolve(onChanged?.())
+      },
+      onError: (error) =>
+        toast.error(error.message || "Could not replace message"),
     })
   )
   const deleteNodeMutation = useMutation(
@@ -292,6 +373,16 @@ export function Message({
         onChanged?.()
       },
       onError: (error) => toast.error(error.message || "Delete failed"),
+    })
+  )
+  const moveNodeMutation = useMutation(
+    trpc.workspace.moveNode.mutationOptions({
+      onSuccess: async () => {
+        setTeleportOpen(false)
+        await Promise.resolve(onChanged?.())
+      },
+      onError: (error) =>
+        toast.error(error.message || "Could not move message"),
     })
   )
   const setContextExcludedMutation = useMutation(
@@ -340,90 +431,174 @@ export function Message({
       ? Object.entries(usage as Record<string, unknown>)
       : null
   const tree = presentation === "tree"
-  const beginEdit = () => {
-    if (hasEditorSession(editSlot)) return
-    if (node.role === "user") {
-      update(editSlot, composerDraftFromUserParts(parts))
-      return
+  const draftRole = editSession?.role ?? (node.role === "user" ? "user" : "assistant")
+  const persistableParts = () => {
+    const session = useConversationSessionStore.getState().sessions[editSlot]
+    if (!session) return null
+    const authored = authoredPartsFromSession(session)
+    const next = durableAuthoredParts(authored.parts)
+    const parsed = messagePartsSchema.safeParse(
+      next.length > 0 ? next : [{ type: "text", text: "" }]
+    )
+    if (next.length > 0 && !parsed.success) {
+      toast.error(parsed.error.issues[0]?.message ?? "Invalid message")
+      return null
     }
-    setParts(editSlot, editableSegmentsFromParts(parts))
+    if (isEmptyParts(next) && authored.attachments.length === 0) {
+      toast.error("Message is required")
+      return null
+    }
+    return {
+      session,
+      parts: next,
+      attachments: authored.attachments,
+    }
   }
-  const cancelEdit = () => {
-    if (editor) editor.onCancel(node)
+  const finishEdit = (mode: "sent" | "discard") => {
+    if (editor?.onFinishEdit) editor.onFinishEdit(node, mode)
     else clearEdit(editSlot)
   }
-  const saveEdit = () => {
-    if (forkEditMutation.isPending) return
-    const session = useConversationSessionStore.getState().sessions[editSlot]
-    const segments = session?.kind === "parts" ? session.segments : []
-    if (
-      !segments.some(
-        (segment) => segment.type === "text" && segment.text.trim()
-      )
+  const beginEdit = () => {
+    if (hasEditorSession(editSlot)) return
+    const latest = streamId
+      ? (useStreamStore.getState().buffers[streamId]?.parts ?? parts)
+      : parts
+    const editParts =
+      node.status === "streaming" || streamId
+        ? durableAuthoredParts(latest)
+        : latest
+    if (isEmptyParts(editParts)) return
+    setSession(
+      editSlot,
+      sessionFromMessage({
+        role: node.role === "user" ? "user" : "assistant",
+        parts: editParts,
+      })
     )
-      return
-    forkEditMutation.mutate({
+  }
+  const cancelEdit = () => {
+    dismissReplacement()
+    if (editor) editor.onCancel(node)
+    else finishEdit("discard")
+  }
+  const saveEdit = () => {
+    if (forkMessagePartsMutation.isPending) return
+    const prepared = persistableParts()
+    if (!prepared) return
+    forkMessagePartsMutation.mutate({
       nodeId: node.id,
-      edits: segments,
+      parts: prepared.parts,
+      attachments: prepared.attachments,
+      role: prepared.session.role,
       attachSelection: attachSelectionOnEdit,
     })
   }
+  const confirmReplace = () => {
+    const prepared = persistableParts()
+    if (!prepared) return
+    if (streamId) useStreamStore.getState().stop(streamId)
+    replaceMessageMutation.mutate({
+      nodeId: node.id,
+      parts: prepared.parts,
+      attachments: prepared.attachments,
+      role: prepared.session.role,
+      expectedRevision: node.revision,
+    })
+  }
 
-  if (liveEdit && (node.role !== "user" || editor)) {
+  const replacementDialog = (
+    <AlertDialog
+      open={replaceOpen}
+      onOpenChange={(open) => {
+        if (open) setReplaceOpen(true)
+        else dismissReplacement()
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Replace this message?</AlertDialogTitle>
+          <AlertDialogDescription>
+            This destructively replaces the current message. If it is still
+            generating, generation stops and its current output is replaced.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={confirmReplace}
+            disabled={replaceMessageMutation.isPending}
+          >
+            Replace message
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+
+  if (liveEdit && (draftRole !== "user" || editor)) {
     return (
-      <div
-        ref={setShellRef}
-        tabIndex={-1}
-        data-find-node={node.id}
-        className={
-          presentation === "linear" && node.role === "user"
-            ? "ml-auto w-full max-w-[88%]"
-            : undefined
-        }
-      >
-        <SessionMessageEditor
-          slot={editSlot}
-          variant="inline"
-          purpose="edit"
-          placement={presentation === "tree" ? "tree" : "linear"}
-          autoFocus
-          animate={editor?.animate}
-          placeholder="Edit this message…"
-          sendLabel={node.role === "user" ? "Save & generate" : "Save branch"}
-          mcpAvailable={Boolean(editor?.mcpAvailable) && node.role === "user"}
-          showContextPreview
-          contextParentId={node.parent_id}
-          sourceParts={node.role === "user" ? undefined : parts}
-          overlayNodeId={node.role === "user" ? undefined : node.id}
-          submitting={
-            node.role === "user" ? undefined : forkEditMutation.isPending
-          }
-          onSend={() => {
-            if (node.role === "user") {
-              void editor?.onSend(node)
-              return
-            }
-            saveEdit()
-          }}
-          onCancel={cancelEdit}
-          onFiles={
-            editor ? (files) => editor.onFiles(editSlot, files) : undefined
-          }
-          onRemoveAttachment={
-            editor
-              ? (part) => editor.onRemoveAttachment(editSlot, part)
+      <>
+        <div
+          ref={setShellRef}
+          tabIndex={-1}
+          data-find-node={node.id}
+          className={
+            presentation === "linear" && draftRole === "user"
+              ? "w-full"
               : undefined
           }
-          onPreview={editor?.onPreview}
-          onOpenResources={
-            editor ? () => editor.onOpenResources(editSlot) : undefined
-          }
-          onOpenPrompts={
-            editor ? () => editor.onOpenPrompts(editSlot) : undefined
-          }
-          onRevealContextMessage={editor?.onRevealContextMessage}
-        />
-      </div>
+          style={layoutStyle}
+        >
+          <SessionMessageEditor
+            slot={editSlot}
+            variant="inline"
+            purpose="edit"
+            placement={presentation === "tree" ? "tree" : "linear"}
+            autoFocus
+            animate={editor?.animate}
+            placeholder="Edit this message…"
+            sendLabel={
+              draftRole === "user" ? "Save & generate" : "Save branch"
+            }
+            mcpAvailable={Boolean(editor?.mcpAvailable) && draftRole === "user"}
+            allowAttachments={draftRole === "user"}
+            showContextPreview
+            contextParentId={node.parent_id}
+            overlayNodeId={node.id}
+            submitting={
+              draftRole === "user"
+                ? undefined
+                : forkMessagePartsMutation.isPending
+            }
+            onSend={() => {
+              if (draftRole === "user") {
+                void editor?.onSend(node)
+                return
+              }
+              saveEdit()
+            }}
+            onCancel={cancelEdit}
+            onReplace={() => setReplaceOpen(true)}
+            onFiles={
+              editor ? (files) => editor.onFiles(editSlot, files) : undefined
+            }
+            onRemoveAttachment={
+              editor
+                ? (part) => editor.onRemoveAttachment(editSlot, part)
+                : undefined
+            }
+            onPreview={editor?.onPreview}
+            onOpenResources={
+              editor ? () => editor.onOpenResources(editSlot) : undefined
+            }
+            onOpenPrompts={
+              editor ? () => editor.onOpenPrompts(editSlot) : undefined
+            }
+            onRevealContextMessage={editor?.onRevealContextMessage}
+          />
+        </div>
+        {replacementDialog}
+      </>
     )
   }
 
@@ -432,7 +607,10 @@ export function Message({
       ref={setShellRef}
       tabIndex={-1}
       data-find-node={node.id}
-      {...(node.status === "streaming" ? { "data-find-skip": "" } : {})}
+      {...(node.status === "streaming" || streamId
+        ? { "data-find-skip": "" }
+        : {})}
+      {...(tree && streamId ? { "data-tree-streaming": "" } : {})}
       data-theme-group={
         node.role === "user" ? "message-user" : "message-assistant"
       }
@@ -445,12 +623,13 @@ export function Message({
           ? "flex h-full min-h-0 flex-col overflow-hidden"
           : "overflow-hidden p-4",
         node.role === "user" && presentation === "linear"
-          ? "ml-auto max-w-[88%] border-message-user-border bg-message-user text-message-user-foreground"
+          ? "border-message-user-border bg-message-user text-message-user-foreground"
           : node.role === "user"
             ? "border-message-user-border bg-message-user text-message-user-foreground"
             : "border-message-assistant-border bg-message-assistant text-message-assistant-foreground",
         tree && "hover:border-foreground/30"
       )}
+      style={layoutStyle}
     >
       <div
         className={
@@ -472,11 +651,13 @@ export function Message({
               {node.role}
               {node.status === "awaiting_input"
                 ? " · waiting for input"
-                : node.status === "stopped"
-                  ? " · stopped"
-                  : node.status === "error"
-                    ? " · error"
-                    : null}
+                : node.status === "streaming" || streamId
+                  ? " · streaming"
+                  : node.status === "stopped"
+                    ? " · stopped"
+                    : node.status === "error"
+                      ? " · error"
+                      : null}
             </span>
             {siblings.length > 1 && (
               <span className="flex items-center gap-1">
@@ -541,7 +722,7 @@ export function Message({
         displayParts.some((part) => part.type === "tool-invocation") ? (
           <MessageParts
             parts={displayParts}
-            streaming={node.status === "streaming"}
+            streaming={node.status === "streaming" || Boolean(streamId)}
             interactiveTools={interactiveTools && !resumeInFlight}
             onAnswerTool={
               onAnswerTools
@@ -570,8 +751,9 @@ export function Message({
             }
           />
         ) : (
-          <Markdown streaming={node.status === "streaming"}>
-            {text || (node.status === "streaming" ? "Thinking…" : "")}
+          <Markdown streaming={node.status === "streaming" || Boolean(streamId)}>
+            {text ||
+              (node.status === "streaming" || streamId ? "Thinking…" : "")}
           </Markdown>
         )}
         {tree && node.status === "error" ? (
@@ -597,7 +779,10 @@ export function Message({
           >
             Copy
           </MessageAction>
-          {node.role === "assistant" && onRegenerate && (
+          {node.role === "assistant" &&
+            onRegenerate &&
+            node.status !== "streaming" &&
+            !streamId && (
             <MessageAction
               onClick={() => onRegenerate()}
               icon={RefreshIcon}
@@ -612,7 +797,7 @@ export function Message({
               icon={Edit02Icon}
               captions={messageActionCaptions}
             >
-              Edit as branch
+              Edit
             </MessageAction>
           )}
           <MessageAction
@@ -662,6 +847,15 @@ export function Message({
                   aria-hidden
                 />
                 Copy path
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => setTeleportOpen(true)}>
+                <HugeiconsIcon
+                  icon={ArrowMoveUpRightIcon}
+                  strokeWidth={2}
+                  className="size-3.5 text-muted-foreground"
+                  aria-hidden
+                />
+                Move…
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -746,13 +940,111 @@ export function Message({
         </DialogContent>
       </Dialog>
 
+      <Dialog open={teleportOpen} onOpenChange={setTeleportOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Move message</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Reattach this message in the conversation. Leaving replies behind
+            promotes them to this message&apos;s former parent.
+          </p>
+          <div className="grid gap-1.5">
+            <Label id="move-placement">Placement</Label>
+            <ToggleGroup
+              value={[teleportMode]}
+              onValueChange={(next) => {
+                const mode = next[0]
+                if (mode === "reply" || mode === "before") setTeleportMode(mode)
+              }}
+              variant="outline"
+              spacing={0}
+              size="sm"
+              className="w-full"
+              aria-labelledby="move-placement"
+            >
+              <ToggleGroupItem value="reply" className="flex-1">
+                As a reply
+              </ToggleGroupItem>
+              <ToggleGroupItem
+                value="before"
+                className="flex-1"
+                disabled={teleportDestination === "root"}
+              >
+                Before this message
+              </ToggleGroupItem>
+            </ToggleGroup>
+          </div>
+          <Label className="grid gap-1.5 text-sm">
+            {teleportMode === "before" ? "Insert before" : "Reply to"}
+            <Select
+              value={teleportDestination}
+              onValueChange={(value) => {
+                if (!value) return
+                setTeleportDestination(value)
+                if (value === "root") setTeleportMode("reply")
+              }}
+            >
+              <SelectTrigger size="sm" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="root">Conversation root</SelectItem>
+                {teleportTargets.map((candidate) => (
+                  <SelectItem key={candidate.id} value={candidate.id}>
+                    {candidate.role}:{" "}
+                    {textFromParts(
+                      parseJson<Parts>(candidate.parts_json, [])
+                    ).slice(0, 72) || "(empty)"}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Label>
+          <div className="flex items-center gap-2">
+            <Switch
+              id={moveRepliesId}
+              checked={teleportSubtree}
+              onCheckedChange={(checked) =>
+                setTeleportSubtree(checked === true)
+              }
+            />
+            <Label htmlFor={moveRepliesId} className="text-sm font-normal">
+              Also move replies
+            </Label>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTeleportOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={moveNodeMutation.isPending}
+              onClick={() =>
+                moveNodeMutation.mutate({
+                  nodeId: node.id,
+                  destinationParentId:
+                    teleportDestination === "root" ? null : teleportDestination,
+                  ...(teleportMode === "before" &&
+                  teleportDestination !== "root"
+                    ? { beforeNodeId: teleportDestination }
+                    : {}),
+                  subtree: teleportSubtree,
+                })
+              }
+            >
+              Move
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete message node</AlertDialogTitle>
             <AlertDialogDescription>
-              Subtree delete removes this node and all descendants. Reparent
-              only works when there is exactly one child (promotes that child).
+              Subtree delete removes this node and all descendants. Keep replies
+              removes only this message and promotes every direct reply.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -766,7 +1058,7 @@ export function Message({
                 })
               }
             >
-              Reparent
+              Keep replies
             </Button>
             <AlertDialogAction
               variant="destructive"
@@ -782,6 +1074,7 @@ export function Message({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      {replacementDialog}
     </article>
   )
 }

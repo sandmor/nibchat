@@ -21,6 +21,60 @@ export const questionInputSchema = z.object({
 export type QuestionInput = z.infer<typeof questionInputSchema>
 export type QuestionPrompt = z.infer<typeof questionPromptSchema>
 
+export function emptyQuestionInput(): QuestionInput {
+  return {
+    questions: [
+      {
+        question: "Question",
+        header: "Question",
+        options: [{ label: "Option A", description: "" }],
+        multiple: false,
+        custom: true,
+      },
+    ],
+  }
+}
+
+/** Best-effort draft for the question widget when JSON is incomplete. */
+export function questionInputDraft(input: unknown): QuestionInput {
+  const parsed = questionInputSchema.safeParse(input)
+  if (parsed.success) return parsed.data
+  if (!input || typeof input !== "object" || !("questions" in input))
+    return emptyQuestionInput()
+  const raw = (input as { questions: unknown }).questions
+  if (!Array.isArray(raw) || raw.length === 0) return emptyQuestionInput()
+  const questions = raw.map((entry) => {
+    const item = entry && typeof entry === "object" ? entry : {}
+    const record = item as {
+      question?: unknown
+      header?: unknown
+      options?: unknown
+      multiple?: unknown
+      custom?: unknown
+    }
+    const options = Array.isArray(record.options)
+      ? record.options.map((option) => {
+          const row = option && typeof option === "object" ? option : {}
+          const fields = row as { label?: unknown; description?: unknown }
+          return {
+            label: typeof fields.label === "string" ? fields.label : "",
+            description:
+              typeof fields.description === "string" ? fields.description : "",
+          }
+        })
+      : []
+    return {
+      question: typeof record.question === "string" ? record.question : "",
+      header:
+        typeof record.header === "string" ? record.header.slice(0, 30) : "",
+      options: options.length > 0 ? options : [{ label: "", description: "" }],
+      multiple: record.multiple === true,
+      custom: record.custom !== false,
+    }
+  })
+  return { questions }
+}
+
 /** Per-question selected labels (or freeform strings). */
 export type QuestionAnswers = string[][]
 

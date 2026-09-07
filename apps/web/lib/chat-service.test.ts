@@ -7,18 +7,22 @@ import {
   createProvider,
   finishSetup,
   getTitleModelConfig,
-  createTurn,
+  createMessage,
   deleteChat,
   deleteNode,
   finalizeStreamingAssistant,
-  forkEdit,
+  forkMessageParts,
   getWorkspace,
   insertNode,
+  moveNode,
   nodeParts,
+  replaceMessage,
   restoreAwaitingInput,
   restoreBackup,
   setNodeContextExcluded,
   startRegenerate,
+  startGeneration,
+  submitUserTurn,
   setChatViewState,
 } from "@/lib/chat-service"
 import { getGenerationRun } from "@/lib/generation-runs"
@@ -32,6 +36,7 @@ import { parseBackup } from "@/lib/backup"
 import { unpackBackupArchive } from "@/lib/backup-archive"
 import { db, migrate } from "@/lib/db"
 import { ancestorPath, parseJson, resolveActivePath } from "@/lib/domain"
+import { siblingSort } from "@/lib/sort-key"
 import { formatProviderError } from "@/lib/provider-errors"
 import {
   listAvailableProviders,
@@ -146,7 +151,7 @@ describe("SQLite chat repository", () => {
     ).toBe(false)
   })
 
-  it("createTurn inserts user + streaming assistant without rewriting view selection", async () => {
+  it("creates an authored message and generation without rewriting view selection", async () => {
     const chat = await createChat(userId, "Turn test")
     const prior = await insertNode({
       chatId: chat.id,
@@ -154,12 +159,21 @@ describe("SQLite chat repository", () => {
       role: "user",
       parts: [{ type: "text", text: "prior" }],
     })
-    const { user, assistant } = await createTurn({
+    const user = await createMessage({
       userId,
       chatId: chat.id,
       parentId: prior.id,
-      content: "hello turn",
+      role: "user",
+      parts: [{ type: "text", text: "hello turn" }],
+      attachSelection: false,
+    })
+    const { assistant } = await startGeneration({
+      userId,
+      chatId: chat.id,
+      parentId: user.id,
+      generationId: crypto.randomUUID(),
       assistantMetadata: { model: "test" },
+      attachSelection: false,
     })
     expect(user.parent_id).toBe(prior.id)
     expect(assistant.parent_id).toBe(user.id)
@@ -170,12 +184,557 @@ describe("SQLite chat repository", () => {
     )
 
     const workspace = await getWorkspace(userId, { chatId: chat.id })
-    // Prior insert attached selection to prior; createTurn must not redirect it.
+    // Prior insert attached selection to prior; authored follow-ups must not redirect it.
     expect(workspace.chat?.selected_root_node_id).toBe(prior.id)
     const priorRow = workspace.nodes.find((n) => n.id === prior.id)
     expect(priorRow?.selected_child_id).toBeNull()
     const userRow = workspace.nodes.find((n) => n.id === user.id)
     expect(userRow?.selected_child_id).toBeNull()
+  })
+
+  it("supports adjacent same-role messages, explicit insertion order, and teleporting", async () => {
+    const chat = await createChat(userId, "Free-form structure")
+    const root = await createMessage({
+      userId,
+      chatId: chat.id,
+      parentId: null,
+      role: "assistant",
+      parts: [{ type: "text", text: "root assistant" }],
+    })
+    const later = await createMessage({
+      userId,
+      chatId: chat.id,
+      parentId: root.id,
+      role: "assistant",
+      parts: [{ type: "text", text: "later assistant" }],
+    })
+    const first = await createMessage({
+      userId,
+      chatId: chat.id,
+      parentId: root.id,
+      beforeNodeId: later.id,
+      role: "assistant",
+      parts: [{ type: "text", text: "first assistant" }],
+    })
+    const beforeMove = await getWorkspace(userId, { chatId: chat.id })
+    expect(
+      beforeMove.nodes
+        .filter((node) => node.parent_id === root.id)
+        .sort(siblingSort)
+        .map((node) => node.id)
+    ).toEqual([first.id, later.id])
+    await moveNode({
+      userId,
+      nodeId: first.id,
+      destinationParentId: null,
+      beforeNodeId: root.id,
+      subtree: true,
+    })
+
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    const roots = workspace.nodes
+      .filter((node) => node.parent_id === null)
+      .sort((a, b) => a.sort_key - b.sort_key)
+    expect(roots.map((node) => node.id)).toEqual([first.id, root.id])
+    const children = workspace.nodes
+      .filter((node) => node.parent_id === root.id)
+      .sort((a, b) => a.sort_key - b.sort_key)
+    expect(children.map((node) => node.id)).toEqual([later.id])
+  })
+
+  it("inserts before neighbors that share a sort_key without jumping the group", async () => {
+    const chat = await createChat(userId, "Equal ranks")
+    const first = await createMessage({
+      userId,
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "first" }],
+    })
+    const second = await createMessage({
+      userId,
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "second" }],
+    })
+    await db
+      .updateTable("message_nodes")
+      .set({ sort_key: 1, created_at: "2024-01-01T00:00:00.000Z" })
+      .where("id", "in", [first.id, second.id])
+      .execute()
+    const colliding = [first, second]
+      .map((node) => ({
+        ...node,
+        sort_key: 1,
+        created_at: "2024-01-01T00:00:00.000Z",
+      }))
+      .sort(siblingSort)
+    const prior = colliding[0]!
+    const target = colliding[1]!
+    const middle = await createMessage({
+      userId,
+      chatId: chat.id,
+      parentId: null,
+      beforeNodeId: target.id,
+      role: "user",
+      parts: [{ type: "text", text: "middle" }],
+    })
+    const roots = (await getWorkspace(userId, { chatId: chat.id })).nodes
+      .filter((node) => node.parent_id === null)
+      .sort(siblingSort)
+    expect(roots.map((node) => node.id)).toEqual([
+      prior.id,
+      middle.id,
+      target.id,
+    ])
+  })
+
+  it("reorders siblings without stealing the selected child", async () => {
+    const chat = await createChat(userId, "Reorder selection")
+    const parent = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "parent" }],
+    })
+    const first = await insertNode({
+      chatId: chat.id,
+      parentId: parent.id,
+      role: "assistant",
+      parts: [{ type: "text", text: "first" }],
+    })
+    const selected = await insertNode({
+      chatId: chat.id,
+      parentId: parent.id,
+      role: "assistant",
+      parts: [{ type: "text", text: "selected" }],
+    })
+    await moveNode({
+      userId,
+      nodeId: selected.id,
+      destinationParentId: parent.id,
+      beforeNodeId: first.id,
+      subtree: true,
+    })
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    expect(
+      workspace.nodes.find((node) => node.id === parent.id)?.selected_child_id
+    ).toBe(selected.id)
+    const children = workspace.nodes
+      .filter((node) => node.parent_id === parent.id)
+      .sort((a, b) => a.sort_key - b.sort_key)
+    expect(children.map((node) => node.id)).toEqual([selected.id, first.id])
+  })
+
+  it("serializes opposing moves so a cycle cannot be committed", async () => {
+    const chat = await createChat(userId, "Concurrent moves")
+    const a = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "a" }],
+      attachSelection: false,
+    })
+    const b = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "b" }],
+      attachSelection: false,
+    })
+    const results = await Promise.allSettled([
+      moveNode({
+        userId,
+        nodeId: a.id,
+        destinationParentId: b.id,
+        subtree: true,
+      }),
+      moveNode({
+        userId,
+        nodeId: b.id,
+        destinationParentId: a.id,
+        subtree: true,
+      }),
+    ])
+    expect(
+      results.filter((result) => result.status === "fulfilled")
+    ).toHaveLength(1)
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    expect(() => ancestorPath(workspace.nodes, a.id)).not.toThrow()
+    expect(() => ancestorPath(workspace.nodes, b.id)).not.toThrow()
+  })
+
+  it("repairs the selected root then follows a reparented message", async () => {
+    const chat = await createChat(userId, "Move selected root")
+    const moving = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "moving" }],
+    })
+    const other = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "other" }],
+      attachSelection: false,
+    })
+    expect(
+      (await getWorkspace(userId, { chatId: chat.id })).chat
+        ?.selected_root_node_id
+    ).toBe(moving.id)
+    await moveNode({
+      userId,
+      nodeId: moving.id,
+      destinationParentId: other.id,
+      subtree: true,
+    })
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    expect(workspace.chat?.selected_root_node_id).toBe(other.id)
+    expect(
+      workspace.nodes.find((node) => node.id === other.id)?.selected_child_id
+    ).toBe(moving.id)
+  })
+
+  it("deleteNode reparent promotes every direct reply", async () => {
+    const chat = await createChat(userId, "Keep replies")
+    const root = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "root" }],
+    })
+    const mid = await insertNode({
+      chatId: chat.id,
+      parentId: root.id,
+      role: "assistant",
+      parts: [{ type: "text", text: "mid" }],
+    })
+    const first = await insertNode({
+      chatId: chat.id,
+      parentId: mid.id,
+      role: "user",
+      parts: [{ type: "text", text: "first" }],
+    })
+    const second = await insertNode({
+      chatId: chat.id,
+      parentId: mid.id,
+      role: "user",
+      parts: [{ type: "text", text: "second" }],
+    })
+    await deleteNode(userId, mid.id, "reparent")
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    expect(workspace.nodes.some((node) => node.id === mid.id)).toBe(false)
+    expect(
+      workspace.nodes
+        .filter((node) => node.parent_id === root.id)
+        .map((node) => node.id)
+        .sort()
+    ).toEqual([first.id, second.id].sort())
+  })
+
+  it("rejects incompatible role parts and replaces a message with revision fencing", async () => {
+    const chat = await createChat(userId, "Role constraints")
+    await expect(
+      createMessage({
+        userId,
+        chatId: chat.id,
+        parentId: null,
+        role: "user",
+        parts: [{ type: "reasoning", text: "private" }],
+      })
+    ).rejects.toThrow("User messages cannot contain reasoning")
+    const assistant = await createMessage({
+      userId,
+      chatId: chat.id,
+      parentId: null,
+      role: "assistant",
+      parts: [{ type: "text", text: "before" }],
+    })
+    await replaceMessage({
+      userId,
+      nodeId: assistant.id,
+      parts: [
+        { type: "reasoning", text: "thought" },
+        { type: "text", text: "after" },
+      ],
+      expectedRevision: 0,
+    })
+    await expect(
+      replaceMessage({
+        userId,
+        nodeId: assistant.id,
+        parts: [{ type: "text", text: "stale write" }],
+        expectedRevision: 0,
+      })
+    ).rejects.toThrow("Message changed before it could be replaced")
+  })
+
+  it("forks and replaces a message with a converted role", async () => {
+    const chat = await createChat(userId, "Role conversion")
+    const assistant = await createMessage({
+      userId,
+      chatId: chat.id,
+      parentId: null,
+      role: "assistant",
+      parts: [
+        { type: "reasoning", text: "plan" },
+        { type: "text", text: "hello" },
+        {
+          type: "tool-invocation",
+          toolCallId: "c1",
+          toolName: "lookup",
+          state: "output-available",
+          input: { q: "x" },
+          output: "ok",
+        },
+      ],
+    })
+    const forked = await forkMessageParts({
+      userId,
+      nodeId: assistant.id,
+      role: "user",
+      parts: [{ type: "text", text: "plan\n\nhello\n\nlookup" }],
+    })
+    expect(forked.role).toBe("user")
+    expect(nodeParts(forked)).toEqual([
+      { type: "text", text: "plan\n\nhello\n\nlookup" },
+    ])
+    const user = await createMessage({
+      userId,
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "ask" }],
+    })
+    await replaceMessage({
+      userId,
+      nodeId: user.id,
+      role: "assistant",
+      parts: [{ type: "text", text: "ask" }],
+      expectedRevision: 0,
+    })
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    const replaced = workspace.nodes.find((node) => node.id === user.id)
+    expect(replaced?.role).toBe("assistant")
+  })
+
+  it("forks a streaming assistant into a durable sibling without stopping it", async () => {
+    const chat = await createChat(userId, "Stream fork")
+    const streaming = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "assistant",
+      parts: [],
+      status: "streaming",
+    })
+    const forked = await forkMessageParts({
+      userId,
+      nodeId: streaming.id,
+      parts: [
+        { type: "text", text: "partial" },
+        {
+          type: "tool-invocation",
+          toolCallId: "pending",
+          toolName: "lookup",
+          state: "input-streaming",
+          input: {},
+        },
+        {
+          type: "tool-invocation",
+          toolCallId: "ready",
+          toolName: "lookup",
+          state: "input-available",
+          input: { q: "x" },
+        },
+      ],
+    })
+    expect(forked.id).not.toBe(streaming.id)
+    expect(forked.parent_id).toBe(streaming.parent_id)
+    expect(forked.status).toBe("complete")
+    expect(nodeParts(forked)).toEqual([
+      { type: "text", text: "partial" },
+      {
+        type: "tool-invocation",
+        toolCallId: "ready",
+        toolName: "lookup",
+        state: "output-error",
+        errorText: "Cancelled before the tool ran.",
+        input: { q: "x" },
+      },
+    ])
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    expect(
+      workspace.nodes.find((node) => node.id === streaming.id)?.status
+    ).toBe("streaming")
+  })
+
+  it("replace stops a streaming assistant and writes the edited document", async () => {
+    clearActiveGenerations()
+    const chat = await createChat(userId, "Stream replace")
+    const streaming = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "assistant",
+      parts: [],
+      status: "streaming",
+      generationId: crypto.randomUUID(),
+    })
+    const controller = new AbortController()
+    registerGeneration(streaming.id, controller)
+    await replaceMessage({
+      userId,
+      nodeId: streaming.id,
+      parts: [
+        { type: "text", text: "kept" },
+        {
+          type: "tool-invocation",
+          toolCallId: "pending",
+          toolName: "lookup",
+          state: "input-streaming",
+          input: {},
+        },
+      ],
+      expectedRevision: 0,
+    })
+    expect(controller.signal.aborted).toBe(true)
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    const replaced = workspace.nodes.find((node) => node.id === streaming.id)
+    expect(replaced?.status).toBe("complete")
+    expect(nodeParts(replaced!)).toEqual([{ type: "text", text: "kept" }])
+  })
+
+  it("replaces a user message with a sidecar upload", async () => {
+    const chat = await createChat(userId, "Replace upload")
+    const user = await createMessage({
+      userId,
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "caption" }],
+    })
+    await db
+      .insertInto("attachments")
+      .values({
+        id: "sidecar-upload",
+        user_id: userId,
+        filename: "shot.png",
+        media_type: "image/png",
+        byte_size: 4,
+        sha256: "b".repeat(64),
+        storage_backend: "database",
+        storage_key: null,
+        data: new Uint8Array([9, 8, 7, 6]),
+        claimed_at: null,
+        created_at: new Date().toISOString(),
+      })
+      .execute()
+    await replaceMessage({
+      userId,
+      nodeId: user.id,
+      parts: [{ type: "text", text: "caption" }],
+      attachments: [{ kind: "uploaded-file", id: "sidecar-upload" }],
+      expectedRevision: 0,
+    })
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    const replaced = workspace.nodes.find((node) => node.id === user.id)
+    const parts = nodeParts(replaced!)
+    expect(parts.some((part) => part.type === "text")).toBe(true)
+    expect(
+      parts.some(
+        (part) =>
+          part.type === "attachment" &&
+          part.content.kind === "binary" &&
+          part.content.attachmentId === "sidecar-upload"
+      )
+    ).toBe(true)
+    const claimed = await db
+      .selectFrom("attachments")
+      .select(["claimed_at"])
+      .where("id", "=", "sidecar-upload")
+      .executeTakeFirst()
+    expect(claimed?.claimed_at).toBeTruthy()
+    const link = await db
+      .selectFrom("message_attachments")
+      .select("attachment_id")
+      .where("message_node_id", "=", user.id)
+      .executeTakeFirst()
+    expect(link?.attachment_id).toBe("sidecar-upload")
+  })
+
+  it("stores authored pending tools as cancelled records", async () => {
+    const chat = await createChat(userId, "Coerce tools")
+    const assistant = await createMessage({
+      userId,
+      chatId: chat.id,
+      parentId: null,
+      role: "assistant",
+      parts: [
+        { type: "text", text: "hello" },
+        {
+          type: "tool-invocation",
+          toolCallId: "ready",
+          toolName: "lookup",
+          state: "input-available",
+          input: { q: "x" },
+        },
+      ],
+    })
+    expect(nodeParts(assistant)).toEqual([
+      { type: "text", text: "hello" },
+      {
+        type: "tool-invocation",
+        toolCallId: "ready",
+        toolName: "lookup",
+        state: "output-error",
+        errorText: "Cancelled before the tool ran.",
+        input: { q: "x" },
+      },
+    ])
+    const paused = await insertNode({
+      chatId: chat.id,
+      parentId: assistant.id,
+      role: "assistant",
+      parts: [
+        {
+          type: "tool-invocation",
+          toolCallId: "q1",
+          toolName: "question",
+          state: "input-available",
+          input: {},
+        },
+      ],
+      status: "awaiting_input",
+      attachSelection: false,
+    })
+    await expect(
+      replaceMessage({
+        userId,
+        nodeId: paused.id,
+        parts: [{ type: "text", text: "nope" }],
+      })
+    ).rejects.toThrow("still in progress")
+  })
+
+  it("submits the user and assistant rows through one transaction", async () => {
+    const chat = await createChat(userId, "Atomic turn")
+    const result = await submitUserTurn({
+      userId,
+      chatId: chat.id,
+      parentId: null,
+      parts: [{ type: "text", text: "hello" }],
+      generationId: crypto.randomUUID(),
+      attachSelection: true,
+    })
+    expect(result.assistant.parent_id).toBe(result.user.id)
+    expect(
+      await db
+        .selectFrom("generation_runs")
+        .select("node_id")
+        .where("node_id", "=", result.assistant.id)
+        .executeTakeFirst()
+    ).toEqual({ node_id: result.assistant.id })
   })
 
   it("can fork an edit without rewriting the selected linear branch", async () => {
@@ -192,14 +751,12 @@ describe("SQLite chat repository", () => {
       role: "assistant",
       parts: [{ type: "text", text: "selected" }],
     })
-    const edited = await forkEdit(
+    const edited = await forkMessageParts({
       userId,
-      selected.id,
-      [{ type: "text", text: "tree edit" }],
-      {
-        attachSelection: false,
-      }
-    )
+      nodeId: selected.id,
+      parts: [{ type: "text", text: "tree edit" }],
+      attachSelection: false,
+    })
     const workspace = await getWorkspace(userId, { chatId: chat.id })
     expect(edited.parent_id).toBe(root.id)
     expect(
@@ -230,11 +787,23 @@ describe("SQLite chat repository", () => {
         { type: "text", text: "after" },
       ],
     })
-    const edited = await forkEdit(userId, original.id, [
-      { type: "reasoning", text: "think again" },
-      { type: "text", text: "hello" },
-      { type: "text", text: "world" },
-    ])
+    const edited = await forkMessageParts({
+      userId,
+      nodeId: original.id,
+      parts: [
+        { type: "reasoning", text: "think again" },
+        { type: "text", text: "hello" },
+        {
+          type: "tool-invocation",
+          toolCallId: "c1",
+          toolName: "web_search",
+          state: "output-available",
+          input: { q: "nib" },
+          output: "hits",
+        },
+        { type: "text", text: "world" },
+      ],
+    })
     expect(nodeParts(edited)).toEqual([
       { type: "reasoning", text: "think again" },
       { type: "text", text: "hello" },
@@ -250,14 +819,14 @@ describe("SQLite chat repository", () => {
     ])
   })
 
-  it("createTurn persists attachment-only user turns", async () => {
+  it("persists attachment-only authored user messages", async () => {
     const chat = await createChat(userId, "Attachment turn")
-    const { user } = await createTurn({
+    const user = await createMessage({
       userId,
       chatId: chat.id,
       parentId: null,
-      content: "",
-      attachments: [
+      role: "user",
+      parts: [
         {
           type: "attachment",
           id: "attachment-1",
@@ -271,7 +840,6 @@ describe("SQLite chat repository", () => {
           },
         },
       ],
-      assistantMetadata: {},
     })
     expect(nodeParts(user)).toEqual([
       {
@@ -289,7 +857,7 @@ describe("SQLite chat repository", () => {
     ])
   })
 
-  it("createTurn under a branch parent does not rewire an upstream selection tip", async () => {
+  it("authored messages and generation under a branch do not rewire an upstream selection tip", async () => {
     const chat = await createChat(userId, "Concurrent tip")
     const root = await insertNode({
       chatId: chat.id,
@@ -312,12 +880,21 @@ describe("SQLite chat repository", () => {
     expect(pathBefore.at(-1)?.id).toBe(leaf.id)
 
     // Turn parents under root while selection still favors leaf
-    const { user, assistant } = await createTurn({
+    const user = await createMessage({
       userId,
       chatId: chat.id,
       parentId: root.id,
-      content: "branch turn",
+      role: "user",
+      parts: [{ type: "text", text: "branch turn" }],
+      attachSelection: false,
+    })
+    const { assistant } = await startGeneration({
+      userId,
+      chatId: chat.id,
+      parentId: user.id,
+      generationId: crypto.randomUUID(),
       assistantMetadata: {},
+      attachSelection: false,
     })
     expect(user.parent_id).toBe(root.id)
     expect(assistant.parent_id).toBe(user.id)
@@ -375,9 +952,26 @@ describe("SQLite chat repository", () => {
       .insertInto("message_attachments")
       .values({ message_node_id: original.id, attachment_id: "image-branch" })
       .execute()
-    const edited = await forkEdit(userId, original.id, [
-      { type: "text", text: "edited" },
-    ])
+    const edited = await forkMessageParts({
+      userId,
+      nodeId: original.id,
+      parts: [
+        {
+          type: "attachment",
+          id: "image-branch",
+          name: "image.png",
+          source: { kind: "upload" },
+          content: {
+            kind: "binary",
+            attachmentId: "image-branch",
+            mediaType: "image/png",
+            byteSize: 4,
+            sha256: "a".repeat(64),
+          },
+        },
+        { type: "text", text: "edited" },
+      ],
+    })
     await deleteNode(userId, original.id, "subtree")
     const reference = await db
       .selectFrom("message_attachments")
@@ -391,6 +985,85 @@ describe("SQLite chat repository", () => {
       .executeTakeFirst()
     expect(reference?.attachment_id).toBe("image-branch")
     expect(attachment?.id).toBe("image-branch")
+  })
+
+  it("rejects foreign attachments when forking message parts", async () => {
+    const foreignUserId = "foreign-attachment-owner"
+    const existing = await db
+      .selectFrom("user")
+      .select("id")
+      .where("id", "=", foreignUserId)
+      .executeTakeFirst()
+    if (!existing)
+      await db
+        .insertInto("user")
+        .values({
+          id: foreignUserId,
+          name: "Other owner",
+          email: "foreign-attachment-owner@test.local",
+          emailVerified: 1 as unknown as boolean,
+          image: null,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        })
+        .execute()
+    const attachmentId = crypto.randomUUID()
+    await db
+      .insertInto("attachments")
+      .values({
+        id: attachmentId,
+        user_id: foreignUserId,
+        filename: "foreign.png",
+        media_type: "image/png",
+        byte_size: 1,
+        sha256: "f".repeat(64),
+        storage_backend: "database",
+        storage_key: null,
+        data: new Uint8Array([1]),
+        claimed_at: null,
+        created_at: new Date().toISOString(),
+      })
+      .execute()
+    const chat = await createChat(userId, "Foreign fork attachment")
+    const original = await createMessage({
+      userId,
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "original" }],
+    })
+    const before = await db
+      .selectFrom("message_nodes")
+      .select(({ fn }) => fn.countAll<number>().as("count"))
+      .where("chat_id", "=", chat.id)
+      .executeTakeFirstOrThrow()
+    await expect(
+      forkMessageParts({
+        userId,
+        nodeId: original.id,
+        parts: [
+          {
+            type: "attachment",
+            id: attachmentId,
+            name: "foreign.png",
+            source: { kind: "upload" },
+            content: {
+              kind: "binary",
+              attachmentId,
+              mediaType: "image/png",
+              byteSize: 1,
+              sha256: "f".repeat(64),
+            },
+          },
+        ],
+      })
+    ).rejects.toThrow("file uploads are unavailable")
+    const after = await db
+      .selectFrom("message_nodes")
+      .select(({ fn }) => fn.countAll<number>().as("count"))
+      .where("chat_id", "=", chat.id)
+      .executeTakeFirstOrThrow()
+    expect(after.count).toBe(before.count)
   })
 
   it("keeps pending uploads when sweeping detached claimed images", async () => {
@@ -1652,6 +2325,8 @@ function fixtureNode(id: string, chatId: string) {
     chat_id: chatId,
     parent_id: null,
     selected_child_id: null,
+    sort_key: 1,
+    revision: 0,
     role: "user" as const,
     parts_json: "[]",
     search_text: "",

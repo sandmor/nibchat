@@ -8,9 +8,8 @@ import type {
   MessageStatus,
   Part,
   Parts,
-  ReasoningPart,
-  TextPart,
   ToolInvocationPart,
+  MessageRole,
 } from "@/lib/types"
 
 export type {
@@ -98,6 +97,46 @@ export const attachmentPartSchema = z.object({
   source: attachmentSourceSchema,
   content: attachmentContentSchema,
 })
+
+/** Durable message payload accepted by authored-message and replacement APIs. */
+export const messagePartSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal("text"),
+      text: z.string(),
+      streamId: z.string().optional(),
+      providerMetadata: z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("reasoning"),
+      text: z.string(),
+      streamId: z.string().optional(),
+      providerMetadata: z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("tool-invocation"),
+      toolCallId: z.string().min(1),
+      toolName: z.string().min(1),
+      state: z.enum([
+        "input-streaming",
+        "input-available",
+        "output-available",
+        "output-error",
+      ]),
+      input: z.unknown(),
+      output: z.unknown().optional(),
+      errorText: z.string().optional(),
+      providerMetadata: z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict(),
+  attachmentPartSchema,
+])
+
+export const messagePartsSchema = z.array(messagePartSchema).min(1)
 
 /** Visible prose (text + attachment text bodies). */
 export function textFromParts(parts: Parts): string {
@@ -383,11 +422,20 @@ export function isEmptyParts(parts: Parts): boolean {
   })
 }
 
-export const messageEditSegmentSchema = z.object({
-  type: z.enum(["text", "reasoning"]),
-  text: z.string(),
-})
-export type MessageEditSegment = z.infer<typeof messageEditSegmentSchema>
+/** Conversation roles have distinct durable capabilities. */
+export function assertPartsAllowedForRole(role: MessageRole, parts: Parts) {
+  if (role === "user") {
+    if (
+      parts.some(
+        (part) => part.type === "reasoning" || part.type === "tool-invocation"
+      )
+    )
+      throw new Error("User messages cannot contain reasoning or tool calls.")
+    return
+  }
+  if (role === "assistant" && parts.some((part) => part.type === "attachment"))
+    throw new Error("Assistant messages cannot contain attachments.")
+}
 
 /** Merge streamed text deltas so adjacent prose is one document. */
 export function coalesceAdjacentTextParts(parts: Parts): Parts {
@@ -406,77 +454,173 @@ export function coalesceAdjacentTextParts(parts: Parts): Parts {
   return result
 }
 
-export function editableSegmentsFromParts(parts: Parts): MessageEditSegment[] {
-  return coalesceAdjacentTextParts(parts).flatMap((part) =>
-    part.type === "text" || part.type === "reasoning"
-      ? [{ type: part.type, text: part.text }]
-      : []
-  )
+export function canEditMessage(status: MessageStatus, _parts?: Parts): boolean {
+  return status !== "awaiting_input"
 }
 
 /**
- * Rebuild parts from a coalesced walk: text/reasoning take the matching edit,
- * tools and attachments are cloned in place. Adjacent original text parts
- * become one text part.
+ * Turn live or authored parts into a durable document. Incomplete tool
+ * argument streams cannot be stored; tools that never ran become cancelled
+ * records instead of executable calls.
  */
-export function applyMessageEdits(
-  original: Parts,
-  edits: readonly MessageEditSegment[]
-): Parts {
-  const coalesced = coalesceAdjacentTextParts(original)
-  const expected = coalesced.filter(
-    (part): part is TextPart | ReasoningPart =>
-      part.type === "text" || part.type === "reasoning"
-  )
-  if (edits.length !== expected.length) {
-    throw new Error("Edit does not match this message")
-  }
-  for (const [index, part] of expected.entries()) {
-    if (edits[index]?.type !== part.type) {
-      throw new Error("Edit does not match this message")
-    }
-  }
-  if (
-    !edits.some((segment) => segment.type === "text" && segment.text.trim())
-  ) {
-    throw new Error("Message is required")
-  }
+export function durableAuthoredParts(parts: Parts): Parts {
   const next: Parts = []
-  let editIndex = 0
-  for (const part of coalesced) {
-    if (part.type === "text" || part.type === "reasoning") {
-      const text = edits[editIndex++]!.text
-      if (text) next.push({ type: part.type, text })
+  for (const part of parts) {
+    if (part.type !== "tool-invocation") {
+      next.push(part)
+      continue
+    }
+    if (part.state === "input-streaming") continue
+    if (part.state === "input-available") {
+      next.push({
+        ...part,
+        state: "output-error",
+        errorText: "Cancelled before the tool ran.",
+      })
       continue
     }
     next.push(part)
   }
-  return next
+  return dropEmptyTextLikeParts(next)
 }
 
-export function canEditMessageParts(
-  status: MessageStatus,
-  parts: Parts
-): boolean {
-  if (status === "streaming" || status === "awaiting_input") return false
-  if (partsHavePendingClientTools(parts)) return false
-  return editableSegmentsFromParts(parts).some(
-    (segment) => segment.type === "text"
+export function uniqueAttachmentReferences(
+  references: AttachmentReference[]
+): AttachmentReference[] {
+  const seen = new Set<string>()
+  return references.filter((reference) => {
+    const key =
+      reference.kind === "mcp-resource"
+        ? `${reference.kind}\u0000${reference.profileId}\u0000${reference.uri}`
+        : `${reference.kind}\u0000${reference.id}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+export function uploadedAttachmentId(
+  part: Extract<Part, { type: "attachment" }>
+) {
+  return part.content.kind === "binary" || part.content.kind === "document"
+    ? part.content.attachmentId
+    : undefined
+}
+
+export const EDITOR_PART_TYPES = [
+  "text",
+  "reasoning",
+  "tool-invocation",
+] as const
+export type EditorPartType = (typeof EDITOR_PART_TYPES)[number]
+export type ConversationAuthorRole = Extract<MessageRole, "user" | "assistant">
+
+export function editorPartTypesForRole(
+  role: ConversationAuthorRole
+): EditorPartType[] {
+  return role === "user" ? ["text"] : ["text", "reasoning", "tool-invocation"]
+}
+
+export function createEditorPart(type: EditorPartType): Part {
+  if (type === "text") return { type: "text", text: "" }
+  if (type === "reasoning") return { type: "reasoning", text: "" }
+  return {
+    type: "tool-invocation",
+    toolCallId: crypto.randomUUID(),
+    toolName: "tool",
+    state: "output-available",
+    input: {},
+  }
+}
+
+export function toolRecordJson(part: ToolInvocationPart): string {
+  return JSON.stringify(
+    {
+      toolName: part.toolName,
+      toolCallId: part.toolCallId,
+      state: part.state,
+      input: part.input,
+      ...(part.output !== undefined ? { output: part.output } : {}),
+      ...(part.errorText ? { errorText: part.errorText } : {}),
+    },
+    null,
+    2
   )
 }
 
-/** User messages edit via the composer: text and/or attachments. */
-export function canEditUserComposer(
-  status: MessageStatus,
-  parts: Parts
-): boolean {
-  if (status === "streaming" || status === "awaiting_input") return false
-  if (partsHavePendingClientTools(parts)) return false
-  return (
-    editableSegmentsFromParts(parts).some(
-      (segment) => segment.type === "text"
-    ) || parts.some((part) => part.type === "attachment")
-  )
+export function convertPart(part: Part, to: EditorPartType): Part {
+  if (part.type === to) return part
+  if (part.type === "attachment") return part
+  if (to === "tool-invocation") {
+    return createEditorPart("tool-invocation")
+  }
+  const text =
+    part.type === "tool-invocation"
+      ? `\`\`\`json\n${toolRecordJson(part)}\n\`\`\``
+      : part.text
+  return { type: to, text }
+}
+
+export function convertPartsToRole(
+  parts: Parts,
+  role: ConversationAuthorRole
+): Parts {
+  if (role === "assistant") {
+    const next = parts.filter((part) => part.type !== "attachment")
+    return next.length > 0 ? next : [{ type: "text", text: "" }]
+  }
+  const chunks: string[] = []
+  for (const part of parts) {
+    if (part.type === "text" || part.type === "reasoning") {
+      if (part.text.trim()) chunks.push(part.text)
+      continue
+    }
+    if (part.type === "tool-invocation") {
+      chunks.push(`\`\`\`json\n${toolRecordJson(part)}\n\`\`\``)
+    }
+  }
+  return [{ type: "text", text: chunks.join("\n\n") }]
+}
+
+export function roleConversionLosses(
+  parts: Parts,
+  from: ConversationAuthorRole,
+  to: ConversationAuthorRole
+): string[] {
+  if (from === to) return []
+  if (to === "assistant") {
+    const count = parts.filter((part) => part.type === "attachment").length
+    return count > 0
+      ? [
+          count === 1
+            ? "1 attachment will be removed."
+            : `${count} attachments will be removed.`,
+        ]
+      : []
+  }
+  const losses: string[] = []
+  const reasoning = parts.filter((part) => part.type === "reasoning").length
+  const tools = parts.filter((part) => part.type === "tool-invocation").length
+  const extras = parts.length > 1
+  if (extras)
+    losses.push("Blocks will collapse into a single text message.")
+  if (reasoning)
+    losses.push("Reasoning becomes ordinary text.")
+  if (tools)
+    losses.push(
+      tools === 1
+        ? "1 tool record will be inlined as JSON text."
+        : `${tools} tool records will be inlined as JSON text.`
+    )
+  return losses
+}
+
+export function dropEmptyTextLikeParts(parts: Parts): Parts {
+  return parts.filter((part) => {
+    if (part.type === "text" || part.type === "reasoning")
+      return part.text.length > 0
+    return true
+  })
 }
 
 /** Build text/reasoning-only parts from stream partials (tool-free path). */

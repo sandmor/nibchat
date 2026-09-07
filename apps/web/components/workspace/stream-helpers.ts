@@ -18,7 +18,7 @@ import {
 export type StreamRequestInput =
   | {
       chatId: string
-      intent: "continue"
+      intent: "submit"
       parentNodeId?: string | null
       content: string
       attachments?: AttachmentReference[]
@@ -29,6 +29,12 @@ export type StreamRequestInput =
       chatId: string
       intent: "regenerate"
       assistantNodeId: string
+    }
+  | {
+      chatId: string
+      intent: "generate"
+      parentNodeId?: string | null
+      attachSelection?: boolean
     }
   | {
       chatId: string
@@ -98,7 +104,10 @@ export function shouldSoftFollow(
 ): boolean {
   if (!isViewingChat(body.chatId, selectedChatId, pathname)) return false
   const tipId = path.at(-1)?.id ?? null
-  if (body.intent === "continue") {
+  if (body.intent === "submit") {
+    return tipId === (body.parentNodeId ?? null)
+  }
+  if (body.intent === "generate") {
     return tipId === (body.parentNodeId ?? null)
   }
   // regenerate / resume: original assistant still visible on the active path

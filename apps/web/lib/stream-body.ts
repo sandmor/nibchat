@@ -10,7 +10,7 @@ const timeZoneSchema = z
 
 export const streamBodySchema = z.discriminatedUnion("intent", [
   z.object({
-    intent: z.literal("continue"),
+    intent: z.literal("submit"),
     chatId: z.string().min(1),
     parentNodeId: z.string().nullish(),
     content: z.string(),
@@ -26,6 +26,14 @@ export const streamBodySchema = z.discriminatedUnion("intent", [
     intent: z.literal("regenerate"),
     chatId: z.string().min(1),
     assistantNodeId: z.string().min(1),
+    timeZone: timeZoneSchema,
+  }),
+  z.object({
+    intent: z.literal("generate"),
+    chatId: z.string().min(1),
+    /** The selected context message. Null starts from an empty conversation. */
+    parentNodeId: z.string().nullish(),
+    attachSelection: z.boolean().optional(),
     timeZone: timeZoneSchema,
   }),
   z.object({

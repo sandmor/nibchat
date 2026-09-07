@@ -81,6 +81,8 @@ import { type MessageEditorBindings } from "./message"
 import { ContextPreviewProvider } from "./context-preview"
 import {
   composerSlotId,
+  clearSubmittedComposerDraft,
+  authoredPartsFromSession,
   hasComposerDraft,
   isEditorSending,
   messageEditNodeIdsForChat,
@@ -124,7 +126,12 @@ import {
 import type { GenerationTerminalPayload } from "@/lib/generation-streams/events"
 import { prepareStaticMarkdown } from "@/lib/static-markdown"
 import { normalizeLatexDelimiters } from "@/lib/normalize-latex-delimiters"
-import { coalesceAdjacentTextParts } from "@/lib/agent/parts"
+import {
+  coalesceAdjacentTextParts,
+  durableAuthoredParts,
+  isEmptyParts,
+  messagePartsSchema,
+} from "@/lib/agent/parts"
 
 type Props = {
   mode: "draft" | "chat"
@@ -163,13 +170,6 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const clearSessionChat = useConversationSessionStore(
     (state) => state.clearChat
   )
-  const restoreLinearDraft = (text: string, pending: ComposerAttachment[]) => {
-    const current = readComposerDraft(linearComposerSlot)
-    updateSessionDraft(linearComposerSlot, {
-      text: current.text || text,
-      attachments: current.attachments.length ? current.attachments : pending,
-    })
-  }
   const [viewer, setViewer] = useState<{ src: string; name: string } | null>(
     null
   )
@@ -183,6 +183,9 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const [draftPromptStackId, setDraftPromptStackId] = useState<string | null>(
     null
   )
+  const [treeComposerRoles, setTreeComposerRoles] = useState<
+    Record<string, "user" | "assistant">
+  >({})
   const [inFlightCount, setInFlightCount] = useState(0)
   const [viewState, setViewState] = useState<ChatViewState>(() =>
     readChatViewState(initial.chat?.view_state_json)
@@ -233,7 +236,6 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       const sessions = useConversationSessionStore.getState().sessions
       for (const [slot, session] of Object.entries(sessions)) {
         if (!slot.startsWith(prefix)) continue
-        if (session.kind !== "user-turn") continue
         for (const attachment of session.attachments) {
           if (attachment.previewUrl)
             revokeComposerPreviewUrl(attachment.previewUrl)
@@ -283,6 +285,14 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     if (boundChatIdentityRef.current === chatIdentity) return
     const previous = boundChatIdentityRef.current
     boundChatIdentityRef.current = chatIdentity
+    // A soft navigation to /chat/new starts a genuinely new draft. Do not
+    // let the previous chat id make ensureChatId reuse that conversation;
+    // ensureChatId writes a newly-created id back here for the duration of the
+    // draft handoff.
+    if (chatIdentity === "draft" && previous !== "draft") {
+      selectedChatIdRef.current = null
+      setPendingChatId(null)
+    }
     setScrollTargetId(null)
     if (previous) {
       const previousChatId = previous === "draft" ? null : previous
@@ -306,7 +316,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const stopStream = useStreamStore((state) => state.stop)
   const settleStream = useStreamStore((state) => state.settle)
   const finishStream = useStreamStore((state) => state.finish)
-  /** Placement only. Token text lives in buffers; StreamingBubble reads those. */
+  /** Placement only. Token text lives in buffers; Message reads those. */
   const streamMetas = useStreamStore((state) => state.streams)
   const stoppingBuffers = useStreamStore(
     useShallow((state) => collectStoppingBuffers(state.streams, state.buffers))
@@ -419,10 +429,14 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     [applyStreamEnd, finishStream, queryClient, trpc.workspace.get]
   )
 
-  const workspaceKeyInput = workspaceInput(selectedChatId)
+  // A first submission creates its chat before the route transition commits.
+  // Query that durable chat during the handoff; never seed its key with the
+  // draft route's intentionally empty initial workspace.
+  const workspaceChatId = selectedChatId ?? pendingChatId
+  const workspaceKeyInput = workspaceInput(workspaceChatId)
   const workspaceQuery = useQuery({
     ...trpc.workspace.get.queryOptions(workspaceKeyInput),
-    initialData: initial,
+    ...(workspaceChatId === selectedChatId ? { initialData: initial } : {}),
   })
 
   // Shell already loaded providers; re-query stays warm without a page parallel fetch.
@@ -438,6 +452,14 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       workspace,
     [stoppingBuffers, streamMetas, workspace]
   )
+  useEffect(() => {
+    // Draft routes can be reused by the App Router without changing the
+    // component identity. Once the pending create has been handed off, an
+    // empty draft must never inherit the last visited chat id.
+    if (mode === "draft" && pendingChatId === null && !data.chat) {
+      selectedChatIdRef.current = null
+    }
+  }, [data.chat, mode, pendingChatId])
   const providers = providersQuery.data ?? chromeProviders
   const knownChats = data.chats
 
@@ -520,6 +542,12 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
 
   const createChatMutation = useMutation(
     trpc.workspace.createChat.mutationOptions()
+  )
+  const createMessageMutation = useMutation(
+    trpc.workspace.createMessage.mutationOptions()
+  )
+  const forkMessagePartsMutation = useMutation(
+    trpc.workspace.forkMessageParts.mutationOptions()
   )
 
   const surfacesQuery = useQuery(
@@ -816,10 +844,10 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       streamId = response.headers.get("X-Nibchat-Generation-Id") ?? streamId
       attachController(streamId, controller)
       const parentHeader = response.headers.get("X-Nibchat-Parent-Node")
-      const userNodeId = response.headers.get("X-Nibchat-User-Node")
+      const userNodeId = response.headers.get("X-Nibchat-Submitted-Node")
       // Prefer structural parent from the server; fall back to request body.
       const parentNodeId =
-        parentHeader ?? (body.intent === "continue" ? userNodeId : null)
+        parentHeader ?? (body.intent === "submit" ? userNodeId : null)
       startStream(streamId, {
         nodeId,
         chatId: body.chatId,
@@ -1008,61 +1036,78 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     return tip.id
   }, [activePath])
 
-  async function streamContinue() {
+  async function streamSubmit() {
     const { text, attachments } = readComposerDraft(linearComposerSlot)
     const content = text.trim()
-    if (!content && attachments.length === 0) return
+    const generateOnly = !content && attachments.length === 0
     if (attachments.some((attachment) => attachment.uploading)) return
     if (!ensureModelReady(activeModelConfig)) return
 
     const contextLeafId = composerParentId
     const modelConfig = activeModelConfig
     const pendingAttachments = [...attachments]
-    updateSessionDraft(linearComposerSlot, { text: "", attachments: [] })
 
     let ensuredId: string | null = null
     let created = false
-    let replaced = false
     try {
       const ensured = await ensureChatId(modelConfig)
       ensuredId = ensured.chatId
       created = ensured.created
       // Start the stream before URL replace so remount sees Zustand state.
-      const started = await runStream(
-        {
-          chatId: ensuredId,
-          intent: "continue",
-          parentNodeId: created ? null : contextLeafId,
-          content,
-          ...(pendingAttachments.length
-            ? { attachments: pendingAttachments.map((item) => item.reference) }
-            : {}),
-        },
+      await runStream(
+        generateOnly
+          ? {
+              chatId: ensuredId,
+              intent: "generate",
+              parentNodeId: created ? null : contextLeafId,
+              attachSelection: true,
+            }
+          : {
+              chatId: ensuredId,
+              intent: "submit",
+              parentNodeId: created ? null : contextLeafId,
+              content,
+              attachSelection: true,
+              ...(pendingAttachments.length
+                ? {
+                    attachments: pendingAttachments.map(
+                      (item) => item.reference
+                    ),
+                  }
+                : {}),
+            },
         {
           modelConfig,
-          onStreamStarted: created
-            ? () => {
-                replaced = true
-                router.replace(`/chat/${ensuredId}`)
-              }
-            : undefined,
+          onStreamStarted: () => {
+            if (!generateOnly)
+              updateSessionDraft(
+                linearComposerSlot,
+                clearSubmittedComposerDraft(
+                  readComposerDraft(linearComposerSlot),
+                  text,
+                  pendingAttachments
+                )
+              )
+            if (created) {
+              // Let the originating click finish before the route transition
+              // replaces the draft composer. A response can arrive during
+              // the click's stability window, which otherwise detaches the
+              // Send button and makes Playwright (and real pointer users)
+              // retry against a disabled node.
+              setTimeout(() => {
+                if (aliveRef.current) router.replace(`/chat/${ensuredId}`)
+              }, 50)
+            }
+          },
         }
       )
-      if (!started && aliveRef.current)
-        restoreLinearDraft(content, pendingAttachments)
     } catch (error) {
       if (aliveRef.current) {
-        restoreLinearDraft(content, pendingAttachments)
         toast.error(
           error instanceof Error
             ? error.message
             : "Could not start conversation"
         )
-      }
-    } finally {
-      // If create succeeded but stream never started, still leave draft URL.
-      if (created && ensuredId && !replaced && aliveRef.current) {
-        router.replace(`/chat/${ensuredId}`)
       }
     }
   }
@@ -1259,13 +1304,66 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   }
 
   async function streamTreeSend(parentNodeId: string | null) {
-    if (!data.chat || !ensureModelReady(activeModelConfig)) return false
+    if (!data.chat) return false
     const slot = treeSlot(parentNodeId)
     const draft = readComposerDraft(slot)
     const content = draft.text.trim()
-    if (!content && draft.attachments.length === 0) return false
     if (draft.attachments.some((attachment) => attachment.uploading))
       return false
+    const role = treeComposerRoles[parentNodeId ?? "root"] ?? "user"
+    if (!content && draft.attachments.length === 0) {
+      if (role !== "user") return false
+      if (!ensureModelReady(activeModelConfig)) return false
+      const treeChatId = data.chat.id
+      return new Promise<boolean>((resolve) => {
+        let started = false
+        let settled = false
+        const finish = (ok: boolean) => {
+          if (settled) return
+          settled = true
+          resolve(ok)
+        }
+        void runStream(
+          {
+            chatId: treeChatId,
+            intent: "generate",
+            parentNodeId,
+          },
+          {
+            suppressSelectionFollow: true,
+            onStreamStarted: () => {
+              started = true
+              closeTreeDraft(parentNodeId, "sent")
+              finish(true)
+            },
+          }
+        ).then(() => finish(started))
+      })
+    }
+    if (role === "assistant") {
+      if (draft.attachments.length) {
+        toast.error("Assistant messages cannot contain attachments.")
+        return false
+      }
+      try {
+        await createMessageMutation.mutateAsync({
+          chatId: data.chat.id,
+          parentId: parentNodeId,
+          role,
+          parts: [{ type: "text", text: content }],
+          attachSelection: false,
+        })
+        updateSessionDraft(slot, { text: "", attachments: [] })
+        await invalidateWorkspace()
+        return true
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Could not save message"
+        )
+        return false
+      }
+    }
+    if (!ensureModelReady(activeModelConfig)) return false
     const treeChatId = data.chat.id
     const pendingAttachments = [...draft.attachments]
     updateSessionDraft(slot, {
@@ -1285,7 +1383,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       void runStream(
         {
           chatId: treeChatId,
-          intent: "continue",
+          intent: "submit",
           parentNodeId,
           content,
           ...(pendingAttachments.length
@@ -1328,13 +1426,18 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     if (!data.chat || !ensureModelReady(activeModelConfig)) return false
     const slot = messageEditSlotId(node.chat_id, node.id)
     if (isEditorSending(slot)) return false
-    const draft = readComposerDraft(slot)
-    const content = draft.text.trim()
-    if (!content && draft.attachments.length === 0) return false
-    if (draft.attachments.some((attachment) => attachment.uploading))
+    const session = useConversationSessionStore.getState().sessions[slot]
+    if (!session || session.role !== "user") return false
+    const authored = authoredPartsFromSession(session)
+    const parts = durableAuthoredParts(authored.parts)
+    if (isEmptyParts(parts) && authored.attachments.length === 0)
+      return false
+    if (parts.length > 0 && !messagePartsSchema.safeParse(parts).success)
+      return false
+    if (session.attachments.some((attachment) => attachment.uploading))
       return false
     const chatId = data.chat.id
-    const pendingAttachments = [...draft.attachments]
+    const pendingAttachments = [...session.attachments]
     setSessionSending(slot, true)
     updateSessionDraft(slot, {
       attachments: pendingAttachments.map((item) => ({
@@ -1342,46 +1445,55 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
         claimed: true,
       })),
     })
-    return new Promise<boolean>((resolve) => {
+    let persisted = false
+    try {
+      const forked = await forkMessagePartsMutation.mutateAsync({
+        nodeId: node.id,
+        parts,
+        attachments: authored.attachments,
+        role: "user",
+        attachSelection: view === "linear",
+      })
+      persisted = true
+      // The authored branch is durable now; close the editor before starting
+      // generation so a retry cannot fork the same draft again.
+      closeMessageEdit(node, "sent")
       let started = false
-      let settled = false
-      const finish = (ok: boolean) => {
-        if (settled) return
-        settled = true
-        resolve(ok)
-      }
-      void runStream(
+      await runStream(
         {
           chatId,
-          intent: "continue",
-          parentNodeId: node.parent_id,
-          content,
-          editedFromNodeId: node.id,
-          ...(view === "linear" ? { attachSelection: true } : {}),
-          ...(pendingAttachments.length
-            ? {
-                attachments: pendingAttachments.map((item) => item.reference),
-              }
-            : {}),
+          intent: "generate",
+          parentNodeId: forked.id,
+          attachSelection: view === "linear",
         },
         {
           suppressSelectionFollow: true,
           onStreamStarted: () => {
             started = true
           },
-          onWorkspaceReady: () => {
-            closeMessageEdit(node, "sent")
-            finish(true)
+          onWorkspaceReady: async ({ assistantNodeId }) => {
+            if (view === "linear")
+              await selectPathMutation.mutateAsync({
+                chatId,
+                nodeId: assistantNodeId,
+              })
           },
         }
-      ).then(() => {
-        if (!started) {
-          updateSessionDraft(slot, { attachments: pendingAttachments })
-        }
-        if (hasComposerDraft(slot)) setSessionSending(slot, false)
-        finish(started)
-      })
-    })
+      )
+      if (!started) throw new Error("Generation did not start")
+      return true
+    } catch (error) {
+      if (!persisted)
+        updateSessionDraft(slot, {
+          attachments: pendingAttachments,
+        })
+      toast.error(
+        error instanceof Error ? error.message : "Could not save and generate"
+      )
+      return false
+    } finally {
+      if (hasComposerDraft(slot)) setSessionSending(slot, false)
+    }
   }
 
   async function streamTreeRegenerate(assistantNodeId: string) {
@@ -1508,6 +1620,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     animate: animate && transition.duration > 0,
     onSend: streamEditSend,
     onCancel: (node) => closeMessageEdit(node),
+    onFinishEdit: closeMessageEdit,
     onFiles: (slot, files) => void uploadFiles(slot, files),
     onRemoveAttachment: (slot, part) => removeAttachment(slot, part),
     onPreview: (src, name) => setViewer({ src, name }),
@@ -1668,40 +1781,62 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
               onSendDraft={streamTreeSend}
               renderComposer={(anchor, options) => {
                 const slot = treeSlot(anchor)
+                const role = treeComposerRoles[anchor ?? "root"] ?? "user"
                 return (
-                  <SessionMessageEditor
-                    slot={slot}
-                    variant="inline"
-                    autoFocus={options.autoFocus}
-                    submitting={options.submitting}
-                    animate={animate && transition.duration > 0}
-                    placeholder={
-                      anchor
-                        ? "Take this conversation somewhere new…"
-                        : "Start a new root…"
-                    }
-                    mcpAvailable={mcpAvailableForGeneration}
-                    streaming={options.submitting}
-                    showContextPreview
-                    contextParentId={anchor}
-                    onSend={options.onSend}
-                    onCancel={() => closeTreeDraft(anchor)}
-                    onFiles={(files) => void uploadFiles(slot, files)}
-                    onRemoveAttachment={(part) => removeAttachment(slot, part)}
-                    onPreview={(src, name) => setViewer({ src, name })}
-                    onOpenResources={() => {
-                      setPickerSlot(slot)
-                      setResourcePickerOpen(true)
-                    }}
-                    onOpenPrompts={() => {
-                      setPickerSlot(slot)
-                      setPromptPickerOpen(true)
-                    }}
-                    onStop={() =>
-                      streamsForActiveChat.forEach(([id]) => stopStream(id))
-                    }
-                    onRevealContextMessage={setScrollTargetId}
-                  />
+                  <div>
+                    <ComposerRoleToggle
+                      className="mb-1"
+                      value={role}
+                      onChange={(candidate) =>
+                        setTreeComposerRoles((current) => ({
+                          ...current,
+                          [anchor ?? "root"]: candidate,
+                        }))
+                      }
+                    />
+                    <SessionMessageEditor
+                      slot={slot}
+                      variant="inline"
+                      autoFocus={options.autoFocus}
+                      submitting={options.submitting}
+                      animate={animate && transition.duration > 0}
+                      placeholder={
+                        role === "user"
+                          ? anchor
+                            ? "Take this conversation somewhere new…"
+                            : "Start a new root…"
+                          : "Write an assistant message…"
+                      }
+                      mcpAvailable={
+                        role === "user" && mcpAvailableForGeneration
+                      }
+                      allowAttachments={role === "user"}
+                      streaming={options.submitting}
+                      showContextPreview
+                      contextParentId={anchor}
+                      sendLabel={role === "user" ? "Send" : "Save"}
+                      allowEmptySend={role === "user"}
+                      onSend={options.onSend}
+                      onCancel={() => closeTreeDraft(anchor)}
+                      onFiles={(files) => void uploadFiles(slot, files)}
+                      onRemoveAttachment={(part) =>
+                        removeAttachment(slot, part)
+                      }
+                      onPreview={(src, name) => setViewer({ src, name })}
+                      onOpenResources={() => {
+                        setPickerSlot(slot)
+                        setResourcePickerOpen(true)
+                      }}
+                      onOpenPrompts={() => {
+                        setPickerSlot(slot)
+                        setPromptPickerOpen(true)
+                      }}
+                      onStop={() =>
+                        streamsForActiveChat.forEach(([id]) => stopStream(id))
+                      }
+                      onRevealContextMessage={setScrollTargetId}
+                    />
+                  </div>
                 )
               }}
               onOpenDraft={openTreeDraft}
@@ -1757,10 +1892,12 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
                 animate={animate && transition.duration > 0}
                 placeholder="Message Nibchat…"
                 mcpAvailable={mcpAvailableForGeneration}
+                allowAttachments
                 streaming={streamsForActiveChat.length > 0}
                 showContextPreview
                 contextParentId={composerParentId}
-                onSend={() => void streamContinue()}
+                sendLabel="Send"
+                onSend={() => void streamSubmit()}
                 onFiles={(files) => void uploadFiles(linearComposerSlot, files)}
                 onRemoveAttachment={(part) =>
                   removeAttachment(linearComposerSlot, part)
@@ -1997,5 +2134,31 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
         </Dialog>
       </section>
     </ContextPreviewProvider>
+  )
+}
+
+function ComposerRoleToggle({
+  value,
+  onChange,
+  className,
+}: {
+  value: "user" | "assistant"
+  onChange: (role: "user" | "assistant") => void
+  className?: string
+}) {
+  return (
+    <div className={cn("flex gap-1", className)}>
+      {(["user", "assistant"] as const).map((role) => (
+        <Button
+          key={role}
+          type="button"
+          size="xs"
+          variant={value === role ? "secondary" : "ghost"}
+          onClick={() => onChange(role)}
+        >
+          {role === "user" ? "User" : "Assistant"}
+        </Button>
+      ))}
+    </div>
   )
 }

@@ -273,6 +273,72 @@ export function ThemeDocumentEditor({
         </div>
       </div>
 
+      <div className="grid gap-3 sm:grid-cols-2">
+        {(["user", "assistant"] as const).map((role) => {
+          const layout = draft.messageLayout[role]
+          return (
+            <div key={role} className="grid grid-cols-2 gap-2">
+              <Label className="col-span-2 capitalize">{role} messages</Label>
+              <div className="grid gap-1">
+                <Label className="text-xs text-muted-foreground">Align</Label>
+                <Select
+                  value={layout.align}
+                  onValueChange={(value) => {
+                    if (
+                      value !== "left" &&
+                      value !== "center" &&
+                      value !== "right"
+                    )
+                      return
+                    applyDocument({
+                      ...draft,
+                      messageLayout: {
+                        ...draft.messageLayout,
+                        [role]: { ...layout, align: value },
+                      },
+                    })
+                  }}
+                >
+                  <SelectTrigger size="sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="left">Left</SelectItem>
+                    <SelectItem value="center">Center</SelectItem>
+                    <SelectItem value="right">Right</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-1">
+                <Label className="text-xs text-muted-foreground">
+                  Max width %
+                </Label>
+                <Input
+                  type="number"
+                  min={20}
+                  max={100}
+                  value={layout.maxWidthPercent}
+                  onChange={(event) => {
+                    const width = Math.max(
+                      20,
+                      Math.min(100, Number(event.target.value) || 20)
+                    )
+                    applyDocument({
+                      ...draft,
+                      messageLayout: {
+                        ...draft.messageLayout,
+                        [role]: { ...layout, maxWidthPercent: width },
+                      },
+                    })
+                  }}
+                  aria-label={`${role} message maximum width percent`}
+                />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
       <div>
         <Label className="mb-2 block text-xs text-muted-foreground">
           Palette

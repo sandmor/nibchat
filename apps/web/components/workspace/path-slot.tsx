@@ -10,7 +10,6 @@
 import type { NodeRow } from "@/lib/types"
 import type { ProviderSummary } from "./types"
 import { Message, type MessageEditorBindings } from "./message"
-import { StreamingBubble } from "./streaming-bubble"
 import { SlotCrossfade } from "./slot-crossfade"
 import {
   transcriptRowContentKey,
@@ -45,33 +44,28 @@ export function PathSlot({
   ) => void | Promise<void>
   editor?: MessageEditorBindings
 }) {
-  const liveStreamId = row.liveStreamId
-
   return (
     <SlotCrossfade
       contentKey={transcriptRowContentKey(row)}
       animate={animate}
       transition={transition}
     >
-      {liveStreamId ? (
-        <StreamingBubble streamId={liveStreamId} />
-      ) : (
-        <Message
-          node={row.node}
-          nodes={nodes}
-          providers={providers}
-          messageActionCaptions={messageActionCaptions}
-          onSelect={onSelect}
-          onChanged={onChanged}
-          onRegenerate={
-            row.node.role === "assistant"
-              ? () => onRegenerate(row.node.id)
-              : undefined
-          }
-          onAnswerTools={onAnswerTools}
-          editor={editor}
-        />
-      )}
+      <Message
+        node={row.node}
+        nodes={nodes}
+        providers={providers}
+        messageActionCaptions={messageActionCaptions}
+        onSelect={onSelect}
+        onChanged={onChanged}
+        onRegenerate={
+          row.node.role === "assistant"
+            ? () => onRegenerate(row.node.id)
+            : undefined
+        }
+        onAnswerTools={onAnswerTools}
+        editor={editor}
+        streamId={row.liveStreamId}
+      />
     </SlotCrossfade>
   )
 }

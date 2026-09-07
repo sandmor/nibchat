@@ -35,6 +35,9 @@ export function EditorShell({
   expandable = true,
   expanded = false,
   onToggleExpanded,
+  onReplace,
+  replaceLabel,
+  replaceDisabled,
 }: {
   variant?: "docked" | "inline"
   submitting?: boolean
@@ -57,6 +60,9 @@ export function EditorShell({
   expandable?: boolean
   expanded?: boolean
   onToggleExpanded?: () => void
+  onReplace?: () => void
+  replaceLabel?: string
+  replaceDisabled?: boolean
 }) {
   const inline = variant === "inline"
   return (
@@ -139,6 +145,17 @@ export function EditorShell({
                 className="size-4"
               />
               Stop
+            </Button>
+          ) : null}
+          {onReplace ? (
+            <Button
+              type="button"
+              variant="outline"
+              size={inline ? "xs" : "sm"}
+              onClick={onReplace}
+              disabled={replaceDisabled ?? sendDisabled}
+            >
+              {replaceLabel ?? "Replace"}
             </Button>
           ) : null}
           <Button

@@ -18,6 +18,11 @@ export type MockCompletionPlan = {
    */
   hold?: boolean
   /**
+   * After emitting text, wait for `release()` before the stop chunk so the
+   * client can interact with a populated in-flight message.
+   */
+  holdAfterText?: boolean
+  /**
    * When set, the response finishes with `tool_calls` instead of text stop.
    * Text is still emitted first when non-empty.
    */
@@ -135,18 +140,43 @@ export async function startMockLlm(): Promise<MockLlm> {
 
       if (plan.hold) {
         await new Promise<void>((resolve) => {
-          releaseWaiters.push(resolve)
+          const release = () => {
+            const index = releaseWaiters.indexOf(release)
+            if (index !== -1) releaseWaiters.splice(index, 1)
+            res.off("close", release)
+            resolve()
+          }
+          releaseWaiters.push(release)
+          res.once("close", release)
         })
       }
+
+      if (res.destroyed) return
 
       // Role chunk then content (matches common OpenAI streaming shape).
       writeChunk(res, { role: "assistant", content: "" })
       if (plan.text) {
         for (const part of chunkText(plan.text, 12)) {
+          if (res.destroyed) return
           writeChunk(res, { content: part })
           await sleep(8)
         }
       }
+
+      if (plan.holdAfterText) {
+        await new Promise<void>((resolve) => {
+          const release = () => {
+            const index = releaseWaiters.indexOf(release)
+            if (index !== -1) releaseWaiters.splice(index, 1)
+            res.off("close", release)
+            resolve()
+          }
+          releaseWaiters.push(release)
+          res.once("close", release)
+        })
+      }
+
+      if (res.destroyed) return
 
       if (plan.toolCalls?.length) {
         for (const [index, call] of plan.toolCalls.entries()) {
@@ -163,6 +193,7 @@ export async function startMockLlm(): Promise<MockLlm> {
             ],
           })
           for (const part of chunkText(args, 40)) {
+            if (res.destroyed) return
             writeChunk(res, {
               tool_calls: [
                 {
@@ -206,6 +237,10 @@ export async function startMockLlm(): Promise<MockLlm> {
     close: () =>
       new Promise((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()))
+        // A failed test may never release its stream. Teardown must close those
+        // sockets too; server.close() alone waits for active responses forever.
+        server.closeAllConnections()
+        for (const release of [...releaseWaiters]) release()
       }),
   }
 }

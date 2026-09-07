@@ -17,6 +17,7 @@ export async function POST(request: Request) {
       filename: attachment.filename,
       mediaType: attachment.media_type,
       byteSize: attachment.byte_size,
+      sha256: attachment.sha256,
     })
   } catch (error) {
     return jsonError(error, "File upload failed")

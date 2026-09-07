@@ -1,13 +1,11 @@
 "use client"
 
 import { memo, useCallback, useMemo, useRef } from "react"
-import type { Parts } from "@/lib/types"
 import {
   useComposerDraft,
   useEditorSending,
   useConversationSessionStore,
   useEditorSession,
-  useMessageEdit,
   type ComposerAttachment,
 } from "../conversation-session-store"
 import type { EditorPlacement, EditorPurpose } from "./layout"
@@ -22,6 +20,8 @@ export type SessionMessageEditorProps = {
   purpose?: EditorPurpose
   placement?: EditorPlacement
   mcpAvailable?: boolean
+  /** Assistant-authored messages cannot contain attachments. */
+  allowAttachments?: boolean
   streaming?: boolean
   submitting?: boolean
   animate?: boolean
@@ -37,7 +37,10 @@ export type SessionMessageEditorProps = {
   onOpenPrompts?: () => void
   onStop?: () => void
   onRevealContextMessage?: (nodeId: string) => void
-  sourceParts?: Parts
+  onReplace?: () => void
+  onConvertRole?: (role: "user" | "assistant") => void
+  /** Compose-only. Empty Send starts a generation without inserting a user turn. */
+  allowEmptySend?: boolean
   overlayNodeId?: string
 }
 
@@ -58,14 +61,16 @@ export function SessionMessageEditor(props: SessionMessageEditorProps) {
       purpose={props.purpose}
       placement={props.placement}
       mcpAvailable={props.mcpAvailable}
+      allowAttachments={props.allowAttachments}
       streaming={props.streaming}
       submitting={props.submitting}
       animate={props.animate}
       showContextPreview={props.showContextPreview}
       contextParentId={props.contextParentId}
       sendLabel={props.sendLabel}
-      sourceParts={props.sourceParts}
       overlayNodeId={props.overlayNodeId}
+      allowEmptySend={props.allowEmptySend}
+      canReplace={Boolean(props.onReplace)}
       latestRef={latestRef}
     />
   )
@@ -79,53 +84,55 @@ const SessionMessageEditorLeaf = memo(function SessionMessageEditorLeaf({
   purpose,
   placement,
   mcpAvailable,
+  allowAttachments,
   streaming,
   submitting,
   animate,
   showContextPreview,
   contextParentId,
   sendLabel,
-  sourceParts,
   overlayNodeId,
+  allowEmptySend,
+  canReplace,
   latestRef,
 }: {
   slot: string
-  placeholder: string
+  placeholder?: string
   autoFocus?: boolean
   variant?: SessionMessageEditorProps["variant"]
   purpose?: EditorPurpose
   placement?: EditorPlacement
   mcpAvailable?: boolean
+  allowAttachments?: boolean
   streaming?: boolean
   submitting?: boolean
   animate?: boolean
   showContextPreview?: boolean
   contextParentId?: string | null
   sendLabel?: string
-  sourceParts?: Parts
   overlayNodeId?: string
+  allowEmptySend?: boolean
+  canReplace?: boolean
   latestRef: { current: SessionMessageEditorProps }
 }) {
   const session = useEditorSession(slot)
   const draft = useComposerDraft(slot)
-  const edits = useMessageEdit(slot)
   const slotSending = useEditorSending(slot)
   const update = useConversationSessionStore((state) => state.update)
-  const updatePartsSegment = useConversationSessionStore(
-    (state) => state.updatePartsSegment
-  )
+  const replacePart = useConversationSessionStore((state) => state.replacePart)
+  const insertPart = useConversationSessionStore((state) => state.insertPart)
+  const removePart = useConversationSessionStore((state) => state.removePart)
+  const movePart = useConversationSessionStore((state) => state.movePart)
+  const convertRole = useConversationSessionStore((state) => state.convertRole)
   const onTextChange = useCallback(
     (text: string) => update(slot, { text }),
     [slot, update]
-  )
-  const onSegmentChange = useCallback(
-    (index: number, text: string) => updatePartsSegment(slot, index, text),
-    [slot, updatePartsSegment]
   )
   const actions = useMemo(
     () => ({
       onSend: () => latestRef.current.onSend(),
       onCancel: () => latestRef.current.onCancel?.(),
+      onReplace: () => latestRef.current.onReplace?.(),
       onFiles: (files: File[] | FileList) => latestRef.current.onFiles?.(files),
       onRemoveAttachment: (part: ComposerAttachment) =>
         latestRef.current.onRemoveAttachment?.(part),
@@ -136,29 +143,54 @@ const SessionMessageEditorLeaf = memo(function SessionMessageEditorLeaf({
       onStop: () => latestRef.current.onStop?.(),
       onRevealContextMessage: (nodeId: string) =>
         latestRef.current.onRevealContextMessage?.(nodeId),
+      onConvertRole: (role: "user" | "assistant") => {
+        const current =
+          useConversationSessionStore.getState().sessions[slot]
+        const dropped =
+          role === "assistant" && current
+            ? current.attachments.filter((item) => !item.claimed)
+            : []
+        convertRole(slot, role)
+        for (const attachment of dropped) {
+          latestRef.current.onRemoveAttachment?.(attachment)
+        }
+        latestRef.current.onConvertRole?.(role)
+      },
     }),
-    [latestRef]
+    [latestRef, convertRole, slot]
   )
   const busy = Boolean(submitting) || slotSending
+  const editSession = purpose === "edit" ? session : null
 
-  if (session?.kind === "parts") {
-    if (!sourceParts || !overlayNodeId) return null
+  if (editSession) {
     return (
       <PartsEditor
         key={slot}
-        parts={sourceParts}
-        edits={edits}
-        overlayNodeId={overlayNodeId}
+        role={editSession.role}
+        parts={editSession.parts}
+        keys={editSession.keys}
+        attachments={editSession.attachments}
+        overlayNodeId={overlayNodeId ?? slot}
         variant={variant}
         placement={placement}
         submitting={busy}
         animate={animate}
         showContextPreview={showContextPreview}
         sendLabel={sendLabel}
-        onEditChange={onSegmentChange}
+        allowAttachments={
+          allowAttachments !== false && editSession.role === "user"
+        }
+        onReplacePart={(index, part) => replacePart(slot, index, part)}
+        onInsertPart={(index, part) => insertPart(slot, index, part)}
+        onRemovePart={(index) => removePart(slot, index)}
+        onMovePart={(from, to) => movePart(slot, from, to)}
+        onConvertRole={actions.onConvertRole}
         onSend={actions.onSend}
         onCancel={actions.onCancel}
+        onReplace={canReplace ? actions.onReplace : undefined}
         onRevealContextMessage={actions.onRevealContextMessage}
+        onFiles={actions.onFiles}
+        onRemoveAttachment={actions.onRemoveAttachment}
       />
     )
   }
@@ -167,18 +199,20 @@ const SessionMessageEditorLeaf = memo(function SessionMessageEditorLeaf({
     <UserTurnEditor
       key={slot}
       draft={draft}
-      placeholder={placeholder}
+      placeholder={placeholder ?? ""}
       autoFocus={autoFocus}
       variant={variant}
       purpose={purpose}
       placement={placement}
       mcpAvailable={Boolean(mcpAvailable)}
+      allowAttachments={allowAttachments !== false}
       streaming={streaming}
       submitting={busy}
       animate={animate}
       showContextPreview={showContextPreview}
       contextParentId={contextParentId}
       sendLabel={sendLabel}
+      allowEmptySend={allowEmptySend}
       onTextChange={onTextChange}
       onSend={actions.onSend}
       onCancel={actions.onCancel}

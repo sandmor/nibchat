@@ -21,11 +21,21 @@ describe("applySchema", () => {
       notnull: number
       dflt_value: string | null
     }>
+    expect(columns.map((column) => column.name)).toEqual(
+      expect.arrayContaining(["sort_key", "revision", "excluded_from_context"])
+    )
     expect(columns).toContainEqual(
       expect.objectContaining({
         name: "excluded_from_context",
         notnull: 1,
         dflt_value: "false",
+      })
+    )
+    expect(columns).toContainEqual(
+      expect.objectContaining({
+        name: "revision",
+        notnull: 1,
+        dflt_value: "0",
       })
     )
     await db.selectFrom("provider_profiles").select("id").limit(1).execute()

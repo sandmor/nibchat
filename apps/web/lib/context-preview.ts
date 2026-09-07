@@ -283,7 +283,7 @@ export type AssembleContextPreviewInput = {
   /** Time represented by the preview. Defaults to the assembly time. */
   now?: Date
   /**
-   * Simulate the sibling `forkEdit` would insert at this node's path
+   * Simulate the sibling an authored edit would insert at this node's path
    * position: edited parts, owner-edited provenance, complete and included.
    */
   overlay?: ContextPreviewOverlay

@@ -16,6 +16,8 @@ const node = (
   chat_id: "chat",
   parent_id,
   selected_child_id,
+  sort_key: 0,
+  revision: 0,
   role: "user",
   parts_json: "[]",
   search_text: "",
@@ -39,18 +41,18 @@ describe("tree navigation", () => {
       "a1",
     ])
   })
-  it("uses the first chronological child when there is no explicit selection", () => {
+  it("uses the earliest sibling when there is no explicit selection", () => {
     const nodes = [
-      { ...node("root", null, null), created_at: "1" },
-      { ...node("later", "root", null), created_at: "3" },
-      { ...node("first", "root", null), created_at: "2" },
+      node("root", null, null),
+      { ...node("later", "root", null), sort_key: 2048 },
+      { ...node("first", "root", null), sort_key: 1024 },
     ]
     expect(resolveActivePath(nodes, "root").map((item) => item.id)).toEqual([
       "root",
       "first",
     ])
   })
-  it("keeps an explicit branch over the chronological fallback", () => {
+  it("keeps an explicit branch over sibling order", () => {
     const nodes = [
       node("root", null, "later"),
       { ...node("first", "root", null), created_at: "1" },
@@ -64,6 +66,10 @@ describe("tree navigation", () => {
   it("resolves ancestors without normalizing roles", () => {
     const nodes = [node("root", null, "a"), node("a", "root", null)]
     expect(ancestorPath(nodes, "a").map((n) => n.id)).toEqual(["root", "a"])
+  })
+  it("fails fast on cyclic ancestor links", () => {
+    const nodes = [node("a", "b", null), node("b", "a", null)]
+    expect(() => ancestorPath(nodes, "a")).toThrow("cycle")
   })
   it("does not put reasoning into searchable text", () =>
     expect(

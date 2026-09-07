@@ -1,3 +1,4 @@
+import { siblingSort } from "@/lib/sort-key"
 import type { NodeRow } from "@/lib/types"
 
 export type TreeRect = { x: number; y: number; width: number; height: number }
@@ -64,7 +65,7 @@ type LayoutOptions = {
   sizes?: ReadonlyMap<string, number>
 }
 
-/** Same sibling grouping layoutChatTree uses: created_at, then id. */
+/** Same sibling grouping layoutChatTree uses: durable order, then stable ties. */
 function groupedTreeChildren(
   nodes: readonly NodeRow[]
 ): Map<string | null, NodeRow[]> {
@@ -74,17 +75,13 @@ function groupedTreeChildren(
     list.push(node)
     children.set(node.parent_id, list)
   }
-  for (const list of children.values())
-    list.sort(
-      (a, b) =>
-        a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)
-    )
+  for (const list of children.values()) list.sort(siblingSort)
   return children
 }
 
 /**
  * Message node ids in preorder: parent, then children left-to-right by
- * created_at then id. Uses the same sibling/root grouping as layoutChatTree.
+ * sort_key. Uses the same sibling/root grouping as layoutChatTree.
  * Plus-node controls are excluded. Preorder is the Find hit order for
  * off-path nodes.
  */

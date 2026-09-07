@@ -5,7 +5,7 @@ describe("streamBodySchema", () => {
   it("accepts retained MCP snapshot references", () => {
     expect(
       streamBodySchema.parse({
-        intent: "continue",
+        intent: "submit",
         chatId: "chat-1",
         timeZone: "America/Bogota",
         content: "",
@@ -19,13 +19,13 @@ describe("streamBodySchema", () => {
           },
         ],
       })
-    ).toMatchObject({ intent: "continue" })
+    ).toMatchObject({ intent: "submit" })
   })
 
   it("rejects client-supplied attachment snapshots", () => {
     expect(
       streamBodySchema.safeParse({
-        intent: "continue",
+        intent: "submit",
         chatId: "chat-1",
         timeZone: "America/Bogota",
         content: "",
@@ -45,7 +45,8 @@ describe("streamBodySchema", () => {
 
   it("accepts an optional browser time zone on every stream intent", () => {
     for (const input of [
-      { intent: "continue", chatId: "chat-1", content: "Hi" },
+      { intent: "submit", chatId: "chat-1", content: "Hi" },
+      { intent: "generate", chatId: "chat-1", parentNodeId: "u1" },
       { intent: "regenerate", chatId: "chat-1", assistantNodeId: "a1" },
       {
         intent: "resume",
@@ -65,14 +66,14 @@ describe("streamBodySchema", () => {
   it("requires a supported browser time zone", () => {
     expect(
       streamBodySchema.safeParse({
-        intent: "continue",
+        intent: "submit",
         chatId: "chat-1",
         content: "Hi",
       }).success
     ).toBe(false)
     expect(
       streamBodySchema.safeParse({
-        intent: "continue",
+        intent: "submit",
         chatId: "chat-1",
         content: "Hi",
         timeZone: "Mars/Olympus",

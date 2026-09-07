@@ -137,7 +137,7 @@ test.describe("chat tree invariants", () => {
     await sendMessage(page, "to be deleted")
     await expectAssistantText(page, "DELETE_ME_PARENT")
 
-    // Follow-up under the tip → held assistant stream (StreamingBubble has no Delete).
+    // Follow-up under the tip → held assistant stream.
     await sendMessage(page, "spawn held child")
     await expect(streamingMarkers(page)).toBeVisible({ timeout: 15_000 })
 

@@ -28,7 +28,6 @@ import type { ChatViewCamera } from "@/lib/chat-view-state"
 import type { ProviderSummary } from "./types"
 import { ComposeSlot, TreeHandoff, TreePlaque } from "./tree-card"
 import { Message, type MessageEditorBindings } from "./message"
-import { StreamingBubble } from "./streaming-bubble"
 import { collectHandoffs, uniqueHandoffAnchors } from "./tree-handoff"
 import {
   ROOT_ADD_ID,
@@ -948,14 +947,7 @@ export function ChatTree({
                   Off path
                 </span>
               ) : null}
-              {streamId && live ? (
-                <StreamingBubble
-                  streamId={streamId}
-                  animate={animate}
-                  transition={forestTransition}
-                  presentation="tree"
-                />
-              ) : paint === "stub" ? (
+              {paint === "stub" ? (
                 <div
                   className={cn(
                     "h-full w-full rounded-xl border",
@@ -977,6 +969,7 @@ export function ChatTree({
                   onRegenerate={onRegenerate}
                   onAnswerTools={onAnswerTools}
                   editor={editor}
+                  streamId={streamId}
                 />
               )}
             </motion.div>
@@ -1320,6 +1313,7 @@ const TreeMessage = memo(function TreeMessage({
   onRegenerate,
   onAnswerTools,
   editor,
+  streamId,
 }: {
   node: NodeRow
   nodes: NodeRow[]
@@ -1332,6 +1326,7 @@ const TreeMessage = memo(function TreeMessage({
     results: Array<{ toolCallId: string; output: unknown }>
   ) => void
   editor?: MessageEditorBindings
+  streamId?: string
 }) {
   return (
     <Message
@@ -1347,6 +1342,7 @@ const TreeMessage = memo(function TreeMessage({
       }
       onAnswerTools={onAnswerTools}
       editor={editor}
+      streamId={streamId}
     />
   )
 })

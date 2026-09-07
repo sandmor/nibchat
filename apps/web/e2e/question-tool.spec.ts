@@ -92,7 +92,7 @@ test.describe("question tool", () => {
     })
     // Toolful turns hide free-text edit; user messages may still offer it.
     await expect(
-      assistant.getByRole("button", { name: "Edit as branch" })
+      assistant.getByRole("button", { name: "Edit", exact: true })
     ).toHaveCount(0)
     await expect(page.getByText("waiting for input")).toBeVisible()
 
@@ -143,6 +143,66 @@ test.describe("question tool", () => {
     await expect(
       transcript.getByText("Unanswered", { exact: true })
     ).toBeVisible()
+  })
+
+  test("edits question copy on the questionnaire widget", async () => {
+    await openNewChat(page)
+
+    llm.enqueue(
+      {
+        text: "I have a question for you.",
+        toolCalls: [questionToolCall],
+      },
+      { text: "QUESTION_DONE_WITH_ANSWERS" }
+    )
+
+    await sendMessage(page, "Please ask me something")
+    await expect(streamingMarkers(page)).toHaveCount(0, { timeout: 30_000 })
+    await expect(
+      page.getByText("What should the agent build next?")
+    ).toBeVisible({ timeout: 15_000 })
+
+    await chooseAnswer(page, /Tool timeline \(Recommended\)/)
+    await page.getByRole("button", { name: /Submit answers|Submit/i }).click()
+    await expectAssistantText(page, "QUESTION_DONE_WITH_ANSWERS", {
+      timeout: 30_000,
+    })
+
+    const toolArticle = presentTranscript(page)
+      .locator("article")
+      .filter({ has: page.getByText("Questions answered") })
+      .last()
+    await toolArticle.getByRole("button", { name: "Edit", exact: true }).click()
+
+    const prompt = page.getByRole("textbox", { name: "Question prompt" })
+    await expect(prompt).toBeVisible()
+    await expect(page.getByRole("textbox", { name: "Choice label" })).toHaveCount(
+      2
+    )
+    await expect(page.getByPlaceholder("Type another answer…")).toBeVisible()
+
+    await prompt.fill("What should we ship first?")
+    await page.getByRole("button", { name: "Add option" }).click()
+    await expect(page.getByRole("textbox", { name: "Choice label" })).toHaveCount(
+      3
+    )
+
+    await page.getByRole("button", { name: "Save branch" }).click()
+    await expect(prompt).toHaveCount(0)
+
+    await presentTranscript(page)
+      .locator("article")
+      .filter({ has: page.getByText("Questions answered") })
+      .last()
+      .getByRole("button", { name: "Edit", exact: true })
+      .click()
+    await expect(
+      page.getByRole("textbox", { name: "Question prompt" })
+    ).toHaveValue("What should we ship first?")
+    await expect(page.getByRole("textbox", { name: "Choice label" })).toHaveCount(
+      3
+    )
+    await page.getByRole("button", { name: "Cancel" }).click()
   })
 
   test("awaiting question survives tab close and continues after reopening", async () => {

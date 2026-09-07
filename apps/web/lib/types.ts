@@ -141,6 +141,11 @@ export interface MessageNodesTable {
   chat_id: string
   parent_id: string | null
   selected_child_id: string | null
+  /** Durable sibling/root order. Structural operations may reorder without
+   * falsifying message creation time. */
+  sort_key: number
+  /** Optimistic-concurrency revision for destructive replacement. */
+  revision: number
   role: MessageRole
   parts_json: string
   search_text: string

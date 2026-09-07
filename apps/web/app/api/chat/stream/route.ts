@@ -6,8 +6,8 @@ import {
 import {
   applyToolOutputs,
   pendingToolInvocations,
-  reuseMcpAttachmentSnapshots,
   textFromParts,
+  uniqueAttachmentReferences,
 } from "@/lib/agent/parts"
 import {
   answersFromResumeOutput,
@@ -16,13 +16,14 @@ import {
 } from "@/lib/agent/tools"
 import { requireUser } from "@/lib/app-session"
 import {
-  createTurn,
   getTitleModelConfig,
   maybeAssignChatTitle,
   nodeParts,
   loadEditSourceUserNode,
   resolveStackForChat,
   startRegenerate,
+  startGeneration,
+  submitUserTurn,
 } from "@/lib/chat-service"
 import { db } from "@/lib/db"
 import { parseJson } from "@/lib/domain"
@@ -37,12 +38,11 @@ import {
   selectedProtocolFor,
   type ModelConfig,
 } from "@/lib/providers"
-import { resolveMcpResourceAttachment } from "@/lib/mcp"
-import { resolveUploadedAttachments } from "@/lib/attachments"
+import { resolveConversationAttachments } from "@/lib/conversation-attachments"
 import { assertPdfFallbackAvailable } from "@/lib/pdf-input"
 import { streamBodySchema } from "@/lib/stream-body"
 import { firstTurnTitleAction } from "@/lib/chat-title"
-import type { AttachmentReference, NodeRow, Parts } from "@/lib/types"
+import type { NodeRow, Parts } from "@/lib/types"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -112,7 +112,7 @@ export async function POST(request: Request) {
         }) => Promise<void>)
       | undefined
 
-    if (body.intent === "continue") {
+    if (body.intent === "submit") {
       const message = body.content.trim()
       const references = uniqueAttachmentReferences(body.attachments ?? [])
       if (!message && references.length === 0)
@@ -128,36 +128,33 @@ export async function POST(request: Request) {
             )
           )
         : []
-      const { reused, unresolved } = reuseMcpAttachmentSnapshots(
+      const attachments = await resolveConversationAttachments({
+        userId: user.id,
+        references,
         sourceParts,
-        references
-      )
-      const attachments = [
-        ...reused,
-        ...(await Promise.all(
-          unresolved.map((reference) => resolveMcpResourceAttachment(reference))
-        )),
-        ...(await resolveUploadedAttachments(user.id, references)),
-      ]
+      })
       if ((await pdfInputModeFor(user.id, config)) === "extracted")
         assertPdfFallbackAvailable(attachments)
-      const turn = await createTurn({
-        userId: user.id,
-        chatId: chat.id,
-        parentId,
-        content: message,
-        attachments,
-        assistantMetadata: assistantMeta,
-        generationId,
-        attachSelection: body.attachSelection,
-      })
-      assistant = turn.assistant
-      contextLeafId = turn.user.id
+      const { user: userMessage, assistant: generationAssistant } =
+        await submitUserTurn({
+          userId: user.id,
+          chatId: chat.id,
+          parentId,
+          parts: [
+            ...attachments,
+            ...(message ? [{ type: "text" as const, text: message }] : []),
+          ],
+          generationId,
+          assistantMetadata: assistantMeta,
+          attachSelection: body.attachSelection,
+        })
+      assistant = generationAssistant
+      contextLeafId = userMessage.id
       headers = {
         ...(assistant.parent_id
           ? { "X-Nibchat-Parent-Node": assistant.parent_id }
           : {}),
-        "X-Nibchat-User-Node": turn.user.id,
+        "X-Nibchat-Submitted-Node": userMessage.id,
       }
       const attachmentNames = attachments.map((part) => part.name)
       const titleModelConfigured =
@@ -188,6 +185,22 @@ export async function POST(request: Request) {
             allowLlm: outcome === "complete",
           })
         }
+      }
+    } else if (body.intent === "generate") {
+      const result = await startGeneration({
+        userId: user.id,
+        chatId: chat.id,
+        parentId: body.parentNodeId ?? null,
+        generationId,
+        assistantMetadata: assistantMeta,
+        attachSelection: body.attachSelection,
+      })
+      assistant = result.assistant
+      contextLeafId = result.contextLeafId
+      headers = {
+        ...(assistant.parent_id
+          ? { "X-Nibchat-Parent-Node": assistant.parent_id }
+          : {}),
       }
     } else if (body.intent === "regenerate") {
       const result = await startRegenerate(
@@ -416,17 +429,4 @@ function parseGenerationConfig(value: unknown): ModelConfig | undefined {
     typeof config.model === "string"
     ? config
     : undefined
-}
-
-function uniqueAttachmentReferences(references: AttachmentReference[]) {
-  const seen = new Set<string>()
-  return references.filter((reference) => {
-    const key =
-      reference.kind === "mcp-resource"
-        ? `${reference.kind}\u0000${reference.profileId}\u0000${reference.uri}`
-        : `${reference.kind}\u0000${reference.id}`
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
 }

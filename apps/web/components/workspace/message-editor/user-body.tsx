@@ -44,6 +44,7 @@ export function UserTurnEditor({
   autoFocus,
   variant = "docked",
   mcpAvailable,
+  allowAttachments = true,
   streaming,
   submitting = false,
   animate = true,
@@ -62,12 +63,14 @@ export function UserTurnEditor({
   sendLabel = "Send",
   purpose = "compose",
   placement = "linear",
+  allowEmptySend,
 }: {
   draft: ComposerDraft
   placeholder: string
   autoFocus?: boolean
   variant?: "docked" | "inline"
   mcpAvailable: boolean
+  allowAttachments?: boolean
   streaming?: boolean
   submitting?: boolean
   animate?: boolean
@@ -86,6 +89,7 @@ export function UserTurnEditor({
   sendLabel?: string
   purpose?: EditorPurpose
   placement?: EditorPlacement
+  allowEmptySend?: boolean
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [mcpMenuOpen, setMcpMenuOpen] = useState(false)
@@ -99,9 +103,12 @@ export function UserTurnEditor({
   const inline = variant === "inline"
   const sendDisabled =
     submitting ||
-    (!draft.text.trim() && draft.attachments.length === 0) ||
-    draft.attachments.some((attachment) => attachment.uploading)
+    draft.attachments.some((attachment) => attachment.uploading) ||
+    ((purpose !== "compose" || allowEmptySend === false) &&
+      !draft.text.trim() &&
+      draft.attachments.length === 0)
   const send = () => {
+    if (sendDisabled) return
     if (expandable) setExpanded(false)
     onSend()
   }
@@ -127,7 +134,8 @@ export function UserTurnEditor({
         event.preventDefault()
         dropDepthRef.current = 0
         setDropActive(false)
-        if (event.dataTransfer.files.length) onFiles(event.dataTransfer.files)
+        if (allowAttachments && event.dataTransfer.files.length)
+          onFiles(event.dataTransfer.files)
       }}
       contextPreview={
         showContextPreview ? (
@@ -141,23 +149,25 @@ export function UserTurnEditor({
       }
       footerStart={
         <>
-          <WithTooltip label="Attach file">
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-xs"
-              className="size-7"
-              aria-label="Attach file"
-              disabled={submitting}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <HugeiconsIcon
-                icon={AttachmentIcon}
-                strokeWidth={2}
-                className="size-3.5"
-              />
-            </Button>
-          </WithTooltip>
+          {allowAttachments ? (
+            <WithTooltip label="Attach file">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                className="size-7"
+                aria-label="Attach file"
+                disabled={submitting}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <HugeiconsIcon
+                  icon={AttachmentIcon}
+                  strokeWidth={2}
+                  className="size-3.5"
+                />
+              </Button>
+            </WithTooltip>
+          ) : null}
           {showMcp ? (
             <Popover open={mcpMenuOpen} onOpenChange={setMcpMenuOpen}>
               <PopoverTrigger
@@ -245,7 +255,7 @@ export function UserTurnEditor({
         type="file"
         accept="image/jpeg,image/png,image/webp,image/gif,application/pdf,.pdf"
         multiple
-        disabled={submitting}
+        disabled={submitting || !allowAttachments}
         className="sr-only"
         onChange={(event) => {
           if (event.target.files) onFiles(event.target.files)
@@ -362,6 +372,7 @@ export function UserTurnEditor({
         onSend={send}
         onCancel={onCancel}
         onFiles={onFiles}
+        allowAttachments={allowAttachments}
         onCollapse={() => setExpanded(false)}
       />
     </EditorShell>
@@ -382,6 +393,7 @@ function UserTurnField({
   onSend,
   onCancel,
   onFiles,
+  allowAttachments,
   onCollapse,
 }: {
   autoFocus?: boolean
@@ -397,6 +409,7 @@ function UserTurnField({
   onSend: () => void
   onCancel?: () => void
   onFiles: (files: File[] | FileList) => void
+  allowAttachments: boolean
   onCollapse: () => void
 }) {
   const fieldRef = useRef<HTMLTextAreaElement>(null)
@@ -467,7 +480,7 @@ function UserTurnField({
         aria-label={placeholder}
         onPaste={(event) => {
           const files = Array.from(event.clipboardData.files)
-          if (files.length) {
+          if (allowAttachments && files.length) {
             event.preventDefault()
             onFiles(files)
           }

@@ -1,13 +1,12 @@
 import { describe, expect, it } from "vitest"
 import {
   allPendingResultsReady,
-  applyMessageEdits,
   attachmentModelText,
   attachmentPartSchema,
   applyToolOutputs,
-  canEditMessageParts,
+  canEditMessage,
   coalesceAdjacentTextParts,
-  editableSegmentsFromParts,
+  durableAuthoredParts,
   hasToolInvocations,
   partsHavePendingClientTools,
   pendingToolInvocations,
@@ -15,11 +14,17 @@ import {
   conversationFindTextFromParts,
   searchTextFromParts,
   textFromParts,
+  convertPart,
+  convertPartsToRole,
+  createEditorPart,
+  roleConversionLosses,
   upsertToolInvocation,
 } from "@/lib/agent/parts"
 import { buildModelMessages } from "@/lib/agent/build-messages"
 import {
   formatQuestionResult,
+  questionInputDraft,
+  questionInputSchema,
   validateQuestionAnswers,
 } from "@/lib/agent/tools/question-shared"
 import type { NodeRow, Parts } from "@/lib/types"
@@ -370,50 +375,11 @@ describe("parts helpers", () => {
       original[3],
       { type: "text", text: "world" },
     ])
-    expect(editableSegmentsFromParts(original)).toEqual([
-      { type: "reasoning", text: "plan" },
-      { type: "text", text: "Hello" },
-      { type: "text", text: "world" },
-    ])
+    expect(canEditMessage("complete", original)).toBe(true)
+    expect(canEditMessage("streaming", original)).toBe(true)
+    expect(canEditMessage("awaiting_input", original)).toBe(false)
     expect(
-      applyMessageEdits(original, [
-        { type: "reasoning", text: "  revised  " },
-        { type: "text", text: "Hi" },
-        { type: "text", text: "there" },
-      ])
-    ).toEqual([
-      { type: "reasoning", text: "  revised  " },
-      { type: "text", text: "Hi" },
-      original[3],
-      { type: "text", text: "there" },
-    ])
-    expect(
-      applyMessageEdits(original, [
-        { type: "reasoning", text: "\n  plan\n" },
-        { type: "text", text: "  ```ts\n  code\n  ```\n" },
-        { type: "text", text: "\n next\n" },
-      ])
-    ).toEqual([
-      { type: "reasoning", text: "\n  plan\n" },
-      { type: "text", text: "  ```ts\n  code\n  ```\n" },
-      original[3],
-      { type: "text", text: "\n next\n" },
-    ])
-    expect(() =>
-      applyMessageEdits(original, [{ type: "text", text: "only" }])
-    ).toThrow("Edit does not match this message")
-    expect(() =>
-      applyMessageEdits(original, [
-        { type: "reasoning", text: "plan" },
-        { type: "text", text: "   " },
-        { type: "text", text: "" },
-      ])
-    ).toThrow("Message is required")
-    expect(canEditMessageParts("complete", original)).toBe(true)
-    expect(canEditMessageParts("streaming", original)).toBe(false)
-    expect(canEditMessageParts("awaiting_input", original)).toBe(false)
-    expect(
-      canEditMessageParts("complete", [
+      canEditMessage("complete", [
         {
           type: "tool-invocation",
           toolCallId: "c1",
@@ -423,7 +389,64 @@ describe("parts helpers", () => {
         },
         { type: "text", text: "hi" },
       ])
-    ).toBe(false)
+    ).toBe(true)
+    expect(
+      canEditMessage("complete", [
+        {
+          type: "tool-invocation",
+          toolCallId: "c1",
+          toolName: "web_search",
+          state: "output-available",
+          input: {},
+          output: "ok",
+        },
+      ])
+    ).toBe(true)
+    expect(
+      durableAuthoredParts([
+        { type: "text", text: "hello" },
+        {
+          type: "tool-invocation",
+          toolCallId: "pending",
+          toolName: "lookup",
+          state: "input-streaming",
+          input: {},
+        },
+        {
+          type: "tool-invocation",
+          toolCallId: "ready",
+          toolName: "lookup",
+          state: "input-available",
+          input: { q: "x" },
+        },
+        {
+          type: "tool-invocation",
+          toolCallId: "done",
+          toolName: "lookup",
+          state: "output-available",
+          input: { q: "y" },
+          output: "ok",
+        },
+      ])
+    ).toEqual([
+      { type: "text", text: "hello" },
+      {
+        type: "tool-invocation",
+        toolCallId: "ready",
+        toolName: "lookup",
+        state: "output-error",
+        errorText: "Cancelled before the tool ran.",
+        input: { q: "x" },
+      },
+      {
+        type: "tool-invocation",
+        toolCallId: "done",
+        toolName: "lookup",
+        state: "output-available",
+        input: { q: "y" },
+        output: "ok",
+      },
+    ])
   })
 
   it("promotes aborted/complete to awaiting_input when client tools are pending", () => {
@@ -462,6 +485,8 @@ describe("buildModelMessages", () => {
       chat_id: "c",
       parent_id: null,
       selected_child_id: null,
+      sort_key: 0,
+      revision: 0,
       role,
       parts_json: JSON.stringify(parts),
       search_text: "",
@@ -699,5 +724,102 @@ describe("buildModelMessages", () => {
         },
       })
     ).toContain("[Truncated from 12000000 characters.]")
+  })
+})
+
+describe("editor part conversion", () => {
+  const tool = {
+    type: "tool-invocation" as const,
+    toolCallId: "c1",
+    toolName: "lookup",
+    state: "output-available" as const,
+    input: { q: "hi" },
+    output: "ok",
+  }
+
+  it("converts text, reasoning, and tool records without dropping tool data", () => {
+    expect(convertPart({ type: "text", text: "hello" }, "reasoning")).toEqual({
+      type: "reasoning",
+      text: "hello",
+    })
+    expect(convertPart({ type: "reasoning", text: "plan" }, "text")).toEqual({
+      type: "text",
+      text: "plan",
+    })
+    const asText = convertPart(tool, "text")
+    expect(asText.type).toBe("text")
+    if (asText.type === "text") {
+      expect(asText.text).toContain("lookup")
+      expect(asText.text).toContain("```json")
+    }
+    expect(convertPart({ type: "text", text: "x" }, "tool-invocation").type).toBe(
+      "tool-invocation"
+    )
+    expect(createEditorPart("text")).toEqual({ type: "text", text: "" })
+  })
+
+  it("collapses assistant documents to one user text part and strips attachments for assistant", () => {
+    const mixed: Parts = [
+      { type: "reasoning", text: "plan" },
+      { type: "text", text: "hello" },
+      tool,
+    ]
+    const asUser = convertPartsToRole(mixed, "user")
+    expect(asUser).toHaveLength(1)
+    expect(asUser[0]).toMatchObject({ type: "text" })
+    if (asUser[0]?.type === "text") {
+      expect(asUser[0].text).toContain("plan")
+      expect(asUser[0].text).toContain("hello")
+      expect(asUser[0].text).toContain("lookup")
+    }
+    expect(
+      convertPartsToRole(
+        [
+          { type: "text", text: "ask" },
+          {
+            type: "attachment",
+            id: "a1",
+            name: "file.png",
+            source: { kind: "upload" },
+            content: {
+              kind: "binary",
+              attachmentId: "a1",
+              mediaType: "image/png",
+              byteSize: 1,
+              sha256: "a".repeat(64),
+            },
+          },
+        ],
+        "assistant"
+      )
+    ).toEqual([{ type: "text", text: "ask" }])
+    expect(roleConversionLosses(mixed, "assistant", "user").length).toBeGreaterThan(
+      0
+    )
+  })
+
+  it("round-trips question widget input through the shared schema", () => {
+    expect(
+      questionInputSchema.parse({
+        questions: [
+          {
+            question: "Which approach?",
+            header: "Approach",
+            options: [{ label: "A", description: "Do A" }],
+            multiple: false,
+            custom: true,
+          },
+        ],
+      }).questions
+    ).toHaveLength(1)
+    expect(
+      questionInputDraft({
+        questions: [{ question: "Q", options: [{ label: "A" }] }],
+      }).questions[0]
+    ).toMatchObject({
+      question: "Q",
+      header: "",
+      options: [{ label: "A", description: "" }],
+    })
   })
 })

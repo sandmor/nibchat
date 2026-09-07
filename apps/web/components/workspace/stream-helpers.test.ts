@@ -22,6 +22,8 @@ function node(id: string): NodeRow {
     role: "user",
     status: "complete",
     selected_child_id: null,
+    sort_key: 0,
+    revision: 0,
     parts_json: "[]",
     search_text: "",
     metadata_json: "{}",
@@ -71,7 +73,7 @@ describe("shouldSoftFollow", () => {
     const body: StreamRequestBody = {
       chatId: "c1",
       timeZone: "America/Bogota",
-      intent: "continue",
+      intent: "submit",
       parentNodeId: null,
       content: "hi",
     }
@@ -82,7 +84,7 @@ describe("shouldSoftFollow", () => {
     const body: StreamRequestBody = {
       chatId: "c1",
       timeZone: "America/Bogota",
-      intent: "continue",
+      intent: "submit",
       parentNodeId: null,
       content: "hi",
     }
@@ -93,9 +95,22 @@ describe("shouldSoftFollow", () => {
     const body: StreamRequestBody = {
       chatId: "c1",
       timeZone: "America/Bogota",
-      intent: "continue",
+      intent: "submit",
       parentNodeId: "u1",
       content: "hi",
+    }
+    expect(shouldSoftFollow(body, [node("u1")], "c1", "/chat/c1")).toBe(true)
+    expect(shouldSoftFollow(body, [node("other")], "c1", "/chat/c1")).toBe(
+      false
+    )
+  })
+
+  it("soft-follows generate when tip is still the parent", () => {
+    const body: StreamRequestBody = {
+      chatId: "c1",
+      timeZone: "America/Bogota",
+      intent: "generate",
+      parentNodeId: "u1",
     }
     expect(shouldSoftFollow(body, [node("u1")], "c1", "/chat/c1")).toBe(true)
     expect(shouldSoftFollow(body, [node("other")], "c1", "/chat/c1")).toBe(
@@ -151,7 +166,11 @@ describe("readStreamEvents", () => {
         {
           type: "terminal",
           result: "complete",
-          node: { ...node("a1"), role: "assistant", parts_json: '[{"type":"text","text":"done"}]' },
+          node: {
+            ...node("a1"),
+            role: "assistant",
+            parts_json: '[{"type":"text","text":"done"}]',
+          },
         },
       ]),
       { onEvent: () => {} }
@@ -479,11 +498,12 @@ describe("followGenerationStream", () => {
   })
 
   it("stops reconnecting as soon as it receives a terminal event", async () => {
-    const fetch = vi.fn(async () =>
-      new Response(
-        sseBody([{ type: "terminal", result: "complete", node: null }]),
-        { status: 200 }
-      )
+    const fetch = vi.fn(
+      async () =>
+        new Response(
+          sseBody([{ type: "terminal", result: "complete", node: null }]),
+          { status: 200 }
+        )
     )
     vi.stubGlobal("fetch", fetch)
     const result = await followGenerationStream({

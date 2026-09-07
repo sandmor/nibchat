@@ -10,6 +10,7 @@ import {
 
 import {
   createChat,
+  createMessage,
   createPromptStack,
   createProvider,
   finishSetup,
@@ -18,7 +19,9 @@ import {
   deletePromptStack,
   deleteProvider,
   duplicatePromptStack,
-  forkEdit,
+  forkMessageParts,
+  moveNode,
+  replaceMessage,
   getInstanceSettings,
   getWorkspace,
   listPromptStacks,
@@ -55,7 +58,11 @@ import {
   refreshMcpCatalog,
   updateMcpProfile,
 } from "@/lib/mcp"
-import { messageEditSegmentSchema } from "@/lib/agent/parts"
+import {
+  attachmentReferenceSchema,
+  messagePartSchema,
+  type Parts,
+} from "@/lib/agent/parts"
 import { setUserThemeMode, setBuiltInToolsPrefs } from "@/lib/user-settings"
 import { chatViewStateSchema } from "@/lib/chat-view-state"
 import { providerConnectionConfigSchema } from "@/lib/provider-config"
@@ -353,20 +360,90 @@ export const appRouter = t.router({
           mapError(error)
         }
       }),
-    forkEdit: userProcedure
+    forkMessageParts: userProcedure
       .input(
         z.object({
           nodeId: z.string(),
-          edits: z.array(messageEditSegmentSchema).min(1),
+          parts: z.array(messagePartSchema),
+          attachments: z.array(attachmentReferenceSchema).max(20).optional(),
+          role: z.enum(["user", "assistant"]).optional(),
           attachSelection: z.boolean().optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
         try {
-          const node = await forkEdit(ctx.user.id, input.nodeId, input.edits, {
+          return await forkMessageParts({
+            userId: ctx.user.id,
+            nodeId: input.nodeId,
+            parts: input.parts as Parts,
+            attachments: input.attachments,
+            role: input.role,
             attachSelection: input.attachSelection,
           })
-          return { ok: true, node }
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    createMessage: userProcedure
+      .input(
+        z.object({
+          chatId: z.string(),
+          parentId: z.string().nullable(),
+          beforeNodeId: z.string().optional(),
+          role: z.enum(["user", "assistant"]),
+          parts: z.array(messagePartSchema),
+          attachments: z.array(attachmentReferenceSchema).max(20).optional(),
+          attachSelection: z.boolean().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await createMessage({
+            ...input,
+            userId: ctx.user.id,
+            parts: input.parts as Parts,
+          })
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    replaceMessage: userProcedure
+      .input(
+        z.object({
+          nodeId: z.string(),
+          parts: z.array(messagePartSchema),
+          attachments: z.array(attachmentReferenceSchema).max(20).optional(),
+          role: z.enum(["user", "assistant"]).optional(),
+          expectedRevision: z.number().int().nonnegative().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await replaceMessage({
+            userId: ctx.user.id,
+            nodeId: input.nodeId,
+            parts: input.parts as Parts,
+            attachments: input.attachments,
+            role: input.role,
+            expectedRevision: input.expectedRevision,
+          })
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    moveNode: userProcedure
+      .input(
+        z.object({
+          nodeId: z.string(),
+          destinationParentId: z.string().nullable(),
+          beforeNodeId: z.string().optional(),
+          subtree: z.boolean(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          await moveNode({ ...input, userId: ctx.user.id })
+          return { ok: true }
         } catch (error) {
           mapError(error)
         }

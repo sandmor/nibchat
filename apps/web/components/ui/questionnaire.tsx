@@ -101,22 +101,32 @@ function QuestionnaireChoices({
 function QuestionnaireChoice({
   children,
   className,
+  readOnly = false,
   ...props
-}: React.ComponentProps<typeof QuestionnairePrimitive.Choice>) {
+}: React.ComponentProps<typeof QuestionnairePrimitive.Choice> & {
+  /** Skip the answering overlay so nested fields can be edited. */
+  readOnly?: boolean
+}) {
   return (
     <QuestionnairePrimitive.Choice
       data-slot="questionnaire-choice"
+      render={readOnly ? <div /> : undefined}
       className={cn(
-        "group/questionnaire-choice relative flex min-h-11 cursor-pointer items-start gap-3 rounded-4xl border border-input bg-input/20 px-4 py-3.5 text-start text-sm transition-colors outline-none select-none hover:bg-input/40 has-[>input:focus-visible]:border-ring has-[>input:focus-visible]:ring-[3px] has-[>input:focus-visible]:ring-ring/50 data-invalid:border-destructive data-checked:border-primary/40 data-checked:bg-primary/10",
+        "group/questionnaire-choice relative flex min-h-11 items-start gap-3 rounded-4xl border border-input bg-input/20 px-4 py-3.5 text-start text-sm transition-colors outline-none select-none has-[:focus-visible]:border-ring has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/50 data-invalid:border-destructive data-checked:border-primary/40 data-checked:bg-primary/10",
+        readOnly
+          ? "cursor-default"
+          : "cursor-pointer hover:bg-input/40",
         "data-disabled:pointer-events-none data-disabled:cursor-not-allowed data-disabled:opacity-50",
         className
       )}
       {...props}
     >
-      <QuestionnairePrimitive.ChoiceInput
-        data-slot="questionnaire-choice-input"
-        className="absolute inset-0 z-10 size-full cursor-pointer opacity-0"
-      />
+      {readOnly ? null : (
+        <QuestionnairePrimitive.ChoiceInput
+          data-slot="questionnaire-choice-input"
+          className="absolute inset-0 z-10 size-full cursor-pointer opacity-0"
+        />
+      )}
       <span
         aria-hidden="true"
         data-slot="questionnaire-choice-indicator"

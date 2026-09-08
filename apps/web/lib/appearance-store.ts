@@ -3,7 +3,6 @@
 import { create } from "zustand"
 import {
   appearanceToJson,
-  compileAppearance,
   parseAppearance,
   patchGroupFill,
   patchPalette,
@@ -64,21 +63,6 @@ export type AppearancePreviewSnapshot = {
   density: Appearance["density"]
   motionEnabled: boolean
   motionReduced: Appearance["motion"]["reducedMotion"]
-}
-
-function previewSnapshot(
-  themeId: string | null,
-  doc: Appearance | undefined
-): AppearancePreviewSnapshot | undefined {
-  if (!themeId || !doc) return undefined
-  return {
-    themeId,
-    vars: compileAppearance(doc),
-    scheme: doc.scheme,
-    density: doc.density,
-    motionEnabled: doc.motion.enabled,
-    motionReduced: doc.motion.reducedMotion,
-  }
 }
 
 type AppearanceStore = {
@@ -226,9 +210,6 @@ function writeLocalMagic(
     return
   }
   try {
-    const preview = open
-      ? previewSnapshot(themeId, drafts[themeId ?? ""])
-      : undefined
     localStorage.setItem(
       appearanceMagicStorageKey(persistenceUserId),
       serializeMagicPersist({
@@ -236,7 +217,6 @@ function writeLocalMagic(
         open,
         themeId,
         drafts: dirtyDrafts,
-        preview,
       })
     )
   } catch {
@@ -485,7 +465,6 @@ export const useAppearanceStore = create<AppearanceStore>((set, get) => ({
       drafts: existingDrafts,
       open,
       savedById,
-      themeId: currentId,
       pickArmed,
     } = get()
     const local = hydrated ? null : readLocalMagic()
@@ -498,20 +477,18 @@ export const useAppearanceStore = create<AppearanceStore>((set, get) => ({
         if (library.has(id)) drafts[id] = draft
       }
     }
-    const preferredId =
-      !hydrated && local?.open && local.themeId && library.has(local.themeId)
-        ? local.themeId
-        : hydrated && currentId && library.has(currentId)
-          ? currentId
-          : activeThemeId
-    const themeId = library.has(preferredId) ? preferredId : activeThemeId
+    // The assigned light/dark slot owns the page appearance. Local state keeps
+    // unsaved drafts, but it must not replace that slot after a reload or while
+    // next-themes is resolving the browser preference.
+    const themeId = library.has(activeThemeId) ? activeThemeId : themes[0]?.id
+    if (!themeId) return
     const saved = library.get(themeId) ?? active
-    const draft = reconcileDraft(themeId, saved, drafts)
+    const draft = saved
     const nextSavedById = Object.fromEntries(library) as Record<
       string,
       Appearance
     >
-    const restoredOpen = hydrated ? open : (local?.open ?? false)
+    const restoredOpen = hydrated ? open : false
     set({
       themeId,
       draft,

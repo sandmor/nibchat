@@ -323,6 +323,7 @@ export function WorkspaceShell({
         activeThemeId={currentThemeId}
         fallback={activeAppearance}
         userId={user.id}
+        ready={themeReady}
       />
       <div className="flex h-svh flex-col bg-background text-foreground">
         <div className="flex h-12 shrink-0 items-center justify-between border-b px-3 md:hidden">

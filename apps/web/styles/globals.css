@@ -663,6 +663,16 @@
   white-space: pre;
 }
 
+/* Static Markdown embeds Shiki's light color inline and its dark color in a
+   custom property. Inline styles otherwise win, leaving completed code blocks
+   with the light palette after the app switches to a dark appearance. */
+.dark
+  .markdown-static
+  [data-markdown-code-block]
+  span[style*="--shiki-dark"] {
+  color: var(--shiki-dark) !important;
+}
+
 .markdown-static
   [data-markdown-code-block]
   pre[data-line-numbers]

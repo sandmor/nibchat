@@ -13,11 +13,14 @@ export function AppearanceRuntime({
   activeThemeId,
   fallback,
   userId,
+  ready,
 }: {
   themes: ThemeRecord[]
   activeThemeId: string
   fallback: Appearance
   userId: string
+  /** Wait for next-themes to resolve the real browser slot. */
+  ready: boolean
 }) {
   const hydrateThemeLibrary = useAppearanceStore((s) => s.hydrateThemeLibrary)
   const draft = useAppearanceStore((s) => s.draft)
@@ -42,10 +45,12 @@ export function AppearanceRuntime({
   }, [userId])
 
   useEffect(() => {
+    if (!ready) return
     hydrateThemeLibrary(themes, activeThemeId)
-  }, [activeThemeId, hydrateThemeLibrary, themes])
+  }, [activeThemeId, hydrateThemeLibrary, ready, themes])
 
   useEffect(() => {
+    if (!ready) return
     if (frameRef.current != null) cancelAnimationFrame(frameRef.current)
     frameRef.current = requestAnimationFrame(() => {
       frameRef.current = null
@@ -55,7 +60,7 @@ export function AppearanceRuntime({
         applierRef.current?.apply(document)
       }
     })
-  }, [document, preview])
+  }, [document, preview, ready])
 
   return null
 }

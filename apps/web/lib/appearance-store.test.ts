@@ -225,10 +225,7 @@ describe("appearance-store setToken + persist", () => {
     expect(parseMagicPersist(raw)?.drafts.paper?.palette.accent).toBe(
       "oklch(0.4 0.1 40)"
     )
-    expect(parseMagicPersist(raw)?.preview?.themeId).toBe("paper")
-    expect(parseMagicPersist(raw)?.preview?.vars["--palette-accent"]).toBe(
-      "oklch(0.4 0.1 40)"
-    )
+    expect(parseMagicPersist(raw)?.preview).toBeUndefined()
     vi.advanceTimersByTime(MAGIC_PERSIST_DEBOUNCE_MS * 2)
     expect(
       parseMagicPersist(localStorage.getItem(APPEARANCE_MAGIC_LS_KEY))?.drafts
@@ -297,7 +294,7 @@ describe("appearance-store setToken + persist", () => {
     expect(draft?.tokens["--sidebar"]).toEqual({ literal: "oklch(0.11 0 0)" })
   })
 
-  it("restores the open magic document instead of the active slot", () => {
+  it("keeps local drafts but restores the active slot after reload", () => {
     const paper = defaultAppearance()
     const ink = parseAppearance({ scheme: "dark" })
     const dirtyInk = patchToken(ink, "--composer", {
@@ -319,14 +316,16 @@ describe("appearance-store setToken + persist", () => {
       ],
       "paper"
     )
-    expect(useAppearanceStore.getState().themeId).toBe("ink")
-    expect(useAppearanceStore.getState().draft?.tokens["--composer"]).toEqual(
+    expect(useAppearanceStore.getState().themeId).toBe("paper")
+    expect(useAppearanceStore.getState().draft).toStrictEqual(paper)
+    expect(useAppearanceStore.getState().drafts.ink?.tokens["--composer"]).toEqual(
       dirtyInk.tokens["--composer"]
     )
-    expect(useAppearanceStore.getState().pickArmed).toBe(true)
+    expect(useAppearanceStore.getState().open).toBe(false)
+    expect(useAppearanceStore.getState().pickArmed).toBe(false)
   })
 
-  it("keeps the hydrated document when the active slot changes", () => {
+  it("follows the active slot when it changes", () => {
     const paper = defaultAppearance()
     const ink = parseAppearance({ scheme: "dark" })
     useAppearanceStore.getState().hydrateThemeLibrary(
@@ -344,7 +343,7 @@ describe("appearance-store setToken + persist", () => {
       ],
       "paper"
     )
-    expect(useAppearanceStore.getState().themeId).toBe("ink")
+    expect(useAppearanceStore.getState().themeId).toBe("paper")
   })
 
   it("switching themes restores a dirty draft for the other id", () => {

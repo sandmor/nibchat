@@ -30,7 +30,6 @@ export default async function WorkspaceLayout({
         themes={visibleSettings.themes}
         lightThemeId={visibleSettings.lightThemeId}
         darkThemeId={visibleSettings.darkThemeId}
-        userId={user.id}
       />
       <WorkspaceShell
         initialChats={workspace.chats}

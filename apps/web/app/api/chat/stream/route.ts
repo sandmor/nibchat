@@ -96,7 +96,10 @@ export async function POST(request: Request) {
         })
         .where("id", "=", chat.id)
         .execute()
-    let languageModel = await modelFor(user.id, config, { chatId: chat.id })
+    let languageModel = await modelFor(user.id, config, {
+      chatId: chat.id,
+      timeZone: body.timeZone,
+    })
     let responsesReplay = await responsesReplayTargetFor(user.id, config)
     let assistantMeta = streamMeta(config, responsesReplay)
     const generationId = crypto.randomUUID()
@@ -247,6 +250,7 @@ export async function POST(request: Request) {
         config = priorConfig
         languageModel = await modelFor(user.id, config, {
           chatId: chat.id,
+          timeZone: body.timeZone,
           requireConfiguredModel: true,
         })
         responsesReplay = await responsesReplayTargetFor(user.id, config)

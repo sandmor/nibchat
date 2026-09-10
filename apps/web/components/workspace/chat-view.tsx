@@ -1641,6 +1641,11 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       chatStackId={data.chat?.prompt_stack_id ?? null}
       draftStackId={draftPromptStackId}
       hasChat={Boolean(data.chat)}
+      chat={
+        data.chat
+          ? { id: data.chat.id, created_at: data.chat.created_at }
+          : undefined
+      }
       modelConfig={previewModelConfig}
       providers={providers}
     >

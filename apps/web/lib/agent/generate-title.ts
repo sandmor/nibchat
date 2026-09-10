@@ -27,11 +27,13 @@ export function sanitizeGeneratedTitle(raw: string) {
 export async function generateChatTitle(input: {
   userId: string
   config: ModelConfig
+  chatId?: string
   userText: string
   assistantText?: string
 }) {
   const model = await modelFor(input.userId, input.config, {
     requireConfiguredModel: true,
+    chatId: input.chatId,
   })
   const userText = input.userText.trim().slice(0, USER_TEXT_LIMIT)
   const assistantText = input.assistantText

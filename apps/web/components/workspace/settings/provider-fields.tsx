@@ -227,6 +227,7 @@ export function ProviderProfileFields({
         valuePlaceholder="Bearer ${PROVIDER_TOKEN}"
         addLabel="Add header"
         disabled={disabled}
+        macros
       />
       {children}
     </div>

@@ -19,7 +19,10 @@ import {
   configEntrySchema,
   preprocessConfigEntries,
   resolveConfigEntries,
+  resolveHeaderEntries,
+  headersUsePromptMacros,
 } from "@/lib/config-entries"
+import type { MacroContext } from "@/lib/prompt-macros"
 
 export { buildMcpInstructionsText }
 
@@ -570,7 +573,7 @@ export async function approveMcpCatalog(
  * Stdio is intentional for owner/admin self-host: the configured command runs
  * as a full subprocess of the next process with inherited env plus overrides.
  */
-async function createClient(profile: McpProfile) {
+async function createClient(profile: McpProfile, macroContext?: MacroContext) {
   const mode =
     profile.protocolMode === "modern"
       ? { mode: { pin: "2026-07-28" } as const }
@@ -603,7 +606,7 @@ async function createClient(profile: McpProfile) {
   }
   const config = httpConfigSchema.parse(profile.config)
   const requestInit: RequestInit = {
-    headers: resolveConfigEntries(config.headers),
+    headers: resolveHeaderEntries(config.headers, { macroContext }),
     redirect: config.followRedirects ? "follow" : "error",
   }
   const transport =
@@ -623,6 +626,14 @@ type Managed = {
   retiring: boolean
 }
 
+function profileUsesHeaderMacros(profile: McpProfile): boolean {
+  return (
+    profile.transport !== "stdio" &&
+    "headers" in profile.config &&
+    headersUsePromptMacros(profile.config.headers)
+  )
+}
+
 /**
  * Process-local pool. No durable "revision" column — mutators call
  * `invalidate(profileId)`, which bumps an in-memory generation and retires
@@ -638,8 +649,15 @@ class McpConnectionManager {
   }
 
   async acquire(
-    profile: McpProfile
+    profile: McpProfile,
+    macroContext?: MacroContext
   ): Promise<{ client: Client; release: () => Promise<void> }> {
+    // A transport retains request headers for its lifetime. Dynamic header
+    // values must therefore never enter the profile-wide connection pool.
+    if (profileUsesHeaderMacros(profile)) {
+      const client = await createClient(profile, macroContext)
+      return { client, release: () => client.close() }
+    }
     if (runtimeMcpMode() === "stateless") {
       const client = await createClient(profile)
       return { client, release: () => client.close() }
@@ -713,6 +731,8 @@ export type PrepareMcpToolsOptions = {
   includeInstructionsText?: boolean
   /** Built-in tool names that MCP must not overwrite. */
   reservedToolNames?: Iterable<string>
+  /** Context used for chat-scoped connection-header macros. */
+  macroContext?: MacroContext
 }
 
 /**
@@ -721,6 +741,7 @@ export type PrepareMcpToolsOptions = {
  * Tool execute reloads the profile from the DB so pool config stays current.
  */
 export async function prepareMcpTools(options: PrepareMcpToolsOptions = {}) {
+  const macroContext = options.macroContext
   const includeInstructionsText = options.includeInstructionsText === true
   const reserved = new Set(options.reservedToolNames ?? [])
   const profiles = await getEnabledMcpProfiles()
@@ -774,7 +795,7 @@ export async function prepareMcpTools(options: PrepareMcpToolsOptions = {}) {
             throw new Error(
               `Tool “${toolName}” is no longer approved for “${live.name}”.`
             )
-          const lease = await connectionManager.acquire(live)
+          const lease = await connectionManager.acquire(live, macroContext)
           const timeout =
             "callTimeoutMs" in live.config ? live.config.callTimeoutMs : 60_000
           try {

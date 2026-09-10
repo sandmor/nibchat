@@ -1,11 +1,16 @@
 "use client"
 
+import { useMemo, useRef, useState } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { InformationCircleIcon } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { TooltipProvider, WithTooltip } from "@/components/ui/tooltip"
+import { previewHeaderEntry, isValidHttpHeader } from "@/lib/config-entries"
+import { catalogMacroContext, normalizeTimeZone } from "@/lib/prompt-macros"
+import { useBrowserTimeZone } from "../hooks"
+import { MacroPicker } from "./macro-picker"
 
 export type KvEntry = {
   name: string
@@ -15,6 +20,9 @@ export type KvEntry = {
 const ENV_TEMPLATE_HELP =
   "Embed ${ENV_NAME} in a value to resolve it from the server environment at connect time."
 
+const HEADER_TEMPLATE_HELP =
+  "Embed ${ENV_NAME} for server environment values, or prompt macros such as {{date}} and {{chatId}}. Macros resolve when a request is sent."
+
 export function KvEntriesEditor({
   label,
   entries,
@@ -23,6 +31,7 @@ export function KvEntriesEditor({
   valuePlaceholder = "Value or ${ENV_NAME}",
   addLabel = "Add row",
   disabled = false,
+  macros = false,
 }: {
   label: string
   entries: KvEntry[]
@@ -31,13 +40,16 @@ export function KvEntriesEditor({
   valuePlaceholder?: string
   addLabel?: string
   disabled?: boolean
+  /** Header values can insert and preview prompt macros. */
+  macros?: boolean
 }) {
+  const help = macros ? HEADER_TEMPLATE_HELP : ENV_TEMPLATE_HELP
   return (
     <div className="space-y-2 sm:col-span-2">
       <div className="flex items-center gap-1.5">
         <Label className="mb-0">{label}</Label>
         <TooltipProvider delay={200}>
-          <WithTooltip side="top" label={ENV_TEMPLATE_HELP}>
+          <WithTooltip side="top" label={help}>
             <button
               type="button"
               className="inline-flex size-5 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
@@ -53,44 +65,58 @@ export function KvEntriesEditor({
         </TooltipProvider>
       </div>
       <div className="space-y-2">
-        {entries.map((entry, index) => (
-          <div key={index} className="flex flex-wrap items-center gap-2">
-            <Input
-              className="min-w-[8rem] flex-1"
-              value={entry.name}
-              onChange={(event) => {
-                const next = [...entries]
-                next[index] = { ...entry, name: event.target.value }
-                onChange(next)
-              }}
-              placeholder={namePlaceholder}
+        {entries.map((entry, index) =>
+          macros ? (
+            <HeaderEntryRow
+              key={index}
+              label={label}
+              index={index}
+              entry={entry}
+              entries={entries}
+              onChange={onChange}
+              namePlaceholder={namePlaceholder}
+              valuePlaceholder={valuePlaceholder}
               disabled={disabled}
-              aria-label={`${label} name ${index + 1}`}
             />
-            <Input
-              className="min-w-[12rem] flex-[2]"
-              value={entry.value}
-              onChange={(event) => {
-                const next = [...entries]
-                next[index] = { ...entry, value: event.target.value }
-                onChange(next)
-              }}
-              placeholder={valuePlaceholder}
-              autoComplete="off"
-              disabled={disabled}
-              aria-label={`${label} value ${index + 1}`}
-            />
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              onClick={() => onChange(entries.filter((_, i) => i !== index))}
-              disabled={disabled}
-            >
-              Remove
-            </Button>
-          </div>
-        ))}
+          ) : (
+            <div key={index} className="flex flex-wrap items-center gap-2">
+              <Input
+                className="min-w-[8rem] flex-1"
+                value={entry.name}
+                onChange={(event) => {
+                  const next = [...entries]
+                  next[index] = { ...entry, name: event.target.value }
+                  onChange(next)
+                }}
+                placeholder={namePlaceholder}
+                disabled={disabled}
+                aria-label={`${label} name ${index + 1}`}
+              />
+              <Input
+                className="min-w-[12rem] flex-[2]"
+                value={entry.value}
+                onChange={(event) => {
+                  const next = [...entries]
+                  next[index] = { ...entry, value: event.target.value }
+                  onChange(next)
+                }}
+                placeholder={valuePlaceholder}
+                autoComplete="off"
+                disabled={disabled}
+                aria-label={`${label} value ${index + 1}`}
+              />
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => onChange(entries.filter((_, i) => i !== index))}
+                disabled={disabled}
+              >
+                Remove
+              </Button>
+            </div>
+          )
+        )}
       </div>
       <Button
         type="button"
@@ -101,6 +127,178 @@ export function KvEntriesEditor({
       >
         {addLabel}
       </Button>
+    </div>
+  )
+}
+
+function HeaderEntryRow({
+  label,
+  index,
+  entry,
+  entries,
+  onChange,
+  namePlaceholder,
+  valuePlaceholder,
+  disabled,
+}: {
+  label: string
+  index: number
+  entry: KvEntry
+  entries: KvEntry[]
+  onChange: (entries: KvEntry[]) => void
+  namePlaceholder: string
+  valuePlaceholder: string
+  disabled: boolean
+}) {
+  const valueRef = useRef<HTMLInputElement>(null)
+  const [headerInvalid, setHeaderInvalid] = useState(false)
+  const browserTimeZone = useBrowserTimeZone()
+  const timeZone = browserTimeZone ? normalizeTimeZone(browserTimeZone) : null
+  const catalogContext = useMemo(
+    () => (timeZone ? catalogMacroContext(timeZone) : null),
+    [timeZone]
+  )
+  const preview = useMemo(
+    () =>
+      catalogContext && entry.value
+        ? previewHeaderEntry(entry, catalogContext)
+        : null,
+    [catalogContext, entry]
+  )
+
+  function patch(nextEntry: KvEntry) {
+    const next = [...entries]
+    next[index] = nextEntry
+    onChange(next)
+  }
+
+  function insertSnippet(snippet: string) {
+    const el = valueRef.current
+    const start = el?.selectionStart ?? entry.value.length
+    const end = el?.selectionEnd ?? entry.value.length
+    const nextValue =
+      entry.value.slice(0, start) + snippet + entry.value.slice(end)
+    const cursor = start + snippet.length
+    patch({ ...entry, value: nextValue })
+    requestAnimationFrame(() => {
+      const node = valueRef.current
+      if (!node) return
+      node.focus()
+      node.setSelectionRange(cursor, cursor)
+    })
+  }
+
+  function validateHeader() {
+    if (!entry.name && !entry.value) {
+      setHeaderInvalid(false)
+      return
+    }
+    const expanded = preview?.expanded ?? entry.value
+    setHeaderInvalid(
+      Boolean(entry.name) && !isValidHttpHeader(entry.name, expanded)
+    )
+  }
+
+  const describedBy = [
+    preview?.expanded && preview.expanded !== entry.value
+      ? `header-preview-${index}`
+      : null,
+    preview?.omittedWithoutChat ? `header-chat-${index}` : null,
+    preview?.unresolved ? `header-unresolved-${index}` : null,
+    headerInvalid ? `header-invalid-${index}` : null,
+  ]
+    .filter(Boolean)
+    .join(" ")
+
+  return (
+    <div className="space-y-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          className="min-w-[8rem] flex-1"
+          value={entry.name}
+          onChange={(event) => {
+            setHeaderInvalid(false)
+            patch({ ...entry, name: event.target.value })
+          }}
+          onBlur={validateHeader}
+          placeholder={namePlaceholder}
+          disabled={disabled}
+          aria-label={`${label} name ${index + 1}`}
+          aria-invalid={headerInvalid ? true : undefined}
+          aria-describedby={describedBy || undefined}
+        />
+        <Input
+          ref={valueRef}
+          className="min-w-[12rem] flex-[2]"
+          value={entry.value}
+          onChange={(event) => {
+            setHeaderInvalid(false)
+            patch({ ...entry, value: event.target.value })
+          }}
+          onBlur={validateHeader}
+          placeholder={valuePlaceholder}
+          autoComplete="off"
+          disabled={disabled}
+          aria-label={`${label} value ${index + 1}`}
+          aria-invalid={headerInvalid ? true : undefined}
+          aria-describedby={describedBy || undefined}
+        />
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          onClick={() => onChange(entries.filter((_, i) => i !== index))}
+          disabled={disabled}
+        >
+          Remove
+        </Button>
+      </div>
+      <div className="flex items-start gap-2">
+        <div className="min-w-0 flex-1 space-y-0.5">
+          {preview && preview.expanded !== entry.value ? (
+            <p
+              id={`header-preview-${index}`}
+              className="line-clamp-2 text-xs text-muted-foreground"
+            >
+              <span className="mr-1 text-[11px] tracking-wide text-muted-foreground/80 uppercase">
+                Sends as
+              </span>
+              {preview.expanded}
+            </p>
+          ) : null}
+          {preview?.omittedWithoutChat ? (
+            <p
+              id={`header-chat-${index}`}
+              className="text-xs text-muted-foreground"
+            >
+              Sent with chat requests; omitted when listing models or testing a
+              connection.
+            </p>
+          ) : null}
+          {preview?.unresolved ? (
+            <p
+              id={`header-unresolved-${index}`}
+              className="text-xs text-destructive"
+            >
+              This value will not be sent.
+            </p>
+          ) : null}
+          {headerInvalid ? (
+            <p
+              id={`header-invalid-${index}`}
+              className="text-xs text-destructive"
+            >
+              Invalid header name or value.
+            </p>
+          ) : null}
+        </div>
+        <MacroPicker
+          catalogContext={catalogContext}
+          onInsert={insertSnippet}
+          disabled={disabled}
+          aria-label={`Insert prompt macro into ${label.toLowerCase()} value ${index + 1}`}
+        />
+      </div>
     </div>
   )
 }

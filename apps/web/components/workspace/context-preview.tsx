@@ -63,6 +63,7 @@ type ContextPreviewGraph = {
   chatStackId: string | null
   draftStackId: string | null
   hasChat: boolean
+  chat?: { id: string; created_at: string }
   modelConfig: PreviewModelConfig
   providers: ReadonlyArray<PreviewProviderKind>
 }
@@ -76,6 +77,7 @@ export function ContextPreviewProvider({
   chatStackId,
   draftStackId,
   hasChat,
+  chat,
   modelConfig,
   providers,
   children,
@@ -83,12 +85,18 @@ export function ContextPreviewProvider({
   const providerId = modelConfig.providerId
   const model = modelConfig.model
   const replayReasoning = modelConfig.replayReasoning
+  const chatId = chat?.id
+  const chatCreatedAt = chat?.created_at
   const value = useMemo(
     () => ({
       nodes,
       chatStackId,
       draftStackId,
       hasChat,
+      chat:
+        chatId && chatCreatedAt
+          ? { id: chatId, created_at: chatCreatedAt }
+          : undefined,
       modelConfig: { providerId, model, replayReasoning },
       providers,
     }),
@@ -97,6 +105,8 @@ export function ContextPreviewProvider({
       chatStackId,
       draftStackId,
       hasChat,
+      chatId,
+      chatCreatedAt,
       providerId,
       model,
       replayReasoning,
@@ -164,6 +174,7 @@ function useAssembledContextPreview(
       timeZone: timeZone ?? undefined,
       now: timeZone ? (refreshedAt ?? new Date()) : HYDRATION_PREVIEW_NOW,
       overlay,
+      chat: graph.chat,
     })
   }, [
     graph,

@@ -807,6 +807,7 @@ export async function maybeAssignChatTitle(input: {
         const generated = await generateChatTitle({
           userId: input.userId,
           config,
+          chatId: input.chatId,
           userText: input.userText.trim() || seed,
           assistantText: input.assistantText,
         })

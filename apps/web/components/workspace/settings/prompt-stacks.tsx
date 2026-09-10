@@ -50,20 +50,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import {
   builtInMacroDefinitions,
+  catalogMacroContext,
   createMacroRegistry,
-  defaultMacroContext,
   expandPromptMacros,
-  macroPickerEntries,
   normalizeTimeZone,
   type MacroDefinition,
 } from "@/lib/prompt-macros"
@@ -78,6 +72,7 @@ import {
   type PromptStackDocument,
   type StackModule,
 } from "@/lib/prompt-stack"
+import { MacroPicker } from "./macro-picker"
 import { useBrowserTimeZone } from "../hooks"
 
 const PLACEMENTS: ModulePlacement[] = ["relative", "in_chat"]
@@ -271,8 +266,8 @@ export function PromptStackSettings() {
         <CardDescription>
           Ordered modules that build model context. Reorder Chat history like
           any other row; inject with Relative or In chat depth. Prompt bodies
-          can expand date and time macros at send time. Edits apply everywhere
-          this stack is used.
+          can expand date, time, and chat macros at send time. Edits apply
+          everywhere this stack is used.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -498,25 +493,15 @@ function PromptModuleBodyEditor({
   const browserTimeZone = useBrowserTimeZone()
   const timeZone = browserTimeZone ? normalizeTimeZone(browserTimeZone) : null
   const registry = useMemo(() => createMacroRegistry(macros), [macros])
-  const entries = useMemo(() => macroPickerEntries(macros), [macros])
-  const expanded = useMemo(() => {
-    if (!timeZone) return value
-    return expandPromptMacros(
-      value,
-      defaultMacroContext({ timeZone }),
-      registry
-    )
-  }, [registry, timeZone, value])
   const catalogContext = useMemo(() => {
     if (!timeZone) return null
-    const now = new Date()
-    return defaultMacroContext({
-      now,
-      timeZone,
-      idleSince: new Date(now.getTime() - 2 * 60 * 60 * 1000),
-    })
+    return catalogMacroContext(timeZone)
   }, [timeZone])
-  const showPreview = timeZone !== null && expanded !== value
+  const expanded = useMemo(() => {
+    if (!catalogContext) return value
+    return expandPromptMacros(value, catalogContext, registry)
+  }, [catalogContext, registry, value])
+  const showPreview = catalogContext !== null && expanded !== value
 
   function insertSnippet(snippet: string) {
     const el = textareaRef.current
@@ -552,50 +537,11 @@ function PromptModuleBodyEditor({
             {expanded}
           </p>
         ) : null}
-        <Popover>
-          <PopoverTrigger
-            render={
-              <Button
-                type="button"
-                variant="ghost"
-                size="xs"
-                className="ml-auto shrink-0"
-                aria-label="Insert prompt macro"
-              />
-            }
-          >
-            Macros
-          </PopoverTrigger>
-          <PopoverContent
-            align="end"
-            className="w-[min(20rem,calc(100vw-2rem))] gap-1 p-2"
-          >
-            <ul className="flex max-h-[min(18rem,50vh)] flex-col overflow-y-auto">
-              {entries.map((entry) => (
-                <li key={entry.name}>
-                  <button
-                    type="button"
-                    title={entry.summary}
-                    className="flex w-full items-baseline justify-between gap-3 rounded-lg px-2 py-1.5 text-left hover:bg-muted/70"
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => insertSnippet(entry.snippet)}
-                  >
-                    <span className="font-mono text-[11px]">{entry.name}</span>
-                    <span className="min-w-0 truncate text-xs text-muted-foreground">
-                      {catalogContext
-                        ? expandPromptMacros(
-                            entry.snippet,
-                            catalogContext,
-                            registry
-                          )
-                        : entry.snippet}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </PopoverContent>
-        </Popover>
+        <MacroPicker
+          macros={macros}
+          catalogContext={catalogContext}
+          onInsert={insertSnippet}
+        />
       </div>
     </div>
   )

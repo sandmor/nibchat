@@ -17,7 +17,8 @@ import { db } from "@/lib/db"
 import { parseJson } from "@/lib/domain"
 import { ollamaApiUrl } from "@/lib/ollama"
 import { providerConfigFromJson } from "@/lib/provider-config"
-import { resolveConfigEntries } from "@/lib/config-entries"
+import { resolveHeaderEntries } from "@/lib/config-entries"
+import { chatIdentityFromRow, normalizeTimeZone } from "@/lib/prompt-macros"
 import {
   firstEnabledModelId,
   isEnabledModelId,
@@ -186,7 +187,11 @@ export async function defaultModelConfig(userId: string): Promise<ModelConfig> {
 export async function modelFor(
   userId: string,
   config: ModelConfig,
-  options?: { requireConfiguredModel?: boolean; chatId?: string }
+  options?: {
+    requireConfiguredModel?: boolean
+    chatId?: string
+    timeZone?: string
+  }
 ): Promise<LanguageModel> {
   const profile = config.providerId
     ? await db
@@ -213,7 +218,22 @@ export async function modelFor(
       `Provider "${profile.name}" needs a base URL (e.g. your gateway) before it can send requests.`
     )
   }
-  const headers = resolveConfigEntries(connection.headers)
+  const chat = options?.chatId
+    ? await db
+        .selectFrom("chats")
+        .select(["id", "created_at"])
+        .where("id", "=", options.chatId)
+        .where("user_id", "=", userId)
+        .executeTakeFirst()
+    : undefined
+  const chatIdentity = chatIdentityFromRow(chat)
+  const headers = resolveHeaderEntries(connection.headers, {
+    macroContext: {
+      now: new Date(),
+      timeZone: normalizeTimeZone(options?.timeZone),
+      ...(chatIdentity ? { chat: chatIdentity } : {}),
+    },
+  })
   const configured = enabledModels.find((item) => item.id === model)
   const support = reasoningSupport(
     nativeReasoningKind(profile.kind, connection.baseUrl),

@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest"
 import {
   builtInMacroDefinitions,
+  catalogMacroContext,
   createMacroRegistry,
   defaultMacroContext,
   expandPromptMacros,
+  groupedMacroPickerEntries,
   idleSinceFromPath,
   macroPickerEntries,
+  macroPickerPreview,
   normalizeTimeZone,
+  SAMPLE_MACRO_CHAT,
   type MacroDefinition,
 } from "@/lib/prompt-macros"
 
@@ -14,6 +18,10 @@ const context = defaultMacroContext({
   now: new Date("2026-04-16T09:28:00.000Z"),
   timeZone: "America/Bogota",
   idleSince: new Date("2026-04-16T07:28:00.000Z"),
+  chat: {
+    id: "chat-1",
+    createdAt: new Date("2026-04-16T08:00:00.000Z"),
+  },
 })
 
 describe("prompt macros", () => {
@@ -38,10 +46,42 @@ describe("prompt macros", () => {
     ).toBe("3 hours")
   })
 
+  it("expands chat identity and integer transforms", () => {
+    expect(expandPromptMacros("{{chatId}}", context)).toBe("chat-1")
+    expect(expandPromptMacros("{{chatCreatedAt}}", context)).toBe(
+      "2026-04-16T08:00:00.000Z"
+    )
+    expect(expandPromptMacros("{{chatCreatedAt::x}}", context)).toBe(
+      String(context.chat!.createdAt.getTime())
+    )
+    expect(expandPromptMacros("{{add::1::2}} {{mul::2::4096}}", context)).toBe(
+      "3 8192"
+    )
+    expect(expandPromptMacros("{{bitnot::1}} {{hex::255}}", context)).toBe(
+      "-2 ff"
+    )
+  })
+
+  it("hashes and slices nested chat identity", () => {
+    const nested = "{{slice::{{hash::{{chatId}}::base62}}::0::14}}"
+    const value = expandPromptMacros(nested, context)
+    expect(value).toHaveLength(14)
+    expect(value).not.toContain("{")
+    expect(expandPromptMacros("{{chatId}}", defaultMacroContext())).toBe(
+      "{{chatId}}"
+    )
+  })
+
   it("preserves unknown and invalid expressions literally", () => {
     expect(
       expandPromptMacros("{{unknown::{{date}}}} {{time::Mars}} {{date")
     ).toBe("{{unknown::{{date}}}} {{time::Mars}} {{date")
+  })
+
+  it("accepts an omitted context without throwing", () => {
+    expect(expandPromptMacros("{{isodate}}", undefined)).toMatch(
+      /^\d{4}-\d{2}-\d{2}$/
+    )
   })
 
   it("uses a registry instead of hardcoded names", () => {
@@ -82,8 +122,19 @@ describe("prompt macros", () => {
     expect(entries.map((entry) => entry.name)).toEqual(
       builtInMacroDefinitions.map((definition) => definition.name)
     )
-    for (const entry of entries) {
-      expect(expandPromptMacros(entry.snippet, context)).not.toBe(entry.snippet)
+    const catalog = catalogMacroContext("America/Bogota", context.now)
+    expect(catalog.chat?.id).toBe(SAMPLE_MACRO_CHAT.id)
+    for (const group of groupedMacroPickerEntries(builtInMacroDefinitions)) {
+      for (const entry of group.entries) {
+        if (entry.preview === "snippet") {
+          expect(macroPickerPreview(entry, catalog)).toBe(entry.snippet)
+          continue
+        }
+        expect(macroPickerPreview(entry, catalog)).not.toBe(entry.snippet)
+        expect(expandPromptMacros(entry.snippet, catalog)).not.toBe(
+          entry.snippet
+        )
+      }
     }
   })
 
@@ -95,6 +146,8 @@ describe("prompt macros", () => {
         name: "projectName",
         summary: "projectName",
         snippet: "{{projectName}}",
+        group: "time",
+        preview: "value",
       },
     ])
   })

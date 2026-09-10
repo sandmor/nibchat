@@ -6,6 +6,7 @@ import localizedFormat from "dayjs/plugin/localizedFormat"
 import relativeTime from "dayjs/plugin/relativeTime"
 import timezone from "dayjs/plugin/timezone"
 import utc from "dayjs/plugin/utc"
+import { sha256 } from "@noble/hashes/sha2.js"
 
 dayjs.extend(utc)
 dayjs.extend(timezone)
@@ -29,7 +30,11 @@ export type MacroContext = {
   timeZone: string
   /** The user message preceding the currently generated turn, when available. */
   idleSince?: Date
+  /** Stable chat identity, when rendering a conversation-scoped value. */
+  chat?: { id: string; createdAt: Date }
 }
+
+export type MacroPickerGroupId = "chat" | "time" | "transform"
 
 export type MacroDefinition = {
   name: string
@@ -37,6 +42,10 @@ export type MacroDefinition = {
   summary?: string
   /** Inserted text. Defaults to `{{name}}`. */
   snippet?: string
+  /** Insert-picker section. Defaults to `time`. */
+  group?: MacroPickerGroupId
+  /** Picker secondary text. Transforms default to the argument form. */
+  preview?: "value" | "snippet"
   evaluate: (args: readonly string[], context: MacroContext) => string | null
 }
 
@@ -46,6 +55,64 @@ export type MacroPickerEntry = {
   name: string
   summary: string
   snippet: string
+  group: MacroPickerGroupId
+  preview: "value" | "snippet"
+}
+
+export type MacroPickerGroup = {
+  id: MacroPickerGroupId
+  label: string
+  entries: MacroPickerEntry[]
+}
+
+export const MACRO_PICKER_GROUP_LABELS: Record<MacroPickerGroupId, string> = {
+  chat: "Chat",
+  time: "Time",
+  transform: "Transforms",
+}
+
+const MACRO_PICKER_GROUP_ORDER: readonly MacroPickerGroupId[] = [
+  "chat",
+  "time",
+  "transform",
+]
+
+export const SAMPLE_MACRO_CHAT = {
+  id: "11111111-1111-4111-8111-111111111111",
+  createdAt: new Date("2026-04-16T08:00:00.000Z"),
+}
+
+const CHAT_MACRO_RE = /{{\s*chat(?:Id|CreatedAt)\b/i
+
+/** True when expansion needs a conversation, not just the current time. */
+export function valueNeedsChatContext(value: string): boolean {
+  return CHAT_MACRO_RE.test(value)
+}
+
+/** Header rendering treats leftover braces as an unresolved entry. */
+export function expansionLooksUnresolved(value: string): boolean {
+  return value.includes("{{") || value.includes("}}")
+}
+
+export function chatIdentityFromRow(
+  row?: { id: string; created_at: string } | null
+): NonNullable<MacroContext["chat"]> | undefined {
+  if (!row) return undefined
+  const createdAt = new Date(row.created_at)
+  if (Number.isNaN(createdAt.getTime())) return undefined
+  return { id: row.id, createdAt }
+}
+
+export function catalogMacroContext(
+  timeZone: string,
+  now: Date = new Date()
+): MacroContext {
+  return defaultMacroContext({
+    now,
+    timeZone,
+    idleSince: new Date(now.getTime() - 2 * 60 * 60 * 1000),
+    chat: SAMPLE_MACRO_CHAT,
+  })
 }
 
 export function macroInsertSnippet(definition: MacroDefinition): string {
@@ -59,7 +126,33 @@ export function macroPickerEntries(
     name: definition.name,
     summary: definition.summary ?? definition.name,
     snippet: macroInsertSnippet(definition),
+    group: definition.group ?? "time",
+    preview:
+      definition.preview ??
+      (definition.group === "transform" ? "snippet" : "value"),
   }))
+}
+
+export function groupedMacroPickerEntries(
+  definitions: readonly MacroDefinition[]
+): MacroPickerGroup[] {
+  const entries = macroPickerEntries(definitions)
+  return MACRO_PICKER_GROUP_ORDER.flatMap((id) => {
+    const groupEntries = entries.filter((entry) => entry.group === id)
+    return groupEntries.length
+      ? [{ id, label: MACRO_PICKER_GROUP_LABELS[id], entries: groupEntries }]
+      : []
+  })
+}
+
+/** Live value for chat/time; argument form for transforms. */
+export function macroPickerPreview(
+  entry: MacroPickerEntry,
+  context: MacroContext | null,
+  registry?: MacroRegistry
+): string {
+  if (!context || entry.preview === "snippet") return entry.snippet
+  return expandPromptMacros(entry.snippet, context, registry)
 }
 
 export function normalizeTimeZone(value: string | null | undefined): string {
@@ -78,12 +171,14 @@ export function isSupportedTimeZone(value: string): boolean {
 }
 
 export function defaultMacroContext(
-  overrides: Partial<MacroContext> = {}
+  overrides?: Partial<MacroContext>
 ): MacroContext {
+  const src = overrides ?? {}
   return {
-    now: overrides.now ?? new Date(),
-    timeZone: normalizeTimeZone(overrides.timeZone),
-    ...(overrides.idleSince ? { idleSince: overrides.idleSince } : {}),
+    now: src.now ?? new Date(),
+    timeZone: normalizeTimeZone(src.timeZone),
+    ...(src.idleSince ? { idleSince: src.idleSince } : {}),
+    ...(src.chat ? { chat: src.chat } : {}),
   }
 }
 
@@ -126,10 +221,28 @@ function noArgs(args: readonly string[]): boolean {
   return args.length === 0
 }
 
+const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+const textEncoder = new TextEncoder()
+
+function integer(value: string): bigint | null {
+  return /^-?\d+$/.test(value.trim()) ? BigInt(value.trim()) : null
+}
+
+function encodeBase62(bytes: Uint8Array): string {
+  let value = bytes.reduce((out, byte) => (out << 8n) | BigInt(byte), 0n)
+  let out = ""
+  while (value) {
+    out = BASE62[Number(value % 62n)]! + out
+    value /= 62n
+  }
+  return out.padStart(43, "0")
+}
+
 export const builtInMacroDefinitions: readonly MacroDefinition[] = [
   {
     name: "time",
     summary: "Local time",
+    group: "time",
     evaluate(args, context) {
       if (noArgs(args)) return current(context).format("h:mm A")
       if (args.length !== 1) return null
@@ -139,30 +252,35 @@ export const builtInMacroDefinitions: readonly MacroDefinition[] = [
   {
     name: "date",
     summary: "Local date",
+    group: "time",
     evaluate: (args, context) =>
       noArgs(args) ? current(context).format("M/D/YYYY") : null,
   },
   {
     name: "weekday",
     summary: "Weekday name",
+    group: "time",
     evaluate: (args, context) =>
       noArgs(args) ? current(context).format("dddd") : null,
   },
   {
     name: "isotime",
     summary: "24-hour time",
+    group: "time",
     evaluate: (args, context) =>
       noArgs(args) ? current(context).format("HH:mm") : null,
   },
   {
     name: "isodate",
     summary: "ISO date",
+    group: "time",
     evaluate: (args, context) =>
       noArgs(args) ? current(context).format("YYYY-MM-DD") : null,
   },
   {
     name: "datetimeformat",
     summary: "Custom format",
+    group: "time",
     snippet: "{{datetimeformat::YYYY-MM-DD HH:mm}}",
     evaluate: (args, context) =>
       args.length === 1 && args[0]!.trim()
@@ -170,8 +288,117 @@ export const builtInMacroDefinitions: readonly MacroDefinition[] = [
         : null,
   },
   {
+    name: "chatId",
+    summary: "Current chat ID",
+    group: "chat",
+    evaluate: (args, context) =>
+      noArgs(args) ? (context.chat?.id ?? null) : null,
+  },
+  {
+    name: "chatCreatedAt",
+    summary: "Current chat creation time",
+    group: "chat",
+    evaluate: (args, context) => {
+      if (!context.chat || args.length > 1) return null
+      if (!args.length) return context.chat.createdAt.toISOString()
+      return args[0] === "x"
+        ? String(context.chat.createdAt.getTime())
+        : dayjs(context.chat.createdAt).tz(context.timeZone).format(args[0]!)
+    },
+  },
+  {
+    name: "add",
+    summary: "Integer addition",
+    group: "transform",
+    snippet: "{{add::left::right}}",
+    evaluate: (args) => {
+      const [left, right] = args.map(integer)
+      return args.length === 2 && left != null && right != null
+        ? String(left + right)
+        : null
+    },
+  },
+  {
+    name: "mul",
+    summary: "Integer multiplication",
+    group: "transform",
+    snippet: "{{mul::left::right}}",
+    evaluate: (args) => {
+      const [left, right] = args.map(integer)
+      return args.length === 2 && left != null && right != null
+        ? String(left * right)
+        : null
+    },
+  },
+  {
+    name: "bitnot",
+    summary: "Integer bitwise complement",
+    group: "transform",
+    snippet: "{{bitnot::value}}",
+    evaluate: (args) => {
+      const value = args.length === 1 ? integer(args[0]!) : null
+      return value == null ? null : String(~value)
+    },
+  },
+  {
+    name: "hex",
+    summary: "Hexadecimal integer",
+    group: "transform",
+    snippet: "{{hex::value}}",
+    evaluate: (args) => {
+      const value =
+        args.length >= 1 && args.length <= 2 ? integer(args[0]!) : null
+      if (value == null) return null
+      if (args.length === 1) return value >= 0n ? value.toString(16) : null
+      const width = integer(args[1]!)
+      if (width == null || width < 1n || width > 1024n) return null
+      const bits = width * 4n
+      return (value & ((1n << bits) - 1n))
+        .toString(16)
+        .padStart(Number(width), "0")
+    },
+  },
+  {
+    name: "hash",
+    summary: "SHA-256 hash",
+    group: "transform",
+    snippet: "{{hash::{{chatId}}::hex}}",
+    evaluate: (args) => {
+      if (args.length < 1 || args.length > 2) return null
+      const digest = sha256(textEncoder.encode(args[0]!))
+      const encoding = args[1] ?? "hex"
+      if (encoding === "hex")
+        return Array.from(digest, (byte) =>
+          byte.toString(16).padStart(2, "0")
+        ).join("")
+      if (encoding === "base62") return encodeBase62(digest)
+      if (encoding === "base64url")
+        return btoa(String.fromCharCode(...digest))
+          .replace(/\+/g, "-")
+          .replace(/\//g, "_")
+          .replace(/=+$/, "")
+      return null
+    },
+  },
+  {
+    name: "slice",
+    summary: "Slice text",
+    group: "transform",
+    snippet: "{{slice::value::start::end}}",
+    evaluate: (args) => {
+      if (args.length < 2 || args.length > 3) return null
+      const start = integer(args[1]!)
+      const end = args.length === 3 ? integer(args[2]!) : undefined
+      if (start == null || (args.length === 3 && end == null)) return null
+      return Array.from(args[0]!)
+        .slice(Number(start), end == null ? undefined : Number(end))
+        .join("")
+    },
+  },
+  {
     name: "idleDuration",
     summary: "Time since the previous user turn",
+    group: "time",
     evaluate: (args, context) => {
       if (!noArgs(args)) return null
       if (!context.idleSince) return "just now"
@@ -185,7 +412,9 @@ export const builtInMacroDefinitions: readonly MacroDefinition[] = [
   {
     name: "timeDiff",
     summary: "Duration between two times",
-    snippet: "{{timeDiff::{{isodate}} 09:00::{{isodate}} 17:00}}",
+    group: "time",
+    snippet: "{{timeDiff::start::end}}",
+    preview: "snippet",
     evaluate: (args, context) => {
       if (args.length !== 2) return null
       const left = parseTime(args[0]!, context)
@@ -288,10 +517,10 @@ function expandInternal(
 
 export function expandPromptMacros(
   text: string,
-  context: MacroContext = defaultMacroContext(),
+  context?: MacroContext,
   registry: MacroRegistry = builtInMacroRegistry
 ): string {
-  return expandInternal(text, defaultMacroContext(context), registry, 0)
+  return expandInternal(text, defaultMacroContext(context ?? {}), registry, 0)
 }
 
 export function idleSinceFromPath(

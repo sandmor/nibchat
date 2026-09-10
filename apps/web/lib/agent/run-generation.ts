@@ -38,10 +38,15 @@ import {
   assemblePromptContext,
   type PromptStackDocument,
 } from "@/lib/prompt-stack"
-import { idleSinceFromPath, normalizeTimeZone } from "@/lib/prompt-macros"
+import {
+  chatIdentityFromRow,
+  idleSinceFromPath,
+  normalizeTimeZone,
+} from "@/lib/prompt-macros"
 import { prepareMcpTools } from "@/lib/mcp"
 import { assertPdfFallbackAvailable } from "@/lib/pdf-input"
 import type { NodeRow, ToolInvocationPart } from "@/lib/types"
+import { db } from "@/lib/db"
 
 const MAX_STEPS = 20
 
@@ -268,10 +273,24 @@ export async function createGenerationResponse(
     )
     // Tools always register from global MCP profiles; this stack module only
     // injects server initialize instructions (if any) at its stack position.
+    const chat = await db
+      .selectFrom("chats")
+      .select(["id", "created_at"])
+      .where("id", "=", assistant.chat_id)
+      .where("user_id", "=", userId)
+      .executeTakeFirst()
+    const chatIdentity = chatIdentityFromRow(chat)
+    const macroContext = {
+      now: new Date(),
+      timeZone: normalizeTimeZone(timeZone),
+      idleSince: idleSinceFromPath(contextNodes),
+      ...(chatIdentity ? { chat: chatIdentity } : {}),
+    }
     const [mcp, builtInPrefs] = await Promise.all([
       prepareMcpTools({
         includeInstructionsText: mcpServerInstructionsEnabled,
         reservedToolNames: reservedBuiltInToolNames,
+        macroContext,
       }),
       getBuiltInToolsPrefs(userId),
     ])
@@ -282,11 +301,7 @@ export async function createGenerationResponse(
       stack: promptStack,
       pathMessages,
       mcpServerInstructionsText: mcp.instructionsText,
-      macroContext: {
-        now: new Date(),
-        timeZone: normalizeTimeZone(timeZone),
-        idleSince: idleSinceFromPath(contextNodes),
-      },
+      macroContext,
     })
 
     let orderedParts: Parts = [...seedParts]

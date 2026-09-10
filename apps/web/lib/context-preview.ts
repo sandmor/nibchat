@@ -11,7 +11,11 @@ import {
 } from "@/lib/prompt-stack"
 import type { NodeRow, Parts } from "@/lib/types"
 import type { PdfAnalysis } from "@/lib/pdf-analysis"
-import { idleSinceFromPath, normalizeTimeZone } from "@/lib/prompt-macros"
+import {
+  chatIdentityFromRow,
+  idleSinceFromPath,
+  normalizeTimeZone,
+} from "@/lib/prompt-macros"
 
 export const TOKEN_ESTIMATE_TOOLTIP =
   "Approximate. Actual usage depends on model tokenizer."
@@ -287,6 +291,8 @@ export type AssembleContextPreviewInput = {
    * position: edited parts, owner-edited provenance, complete and included.
    */
   overlay?: ContextPreviewOverlay
+  /** Conversation identity for chat-scoped prompt macros. */
+  chat?: { id: string; created_at: string } | null
 }
 
 function overlayContextNodes(
@@ -332,6 +338,7 @@ export function assembleContextPreview(
     replayReasoning: input.replayReasoning,
     pdfInputMode,
   })
+  const chat = chatIdentityFromRow(input.chat)
   const assembled = assemblePromptContext({
     stack: resolved.stack,
     pathMessages,
@@ -340,6 +347,7 @@ export function assembleContextPreview(
       now: input.now ?? new Date(),
       timeZone: normalizeTimeZone(input.timeZone),
       idleSince: idleSinceFromPath(contextNodes),
+      ...(chat ? { chat } : {}),
     },
   })
   const preview = summarizeAssembledContext({

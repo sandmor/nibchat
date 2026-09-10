@@ -6,7 +6,7 @@ import {
 } from "@/lib/app-session"
 import { parseJson } from "@/lib/domain"
 import { providerConfigFromJson } from "@/lib/provider-config"
-import { resolveConfigEntries } from "@/lib/config-entries"
+import { resolveHeaderEntries } from "@/lib/config-entries"
 import { jsonError } from "@/lib/http-error"
 import {
   discoverProviderCatalog,
@@ -56,7 +56,7 @@ export async function GET(request: Request) {
     // Regular users may read an existing catalog, but must never cause one.
     if (!isOwner) return Response.json({ models: [] })
     const config = providerConfigFromJson(profile.config_json)
-    const headers = resolveConfigEntries(config.headers)
+    const headers = resolveHeaderEntries(config.headers)
     const discovered = await discoverProviderCatalog(
       { kind: profile.kind, name: profile.name },
       { baseUrl: config.baseUrl ?? null },

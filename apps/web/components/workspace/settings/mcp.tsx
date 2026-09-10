@@ -480,7 +480,14 @@ export function McpSettings() {
                 onChange={(headers) => setForm({ ...form, headers })}
                 namePlaceholder="Authorization"
                 valuePlaceholder="Bearer ${MCP_TOKEN}"
+                macros
               />
+              {form.headers.some((header) => header.value.includes("{{")) ? (
+                <p className="text-xs text-muted-foreground sm:col-span-2">
+                  Headers with macros are resolved per request, so this server
+                  is not reused across chats.
+                </p>
+              ) : null}
               <div className="flex items-center gap-2 sm:col-span-2">
                 <Switch
                   checked={form.followRedirects}

@@ -27,6 +27,14 @@ pnpm --filter web dev
 
 Open [http://localhost:3000](http://localhost:3000). The first signup becomes the sole owner of the instance, then you can connect a model provider.
 
+### Reasoning controls
+
+Use the reasoning picker beside the model to set effort or a thinking budget. Choices are remembered per provider/model in each chat. **Default** omits the override; **Off** explicitly disables thinking where supported. Reasoning replay remains a separate setting in Parameters.
+
+For custom endpoints, open **Settings → provider → Advanced** and configure each model’s reasoning format and supported API values. **OpenAI effort** works with both Responses (`reasoning.effort`) and Chat Completions (`reasoning_effort`), including automatic protocol fallback. Auto recognizes a small set of native models; unfamiliar endpoints require explicit configuration.
+
+For provider-specific fields, use **Custom JSON** and edit the SDK provider options in Parameters. Compatible endpoints using custom reasoning must pin their API type. Saving reasoning JSON switches that chat/model out of managed controls; the picker shows **Custom**. Managed thinking budgets share the total **Max output** limit with the answer.
+
 ### Password reset
 
 There is no outbound email for now. Generate a recovery link:

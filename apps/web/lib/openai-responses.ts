@@ -10,6 +10,51 @@ type ModelV4 = {
   doStream(options: unknown): PromiseLike<unknown>
 }
 
+/** Applied inside each route, after fallback removes incompatible replay state. */
+export function withReasoningOptions<T extends ModelV4>(
+  model: T,
+  key: string,
+  options: Record<string, unknown>
+): T {
+  const apply = (input: unknown) => {
+    if (!isRecord(input) || !Object.keys(options).length) return input
+    const providerOptions = isRecord(input.providerOptions)
+      ? input.providerOptions
+      : {}
+    const thinking = isRecord(options.thinking) ? options.thinking : undefined
+    // The Anthropic SDK adds the thinking budget to maxOutputTokens. Keep the
+    // app's explicit Max output limit inclusive of thinking and answer tokens.
+    const budget =
+      key === "anthropic" &&
+      thinking?.type === "enabled" &&
+      typeof thinking.budgetTokens === "number"
+        ? thinking.budgetTokens
+        : undefined
+    return {
+      ...input,
+      ...(budget !== undefined && typeof input.maxOutputTokens === "number"
+        ? { maxOutputTokens: input.maxOutputTokens - budget }
+        : {}),
+      providerOptions: {
+        ...providerOptions,
+        [key]: {
+          ...(isRecord(providerOptions[key]) ? providerOptions[key] : {}),
+          ...options,
+        },
+      },
+    }
+  }
+  return {
+    ...model,
+    specificationVersion: model.specificationVersion,
+    provider: model.provider,
+    modelId: model.modelId,
+    supportedUrls: model.supportedUrls,
+    doGenerate: (input) => model.doGenerate(apply(input)),
+    doStream: (input) => model.doStream(apply(input)),
+  }
+}
+
 /** Add the small set of OpenAI Responses defaults owned by the application. */
 export function openAIResponsesModel(options: {
   model: ModelV4
@@ -155,6 +200,14 @@ function isProtocolCompatibilityError(
     responseBody?: unknown
   }
   const status = value?.statusCode ?? value?.status
+  const detail =
+    `${value.message ?? ""}\n${stringify(value.responseBody)}`.toLowerCase()
+  // A rejected generation setting is not evidence of a missing wire protocol.
+  if (
+    (status === 400 || status === 422) &&
+    /reasoning|thinking|effort|budget_tokens/.test(detail)
+  )
+    return false
   if (
     status === 500 ||
     status === 501 ||
@@ -163,8 +216,6 @@ function isProtocolCompatibilityError(
     status === 422
   )
     return true
-  const detail =
-    `${value.message ?? ""}\n${stringify(value.responseBody)}`.toLowerCase()
   if (status === 404)
     return !/\b(model|deployment)\b.{0,50}\b(not found|does not exist|unknown)\b/.test(
       detail

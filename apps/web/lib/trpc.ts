@@ -1,3 +1,7 @@
+import {
+  reasoningPreferencesSchema,
+  reasoningSupportSchema,
+} from "@/lib/reasoning"
 import "server-only"
 import { initTRPC, TRPCError } from "@trpc/server"
 import { z, ZodError } from "zod"
@@ -133,6 +137,7 @@ const userProcedure = t.procedure.use(({ ctx, next }) => {
 })
 
 const modelConfigSchema = z.object({
+  reasoning: reasoningPreferencesSchema.optional(),
   providerId: z.string().optional(),
   model: z.string().optional(),
   temperature: z.number().optional(),
@@ -145,6 +150,7 @@ const modelConfigSchema = z.object({
   replayReasoning: z.boolean().optional(),
 })
 const providerModelSchema = z.object({
+  reasoning: reasoningSupportSchema.optional(),
   id: z.string().trim().min(1).max(256),
   label: z.string().trim().max(120).optional(),
   enabled: z.boolean(),

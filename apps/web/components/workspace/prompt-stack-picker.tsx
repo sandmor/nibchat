@@ -191,7 +191,7 @@ export function PromptStackPicker({
         title={label}
         aria-label={`Prompt stack: ${label}`}
       >
-        <span className="truncate">{label}</span>
+        <span className="truncate">Stack</span>
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="max-w-md">

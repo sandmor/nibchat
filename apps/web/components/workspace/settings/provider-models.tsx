@@ -12,6 +12,14 @@ import { AnimatePresence, motion } from "motion/react"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import { reasoningSupportSchema, type ReasoningSupport } from "@/lib/reasoning"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
@@ -43,6 +51,26 @@ const MODELS_HELP =
   "Only enabled models appear in the chat picker. Aliases are labels, not API ids. For PDFs, File sends the original and Text sends extracted text."
 const PROTOCOL_HELP =
   "API type chooses Chat Completions or the Responses API; Auto follows the catalog."
+const REASONING_HELP =
+  "Reasoning format is required for custom endpoints. Auto only applies to native OpenAI, Anthropic, and Ollama gpt-oss models."
+
+function reasoningFormats(kind: string) {
+  return kind === "anthropic"
+    ? {
+        auto: "Auto",
+        adaptive: "Adaptive",
+        budget: "Token budget",
+        custom: "Custom JSON",
+        unsupported: "Unsupported",
+      }
+    : {
+        auto: "Auto",
+        effort: "OpenAI effort",
+        toggle: "On / Off",
+        custom: "Custom JSON",
+        unsupported: "Unsupported",
+      }
+}
 
 const VISIBILITY_ITEMS: { id: ModelVisibilityFilter; label: string }[] = [
   { id: "all", label: "All" },
@@ -76,6 +104,92 @@ function firstSelected<T extends string>(
 /** Used only until the first mounted row is measured. */
 const FALLBACK_ROW_HEIGHT = 74
 
+function ReasoningSupportEditor({
+  model,
+  kind,
+  disabled,
+  onChange,
+}: {
+  model: ProviderModel
+  kind: string
+  disabled: boolean
+  onChange: (support: ReasoningSupport | undefined) => void
+}) {
+  const support = model.reasoning
+  const formats = reasoningFormats(kind)
+  return (
+    <div className="mt-1.5 space-y-1.5">
+      <div className="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between">
+        <p className="shrink-0 text-[11px] leading-none text-muted-foreground">
+          Reasoning
+        </p>
+        <Select
+          value={support?.format ?? "auto"}
+          items={formats}
+          disabled={disabled}
+          onValueChange={(format) => {
+            if (!format || format === "auto") {
+              onChange(undefined)
+              return
+            }
+            const parsed = reasoningSupportSchema.safeParse(
+              format === "effort" || format === "adaptive"
+                ? { format, levels: ["low", "medium", "high"] }
+                : { format }
+            )
+            if (parsed.success) onChange(parsed.data)
+          }}
+        >
+          <SelectTrigger
+            id={`reasoning-${model.id}`}
+            size="sm"
+            className="w-full min-w-0 max-w-full px-2.5 text-xs sm:max-w-[12.5rem]"
+            aria-label={`Reasoning format for ${model.id}`}
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {Object.entries(formats).map(([value, label]) => (
+              <SelectItem key={value} value={value}>
+                {label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      {(support?.format === "effort" || support?.format === "adaptive") && (
+        <Input
+          key={`${model.id}:${support.format}:${support.levels.join(",")}`}
+          defaultValue={support.levels.join(", ")}
+          disabled={disabled}
+          aria-label={`Reasoning levels for ${model.id}`}
+          placeholder="none, low, medium, high"
+          className="h-8 font-mono text-xs"
+          onBlur={(event) => {
+            const levels = [
+              ...new Set(
+                event.target.value
+                  .split(",")
+                  .map((value) => value.trim())
+                  .filter(Boolean)
+              ),
+            ]
+            const parsed = reasoningSupportSchema.safeParse({
+              ...support,
+              levels,
+            })
+            if (parsed.success) onChange(parsed.data)
+            else {
+              event.target.value = support.levels.join(", ")
+              toast.error("Enter 1–16 comma-separated reasoning levels.")
+            }
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
 function ModelRow({
   model,
   custom,
@@ -85,6 +199,9 @@ function ModelRow({
   onPdfInput,
   onProtocol,
   showProtocol,
+  showAdvanced,
+  providerKind,
+  onReasoning,
   animate,
   transition,
   onRemove,
@@ -97,6 +214,9 @@ function ModelRow({
   onPdfInput: (pdfInput: "native" | "extracted") => void
   onProtocol: (protocol: "auto" | "responses" | "chat") => void
   showProtocol: boolean
+  showAdvanced: boolean
+  providerKind: string
+  onReasoning: (support: ReasoningSupport | undefined) => void
   animate: boolean
   transition: MotionTween
   onRemove: () => void
@@ -203,6 +323,14 @@ function ModelRow({
             </motion.div>
           ) : null}
         </AnimatePresence>
+        {showAdvanced && (
+          <ReasoningSupportEditor
+            model={model}
+            kind={providerKind}
+            disabled={disabled}
+            onChange={onReasoning}
+          />
+        )}
       </div>
       {custom ? (
         <Button
@@ -252,10 +380,12 @@ export function ProviderModelsEditor({
   const [customId, setCustomId] = useState("")
   const [loading, setLoading] = useState(() => Boolean(providerId))
   const supportsProtocol = kindSupportsProtocol(providerKind)
-  const [showAdvanced, setShowAdvanced] = useState(
-    () =>
-      supportsProtocol &&
-      models.some((model) => model.protocol && model.protocol !== "auto")
+  const [showAdvanced, setShowAdvanced] = useState(() =>
+    models.some(
+      (model) =>
+        model.reasoning ||
+        (supportsProtocol && model.protocol && model.protocol !== "auto")
+    )
   )
   const showProtocol = supportsProtocol && showAdvanced
   const prefersReduced = usePrefersReducedMotion()
@@ -315,7 +445,7 @@ export function ProviderModelsEditor({
     })
     observer.observe(row)
     return () => observer.disconnect()
-  }, [showProtocol, virtualItems.length])
+  }, [showAdvanced, showProtocol, virtualItems.length])
 
   useEffect(() => {
     onLoadingChange?.(loading)
@@ -399,38 +529,39 @@ export function ProviderModelsEditor({
             {MODELS_HELP}
           </p>
           <AnimatePresence initial={false}>
-            {showProtocol ? (
+            {showAdvanced ? (
               <motion.p
-                key="protocol-help"
+                key="advanced-help"
                 initial={animate ? { height: 0, opacity: 0 } : false}
                 animate={{ height: "auto", opacity: 1 }}
                 exit={animate ? { height: 0, opacity: 0 } : { height: 0 }}
                 transition={animate ? transition : { duration: 0 }}
                 className="overflow-hidden text-xs text-pretty text-muted-foreground"
               >
-                <span className="block pt-1">{PROTOCOL_HELP}</span>
+                <span className="block pt-1">
+                  {supportsProtocol ? `${PROTOCOL_HELP} ` : ""}
+                  {REASONING_HELP}
+                </span>
               </motion.p>
             ) : null}
           </AnimatePresence>
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          {supportsProtocol ? (
-            <div className="flex items-center gap-2">
-              <Switch
-                id="provider-models-advanced"
-                size="sm"
-                checked={showAdvanced}
-                disabled={disabled}
-                onCheckedChange={setShowAdvanced}
-              />
-              <Label
-                htmlFor="provider-models-advanced"
-                className="text-xs font-normal text-muted-foreground"
-              >
-                Advanced
-              </Label>
-            </div>
-          ) : null}
+          <div className="flex items-center gap-2">
+            <Switch
+              id="provider-models-advanced"
+              size="sm"
+              checked={showAdvanced}
+              disabled={disabled}
+              onCheckedChange={setShowAdvanced}
+            />
+            <Label
+              htmlFor="provider-models-advanced"
+              className="text-xs font-normal text-muted-foreground"
+            >
+              Advanced
+            </Label>
+          </div>
           <p className="text-xs text-muted-foreground">
             {enabledCount} on
             {models.length ? ` · ${models.length} listed` : ""}
@@ -585,6 +716,17 @@ export function ProviderModelsEditor({
                                     ? { protocol: undefined }
                                     : { protocol }),
                                 }
+                              : entry
+                          )
+                        )
+                      }
+                      showAdvanced={showAdvanced}
+                      providerKind={providerKind}
+                      onReasoning={(reasoning) =>
+                        onModelsChange(
+                          models.map((entry) =>
+                            entry.id === model.id
+                              ? { ...entry, reasoning }
                               : entry
                           )
                         )

@@ -69,6 +69,34 @@ describe("OpenAI Responses models", () => {
     expect(received.providerOptions.openai.store).toBe(false)
   })
 
+  it.each([400, 422])(
+    "does not switch protocols for a rejected reasoning level (HTTP %s)",
+    async (statusCode) => {
+      let fallbackCalls = 0
+      const failure = {
+        statusCode,
+        message: "Unsupported reasoning_effort parameter: high",
+      }
+      const wrapped = responsesThenChat(
+        model({
+          doGenerate: async () => {
+            throw failure
+          },
+        }),
+        model({
+          doGenerate: async () => {
+            fallbackCalls++
+            return {}
+          },
+        })
+      )
+      if (typeof wrapped === "string")
+        throw new Error("Expected a model adapter")
+      await expect(wrapped.doGenerate({ prompt: [] })).rejects.toBe(failure)
+      expect(fallbackCalls).toBe(0)
+    }
+  )
+
   it("falls back only for a missing Responses endpoint", async () => {
     let fallbackCalls = 0
     const wrapped = responsesThenChat(

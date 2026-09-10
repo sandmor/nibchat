@@ -1,3 +1,4 @@
+import { withReasoning } from "@/lib/reasoning"
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import {
   beginResumeAssistant,
@@ -1717,6 +1718,177 @@ describe("generation abort + finalize", () => {
 })
 
 describe("modelFor preflight", () => {
+  it.each(["responses", "chat"] as const)(
+    "preserves reasoning across %s fallback and subsequent tool steps",
+    async (protocol) => {
+      const provider = await createProvider(userId, {
+        name: "Reasoning Gateway",
+        kind: "openai-compatible",
+        config: { baseUrl: "https://reasoning.test/v1", headers: [] },
+        models: [
+          {
+            id: "custom-reasoner",
+            enabled: true,
+            source: "custom",
+            pdfInput: "extracted",
+            reasoning: { format: "effort", levels: ["low", "high"] },
+          },
+        ],
+      })
+      await db
+        .insertInto("model_catalog_cache")
+        .values({
+          provider_id: provider.id,
+          models_json: JSON.stringify([
+            { id: "custom-reasoner", name: "Custom", protocol },
+          ]),
+          refreshed_at: new Date().toISOString(),
+        })
+        .execute()
+      const requests: Array<{ url: string; body: Record<string, unknown> }> = []
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+        requests.push({
+          url: String(url),
+          body: JSON.parse(String(init?.body)),
+        })
+        if (requests.length === 1)
+          return new Response('{"error":{"message":"Route not found"}}', {
+            status: 404,
+            headers: { "content-type": "application/json" },
+          })
+        return new Response("", {
+          headers: { "content-type": "text/event-stream" },
+        })
+      })
+      const config = withReasoning(
+        { providerId: provider.id, model: "custom-reasoner" },
+        { type: "effort", effort: "high" }
+      )
+      const model = await modelFor(userId, config)
+      if (typeof model === "string") throw new Error("Expected a model adapter")
+      for (let step = 0; step < 2; step++)
+        await model.doStream({
+          prompt: [{ role: "user", content: [{ type: "text", text: "test" }] }],
+        })
+      expect(requests).toHaveLength(3)
+      for (const request of requests) {
+        if (request.url.endsWith("/responses")) {
+          expect(request.body.reasoning).toEqual({ effort: "high" })
+          expect(request.body).not.toHaveProperty("reasoning_effort")
+        } else {
+          expect(request.body.reasoning_effort).toBe("high")
+          expect(request.body).not.toHaveProperty("reasoning")
+        }
+      }
+      expect(requests[1]!.url).toBe(requests[2]!.url)
+      expect(requests[0]!.url).not.toBe(requests[1]!.url)
+    }
+  )
+
+  it.each([
+    {
+      kind: "openai" as const,
+      model: "gpt-5.4",
+      selection: { type: "effort" as const, effort: "high" },
+      expected: { reasoning: { effort: "high" } },
+    },
+    {
+      kind: "anthropic" as const,
+      model: "claude-sonnet-4-6",
+      selection: { type: "effort" as const, effort: "high" },
+      expected: {
+        thinking: { type: "adaptive" },
+        output_config: { effort: "high" },
+      },
+    },
+    {
+      kind: "anthropic" as const,
+      model: "claude-sonnet-4-5",
+      selection: { type: "budget" as const, tokens: 2048 },
+      expected: {
+        thinking: { type: "enabled", budget_tokens: 2048 },
+        max_tokens: 4096,
+      },
+    },
+    {
+      kind: "anthropic" as const,
+      model: "claude-sonnet-4-6",
+      selection: { type: "effort" as const, effort: "none" },
+      expected: { thinking: { type: "disabled" } },
+    },
+  ])(
+    "sends native $model reasoning",
+    async ({ kind, model: modelId, selection, expected }) => {
+      const provider = await createProvider(userId, {
+        name: `Native ${modelId}`,
+        kind,
+        config: {
+          headers: [
+            {
+              name: kind === "openai" ? "Authorization" : "x-api-key",
+              value: kind === "openai" ? "Bearer test-key" : "test-key",
+            },
+          ],
+        },
+        models: [
+          { id: modelId, enabled: true, source: "custom", pdfInput: "native" },
+        ],
+      })
+      const requests: Record<string, unknown>[] = []
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+        requests.push(JSON.parse(String(init?.body)))
+        return new Response("", {
+          headers: { "content-type": "text/event-stream" },
+        })
+      })
+      const config = withReasoning(
+        {
+          providerId: provider.id,
+          model: modelId,
+          maxOutputTokens: 4096,
+          replayReasoning: false,
+        },
+        selection
+      )
+      const model = await modelFor(userId, config)
+      if (typeof model === "string") throw new Error("Expected a model adapter")
+      await model.doStream({
+        maxOutputTokens: config.maxOutputTokens,
+        prompt: [{ role: "user", content: [{ type: "text", text: "test" }] }],
+      })
+      expect(requests[0]).toMatchObject(expected)
+    }
+  )
+
+  it("rejects custom reasoning conflicts and requires a pinned custom protocol before fetching", async () => {
+    const provider = await createProvider(userId, {
+      name: "Custom reasoning",
+      kind: "openai-compatible",
+      config: { baseUrl: "https://reasoning.test/v1", headers: [] },
+      models: [
+        {
+          id: "custom",
+          enabled: true,
+          source: "custom",
+          pdfInput: "extracted",
+          reasoning: { format: "effort", levels: ["high"] },
+        },
+      ],
+    })
+    const config = {
+      providerId: provider.id,
+      model: "custom",
+      providerOptions: { "Custom reasoning": { reasoningEffort: "high" } },
+    }
+    await expect(
+      modelFor(
+        userId,
+        withReasoning(config, { type: "effort", effort: "high" })
+      )
+    ).rejects.toThrow(/also set in provider JSON/)
+    await expect(modelFor(userId, config)).rejects.toThrow(/fixed API type/)
+  })
+
   it("replaces a stale model selection with the first enabled model", async () => {
     const provider = await createProvider(userId, {
       name: `Fallback ${Date.now()}`,

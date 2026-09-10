@@ -1,3 +1,5 @@
+import { reasoningSupportSchema, type ReasoningSupport } from "@/lib/reasoning"
+
 export type ProviderModelSource = "catalog" | "custom"
 export type PdfInputMode = "native" | "extracted"
 /** The wire protocol chosen for this model. `auto` follows provider catalog data. */
@@ -11,6 +13,7 @@ export type ProviderModel = {
   source: ProviderModelSource
   pdfInput: PdfInputMode
   protocol?: ModelProtocolPreference
+  reasoning?: ReasoningSupport
 }
 
 export type ProviderModelDocument = {
@@ -93,6 +96,7 @@ export function parseProviderModels(raw: unknown): ProviderModel[] {
       source?: unknown
       pdfInput?: unknown
       protocol?: unknown
+      reasoning?: unknown
     }
     const id = trimId(record.id)
     if (
@@ -102,6 +106,7 @@ export function parseProviderModels(raw: unknown): ProviderModel[] {
       (record.pdfInput !== "native" && record.pdfInput !== "extracted")
     )
       continue
+    const reasoning = reasoningSupportSchema.safeParse(record.reasoning)
     seen.add(id)
     models.push({
       id,
@@ -109,6 +114,7 @@ export function parseProviderModels(raw: unknown): ProviderModel[] {
       enabled: record.enabled === true,
       source: record.source,
       pdfInput: record.pdfInput,
+      ...(reasoning.success ? { reasoning: reasoning.data } : {}),
       ...(isProtocolPreference(record.protocol)
         ? { protocol: record.protocol }
         : {}),
@@ -225,6 +231,7 @@ export function modelsToPersist(
       if (!catalogNames.has(model.id)) return false
       return (
         model.enabled ||
+        model.reasoning !== undefined ||
         model.label !== catalogNames.get(model.id) ||
         model.pdfInput !== defaultPdfInput ||
         (supportsProtocolRouting &&

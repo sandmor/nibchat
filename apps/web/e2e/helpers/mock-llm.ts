@@ -37,6 +37,7 @@ export type MockLlm = {
   release: () => void
   /** How many chat-completion requests were accepted. */
   requestCount: () => number
+  requestBodies: () => Record<string, unknown>[]
   close: () => Promise<void>
 }
 
@@ -48,6 +49,7 @@ export async function startMockLlm(): Promise<MockLlm> {
   const queue: MockCompletionPlan[] = []
   const releaseWaiters: Array<() => void> = []
   let requests = 0
+  const bodies: Record<string, unknown>[] = []
 
   const server = http.createServer(async (req, res) => {
     const url = req.url ?? ""
@@ -78,6 +80,7 @@ export async function startMockLlm(): Promise<MockLlm> {
         /* malformed requests use the non-streaming response */
       }
 
+      bodies.push(JSON.parse(body))
       requests += 1
       const plan = queue.shift() ?? {
         text: `mock-reply-${requests}`,
@@ -234,6 +237,7 @@ export async function startMockLlm(): Promise<MockLlm> {
       next?.()
     },
     requestCount: () => requests,
+    requestBodies: () => bodies,
     close: () =>
       new Promise((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()))

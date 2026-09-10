@@ -66,6 +66,7 @@ import {
 import { motionTransition, shouldAnimate } from "@/lib/appearance"
 import type { ModelConfigLocal } from "./types"
 import { seedDraftModelConfig, usePrefersReducedMotion } from "./hooks"
+import { ReasoningPicker } from "./reasoning-picker"
 import { ModelPicker } from "./model-picker"
 import { GenerationParameters } from "./generation-parameters"
 import { PromptStackPicker } from "./prompt-stack-picker"
@@ -177,6 +178,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const [promptPickerOpen, setPromptPickerOpen] = useState(false)
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameTitle, setRenameTitle] = useState("")
+  const [parametersOpen, setParametersOpen] = useState(false)
   const [draftModelConfig, setDraftModelConfig] = useState<ModelConfigLocal>(
     () => seedDraftModelConfig(initial.chats, chromeProviders)
   )
@@ -1430,8 +1432,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     if (!session || session.role !== "user") return false
     const authored = authoredPartsFromSession(session)
     const parts = durableAuthoredParts(authored.parts)
-    if (isEmptyParts(parts) && authored.attachments.length === 0)
-      return false
+    if (isEmptyParts(parts) && authored.attachments.length === 0) return false
     if (parts.length > 0 && !messagePartsSchema.safeParse(parts).success)
       return false
     if (session.attachments.some((attachment) => attachment.uploading))
@@ -1533,7 +1534,6 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       onSuccess: async () => {
         await invalidateWorkspace()
       },
-      onError: (error) => toast.error(error.message || "Could not apply model"),
     })
   )
 
@@ -1675,7 +1675,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
               Each reply can become its own direction.
             </p>
           </div>
-          <div className="flex min-w-0 items-center gap-0.5 sm:max-w-[min(36rem,70%)] sm:shrink-0 sm:gap-1">
+          <div className="flex min-w-0 items-center gap-0.5 sm:max-w-[min(44rem,78%)] sm:shrink-0 sm:gap-1">
             <Button
               type="button"
               variant="ghost"
@@ -1709,13 +1709,21 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
               chatId={data.chat?.id}
               providers={providers}
               showIds={appearance.modelPicker.showIds}
-              onChange={(config) => void commitModelConfig(config)}
+              onChange={commitModelConfig}
+            />
+            <ReasoningPicker
+              config={activeModelConfig}
+              providers={providers}
+              onChange={commitModelConfig}
+              onEditParameters={() => setParametersOpen(true)}
             />
             <GenerationParameters
+              open={parametersOpen}
+              onOpenChange={setParametersOpen}
               key={`${data.chat?.id ?? "draft"}:${activeModelConfig.providerId ?? ""}:${activeModelConfig.model ?? ""}`}
               config={activeModelConfig}
               chatId={data.chat?.id}
-              onChange={(config) => void commitModelConfig(config)}
+              onChange={commitModelConfig}
             />
           </div>
         </header>

@@ -1,4 +1,12 @@
 import "server-only"
+import {
+  nativeReasoningKind,
+  reasoningSupport,
+  selectedReasoning,
+  hasCustomReasoning,
+  reasoningRequest,
+  type ReasoningSelection,
+} from "@/lib/reasoning"
 import { createAnthropic } from "@ai-sdk/anthropic"
 import { createOpenAI } from "@ai-sdk/openai"
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible"
@@ -24,9 +32,11 @@ import { replayReasoningEnabled } from "@/lib/reasoning-replay"
 import {
   openAIResponsesModel,
   protocolRoutedModel,
+  withReasoningOptions,
 } from "@/lib/openai-responses"
 
 export type ModelConfig = {
+  reasoning?: Record<string, ReasoningSelection>
   providerId?: string
   model?: string
   temperature?: number
@@ -104,6 +114,11 @@ export async function listProviders() {
   return rows.map(({ config_json, ...row }) => ({
     ...row,
     config: providerConfigFromJson(config_json),
+    reasoningKind:
+      nativeReasoningKind(
+        row.kind,
+        providerConfigFromJson(config_json).baseUrl
+      ) ?? null,
   }))
 }
 
@@ -111,11 +126,24 @@ export async function listProviders() {
 export async function listAvailableProviders() {
   const rows = await db
     .selectFrom("provider_profiles")
-    .select(["id", "name", "kind", "models_json", "created_at", "updated_at"])
+    .select([
+      "id",
+      "name",
+      "kind",
+      "config_json",
+      "models_json",
+      "created_at",
+      "updated_at",
+    ])
     .orderBy("name")
     .execute()
-  return rows.map((row) => ({
+  return rows.map(({ config_json, ...row }) => ({
     ...row,
+    reasoningKind:
+      nativeReasoningKind(
+        row.kind,
+        providerConfigFromJson(config_json).baseUrl
+      ) ?? null,
     // Keep the public shape stable without exposing URLs, header names, or env hints.
     config: { headers: [] as Array<never> },
   }))
@@ -135,6 +163,7 @@ export async function defaultModelConfig(userId: string): Promise<ModelConfig> {
     if (cfg.providerId) {
       return {
         providerId: cfg.providerId,
+        ...(cfg.reasoning ? { reasoning: cfg.reasoning } : {}),
         ...(cfg.model ? { model: cfg.model } : {}),
       }
     }
@@ -185,6 +214,23 @@ export async function modelFor(
     )
   }
   const headers = resolveConfigEntries(connection.headers)
+  const configured = enabledModels.find((item) => item.id === model)
+  const support = reasoningSupport(
+    nativeReasoningKind(profile.kind, connection.baseUrl),
+    model,
+    configured?.reasoning
+  )
+  const selection = selectedReasoning({ ...config, model })
+  const customReasoning =
+    hasCustomReasoning(config.providerOptions) ||
+    (support?.format === "custom" &&
+      Object.keys(config.providerOptions ?? {}).length > 0)
+  if (selection && customReasoning)
+    throw new Error(
+      "Reasoning is also set in provider JSON. Clear those fields in Parameters or choose Default."
+    )
+  const reasoningOptions = (protocol: "responses" | "chat" | "anthropic") =>
+    reasoningRequest(support, selection, protocol, config).options
   if (profile.kind === "anthropic") {
     const xApiKey = headerValue(headers, "x-api-key")
     const authorization = headerValue(headers, "authorization")
@@ -194,14 +240,18 @@ export async function modelFor(
         profile.name,
         "x-api-key or Bearer Authorization"
       )
-    return createAnthropic({
-      ...(xApiKey ? { apiKey: xApiKey } : { authToken: authToken! }),
-      ...(connection.baseUrl ? { baseURL: connection.baseUrl } : {}),
-      headers: withoutHeaders(
-        headers,
-        xApiKey ? ["x-api-key"] : ["authorization"]
-      ),
-    })(model)
+    return withReasoningOptions(
+      createAnthropic({
+        ...(xApiKey ? { apiKey: xApiKey } : { authToken: authToken! }),
+        ...(connection.baseUrl ? { baseURL: connection.baseUrl } : {}),
+        headers: withoutHeaders(
+          headers,
+          xApiKey ? ["x-api-key"] : ["authorization"]
+        ),
+      })(model),
+      "anthropic",
+      reasoningOptions("anthropic")
+    )
   }
   const providerName = profile.kind === "ollama" ? "ollama" : profile.name
   const baseURL =
@@ -223,12 +273,20 @@ export async function modelFor(
       headers: withoutHeaders(headers, ["authorization"]),
     })
     return openAIResponsesModel({
-      model: provider.responses(model),
+      model: withReasoningOptions(
+        provider.responses(model),
+        "openai",
+        reasoningOptions("responses")
+      ),
       promptCacheKey,
       defaultReasoningSummary: isReasoningModel(model),
     })
   }
-  const preference = enabledModels.find((item) => item.id === model)?.protocol
+  const preference = configured?.protocol
+  if (customReasoning && (!preference || preference === "auto"))
+    throw new Error(
+      "Custom reasoning JSON requires a fixed API type. Choose Responses or Chat in this model’s provider settings."
+    )
   const catalog = await catalogModelFor(profile.id, model)
   const cachedProtocol = effectiveCatalogProtocol(catalog)
   const preferred =
@@ -248,20 +306,29 @@ export async function modelFor(
     if (protocol === "responses")
       return {
         protocol,
-        model: createOpenResponses({
-          name: providerName,
-          url: openResponsesUrl(routeBase),
-          headers,
-        })(model),
+        model: withReasoningOptions(
+          createOpenResponses({
+            name: providerName,
+            url: openResponsesUrl(routeBase),
+            headers,
+          })(model),
+          providerName,
+          reasoningOptions(protocol)
+        ),
       }
     return {
       protocol,
-      model: createOpenAICompatible({
-        name: providerName,
-        baseURL: openChatCompletionsBaseUrl(routeBase),
-        headers,
-        supportsStructuredOutputs: profile.kind === "ollama" ? true : undefined,
-      })(model),
+      model: withReasoningOptions(
+        createOpenAICompatible({
+          name: providerName,
+          baseURL: openChatCompletionsBaseUrl(routeBase),
+          headers,
+          supportsStructuredOutputs:
+            profile.kind === "ollama" ? true : undefined,
+        })(model),
+        providerName,
+        reasoningOptions(protocol)
+      ),
     }
   })
   return protocolRoutedModel({

@@ -12,19 +12,23 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
+import { hasCustomReasoning, withReasoning } from "@/lib/reasoning"
 import type { ModelConfigLocal } from "./types"
 
 export function GenerationParameters({
+  open,
+  onOpenChange,
   config: existing,
   chatId,
   onChange,
 }: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
   config: ModelConfigLocal
   chatId?: string
   onChange: (config: ModelConfigLocal) => void | Promise<void>
 }) {
   const replayId = useId()
-  const [open, setOpen] = useState(false)
   const [config, setConfig] = useState(existing)
   const [stopText, setStopText] = useState(
     (existing.stopSequences ?? []).join(", ")
@@ -33,11 +37,24 @@ export function GenerationParameters({
     JSON.stringify(existing.providerOptions ?? {}, null, 2)
   )
   const [pending, setPending] = useState(false)
+  const [draftOpen, setDraftOpen] = useState(open)
+
+  if (open !== draftOpen) {
+    setDraftOpen(open)
+    if (open) {
+      setConfig(existing)
+      setOptionsText(JSON.stringify(existing.providerOptions ?? {}, null, 2))
+      setStopText((existing.stopSequences ?? []).join(", "))
+    }
+  }
 
   async function save() {
     let providerOptions = config.providerOptions
     try {
-      providerOptions = JSON.parse(optionsText) as Record<string, unknown>
+      const parsed: unknown = JSON.parse(optionsText)
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        throw new Error("Expected a JSON object")
+      providerOptions = parsed as Record<string, unknown>
     } catch {
       toast.error("Provider JSON is invalid")
       return
@@ -48,13 +65,16 @@ export function GenerationParameters({
       .filter(Boolean)
     const next = {
       ...config,
+      reasoning: existing.reasoning,
       providerOptions,
       stopSequences: stopSequences.length ? stopSequences : undefined,
     }
     setPending(true)
     try {
-      await onChange(next)
-      setOpen(false)
+      await onChange(
+        hasCustomReasoning(providerOptions) ? withReasoning(next) : next
+      )
+      onOpenChange(false)
       toast.success(
         chatId ? "Parameters applied" : "Parameters set for this conversation"
       )
@@ -68,14 +88,22 @@ export function GenerationParameters({
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover
+      open={open}
+      onOpenChange={onOpenChange}
+    >
       <PopoverTrigger
-        render={<Button variant="ghost" size="sm" className="shrink-0" />}
+        render={
+          <Button variant="ghost" size="sm" className="shrink-0 px-2 sm:px-3" />
+        }
       >
         <span className="sm:hidden">Params</span>
         <span className="hidden sm:inline">Parameters</span>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-80 space-y-3">
+      <PopoverContent
+        align="end"
+        className="max-h-[min(36rem,calc(100dvh-6rem))] w-[min(20rem,calc(100vw-2rem))] gap-3 overflow-y-auto p-3"
+      >
         <p className="text-sm font-medium">Generation parameters</p>
         <div className="grid grid-cols-2 gap-2">
           {(

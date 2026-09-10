@@ -1,4 +1,5 @@
 import "server-only"
+import type { ReasoningSupport } from "@/lib/reasoning"
 import { createHash } from "node:crypto"
 import { sql, type Kysely, type Transaction } from "kysely"
 import { db, fromDbBool, toDbBool } from "@/lib/db"
@@ -1783,6 +1784,7 @@ type ProviderProfileInput = {
     source: "catalog" | "custom"
     pdfInput: "native" | "extracted"
     protocol?: "auto" | "responses" | "chat"
+    reasoning?: ReasoningSupport
   }>
 }
 

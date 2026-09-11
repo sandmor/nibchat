@@ -17,9 +17,7 @@ import {
   type ThemeGroupId,
 } from "@/lib/appearance-registry"
 import type { ThemeHit } from "@/lib/appearance-targets"
-import {
-  appearanceMagicStorageKey,
-} from "@/lib/theme-slot"
+import { appearanceMagicStorageKey } from "@/lib/theme-slot"
 export { APPEARANCE_MAGIC_LS_KEY } from "@/lib/theme-slot"
 
 type ThemeDocument = { id: string; document: Appearance }
@@ -29,7 +27,7 @@ let persistenceUserId: string | undefined
 export function setAppearancePersistenceUser(userId?: string) {
   persistenceUserId = userId
 }
-const LS_VERSION = 2 as const
+const LS_VERSION = 1 as const
 
 export const MAGIC_PERSIST_DEBOUNCE_MS = 250
 
@@ -178,7 +176,9 @@ export function parseMagicPersist(
 function readLocalMagic(): AppearanceMagicPersist | null {
   if (typeof window === "undefined") return null
   try {
-    return parseMagicPersist(localStorage.getItem(appearanceMagicStorageKey(persistenceUserId)))
+    return parseMagicPersist(
+      localStorage.getItem(appearanceMagicStorageKey(persistenceUserId))
+    )
   } catch {
     return null
   }

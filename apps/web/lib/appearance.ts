@@ -7,6 +7,9 @@ import {
   isPaletteRole,
   isThemeGroupId,
   PALETTE_ROLES,
+  parseSurfaceRef,
+  SURFACE_STEPS,
+  surfaceVar,
   THEME_GROUPS,
   THEME_TOKENS,
   tokenByCssVar,
@@ -14,6 +17,13 @@ import {
   type PaletteRole,
   type ThemeGroupId,
 } from "@/lib/appearance-registry"
+import {
+  defaultTokenRecipe,
+  groupFillValue,
+  surfaceStepValue,
+} from "@/lib/appearance-color"
+
+export { defaultTokenRecipe } from "@/lib/appearance-color"
 
 export const PAPER_THEME_ID = "paper"
 export const INK_THEME_ID = "ink"
@@ -175,6 +185,7 @@ export function appearanceReferenceIssues(
       return
     }
     if (isPaletteRole(value.ref)) return
+    if (parseSurfaceRef(value.ref)) return
     if (value.ref.startsWith("extra:")) {
       if (!extras.has(value.ref.slice(6))) {
         issue(path, `Unknown palette extra: ${value.ref}`)
@@ -443,6 +454,8 @@ function cssForRef(refValue: string): string {
     const groupId = refValue.slice(6)
     if (isThemeGroupId(groupId)) return `var(${groupFillVar(groupId)})`
   }
+  const step = parseSurfaceRef(refValue)
+  if (step) return `var(${surfaceVar(step)})`
   if (isPaletteRole(refValue)) return `var(--palette-${refValue})`
   return "var(--palette-paper)"
 }
@@ -456,27 +469,14 @@ function resolvedTokenValue(
   const token = tokenByCssVar(cssVar)
   if (!token) return { literal: "oklch(0.5 0 0)" }
   const groupPaint = doc.groups[token.groupId]
-  if (token.role === "fill") {
-    if (groupPaint?.fill) return { ref: `group:${token.groupId}` }
-    return token.recipe
-  }
+  if (token.role === "fill") return { ref: `group:${token.groupId}` }
   if (token.role === "foreground" && groupPaint?.recolorText) {
     return { ref: `group:${token.groupId}` }
   }
-  return token.recipe
+  return defaultTokenRecipe(doc, token)
 }
 
-function resolvedGroupFill(doc: Appearance, groupId: ThemeGroupId): ColorValue {
-  const paint = doc.groups[groupId]?.fill
-  if (paint) return paint
-  const group = THEME_GROUPS.find((entry) => entry.id === groupId)
-  const fillToken = group
-    ? THEME_TOKENS.find((token) => token.id === group.fillTokenId)
-    : undefined
-  return fillToken?.recipe ?? { ref: "paper" }
-}
-
-/** Compile palette + recipes + overrides into CSS custom properties. */
+/** Compile palette + surface ramp + overrides into CSS custom properties. */
 export function compileAppearance(doc: Appearance): Record<string, string> {
   const vars: Record<string, string> = {}
   for (const role of PALETTE_ROLES) {
@@ -485,8 +485,11 @@ export function compileAppearance(doc: Appearance): Record<string, string> {
   for (const extra of doc.palette.extras) {
     vars[extraPaletteVar(extra.id)] = extra.value
   }
+  for (const step of SURFACE_STEPS) {
+    vars[surfaceVar(step)] = cssForColor(surfaceStepValue(doc, step))
+  }
   for (const group of THEME_GROUPS) {
-    vars[groupFillVar(group.id)] = cssForColor(resolvedGroupFill(doc, group.id))
+    vars[groupFillVar(group.id)] = cssForColor(groupFillValue(doc, group.id))
   }
   for (const token of THEME_TOKENS) {
     vars[token.cssVar] = cssForColor(resolvedTokenValue(doc, token.cssVar))

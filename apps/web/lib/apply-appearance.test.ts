@@ -33,4 +33,21 @@ describe("appearance applier", () => {
     applier.apply(appearance)
     expect(properties.get("--palette-accent")).toBe(appearance.palette.accent)
   })
+
+  it("marks dark elevation from paper vs ink, not scheme", () => {
+    const { root } = appearanceRoot()
+    const applier = createAppearanceApplier(root)
+    applier.apply(defaultAppearance())
+    expect(root.dataset.elevation).toBe("light")
+    applier.apply({
+      ...defaultAppearance(),
+      scheme: "light",
+      palette: {
+        ...defaultAppearance().palette,
+        paper: "oklch(0.145 0 0)",
+        ink: "oklch(0.985 0 0)",
+      },
+    })
+    expect(root.dataset.elevation).toBe("dark")
+  })
 })

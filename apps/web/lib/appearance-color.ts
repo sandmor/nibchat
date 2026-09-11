@@ -1,5 +1,5 @@
 /**
- * Color helpers for the magic appearance editor.
+ * Color helpers for the magic appearance editor and the surface-ramp compiler.
  *
  * Stored tokens are oklch / color-mix / var() references. The custom picker
  * edits OKLCH; writes go back as oklch() literals or palette refs.
@@ -8,7 +8,23 @@
 import { converter, formatHex, interpolate, parse } from "culori"
 import type { Oklch } from "culori"
 import type { Appearance } from "@/lib/appearance"
-import { isPaletteRole, type ColorValue } from "@/lib/appearance-registry"
+import {
+  CHROME_DELTAS,
+  SURFACE_DELTAS,
+  groupById,
+  groupFill,
+  isDeriveSource,
+  isPaletteRole,
+  isThemeGroupId,
+  mix,
+  parseSurfaceRef,
+  surfaceRef,
+  tokenById,
+  type ColorValue,
+  type SurfaceStep,
+  type ThemeGroupId,
+  type ThemeToken,
+} from "@/lib/appearance-registry"
 
 const toOklch = converter("oklch")
 
@@ -67,6 +83,99 @@ function mixCss(from: string, onto: string, amount: number): string {
   })
 }
 
+/** True when paper is darker than ink — cards need a real lift off the canvas. */
+export function usesDarkElevation(doc: Appearance): boolean {
+  return (
+    cssColorToOklch(doc.palette.paper).l < cssColorToOklch(doc.palette.ink).l
+  )
+}
+
+/**
+ * Never spend more than this fraction of the remaining paper→ink span on one
+ * mix. ΔL targeting still wins on seed palettes; tight custom palettes keep
+ * a contrast budget for ink text instead of snapping surfaces to 100% ink.
+ */
+const MAX_MIX_TOWARD_INK = 0.4
+
+function mixAmountForDelta(
+  ontoCss: string,
+  inkCss: string,
+  delta: number
+): number {
+  if (delta <= 0) return 0
+  const span = Math.abs(cssColorToOklch(inkCss).l - cssColorToOklch(ontoCss).l)
+  if (span < 0.01) return 0
+  return Math.min(MAX_MIX_TOWARD_INK, delta / span)
+}
+
+/** Shrink the whole ramp together so canvas < raised < … < control still holds. */
+function surfaceRampScale(doc: Appearance): number {
+  const scheme = usesDarkElevation(doc) ? "dark" : "light"
+  const span = Math.abs(
+    cssColorToOklch(doc.palette.ink).l - cssColorToOklch(doc.palette.paper).l
+  )
+  if (span < 0.01) return 0
+  const peak = SURFACE_DELTAS.control[scheme]
+  const budget = span * MAX_MIX_TOWARD_INK
+  return peak > budget ? budget / peak : 1
+}
+
+export function surfaceStepValue(
+  doc: Appearance,
+  step: SurfaceStep
+): ColorValue {
+  const scheme = usesDarkElevation(doc) ? "dark" : "light"
+  const amount = mixAmountForDelta(
+    doc.palette.paper,
+    doc.palette.ink,
+    SURFACE_DELTAS[step][scheme] * surfaceRampScale(doc)
+  )
+  if (amount <= 0) return { ref: "paper" }
+  return mix("ink", "paper", amount)
+}
+
+function mixTowardInk(
+  doc: Appearance,
+  onto: ColorValue,
+  delta: number
+): ColorValue {
+  const amount = mixAmountForDelta(
+    resolveColorValue(doc, onto),
+    doc.palette.ink,
+    delta
+  )
+  if (amount <= 0) return onto
+  return mix("ink", onto, amount)
+}
+
+export function groupFillValue(
+  doc: Appearance,
+  groupId: ThemeGroupId
+): ColorValue {
+  const paint = doc.groups[groupId]?.fill
+  if (paint) return paint
+  const group = groupById(groupId)
+  const fillToken = group ? tokenById(group.fillTokenId) : null
+  if (!fillToken || isDeriveSource(fillToken.source)) return { ref: "paper" }
+  return fillToken.source
+}
+
+/** ColorValue the compiler and picker use when a token has no override. */
+export function defaultTokenRecipe(
+  doc: Appearance,
+  token: ThemeToken
+): ColorValue {
+  const source = token.source
+  if (token.role === "fill") return groupFill(token.groupId)
+  if (isDeriveSource(source)) {
+    const scheme = usesDarkElevation(doc) ? "dark" : "light"
+    const onto =
+      source.onto === "canvas" ? surfaceRef("canvas") : groupFill(token.groupId)
+    return mixTowardInk(doc, onto, CHROME_DELTAS[source.as][scheme])
+  }
+  return source
+}
+
 export function resolveColorValue(doc: Appearance, value: ColorValue): string {
   return resolveColorValueInner(doc, value, new Set(), 0)
 }
@@ -94,17 +203,27 @@ function resolveColorValueInner(
     base = extra?.value ?? doc.palette.paper
   } else if (value.ref.startsWith("group:")) {
     const groupId = value.ref.slice(6)
-    const fill = doc.groups[groupId]?.fill
     if (groups.has(groupId)) return doc.palette.paper
     const nextGroups = new Set(groups)
     nextGroups.add(groupId)
-    base = fill
-      ? resolveColorValueInner(doc, fill, nextGroups, depth + 1)
-      : doc.palette.paper
-  } else if (isPaletteRole(value.ref)) {
-    base = doc.palette[value.ref]
+    const next = isThemeGroupId(groupId)
+      ? groupFillValue(doc, groupId)
+      : { ref: "paper" as const }
+    base = resolveColorValueInner(doc, next, nextGroups, depth + 1)
   } else {
-    base = doc.palette.paper
+    const step = parseSurfaceRef(value.ref)
+    if (step) {
+      base = resolveColorValueInner(
+        doc,
+        surfaceStepValue(doc, step),
+        groups,
+        depth + 1
+      )
+    } else if (isPaletteRole(value.ref)) {
+      base = doc.palette[value.ref]
+    } else {
+      base = doc.palette.paper
+    }
   }
   if (value.alpha != null && value.alpha < 1) {
     const color = cssColorToOklch(base)
@@ -113,9 +232,34 @@ function resolveColorValueInner(
   return base
 }
 
-export function paletteRefOf(value: ColorValue): string | null {
+function paletteRefOf(value: ColorValue): string | null {
   if (!("ref" in value) || "mix" in value) return null
   if (isPaletteRole(value.ref) || value.ref.startsWith("extra:"))
     return value.ref
   return null
+}
+
+export type ColorBinding =
+  | { kind: "palette"; ref: string }
+  | { kind: "surface"; step: SurfaceStep }
+  | { kind: "custom" }
+
+/** Classify a stored value without collapsing ramp steps into palette seeds. */
+export function colorBinding(
+  doc: Appearance,
+  value: ColorValue,
+  depth = 0
+): ColorBinding {
+  if (depth > 8) return { kind: "custom" }
+  const direct = paletteRefOf(value)
+  if (direct) return { kind: "palette", ref: direct }
+  if ("mix" in value || "literal" in value) return { kind: "custom" }
+  const step = parseSurfaceRef(value.ref)
+  if (step) return { kind: "surface", step }
+  if (value.ref.startsWith("group:")) {
+    const groupId = value.ref.slice(6)
+    if (!isThemeGroupId(groupId)) return { kind: "custom" }
+    return colorBinding(doc, groupFillValue(doc, groupId), depth + 1)
+  }
+  return { kind: "custom" }
 }

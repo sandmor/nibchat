@@ -3,6 +3,7 @@
 @import "shadcn/tailwind.css";
 
 @custom-variant dark (&:is(.dark *));
+@custom-variant elevation-dark (&:is(html[data-elevation="dark"] *));
 @source "../**/*.{ts,tsx}";
 @source not "../components/workspace/find-highlight.ts";
 @source not "../components/workspace/find-highlight.test.ts";
@@ -88,54 +89,59 @@
   --palette-muted: oklch(0.556 0 0);
   --palette-accent: oklch(0.205 0 0);
   --palette-danger: oklch(0.577 0.245 27.325);
-  --app-background: var(--palette-paper);
-  --app-foreground: var(--palette-ink);
-  --sidebar: color-mix(in oklab, var(--palette-ink) 1.5%, var(--palette-paper));
-  --sidebar-foreground: var(--palette-ink);
-  --sidebar-border: color-mix(in oklab, var(--palette-ink) 8%, var(--sidebar));
-  --sidebar-hover: color-mix(in oklab, var(--palette-ink) 6%, var(--sidebar));
-  --chat-background: var(--palette-paper);
-  --message-user: color-mix(
+  --surface-canvas: var(--palette-paper);
+  --surface-raised: var(--palette-paper);
+  --surface-emphasis: color-mix(
     in oklab,
     var(--palette-ink) 4%,
     var(--palette-paper)
   );
+  --surface-control: color-mix(
+    in oklab,
+    var(--palette-ink) 8%,
+    var(--palette-paper)
+  );
+  --surface-overlay: var(--palette-paper);
+  --app-background: var(--surface-canvas);
+  --app-foreground: var(--palette-ink);
+  --sidebar: var(--surface-raised);
+  --sidebar-foreground: var(--palette-ink);
+  --sidebar-border: color-mix(in oklab, var(--palette-ink) 8%, var(--sidebar));
+  --sidebar-hover: color-mix(in oklab, var(--palette-ink) 6%, var(--sidebar));
+  --chat-background: var(--surface-canvas);
+  --message-user: var(--surface-emphasis);
   --message-user-foreground: var(--palette-ink);
   --message-user-border: color-mix(
     in oklab,
     var(--palette-ink) 8%,
     var(--message-user)
   );
-  --message-assistant: var(--palette-paper);
+  --message-assistant: var(--surface-raised);
   --message-assistant-foreground: var(--palette-ink);
   --message-assistant-border: color-mix(
     in oklab,
     var(--palette-ink) 8%,
     var(--message-assistant)
   );
-  --composer: var(--palette-paper);
+  --composer: var(--surface-raised);
   --composer-foreground: var(--palette-ink);
   --composer-border: color-mix(
     in oklab,
     var(--palette-ink) 8%,
     var(--composer)
   );
-  --settings-card: var(--palette-paper);
+  --settings-card: var(--surface-raised);
   --settings-card-foreground: var(--palette-ink);
   --settings-card-border: color-mix(
     in oklab,
     var(--palette-ink) 8%,
     var(--settings-card)
   );
-  --popover: var(--palette-paper);
+  --popover: var(--surface-overlay);
   --popover-foreground: var(--palette-ink);
   --popover-border: color-mix(in oklab, var(--palette-ink) 8%, var(--popover));
-  --input: color-mix(in oklab, var(--palette-ink) 8%, var(--palette-paper));
-  --input-border: color-mix(
-    in oklab,
-    var(--palette-ink) 8%,
-    var(--palette-paper)
-  );
+  --input: var(--surface-control);
+  --input-border: color-mix(in oklab, var(--palette-ink) 8%, var(--input));
   --ring: var(--palette-accent);
   --button: var(--palette-accent);
   --button-foreground: var(--palette-paper);
@@ -172,7 +178,7 @@
   --tree-edge-color: color-mix(
     in oklab,
     var(--palette-ink) 8%,
-    var(--palette-paper)
+    var(--surface-canvas)
   );
   --tree-active-color: color-mix(
     in oklab,
@@ -204,22 +210,14 @@
     var(--palette-paper) 45%,
     transparent
   );
-  --tree-minimap-background: color-mix(
-    in oklab,
-    var(--palette-ink) 8%,
-    var(--palette-paper)
-  );
+  --tree-minimap-background: var(--surface-control);
   --tree-minimap-edge: color-mix(
     in oklab,
     var(--palette-muted) 70%,
     var(--tree-minimap-background)
   );
-  --tree-minimap-node: var(--palette-paper);
-  --tree-minimap-user: color-mix(
-    in oklab,
-    var(--palette-ink) 12%,
-    var(--palette-paper)
-  );
+  --tree-minimap-node: var(--surface-raised);
+  --tree-minimap-user: var(--surface-emphasis);
   --tree-minimap-glyph: color-mix(
     in oklab,
     var(--palette-ink) 28%,
@@ -666,10 +664,7 @@
 /* Static Markdown embeds Shiki's light color inline and its dark color in a
    custom property. Inline styles otherwise win, leaving completed code blocks
    with the light palette after the app switches to a dark appearance. */
-.dark
-  .markdown-static
-  [data-markdown-code-block]
-  span[style*="--shiki-dark"] {
+.dark .markdown-static [data-markdown-code-block] span[style*="--shiki-dark"] {
   color: var(--shiki-dark) !important;
 }
 

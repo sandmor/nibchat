@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { appearanceSchema } from "@/lib/appearance"
+import { parseAppearance } from "@/lib/appearance"
 import { isProviderModelsJson } from "@/lib/provider-models"
 import { chatViewStateSchema } from "@/lib/chat-view-state"
 import { providerConnectionConfigSchema } from "@/lib/provider-config"
@@ -122,7 +122,14 @@ const themeBackupSchema = z.object({
   id: z.string(),
   user_id: z.string(),
   name: z.string(),
-  document: appearanceSchema,
+  document: z
+    .unknown()
+    .refine(
+      (value) =>
+        Boolean(value) && typeof value === "object" && !Array.isArray(value),
+      "Theme document must be an object"
+    )
+    .transform((value) => parseAppearance(value)),
   created_at: z.string(),
   updated_at: z.string(),
 })

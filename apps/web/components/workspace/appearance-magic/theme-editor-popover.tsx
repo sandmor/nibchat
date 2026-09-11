@@ -10,17 +10,20 @@ import { cn } from "@/lib/utils"
 import {
   addPaletteExtra,
   compileAppearance,
+  defaultTokenRecipe,
   newPaletteExtraId,
   type Appearance,
 } from "@/lib/appearance"
 import {
   formatOklch,
-  paletteRefOf,
+  groupFillValue,
+  colorBinding,
   resolveColorValue,
 } from "@/lib/appearance-color"
 import {
   PALETTE_ROLE_LABELS,
   PALETTE_ROLES,
+  SURFACE_STEP_LABELS,
   groupById,
   tokensInGroup,
   tokenById,
@@ -142,16 +145,48 @@ function currentColorValue(
   selection: ThemeSelection
 ): ColorValue {
   if (selection.kind === "group") {
-    const group = groupById(selection.groupId)
-    const fillToken = group ? tokenById(group.fillTokenId) : null
     return (
       doc.groups[selection.groupId]?.fill ??
-      fillToken?.recipe ?? { ref: "paper" }
+      groupFillValue(doc, selection.groupId)
     )
   }
   const token = tokenById(selection.surfaceId)
   if (!token) return { ref: "paper" }
-  return doc.tokens[token.cssVar] ?? token.recipe
+  return doc.tokens[token.cssVar] ?? defaultTokenRecipe(doc, token)
+}
+
+function sourceCaption(
+  doc: Appearance,
+  selection: ThemeSelection,
+  stored: ColorValue,
+  surface: ReturnType<typeof tokenById>
+): { linkedRef: string | null; caption: string } {
+  const overridden =
+    selection.kind === "group"
+      ? Boolean(doc.groups[selection.groupId]?.fill)
+      : Boolean(surface && doc.tokens[surface.cssVar])
+  const binding = colorBinding(doc, stored)
+  const linkedRef = binding.kind === "palette" ? binding.ref : null
+  const paletteCaption = linkedRef
+    ? `Linked to ${paletteLinkLabel(doc, linkedRef)}`
+    : null
+
+  if (!overridden) {
+    if (binding.kind === "surface") {
+      return {
+        linkedRef: null,
+        caption: `Auto · ${SURFACE_STEP_LABELS[binding.step]}`,
+      }
+    }
+    if (paletteCaption) return { linkedRef, caption: paletteCaption }
+    if (surface?.role === "border" || surface?.role === "hover") {
+      return { linkedRef: null, caption: "Auto · from fill" }
+    }
+    return { linkedRef: null, caption: "Auto" }
+  }
+
+  if (paletteCaption) return { linkedRef, caption: paletteCaption }
+  return { linkedRef: null, caption: "Custom color" }
 }
 
 export function ThemeEditorPopover() {
@@ -184,7 +219,11 @@ export function ThemeEditorPopover() {
   const stored = draft && selected ? currentColorValue(draft, selected) : null
   const resolvedCss =
     draft && stored ? resolveColorValue(draft, stored) : "oklch(0.5 0 0)"
-  const linkedRef = stored ? paletteRefOf(stored) : null
+  const source =
+    draft && selected && stored
+      ? sourceCaption(draft, selected, stored, surface)
+      : null
+  const linkedRef = source?.linkedRef ?? null
 
   const dialogRef = useRef<HTMLDivElement>(null)
   const restoreFocusRef = useRef<HTMLElement | null>(null)
@@ -324,9 +363,7 @@ export function ThemeEditorPopover() {
             {surface?.label ?? `${group.label} fill`}
           </Label>
           <p className="mt-0.5 text-[11px] text-muted-foreground">
-            {linkedRef
-              ? `Linked to ${paletteLinkLabel(draft, linkedRef)}`
-              : "Custom color"}
+            {source?.caption ?? "Custom color"}
           </p>
         </div>
         <Button

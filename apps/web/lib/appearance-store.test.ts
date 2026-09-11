@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { defaultAppearance, parseAppearance, patchToken } from "@/lib/appearance"
+import {
+  defaultAppearance,
+  parseAppearance,
+  patchToken,
+} from "@/lib/appearance"
 import {
   APPEARANCE_MAGIC_LS_KEY,
   MAGIC_PERSIST_DEBOUNCE_MS,
@@ -42,7 +46,7 @@ describe("appearance-store pure helpers", () => {
       palette: { paper: "oklch(0.96 0.012 85)" },
     })
     const raw = serializeMagicPersist({
-      v: 2,
+      v: 1,
       open: true,
       themeId: "paper",
       drafts: { paper: draft },
@@ -280,7 +284,7 @@ describe("appearance-store setToken + persist", () => {
     localStorage.setItem(
       APPEARANCE_MAGIC_LS_KEY,
       serializeMagicPersist({
-        v: 2,
+        v: 1,
         open: true,
         themeId: "paper",
         drafts: { paper: dirty },
@@ -303,7 +307,7 @@ describe("appearance-store setToken + persist", () => {
     localStorage.setItem(
       APPEARANCE_MAGIC_LS_KEY,
       serializeMagicPersist({
-        v: 2,
+        v: 1,
         open: true,
         themeId: "ink",
         drafts: { ink: dirtyInk },
@@ -318,9 +322,9 @@ describe("appearance-store setToken + persist", () => {
     )
     expect(useAppearanceStore.getState().themeId).toBe("paper")
     expect(useAppearanceStore.getState().draft).toStrictEqual(paper)
-    expect(useAppearanceStore.getState().drafts.ink?.tokens["--composer"]).toEqual(
-      dirtyInk.tokens["--composer"]
-    )
+    expect(
+      useAppearanceStore.getState().drafts.ink?.tokens["--composer"]
+    ).toEqual(dirtyInk.tokens["--composer"])
     expect(useAppearanceStore.getState().open).toBe(false)
     expect(useAppearanceStore.getState().pickArmed).toBe(false)
   })

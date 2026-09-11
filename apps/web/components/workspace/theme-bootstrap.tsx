@@ -1,4 +1,5 @@
 import { compileAppearance, type ThemeRecord } from "@/lib/appearance"
+import { usesDarkElevation } from "@/lib/appearance-color"
 
 type SlotTheme = {
   id: string
@@ -7,6 +8,7 @@ type SlotTheme = {
   density: "comfortable" | "compact"
   motionEnabled: boolean
   motionReduced: string
+  elevation: "light" | "dark"
 }
 
 function slotTheme(theme: ThemeRecord | undefined): SlotTheme | null {
@@ -19,6 +21,7 @@ function slotTheme(theme: ThemeRecord | undefined): SlotTheme | null {
     density: document.density,
     motionEnabled: document.motion.enabled,
     motionReduced: document.motion.reducedMotion,
+    elevation: usesDarkElevation(document) ? "dark" : "light",
   }
 }
 
@@ -46,7 +49,7 @@ export function ThemeBootstrap({
     light: slotTheme(themes.find((theme) => theme.id === lightThemeId)),
     dark: slotTheme(themes.find((theme) => theme.id === darkThemeId)),
   }
-  const script = `(function(data){try{var root=document.documentElement;var slot=root.getAttribute("data-theme-slot")==="dark"?"dark":"light";var theme=data[slot]||data.light||data.dark;if(!theme)return;Object.keys(theme.vars).forEach(function(key){if(key.slice(0,2)==="--")root.style.setProperty(key,theme.vars[key])});root.dataset.density=theme.density;root.dataset.motionEnabled=String(theme.motionEnabled);root.dataset.motionReduced=theme.motionReduced;root.classList.toggle("dark",theme.scheme==="dark");root.style.colorScheme=theme.scheme;root.dataset.nibchatThemeId=theme.id}catch(_){}})(${safeJson(payload)})`
+  const script = `(function(data){try{var root=document.documentElement;var slot=root.getAttribute("data-theme-slot")==="dark"?"dark":"light";var theme=data[slot]||data.light||data.dark;if(!theme)return;Object.keys(theme.vars).forEach(function(key){if(key.slice(0,2)==="--")root.style.setProperty(key,theme.vars[key])});root.dataset.density=theme.density;root.dataset.motionEnabled=String(theme.motionEnabled);root.dataset.motionReduced=theme.motionReduced;root.dataset.elevation=theme.elevation;root.classList.toggle("dark",theme.scheme==="dark");root.style.colorScheme=theme.scheme;root.dataset.nibchatThemeId=theme.id}catch(_){}})(${safeJson(payload)})`
 
   return (
     <script

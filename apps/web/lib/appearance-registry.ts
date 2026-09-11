@@ -1,7 +1,9 @@
 /**
- * Theme token registry: groups, pickable surfaces, and default recipes.
- * Recipes bind only to palette roles (and group fills). Stored documents
- * overlay group paints and individual token overrides on top of this.
+ * Theme token registry: groups, pickable surfaces, and a shared surface ramp.
+ *
+ * Palette seeds (paper/ink/…) feed named steps (canvas → overlay). Tokens bind
+ * to a step, a palette role, or derived chrome (border/hover from the group
+ * fill). Stored documents overlay group paints and token overrides on top.
  */
 
 export const PALETTE_ROLES = [
@@ -68,6 +70,56 @@ export type TokenRole =
   | "ring"
   | "other"
 
+export const SURFACE_STEPS = [
+  "canvas",
+  "raised",
+  "emphasis",
+  "control",
+  "overlay",
+] as const
+
+export type SurfaceStep = (typeof SURFACE_STEPS)[number]
+
+export const SURFACE_STEP_LABELS: Record<SurfaceStep, string> = {
+  canvas: "Canvas",
+  raised: "Raised",
+  emphasis: "Emphasis",
+  control: "Control",
+  overlay: "Overlay",
+}
+
+/**
+ * Target OKLCH ΔL from canvas toward ink. Light keeps cards flush with paper;
+ * dark lifts them so they separate. Chrome (line/hover) is ΔL from the local fill.
+ */
+export const SURFACE_DELTAS: Record<
+  SurfaceStep,
+  { light: number; dark: number }
+> = {
+  canvas: { light: 0, dark: 0 },
+  raised: { light: 0, dark: 0.06 },
+  emphasis: { light: 0.034, dark: 0.101 },
+  control: { light: 0.068, dark: 0.126 },
+  overlay: { light: 0, dark: 0.084 },
+}
+
+export const CHROME_DELTAS: Record<
+  "line" | "hover",
+  { light: number; dark: number }
+> = {
+  line: { light: 0.068, dark: 0.12 },
+  hover: { light: 0.051, dark: 0.1 },
+}
+
+export type DeriveChrome = {
+  kind: "derive"
+  as: "line" | "hover"
+  /** Default is the group fill. Canvas is for strokes that should not inherit a translucent fill. */
+  onto?: "fill" | "canvas"
+}
+
+export type TokenSource = ColorValue | DeriveChrome
+
 export type ThemeToken = {
   id: string
   label: string
@@ -75,7 +127,7 @@ export type ThemeToken = {
   groupId: ThemeGroupId
   role: TokenRole
   targets: string[]
-  recipe: ColorValue
+  source: TokenSource
 }
 
 export type ThemeGroup = {
@@ -94,6 +146,33 @@ export function isThemeGroupId(value: string): value is ThemeGroupId {
   return (THEME_GROUP_IDS as readonly string[]).includes(value)
 }
 
+function isSurfaceStep(value: string): value is SurfaceStep {
+  return (SURFACE_STEPS as readonly string[]).includes(value)
+}
+
+export function surfaceRef(step: SurfaceStep): ColorValue {
+  return { ref: `surface:${step}` }
+}
+
+export function surfaceVar(step: SurfaceStep): `--${string}` {
+  return `--surface-${step}`
+}
+
+export function parseSurfaceRef(value: string): SurfaceStep | null {
+  if (!value.startsWith("surface:")) return null
+  const step = value.slice(8)
+  return isSurfaceStep(step) ? step : null
+}
+
+export function isDeriveSource(value: TokenSource): value is DeriveChrome {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "kind" in value &&
+    value.kind === "derive"
+  )
+}
+
 export function ref(role: string, alpha?: number): ColorValue {
   return alpha == null ? { ref: role } : { ref: role, alpha }
 }
@@ -108,9 +187,12 @@ export function mix(
   return { mix: { from: wrap(from), onto: wrap(onto), amount } }
 }
 
-function groupFill(groupId: ThemeGroupId): ColorValue {
+export function groupFill(groupId: ThemeGroupId): ColorValue {
   return { ref: `group:${groupId}` }
 }
+
+const line: DeriveChrome = { kind: "derive", as: "line" }
+const hover: DeriveChrome = { kind: "derive", as: "hover" }
 
 export const THEME_GROUPS: ThemeGroup[] = [
   {
@@ -180,7 +262,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "app",
     role: "fill",
     targets: ["app-background"],
-    recipe: ref("paper"),
+    source: surfaceRef("canvas"),
   },
   {
     id: "app-foreground",
@@ -189,7 +271,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "app",
     role: "foreground",
     targets: ["app-foreground"],
-    recipe: ref("ink"),
+    source: ref("ink"),
   },
   {
     id: "sidebar",
@@ -198,7 +280,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "sidebar",
     role: "fill",
     targets: ["sidebar"],
-    recipe: mix("ink", "paper", 0.015),
+    source: surfaceRef("raised"),
   },
   {
     id: "sidebar-foreground",
@@ -207,7 +289,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "sidebar",
     role: "foreground",
     targets: ["sidebar-foreground"],
-    recipe: ref("ink"),
+    source: ref("ink"),
   },
   {
     id: "sidebar-border",
@@ -216,7 +298,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "sidebar",
     role: "border",
     targets: ["sidebar-border"],
-    recipe: mix("ink", groupFill("sidebar"), 0.08),
+    source: line,
   },
   {
     id: "sidebar-hover",
@@ -225,7 +307,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "sidebar",
     role: "hover",
     targets: ["sidebar-hover"],
-    recipe: mix("ink", groupFill("sidebar"), 0.06),
+    source: hover,
   },
   {
     id: "chat",
@@ -234,7 +316,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "chat",
     role: "fill",
     targets: ["chat"],
-    recipe: ref("paper"),
+    source: surfaceRef("canvas"),
   },
   {
     id: "message-user",
@@ -243,7 +325,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "message-user",
     role: "fill",
     targets: ["message-user"],
-    recipe: mix("ink", "paper", 0.04),
+    source: surfaceRef("emphasis"),
   },
   {
     id: "message-user-foreground",
@@ -252,7 +334,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "message-user",
     role: "foreground",
     targets: ["message-user-foreground"],
-    recipe: ref("ink"),
+    source: ref("ink"),
   },
   {
     id: "message-user-border",
@@ -261,7 +343,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "message-user",
     role: "border",
     targets: ["message-user-border"],
-    recipe: mix("ink", groupFill("message-user"), 0.08),
+    source: line,
   },
   {
     id: "message-assistant",
@@ -270,7 +352,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "message-assistant",
     role: "fill",
     targets: ["message-assistant"],
-    recipe: ref("paper"),
+    source: surfaceRef("raised"),
   },
   {
     id: "message-assistant-foreground",
@@ -279,7 +361,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "message-assistant",
     role: "foreground",
     targets: ["message-assistant-foreground"],
-    recipe: ref("ink"),
+    source: ref("ink"),
   },
   {
     id: "message-assistant-border",
@@ -288,7 +370,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "message-assistant",
     role: "border",
     targets: ["message-assistant-border"],
-    recipe: mix("ink", groupFill("message-assistant"), 0.08),
+    source: line,
   },
   {
     id: "composer",
@@ -297,7 +379,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "composer",
     role: "fill",
     targets: ["composer"],
-    recipe: ref("paper"),
+    source: surfaceRef("raised"),
   },
   {
     id: "composer-foreground",
@@ -306,7 +388,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "composer",
     role: "foreground",
     targets: ["composer-foreground"],
-    recipe: ref("ink"),
+    source: ref("ink"),
   },
   {
     id: "composer-border",
@@ -315,7 +397,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "composer",
     role: "border",
     targets: ["composer-border"],
-    recipe: mix("ink", groupFill("composer"), 0.08),
+    source: line,
   },
   {
     id: "tree-chrome",
@@ -324,7 +406,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "tree",
     role: "fill",
     targets: ["tree-chrome"],
-    recipe: { ref: "paper", alpha: 0.9 },
+    source: { ref: "paper", alpha: 0.9 },
   },
   {
     id: "tree-overlay",
@@ -333,7 +415,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "tree",
     role: "other",
     targets: ["tree-overlay"],
-    recipe: { ref: "paper", alpha: 0.45 },
+    source: { ref: "paper", alpha: 0.45 },
   },
   {
     id: "tree-grid",
@@ -342,7 +424,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "tree",
     role: "other",
     targets: ["tree-grid"],
-    recipe: { ref: "muted", alpha: 0.18 },
+    source: { ref: "muted", alpha: 0.18 },
   },
   {
     id: "tree-edge",
@@ -351,7 +433,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "tree",
     role: "border",
     targets: ["tree-edge"],
-    recipe: mix("ink", "paper", 0.08),
+    source: { kind: "derive", as: "line", onto: "canvas" },
   },
   {
     id: "tree-active",
@@ -360,7 +442,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "tree",
     role: "other",
     targets: ["tree-active"],
-    recipe: { ref: "accent", alpha: 0.7 },
+    source: { ref: "accent", alpha: 0.7 },
   },
   {
     id: "tree-focus",
@@ -369,7 +451,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "tree",
     role: "other",
     targets: ["tree-focus"],
-    recipe: { ref: "accent", alpha: 0.7 },
+    source: { ref: "accent", alpha: 0.7 },
   },
   {
     id: "tree-path",
@@ -378,7 +460,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "tree",
     role: "other",
     targets: ["tree-path"],
-    recipe: { ref: "accent", alpha: 0.35 },
+    source: { ref: "accent", alpha: 0.35 },
   },
   {
     id: "tree-active-surface",
@@ -387,7 +469,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "tree",
     role: "other",
     targets: ["tree-active-surface"],
-    recipe: { ref: "accent", alpha: 0.2 },
+    source: { ref: "accent", alpha: 0.2 },
   },
   {
     id: "tree-minimap-background",
@@ -396,7 +478,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "tree",
     role: "other",
     targets: ["tree-minimap-background"],
-    recipe: mix("ink", "paper", 0.08),
+    source: surfaceRef("control"),
   },
   {
     id: "tree-minimap-edge",
@@ -405,7 +487,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "tree",
     role: "other",
     targets: ["tree-minimap-edge"],
-    recipe: mix("muted", mix("ink", "paper", 0.08), 0.7),
+    source: mix("muted", surfaceRef("control"), 0.7),
   },
   {
     id: "tree-minimap-node",
@@ -414,7 +496,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "tree",
     role: "other",
     targets: ["tree-minimap-node"],
-    recipe: ref("paper"),
+    source: surfaceRef("raised"),
   },
   {
     id: "tree-minimap-user",
@@ -423,7 +505,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "tree",
     role: "other",
     targets: ["tree-minimap-user"],
-    recipe: mix("ink", "paper", 0.12),
+    source: surfaceRef("emphasis"),
   },
   {
     id: "tree-minimap-user-rail",
@@ -432,7 +514,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "tree",
     role: "other",
     targets: ["tree-minimap-user-rail"],
-    recipe: { ref: "ink", alpha: 0.42 },
+    source: { ref: "ink", alpha: 0.42 },
   },
   {
     id: "tree-minimap-glyph",
@@ -441,7 +523,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "tree",
     role: "other",
     targets: ["tree-minimap-glyph"],
-    recipe: { ref: "ink", alpha: 0.28 },
+    source: { ref: "ink", alpha: 0.28 },
   },
   {
     id: "tree-minimap-path",
@@ -450,7 +532,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "tree",
     role: "other",
     targets: ["tree-minimap-path"],
-    recipe: mix("accent", "muted", 0.82),
+    source: mix("accent", "muted", 0.82),
   },
   {
     id: "tree-minimap-focus",
@@ -459,7 +541,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "tree",
     role: "other",
     targets: ["tree-minimap-focus"],
-    recipe: ref("accent"),
+    source: ref("accent"),
   },
   {
     id: "tree-viewport",
@@ -468,7 +550,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "tree",
     role: "foreground",
     targets: ["tree-viewport"],
-    recipe: ref("ink"),
+    source: ref("ink"),
   },
   {
     id: "settings-card",
@@ -477,7 +559,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "settings",
     role: "fill",
     targets: ["settings-card"],
-    recipe: ref("paper"),
+    source: surfaceRef("raised"),
   },
   {
     id: "settings-card-foreground",
@@ -486,7 +568,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "settings",
     role: "foreground",
     targets: ["settings-card-foreground"],
-    recipe: ref("ink"),
+    source: ref("ink"),
   },
   {
     id: "settings-card-border",
@@ -495,7 +577,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "settings",
     role: "border",
     targets: ["settings-card-border"],
-    recipe: mix("ink", groupFill("settings"), 0.08),
+    source: line,
   },
   {
     id: "popover",
@@ -504,7 +586,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "popover",
     role: "fill",
     targets: ["popover"],
-    recipe: ref("paper"),
+    source: surfaceRef("overlay"),
   },
   {
     id: "popover-foreground",
@@ -513,7 +595,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "popover",
     role: "foreground",
     targets: ["popover-foreground"],
-    recipe: ref("ink"),
+    source: ref("ink"),
   },
   {
     id: "popover-border",
@@ -522,7 +604,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "popover",
     role: "border",
     targets: ["popover-border"],
-    recipe: mix("ink", groupFill("popover"), 0.08),
+    source: line,
   },
   {
     id: "input",
@@ -531,7 +613,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "input",
     role: "fill",
     targets: ["input"],
-    recipe: mix("ink", "paper", 0.08),
+    source: surfaceRef("control"),
   },
   {
     id: "input-border",
@@ -540,7 +622,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "input",
     role: "border",
     targets: ["input-border"],
-    recipe: mix("ink", "paper", 0.08),
+    source: line,
   },
   {
     id: "ring",
@@ -549,7 +631,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "input",
     role: "ring",
     targets: ["ring"],
-    recipe: ref("accent"),
+    source: ref("accent"),
   },
   {
     id: "button",
@@ -558,7 +640,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "button",
     role: "fill",
     targets: ["button"],
-    recipe: ref("accent"),
+    source: ref("accent"),
   },
   {
     id: "button-foreground",
@@ -567,7 +649,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "button",
     role: "foreground",
     targets: ["button-foreground"],
-    recipe: ref("paper"),
+    source: ref("paper"),
   },
   {
     id: "button-hover",
@@ -576,7 +658,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "button",
     role: "hover",
     targets: ["button-hover"],
-    recipe: mix("paper", groupFill("button"), 0.2),
+    source: mix("paper", groupFill("button"), 0.2),
   },
   {
     id: "danger",
@@ -585,7 +667,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "danger",
     role: "foreground",
     targets: ["danger"],
-    recipe: ref("danger"),
+    source: ref("danger"),
   },
   {
     id: "danger-fill",
@@ -594,7 +676,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "danger",
     role: "fill",
     targets: ["danger-fill"],
-    recipe: { ref: "danger", alpha: 0.12 },
+    source: { ref: "danger", alpha: 0.12 },
   },
   {
     id: "danger-foreground",
@@ -603,7 +685,7 @@ export const THEME_TOKENS: ThemeToken[] = [
     groupId: "danger",
     role: "other",
     targets: ["danger-foreground"],
-    recipe: ref("paper"),
+    source: ref("paper"),
   },
 ]
 

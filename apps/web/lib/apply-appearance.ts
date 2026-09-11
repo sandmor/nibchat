@@ -1,4 +1,5 @@
 import { compileAppearance, type Appearance } from "@/lib/appearance"
+import { usesDarkElevation } from "@/lib/appearance-color"
 
 const REMOTE_LINK_ID = "nibchat-remote-appearance"
 
@@ -45,6 +46,7 @@ export function createAppearanceApplier(
       root.dataset.density = doc.density
       root.dataset.motionEnabled = String(doc.motion.enabled)
       root.dataset.motionReduced = doc.motion.reducedMotion
+      root.dataset.elevation = usesDarkElevation(doc) ? "dark" : "light"
       root.classList.toggle("dark", doc.scheme === "dark")
       root.style.colorScheme = doc.scheme
       syncRemote(doc.remoteStylesheet)
@@ -63,6 +65,7 @@ export function createAppearanceApplier(
       delete root.dataset.density
       delete root.dataset.motionEnabled
       delete root.dataset.motionReduced
+      delete root.dataset.elevation
       root.classList.remove("dark")
       root.style.removeProperty("color-scheme")
     },

@@ -86,7 +86,7 @@ describe("appearance document", () => {
     expect(doc.density).toBe("compact")
     expect(doc.remoteStylesheet).toBe("https://example.com/theme.css")
     const vars = compileAppearance(doc)
-    expect(vars["--app-background"]).toBe("var(--palette-paper)")
+    expect(vars["--app-background"]).toBe("var(--group-app-fill)")
     expect(vars["--background"]).toBe("var(--app-background)")
   })
 
@@ -121,9 +121,12 @@ describe("compileAppearance", () => {
     const doc = defaultAppearance()
     const vars = compileAppearance(doc)
     expect(vars["--palette-paper"]).toBe(doc.palette.paper)
-    expect(vars["--app-background"]).toBe("var(--palette-paper)")
+    expect(vars["--surface-canvas"]).toBe("var(--palette-paper)")
+    expect(vars["--group-app-fill"]).toBe("var(--surface-canvas)")
+    expect(vars["--app-background"]).toBe("var(--group-app-fill)")
     expect(vars["--app-foreground"]).toBe("var(--palette-ink)")
-    expect(vars["--button"]).toBe("var(--palette-accent)")
+    expect(vars["--button"]).toBe("var(--group-button-fill)")
+    expect(vars["--group-button-fill"]).toBe("var(--palette-accent)")
   })
 
   it("palette edit updates linked tokens without rewriting them", () => {
@@ -134,7 +137,8 @@ describe("compileAppearance", () => {
     )
     const vars = compileAppearance(next)
     expect(vars["--palette-paper"]).toBe("oklch(0.9 0.02 80)")
-    expect(vars["--app-background"]).toBe("var(--palette-paper)")
+    expect(vars["--surface-canvas"]).toBe("var(--palette-paper)")
+    expect(vars["--app-background"]).toBe("var(--group-app-fill)")
   })
 
   it("group fill does not clobber a surface override", () => {
@@ -155,6 +159,7 @@ describe("compileAppearance", () => {
     const vars = compileAppearance(doc)
     expect(vars["--sidebar"]).toBe("var(--group-sidebar-fill)")
     expect(vars["--group-sidebar-fill"]).toBe("var(--palette-accent)")
+    expect(vars["--sidebar-border"]).toContain("var(--group-sidebar-fill)")
   })
 
   it("literal token stays put when palette changes", () => {
@@ -174,6 +179,42 @@ describe("compileAppearance", () => {
     )
     const vars = compileAppearance(doc)
     expect(vars["--sidebar-foreground"]).toBe("var(--group-sidebar-fill)")
+  })
+
+  it("routes seed chrome through the surface ramp", () => {
+    const paper = SEED_THEMES.find((theme) => theme.id === "paper")
+    const ink = SEED_THEMES.find((theme) => theme.id === "ink")
+    if (!paper || !ink) throw new Error("Seed themes missing")
+    const paperVars = compileAppearance(paper.document)
+    const inkVars = compileAppearance(ink.document)
+    expect(paperVars["--surface-raised"]).toBe("var(--palette-paper)")
+    expect(inkVars["--surface-raised"]).toMatch(/var\(--palette-ink\)/)
+    expect(paperVars["--group-settings-fill"]).toBe("var(--surface-raised)")
+    expect(inkVars["--group-settings-fill"]).toBe("var(--surface-raised)")
+    expect(inkVars["--group-input-fill"]).toBe("var(--surface-control)")
+  })
+
+  it("chooses elevation from paper vs ink luminance, not scheme", () => {
+    const darkPalette = parseAppearance({
+      scheme: "light",
+      palette: {
+        paper: "oklch(0.145 0 0)",
+        ink: "oklch(0.985 0 0)",
+      },
+    })
+    expect(compileAppearance(darkPalette)["--surface-raised"]).toMatch(
+      /var\(--palette-ink\)/
+    )
+    const lightPalette = parseAppearance({
+      scheme: "dark",
+      palette: {
+        paper: "oklch(1 0 0)",
+        ink: "oklch(0.145 0 0)",
+      },
+    })
+    expect(compileAppearance(lightPalette)["--surface-raised"]).toBe(
+      "var(--palette-paper)"
+    )
   })
 })
 

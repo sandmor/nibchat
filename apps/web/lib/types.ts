@@ -1,9 +1,11 @@
 import type { Selectable } from "kysely"
 
-export const MAX_ATTACHMENT_TEXT_CHARS = 10_000_000
-export const MAX_FILE_ATTACHMENTS = 4
-export const MAX_FILE_ATTACHMENT_BYTES = 10 * 1024 * 1024
-export const MAX_FILE_ATTACHMENT_TOTAL_BYTES = 20 * 1024 * 1024
+export {
+  MAX_ATTACHMENT_TEXT_CHARS,
+  MAX_FILE_ATTACHMENT_BYTES,
+  MAX_FILE_ATTACHMENT_TOTAL_BYTES,
+  MAX_FILE_ATTACHMENTS,
+} from "@/lib/limits"
 
 export type MessageRole = "user" | "assistant" | "system" | "tool"
 export type MessageStatus =

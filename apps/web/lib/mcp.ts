@@ -9,6 +9,7 @@ import { dynamicTool, jsonSchema, type ToolSet } from "ai"
 import { z } from "zod"
 import { db, fromDbBool, toDbBool } from "@/lib/db"
 import { id, now, parseJson } from "@/lib/domain"
+import { MAX_COLLECTION } from "@/lib/limits"
 import {
   MAX_ATTACHMENT_TEXT_CHARS,
   type AttachmentPart,
@@ -27,10 +28,10 @@ import type { MacroContext } from "@/lib/prompt-macros"
 export { buildMcpInstructionsText }
 
 export const httpConfigSchema = z.object({
-  url: z.string().url(),
+  url: z.url(),
   headers: z.preprocess(
     preprocessConfigEntries,
-    z.array(configEntrySchema).max(100)
+    z.array(configEntrySchema).max(MAX_COLLECTION)
   ),
   followRedirects: z.boolean().default(false),
   connectTimeoutMs: z.number().int().min(500).max(120_000).default(10_000),
@@ -39,11 +40,11 @@ export const httpConfigSchema = z.object({
 
 export const stdioConfigSchema = z.object({
   command: z.string().min(1).max(500),
-  args: z.array(z.string().max(2_000)).max(100).default([]),
+  args: z.array(z.string().max(2_000)).max(MAX_COLLECTION).default([]),
   cwd: z.string().max(2_000).optional(),
   env: z.preprocess(
     preprocessConfigEntries,
-    z.array(configEntrySchema).max(100)
+    z.array(configEntrySchema).max(MAX_COLLECTION)
   ),
   connectTimeoutMs: z.number().int().min(500).max(120_000).default(10_000),
   callTimeoutMs: z.number().int().min(500).max(600_000).default(60_000),

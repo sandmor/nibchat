@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { MAX_HEADER_VALUE_CHARS, MAX_NAME } from "@/lib/limits"
 import {
   expandPromptMacros,
   expansionLooksUnresolved,
@@ -10,8 +11,8 @@ import {
 export const ENV_TEMPLATE_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g
 
 export const configEntrySchema = z.object({
-  name: z.string().min(1).max(200),
-  value: z.string().max(10_000).default(""),
+  name: z.string().min(1).max(MAX_NAME),
+  value: z.string().max(MAX_HEADER_VALUE_CHARS).default(""),
 })
 
 export type ConfigEntry = z.infer<typeof configEntrySchema>

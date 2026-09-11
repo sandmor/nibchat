@@ -51,7 +51,11 @@ import {
 } from "@/lib/chat-service"
 import { listAvailableProviders, listProviders } from "@/lib/providers"
 import { appearanceSchema } from "@/lib/appearance"
-import { promptStackDocumentSchema } from "@/lib/prompt-stack"
+import { MAX_NAME } from "@/lib/limits"
+import {
+  promptStackDocumentSchema,
+  promptVariableValueSchema,
+} from "@/lib/prompt-stack"
 import {
   approveMcpCatalog,
   createMcpProfile,
@@ -264,11 +268,11 @@ export const appRouter = t.router({
       .input(
         z
           .object({
-            title: z.string().trim().min(1).max(200).optional(),
+            title: z.string().trim().min(1).max(MAX_NAME).optional(),
             config: modelConfigSchema.optional(),
             promptStackId: z.string().nullable().optional(),
             variables: z
-              .record(z.string(), z.union([z.string(), z.boolean()]))
+              .record(z.string(), promptVariableValueSchema)
               .optional(),
           })
           .optional()
@@ -286,7 +290,7 @@ export const appRouter = t.router({
       .input(
         z.object({
           chatId: z.string(),
-          title: z.string().trim().min(1).max(200).optional(),
+          title: z.string().trim().min(1).max(MAX_NAME).optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -543,7 +547,7 @@ export const appRouter = t.router({
       .input(
         z.object({
           profileId: z.string().min(1),
-          name: z.string().min(1).max(200),
+          name: z.string().min(1).max(MAX_NAME),
           arguments: z.record(z.string(), z.string()).optional(),
         })
       )
@@ -614,7 +618,7 @@ export const appRouter = t.router({
     createTheme: userProcedure
       .input(
         z.object({
-          name: z.string().min(1).max(200),
+          name: z.string().min(1).max(MAX_NAME),
           document: appearanceSchema.optional(),
         })
       )
@@ -629,7 +633,7 @@ export const appRouter = t.router({
       .input(
         z.object({
           id: z.string(),
-          name: z.string().min(1).max(200).optional(),
+          name: z.string().min(1).max(MAX_NAME).optional(),
           document: appearanceSchema.optional(),
         })
       )
@@ -645,7 +649,7 @@ export const appRouter = t.router({
       .input(
         z.object({
           id: z.string(),
-          name: z.string().min(1).max(200).optional(),
+          name: z.string().min(1).max(MAX_NAME).optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -696,7 +700,7 @@ export const appRouter = t.router({
     createPromptStack: userProcedure
       .input(
         z.object({
-          name: z.string().min(1).max(200),
+          name: z.string().min(1).max(MAX_NAME),
           stack: promptStackDocumentSchema.optional(),
         })
       )
@@ -711,7 +715,7 @@ export const appRouter = t.router({
       .input(
         z.object({
           id: z.string(),
-          name: z.string().min(1).max(200).optional(),
+          name: z.string().min(1).max(MAX_NAME).optional(),
           stack: promptStackDocumentSchema.optional(),
         })
       )
@@ -727,7 +731,7 @@ export const appRouter = t.router({
       .input(
         z.object({
           id: z.string(),
-          name: z.string().min(1).max(200).optional(),
+          name: z.string().min(1).max(MAX_NAME).optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -794,7 +798,7 @@ export const appRouter = t.router({
       .input(
         z.object({
           chatId: z.string(),
-          values: z.record(z.string(), z.union([z.string(), z.boolean()])),
+          values: z.record(z.string(), promptVariableValueSchema),
         })
       )
       .mutation(async ({ ctx, input }) => {

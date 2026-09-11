@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { MAX_COLLECTION } from "@/lib/limits"
 import {
   preprocessConfigEntries,
   configEntrySchema,
@@ -9,7 +10,7 @@ export const providerConnectionConfigSchema = z.object({
   baseUrl: z.string().trim().max(2_000).optional(),
   headers: z.preprocess(
     preprocessConfigEntries,
-    z.array(configEntrySchema).max(100)
+    z.array(configEntrySchema).max(MAX_COLLECTION)
   ),
 })
 

@@ -76,6 +76,10 @@ import {
 } from "@/lib/prompt-stack"
 import { MacroPicker } from "./macro-picker"
 import { MacroEditor } from "./macro-editor"
+import {
+  StringVariableField,
+  StringVariableFocusDialog,
+} from "../string-variable-field"
 import { useBrowserTimeZone } from "../hooks"
 
 const PLACEMENTS: ModulePlacement[] = ["relative", "in_chat"]
@@ -512,6 +516,12 @@ function nextVariableName(existing: readonly PromptVariable[]): string {
   return `variable_${index}`
 }
 
+type StringVariableFocus = {
+  index: number
+  snapshot: string
+  count: number
+}
+
 function PromptVariablesEditor({
   variables,
   onChange,
@@ -519,6 +529,12 @@ function PromptVariablesEditor({
   variables: PromptVariable[]
   onChange: (next: PromptVariable[]) => void
 }) {
+  const [focus, setFocus] = useState<StringVariableFocus | null>(null)
+  const focused =
+    focus && focus.count === variables.length ? variables[focus.index] : null
+  const focusVariable = focused?.type === "string" ? focused : null
+  if (focus && !focusVariable) setFocus(null)
+
   function patch(index: number, next: PromptVariable) {
     onChange(variables.map((variable, i) => (i === index ? next : variable)))
   }
@@ -529,8 +545,8 @@ function PromptVariablesEditor({
         <div>
           <Label>Chat variables</Label>
           <p className="text-xs text-muted-foreground">
-            Defaults for this stack. Each chat can override them from the
-            header.
+            Starting values for this stack. Short strings and long prompts both
+            work; each chat can override them from the header.
           </p>
         </div>
         <Button
@@ -570,6 +586,7 @@ function PromptVariablesEditor({
                 onValueChange={(type) => {
                   if (type !== "string" && type !== "boolean") return
                   if (type === variable.type) return
+                  if (focus?.index === index) setFocus(null)
                   patch(
                     index,
                     type === "boolean"
@@ -600,17 +617,7 @@ function PromptVariablesEditor({
                   <SelectItem value="boolean">Boolean</SelectItem>
                 </SelectContent>
               </Select>
-              {variable.type === "string" ? (
-                <Input
-                  className="h-8 min-w-40 flex-1"
-                  value={variable.default}
-                  placeholder="Default"
-                  aria-label={`Default for ${variable.name || "variable"}`}
-                  onChange={(event) =>
-                    patch(index, { ...variable, default: event.target.value })
-                  }
-                />
-              ) : (
+              {variable.type === "boolean" ? (
                 <label className="flex items-center gap-2 text-sm">
                   <Switch
                     size="sm"
@@ -623,19 +630,38 @@ function PromptVariablesEditor({
                     {variable.default ? "On" : "Off"} by default
                   </span>
                 </label>
-              )}
+              ) : null}
               <Button
                 type="button"
                 size="sm"
                 variant="ghost"
                 className="ml-auto"
-                onClick={() =>
+                onClick={() => {
+                  if (focus?.index === index) setFocus(null)
                   onChange(variables.filter((_, i) => i !== index))
-                }
+                }}
               >
                 Remove
               </Button>
             </div>
+            {variable.type === "string" ? (
+              <StringVariableField
+                compact
+                value={variable.default}
+                placeholder="Default"
+                ariaLabel={`Default for ${variable.name || "variable"}`}
+                onChange={(value) =>
+                  patch(index, { ...variable, default: value })
+                }
+                onExpand={() =>
+                  setFocus({
+                    index,
+                    snapshot: variable.default,
+                    count: variables.length,
+                  })
+                }
+              />
+            ) : null}
             <Input
               className="h-8"
               value={variable.description ?? ""}
@@ -665,6 +691,26 @@ function PromptVariablesEditor({
           </div>
         ))}
       </div>
+      <StringVariableFocusDialog
+        open={focusVariable !== null}
+        title={
+          focusVariable?.name.trim()
+            ? `Default · ${focusVariable.name}`
+            : "Default value"
+        }
+        description={focusVariable?.description}
+        initialValue={focus?.snapshot ?? ""}
+        onCommit={(value) => {
+          if (focus === null) return
+          const current = variables[focus.index]
+          if (!current || current.type !== "string") return
+          patch(focus.index, { ...current, default: value })
+          setFocus(null)
+        }}
+        onOpenChange={(open) => {
+          if (!open) setFocus(null)
+        }}
+      />
     </div>
   )
 }

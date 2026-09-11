@@ -1,6 +1,7 @@
 import type { ModelMessage } from "ai"
 import { z } from "zod"
 import { parseJson } from "@/lib/domain"
+import { MAX_COLLECTION, MAX_NAME, MAX_PROMPT_CHARS } from "@/lib/limits"
 import {
   defaultMacroContext,
   expandPromptMacros,
@@ -23,7 +24,7 @@ const promptVariableSchema = z.discriminatedUnion("type", [
   z.object({
     name: variableNameSchema,
     type: z.literal("string"),
-    default: z.string().max(10_000),
+    default: z.string().max(MAX_PROMPT_CHARS),
     description: z.string().max(500).optional(),
   }),
   z.object({
@@ -53,9 +54,9 @@ export const mcpInstructionsModuleSchema = z.object({
 export const promptModuleSchema = z.object({
   id: z.string().min(1),
   kind: z.literal("prompt"),
-  name: z.string().min(1).max(200),
+  name: z.string().min(1).max(MAX_NAME),
   enabled: z.boolean(),
-  body: z.string().max(50_000),
+  body: z.string().max(MAX_PROMPT_CHARS),
   placement: placementSchema,
   depth: z.number().int().min(0).max(10_000).optional(),
   role: moduleRoleSchema,
@@ -68,8 +69,8 @@ export const stackModuleSchema = z.discriminatedUnion("kind", [
 ])
 
 export const promptStackDocumentSchema = z.object({
-  modules: z.array(stackModuleSchema).max(100),
-  variables: z.array(promptVariableSchema).max(100).default([]),
+  modules: z.array(stackModuleSchema).max(MAX_COLLECTION),
+  variables: z.array(promptVariableSchema).max(MAX_COLLECTION).default([]),
 })
 
 export type HistoryModule = {
@@ -92,6 +93,11 @@ export type PromptStackDocument = {
   variables?: PromptVariable[]
 }
 export type PromptVariableValues = Record<string, string | boolean>
+
+export const promptVariableValueSchema = z.union([
+  z.string().max(MAX_PROMPT_CHARS),
+  z.boolean(),
+])
 
 /** Parse a chat `variables_json` blob; invalid JSON becomes an empty map. */
 export function parsePromptVariableValues(

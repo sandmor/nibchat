@@ -3,8 +3,9 @@
 import { useMemo, useState } from "react"
 import { useMutation, useQuery } from "@tanstack/react-query"
 import { toast } from "sonner"
+import { HugeiconsIcon } from "@hugeicons/react"
+import { ArrowRight01Icon } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import {
@@ -28,6 +29,12 @@ import {
 } from "@/lib/prompt-stack"
 import { useTRPC } from "@/lib/trpc-react"
 import { useMediaMdUp } from "./hooks"
+import {
+  STRING_VARIABLE_FOCUS_DIALOG_CLASS,
+  StringVariableEditor,
+  StringVariableField,
+  StringVariableFocusDialog,
+} from "./string-variable-field"
 
 const EMPTY_VALUES: PromptVariableValues = {}
 const EMPTY_VARIABLES: PromptVariable[] = []
@@ -53,6 +60,58 @@ function explicitOverrides(
   return overrides
 }
 
+type PromptStringVariable = Extract<PromptVariable, { type: "string" }>
+
+type OverlayFocus = {
+  name: string
+  snapshot: string
+  returnToList: boolean
+}
+
+type Overlay = {
+  identity: string
+  listOpen: boolean
+  focus: OverlayFocus | null
+}
+
+function reconcileOverlay(
+  overlay: Overlay,
+  identity: string,
+  variables: readonly PromptVariable[]
+): Overlay & { focusVariable: PromptStringVariable | undefined } {
+  const sameIdentity = overlay.identity === identity
+  const listOpen =
+    sameIdentity && variables.length > 0 ? overlay.listOpen : false
+  const requestedFocus = sameIdentity ? overlay.focus : null
+  const focusVariable = requestedFocus
+    ? variables.find(
+        (variable): variable is PromptStringVariable =>
+          variable.name === requestedFocus.name && variable.type === "string"
+      )
+    : undefined
+  return {
+    identity,
+    listOpen,
+    focus: focusVariable ? requestedFocus : null,
+    focusVariable,
+  }
+}
+
+function TriggerLabel({ label, custom }: { label: string; custom: boolean }) {
+  return (
+    <span className="flex min-w-0 items-center gap-1.5">
+      <span className="truncate">{label}</span>
+      {custom ? (
+        <span
+          className="size-1.5 shrink-0 rounded-full bg-primary"
+          title="Custom values"
+          aria-hidden
+        />
+      ) : null}
+    </span>
+  )
+}
+
 export function ChatVariablesPicker({
   chatId,
   promptStackId,
@@ -72,7 +131,6 @@ export function ChatVariablesPicker({
 }) {
   const trpc = useTRPC()
   const mdUp = useMediaMdUp()
-  const [open, setOpen] = useState(false)
   const settingsQuery = useQuery(trpc.workspace.getSettings.queryOptions())
   const stacks = settingsQuery.data?.promptStacks ?? []
   const defaultId = settingsQuery.data?.defaultPromptStackId ?? null
@@ -95,7 +153,13 @@ export function ChatVariablesPicker({
     [variables, storedOverrides]
   )
   const identity = `${chatId ?? "draft"}:${effectiveStack?.id ?? "none"}:${variablesJson}`
+  const sessionIdentity = `${chatId ?? "draft"}:${effectiveStack?.id ?? "none"}`
   const [state, setState] = useState({ identity, resolved, draft: resolved })
+  const [overlay, setOverlay] = useState<Overlay>({
+    identity: sessionIdentity,
+    listOpen: false,
+    focus: null,
+  })
   let current = state
   if (state.identity !== identity) {
     current = { identity, resolved, draft: resolved }
@@ -111,6 +175,19 @@ export function ChatVariablesPicker({
   // Reconcile before rendering or committing, without an effect-driven commit.
   if (current !== state) setState(current)
   const draftForRender = current.draft
+  const nextOverlay = reconcileOverlay(overlay, sessionIdentity, variables)
+  if (
+    overlay.identity !== nextOverlay.identity ||
+    overlay.listOpen !== nextOverlay.listOpen ||
+    overlay.focus !== nextOverlay.focus
+  ) {
+    setOverlay({
+      identity: nextOverlay.identity,
+      listOpen: nextOverlay.listOpen,
+      focus: nextOverlay.focus,
+    })
+  }
+  const { listOpen, focus, focusVariable } = nextOverlay
 
   function setDraft(next: PromptVariableValues) {
     setState({ ...current, draft: next })
@@ -128,6 +205,13 @@ export function ChatVariablesPicker({
 
   if (!variables.length) return null
 
+  const onlyString =
+    variables.length === 1 && variables[0]?.type === "string"
+      ? variables[0]
+      : null
+  const hasCustom =
+    Object.keys(explicitOverrides(variables, draftForRender)).length > 0
+
   function commit(next: PromptVariableValues) {
     setDraft(next)
     const overrides = explicitOverrides(variables, next)
@@ -138,6 +222,53 @@ export function ChatVariablesPicker({
     saveMut.mutate({ chatId, values: overrides })
   }
 
+  function stringValue(name: string, fallback = "") {
+    const value = draftForRender[name]
+    return typeof value === "string" ? value : fallback
+  }
+
+  function setListOpen(next: boolean) {
+    setOverlay({
+      identity: sessionIdentity,
+      listOpen: next,
+      focus,
+    })
+  }
+
+  function openFocus(name: string, returnToList: boolean) {
+    const variable = variables.find((item) => item.name === name)
+    const snapshot = stringValue(
+      name,
+      variable?.type === "string" ? variable.default : ""
+    )
+    setOverlay({
+      identity: sessionIdentity,
+      listOpen: returnToList,
+      focus: { name, snapshot, returnToList },
+    })
+    if (!sameValues(draftForRender, resolved)) commit(draftForRender)
+  }
+
+  function closeFocus(commitValue?: string) {
+    if (commitValue !== undefined && focus) {
+      commit({ ...draftForRender, [focus.name]: commitValue })
+    }
+    const returnToList = focus?.returnToList ?? false
+    setOverlay({
+      identity: sessionIdentity,
+      listOpen: returnToList,
+      focus: null,
+    })
+  }
+
+  function openFromTrigger() {
+    if (onlyString) {
+      openFocus(onlyString.name, false)
+      return
+    }
+    setListOpen(true)
+  }
+
   const body = (
     <div className="flex flex-col gap-3">
       <p className="text-xs text-muted-foreground">
@@ -145,49 +276,110 @@ export function ChatVariablesPicker({
       </p>
       {variables.map((variable) => {
         const value = draftForRender[variable.name] ?? variable.default
+        const custom = value !== variable.default
+        const stringVal = typeof value === "string" ? value : ""
         return (
           <div key={variable.name} className="grid gap-1">
-            <Label className="text-[11px]" htmlFor={`var-${variable.name}`}>
-              {variable.name}
-            </Label>
-            {variable.description ? (
-              <p className="text-xs text-muted-foreground">
-                {variable.description}
-              </p>
-            ) : null}
             {variable.type === "boolean" ? (
-              <div className="flex items-center gap-2">
-                <Switch
+              <>
+                <Label className="text-[11px]" htmlFor={`var-${variable.name}`}>
+                  {variable.name}
+                  {custom ? (
+                    <span className="font-normal text-muted-foreground">
+                      Custom
+                    </span>
+                  ) : null}
+                </Label>
+                {variable.description ? (
+                  <p className="text-xs text-muted-foreground">
+                    {variable.description}
+                  </p>
+                ) : null}
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id={`var-${variable.name}`}
+                    size="sm"
+                    checked={Boolean(value)}
+                    disabled={saveMut.isPending}
+                    onCheckedChange={(checked) =>
+                      commit({ ...draftForRender, [variable.name]: checked })
+                    }
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    {value ? "On" : "Off"}
+                  </span>
+                </div>
+              </>
+            ) : mdUp ? (
+              <>
+                <Label className="text-[11px]" htmlFor={`var-${variable.name}`}>
+                  {variable.name}
+                  {custom ? (
+                    <span className="font-normal text-muted-foreground">
+                      Custom
+                    </span>
+                  ) : null}
+                </Label>
+                {variable.description ? (
+                  <p className="text-xs text-muted-foreground">
+                    {variable.description}
+                  </p>
+                ) : null}
+                <StringVariableField
                   id={`var-${variable.name}`}
-                  size="sm"
-                  checked={Boolean(value)}
+                  compact
+                  value={stringVal}
+                  placeholder="Value"
+                  ariaLabel={variable.name}
                   disabled={saveMut.isPending}
-                  onCheckedChange={(checked) =>
-                    commit({ ...draftForRender, [variable.name]: checked })
+                  onChange={(next) =>
+                    setDraft({
+                      ...draftForRender,
+                      [variable.name]: next,
+                    })
                   }
+                  onBlur={() => {
+                    if (
+                      draftForRender[variable.name] === resolved[variable.name]
+                    )
+                      return
+                    commit(draftForRender)
+                  }}
+                  onExpand={() => openFocus(variable.name, false)}
                 />
-                <span className="text-sm text-muted-foreground">
-                  {value ? "On" : "Off"}
-                </span>
-              </div>
+              </>
             ) : (
-              <Input
-                id={`var-${variable.name}`}
-                className="h-8"
-                value={typeof value === "string" ? value : ""}
+              <button
+                type="button"
+                className="flex items-center gap-2 rounded-xl border border-transparent px-1 py-1 text-left transition-colors hover:border-border hover:bg-muted/40"
                 disabled={saveMut.isPending}
-                onChange={(event) =>
-                  setDraft({
-                    ...draftForRender,
-                    [variable.name]: event.target.value,
-                  })
-                }
-                onBlur={() => {
-                  if (draftForRender[variable.name] === resolved[variable.name])
-                    return
-                  commit(draftForRender)
-                }}
-              />
+                aria-label={`Edit ${variable.name}`}
+                onClick={() => openFocus(variable.name, true)}
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-1.5 text-[11px] font-medium">
+                    {variable.name}
+                    {custom ? (
+                      <span className="font-normal text-muted-foreground">
+                        Custom
+                      </span>
+                    ) : null}
+                  </span>
+                  {variable.description ? (
+                    <span className="mt-0.5 block text-xs text-muted-foreground">
+                      {variable.description}
+                    </span>
+                  ) : null}
+                  <span className="mt-0.5 block truncate text-sm text-muted-foreground">
+                    {stringVal.replace(/\s+/g, " ").trim() || "Empty"}
+                  </span>
+                </span>
+                <HugeiconsIcon
+                  icon={ArrowRight01Icon}
+                  className="size-4 shrink-0 text-muted-foreground"
+                  strokeWidth={2}
+                />
+              </button>
             )}
           </div>
         )
@@ -200,28 +392,54 @@ export function ChatVariablesPicker({
 
   if (mdUp) {
     return (
-      <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger
-          render={
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="max-w-[min(9rem,24vw)] min-w-0 truncate"
-              title="Chat variables"
-              aria-label="Chat variables"
-            />
-          }
+      <>
+        <Popover
+          open={listOpen}
+          onOpenChange={(open) => {
+            if (open && onlyString) {
+              openFocus(onlyString.name, false)
+              return
+            }
+            setListOpen(open)
+          }}
         >
-          <span className="truncate">{triggerLabel}</span>
-        </PopoverTrigger>
-        <PopoverContent
-          align="end"
-          className="w-[min(20rem,calc(100vw-2rem))] gap-3 p-3"
-        >
-          {body}
-        </PopoverContent>
-      </Popover>
+          <PopoverTrigger
+            render={
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="max-w-[min(9rem,24vw)] min-w-0"
+                title={
+                  hasCustom ? "Chat variables, custom values" : "Chat variables"
+                }
+                aria-label={
+                  hasCustom ? "Chat variables, custom values" : "Chat variables"
+                }
+              />
+            }
+          >
+            <TriggerLabel label={triggerLabel} custom={hasCustom} />
+          </PopoverTrigger>
+          <PopoverContent
+            align="end"
+            className="max-h-[min(36rem,calc(100dvh-6rem))] w-[min(24rem,calc(100vw-2rem))] gap-3 overflow-y-auto p-3"
+          >
+            {body}
+          </PopoverContent>
+        </Popover>
+        <StringVariableFocusDialog
+          open={Boolean(focus && focusVariable)}
+          title={focusVariable?.name ?? ""}
+          description={focusVariable?.description}
+          initialValue={focus?.snapshot ?? ""}
+          defaultValue={focusVariable?.default}
+          onCommit={(value) => closeFocus(value)}
+          onOpenChange={(open) => {
+            if (!open) closeFocus()
+          }}
+        />
+      </>
     )
   }
 
@@ -231,19 +449,73 @@ export function ChatVariablesPicker({
         type="button"
         variant="ghost"
         size="sm"
-        className="max-w-[7rem] min-w-0 truncate px-2"
-        onClick={() => setOpen(true)}
-        title="Chat variables"
-        aria-label="Chat variables"
+        className="max-w-[7rem] min-w-0 px-2"
+        onClick={openFromTrigger}
+        title={hasCustom ? "Chat variables, custom values" : "Chat variables"}
+        aria-label={
+          hasCustom ? "Chat variables, custom values" : "Chat variables"
+        }
       >
-        <span className="truncate">Vars</span>
+        <TriggerLabel label="Vars" custom={hasCustom} />
       </Button>
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Chat variables</DialogTitle>
-          </DialogHeader>
-          {body}
+      <Dialog
+        open={listOpen || Boolean(focus)}
+        onOpenChange={(open) => {
+          if (open) {
+            openFromTrigger()
+            return
+          }
+          if (focus?.returnToList) {
+            setOverlay({
+              identity: sessionIdentity,
+              listOpen: true,
+              focus: null,
+            })
+            return
+          }
+          setOverlay({
+            identity: sessionIdentity,
+            listOpen: false,
+            focus: null,
+          })
+        }}
+      >
+        <DialogContent
+          showCloseButton={!focus}
+          className={
+            focus
+              ? STRING_VARIABLE_FOCUS_DIALOG_CLASS
+              : "flex max-h-[90dvh] flex-col gap-3 overflow-y-auto sm:max-w-md"
+          }
+        >
+          {focus && focusVariable ? (
+            <StringVariableEditor
+              key={focus.name}
+              title={focusVariable.name}
+              description={focusVariable.description}
+              initialValue={focus.snapshot}
+              defaultValue={focusVariable.default}
+              onCommit={(value) => closeFocus(value)}
+              onCancel={() => closeFocus()}
+              onBack={
+                focus.returnToList
+                  ? () =>
+                      setOverlay({
+                        identity: sessionIdentity,
+                        listOpen: true,
+                        focus: null,
+                      })
+                  : undefined
+              }
+            />
+          ) : (
+            <>
+              <DialogHeader>
+                <DialogTitle>Chat variables</DialogTitle>
+              </DialogHeader>
+              {body}
+            </>
+          )}
         </DialogContent>
       </Dialog>
     </>

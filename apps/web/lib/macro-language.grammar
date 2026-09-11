@@ -1,0 +1,21 @@
+@top Document { (Text | Macro)* }
+
+Macro { Open Expression Close }
+
+Expression { (Name | Number | String | Operator | "(" | ")" | "," | "." | "/")+ }
+
+@tokens {
+  Text { ![\{ \t\n\r]+ }
+  Open { "{{" }
+  Close { "}}" }
+  Name { $[a-zA-Z_] $[a-zA-Z0-9_]* }
+  Number { $[0-9]+ }
+  String {
+    '"' (!["\\] | "\\" _)* '"' |
+    "'" (!['\\] | "\\" _)* "'"
+  }
+  Operator { "==" | "!=" | "<=" | ">=" | "&&" | "||" | "+" | "-" | "*" | "!" | "<" | ">" }
+  space { $[ \t\n\r]+ }
+}
+
+@skip { space }

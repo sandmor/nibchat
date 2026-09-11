@@ -4,13 +4,19 @@ import { useMemo, useRef, useState } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { InformationCircleIcon } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
+import { type CodeEditorHandle } from "@/components/ui/code-editor"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { TooltipProvider, WithTooltip } from "@/components/ui/tooltip"
 import { previewHeaderEntry, isValidHttpHeader } from "@/lib/config-entries"
-import { catalogMacroContext, normalizeTimeZone } from "@/lib/prompt-macros"
+import {
+  builtInMacroDefinitions,
+  catalogMacroContext,
+  normalizeTimeZone,
+} from "@/lib/prompt-macros"
 import { useBrowserTimeZone } from "../hooks"
 import { MacroPicker } from "./macro-picker"
+import { MacroEditor } from "./macro-editor"
 
 export type KvEntry = {
   name: string
@@ -150,7 +156,7 @@ function HeaderEntryRow({
   valuePlaceholder: string
   disabled: boolean
 }) {
-  const valueRef = useRef<HTMLInputElement>(null)
+  const valueRef = useRef<CodeEditorHandle>(null)
   const [headerInvalid, setHeaderInvalid] = useState(false)
   const browserTimeZone = useBrowserTimeZone()
   const timeZone = browserTimeZone ? normalizeTimeZone(browserTimeZone) : null
@@ -170,22 +176,6 @@ function HeaderEntryRow({
     const next = [...entries]
     next[index] = nextEntry
     onChange(next)
-  }
-
-  function insertSnippet(snippet: string) {
-    const el = valueRef.current
-    const start = el?.selectionStart ?? entry.value.length
-    const end = el?.selectionEnd ?? entry.value.length
-    const nextValue =
-      entry.value.slice(0, start) + snippet + entry.value.slice(end)
-    const cursor = start + snippet.length
-    patch({ ...entry, value: nextValue })
-    requestAnimationFrame(() => {
-      const node = valueRef.current
-      if (!node) return
-      node.focus()
-      node.setSelectionRange(cursor, cursor)
-    })
   }
 
   function validateHeader() {
@@ -227,21 +217,22 @@ function HeaderEntryRow({
           aria-invalid={headerInvalid ? true : undefined}
           aria-describedby={describedBy || undefined}
         />
-        <Input
-          ref={valueRef}
+        <MacroEditor
+          editorRef={valueRef}
           className="min-w-[12rem] flex-[2]"
           value={entry.value}
-          onChange={(event) => {
+          onChange={(value) => {
             setHeaderInvalid(false)
-            patch({ ...entry, value: event.target.value })
+            patch({ ...entry, value })
           }}
           onBlur={validateHeader}
           placeholder={valuePlaceholder}
-          autoComplete="off"
           disabled={disabled}
-          aria-label={`${label} value ${index + 1}`}
-          aria-invalid={headerInvalid ? true : undefined}
-          aria-describedby={describedBy || undefined}
+          singleLine
+          macros={builtInMacroDefinitions}
+          ariaLabel={`${label} value ${index + 1}`}
+          ariaInvalid={headerInvalid ? true : undefined}
+          ariaDescribedBy={describedBy || undefined}
         />
         <Button
           type="button"
@@ -294,7 +285,7 @@ function HeaderEntryRow({
         </div>
         <MacroPicker
           catalogContext={catalogContext}
-          onInsert={insertSnippet}
+          onInsert={(snippet) => valueRef.current?.replaceSelection(snippet)}
           disabled={disabled}
           aria-label={`Insert prompt macro into ${label.toLowerCase()} value ${index + 1}`}
         />

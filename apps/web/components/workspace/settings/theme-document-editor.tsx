@@ -1,8 +1,6 @@
 "use client"
 
 import { useState } from "react"
-import CodeMirror from "@uiw/react-codemirror"
-import { json as jsonLang } from "@codemirror/lang-json"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { HugeiconsIcon } from "@hugeicons/react"
@@ -11,6 +9,7 @@ import {
   InformationCircleIcon,
 } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
+import { AppearanceJsonEditor } from "./appearance-json-editor"
 import {
   Collapsible,
   CollapsibleContent,
@@ -37,6 +36,7 @@ import {
   type ThemeRecord,
 } from "@/lib/appearance"
 import { PALETTE_ROLE_LABELS, PALETTE_ROLES } from "@/lib/appearance-registry"
+import { appearanceJsonParseError } from "@/lib/appearance-json"
 import { reconcileEditorText } from "@/lib/appearance-editor-sync"
 import { isAppearanceDirty, useAppearanceStore } from "@/lib/appearance-store"
 import { useTRPC } from "@/lib/trpc-react"
@@ -128,29 +128,24 @@ export function ThemeDocumentEditor({
   }
 
   function updateText(text: string) {
-    try {
-      const document = parseAppearance(JSON.parse(text))
-      setBuffer({ source: buffer.source, text, parseError: null })
-      applyDocument(document)
-    } catch {
-      setBuffer({ source: buffer.source, text, parseError: "Invalid JSON" })
+    const parseError = appearanceJsonParseError(text)
+    if (parseError) {
+      setBuffer((current) => ({ ...current, text, parseError }))
+      return
     }
+    setBuffer((current) => ({ ...current, text, parseError: null }))
+    applyDocument(parseAppearance(JSON.parse(text)))
   }
 
   function save() {
-    let document: Appearance
-    try {
-      document = parseAppearance(JSON.parse(buffer.text))
-      setBuffer((current) => ({ ...current, parseError: null }))
-    } catch (error) {
-      setBuffer((current) => ({
-        ...current,
-        parseError:
-          error instanceof Error ? error.message : "Invalid theme document",
-      }))
+    const parseError = appearanceJsonParseError(buffer.text)
+    if (parseError) {
+      setBuffer((current) => ({ ...current, parseError }))
       toast.error("Fix JSON before saving")
       return
     }
+    const document = parseAppearance(JSON.parse(buffer.text))
+    setBuffer((current) => ({ ...current, parseError: null }))
     updateMutation.mutate({
       id: theme.id,
       name: nameState.value,
@@ -176,11 +171,7 @@ export function ThemeDocumentEditor({
   const dirty = (() => {
     if (isAppearanceDirty(draft, saved)) return true
     if (invalid) return false
-    try {
-      return isAppearanceDirty(parseAppearance(JSON.parse(buffer.text)), saved)
-    } catch {
-      return false
-    }
+    return isAppearanceDirty(parseAppearance(JSON.parse(buffer.text)), saved)
   })()
   const canSave =
     !invalid &&
@@ -414,7 +405,7 @@ export function ThemeDocumentEditor({
       <Collapsible
         open={jsonOpen}
         onOpenChange={setJsonOpen}
-        className="group/json rounded-lg border border-border"
+        className="group/json overflow-hidden rounded-lg border border-border"
       >
         <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm font-medium outline-none hover:bg-muted/60 focus-visible:ring-[3px] focus-visible:ring-ring/50">
           <span>
@@ -438,15 +429,12 @@ export function ThemeDocumentEditor({
             className="size-4 shrink-0 text-muted-foreground transition-transform group-data-open/json:rotate-180"
           />
         </CollapsibleTrigger>
-        <CollapsibleContent keepMounted className="border-t border-border p-3">
-          <CodeMirror
+        <CollapsibleContent keepMounted className="border-t border-border">
+          <AppearanceJsonEditor
             value={buffer.text}
             onChange={updateText}
-            extensions={[jsonLang()]}
             height="18rem"
-            theme={draft.scheme === "dark" ? "dark" : "light"}
-            className="overflow-hidden rounded-lg border border-border text-xs"
-            basicSetup={{ lineNumbers: true, foldGutter: true }}
+            ariaInvalid={invalid}
           />
         </CollapsibleContent>
       </Collapsible>

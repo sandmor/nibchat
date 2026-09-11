@@ -51,7 +51,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
-import { Textarea } from "@/components/ui/textarea"
+import { type CodeEditorHandle } from "@/components/ui/code-editor"
 import { cn } from "@/lib/utils"
 import {
   builtInMacroDefinitions,
@@ -75,6 +75,7 @@ import {
   type StackModule,
 } from "@/lib/prompt-stack"
 import { MacroPicker } from "./macro-picker"
+import { MacroEditor } from "./macro-editor"
 import { useBrowserTimeZone } from "../hooks"
 
 const PLACEMENTS: ModulePlacement[] = ["relative", "in_chat"]
@@ -679,7 +680,7 @@ function PromptModuleBodyEditor({
   variables?: readonly PromptVariable[]
   macros?: readonly MacroDefinition[]
 }) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const editorRef = useRef<CodeEditorHandle>(null)
   const browserTimeZone = useBrowserTimeZone()
   const timeZone = browserTimeZone ? normalizeTimeZone(browserTimeZone) : null
   const registry = useMemo(() => createMacroRegistry(macros), [macros])
@@ -705,30 +706,17 @@ function PromptModuleBodyEditor({
     [variables]
   )
 
-  function insertSnippet(snippet: string) {
-    const el = textareaRef.current
-    const start = el?.selectionStart ?? value.length
-    const end = el?.selectionEnd ?? value.length
-    const next = value.slice(0, start) + snippet + value.slice(end)
-    const cursor = start + snippet.length
-    onChange(next)
-    requestAnimationFrame(() => {
-      const node = textareaRef.current
-      if (!node) return
-      node.focus()
-      node.setSelectionRange(cursor, cursor)
-    })
-  }
-
   return (
     <div className="space-y-1.5">
-      <Textarea
-        ref={textareaRef}
+      <MacroEditor
+        editorRef={editorRef}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
-        rows={3}
+        onChange={onChange}
+        macros={macros}
+        variables={pickerVariables}
         placeholder="Module body…"
-        className="text-sm"
+        ariaLabel="Module body"
+        className="max-h-96 [&_.cm-scroller]:max-h-96"
       />
       <div className="flex items-start gap-2">
         {showPreview ? (
@@ -744,7 +732,7 @@ function PromptModuleBodyEditor({
           variables={pickerVariables}
           catalogContext={catalogContext}
           blockSnippets
-          onInsert={insertSnippet}
+          onInsert={(snippet) => editorRef.current?.replaceSelection(snippet)}
         />
       </div>
     </div>

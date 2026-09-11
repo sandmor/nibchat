@@ -33,6 +33,8 @@ import {
 } from "@/lib/reasoning"
 import { cn } from "@/lib/utils"
 import type { ModelConfigLocal, ProviderSummary } from "./types"
+import type { SpaceLockSource } from "@/lib/space"
+import { LockedPickerTrigger } from "./space-lock-hint"
 import { useMediaMdUp } from "./hooks"
 
 function choiceKey(choice?: ReasoningSelection) {
@@ -50,6 +52,13 @@ function triggerLabel(selection?: ReasoningSelection, custom?: boolean) {
   return reasoningLabel(selection)
 }
 
+export function reasoningChipLabel(config: ModelConfigLocal) {
+  return triggerLabel(
+    selectedReasoning(config),
+    hasCustomReasoning(config.providerOptions)
+  )
+}
+
 function requestProtocol(
   kind: string,
   modelProtocol?: string
@@ -65,15 +74,25 @@ export function ReasoningPicker({
   providers,
   onChange,
   onEditParameters,
+  lockedBy,
+  open: openProp,
+  onOpenChange,
+  hideTrigger = false,
 }: {
   config: ModelConfigLocal
   providers: ProviderSummary[]
   onChange: (config: ModelConfigLocal) => void | Promise<void>
   onEditParameters: () => void
+  lockedBy?: SpaceLockSource
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+  hideTrigger?: boolean
 }) {
   const router = useRouter()
   const mdUp = useMediaMdUp()
-  const [open, setOpen] = useState(false)
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false)
+  const controlled = openProp !== undefined
+  const open = controlled ? openProp : uncontrolledOpen
   const [pending, setPending] = useState(false)
   const [budget, setBudget] = useState("8192")
   const provider = providers.find((item) => item.id === config.providerId)
@@ -103,9 +122,11 @@ export function ReasoningPicker({
   }
 
   function setPickerOpen(next: boolean) {
+    if (lockedBy) return
     if (next && selection?.type === "budget")
       setBudget(String(selection.tokens))
-    setOpen(next)
+    if (!controlled) setUncontrolledOpen(next)
+    onOpenChange?.(next)
   }
 
   async function apply(next?: ReasoningSelection, clearCustom = false) {
@@ -297,15 +318,43 @@ export function ReasoningPicker({
   )
 
   const triggerClassName =
-    "max-w-[6.5rem] min-w-0 shrink-0 gap-1 px-2 sm:max-w-[9rem] sm:px-3"
+    "max-w-[4.75rem] min-w-0 shrink-0 gap-1 px-1.5 md:max-w-[8rem] md:px-2"
   const triggerIcon = (
     <HugeiconsIcon
       icon={BrainIcon}
       strokeWidth={1.8}
-      className="size-3.5"
+      className="hidden size-3.5 md:block"
       aria-hidden="true"
     />
   )
+
+  if (hideTrigger) {
+    if (lockedBy) return null
+    return (
+      <Dialog open={open} onOpenChange={setPickerOpen}>
+        <DialogContent className="max-h-[min(36rem,calc(100dvh-2rem))] w-[calc(100%-2rem)] max-w-sm gap-3 overflow-y-auto p-4">
+          <DialogHeader className="gap-1">
+            <DialogTitle>Reasoning</DialogTitle>
+            <DialogDescription className="sr-only">{hint}</DialogDescription>
+          </DialogHeader>
+          {panel}
+        </DialogContent>
+      </Dialog>
+    )
+  }
+
+  if (lockedBy) {
+    return (
+      <LockedPickerTrigger
+        lock={lockedBy}
+        label={`Reasoning: ${label}`}
+        className={triggerClassName}
+      >
+        {triggerIcon}
+        <span className="truncate">{label}</span>
+      </LockedPickerTrigger>
+    )
+  }
 
   if (!mdUp) {
     return (

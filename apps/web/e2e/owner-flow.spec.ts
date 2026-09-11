@@ -34,7 +34,9 @@ test.describe("owner flow", () => {
       page.getByRole("button", { name: "Skip for now" })
     ).toBeVisible()
 
-    await page.getByLabel("Request headers value 1").fill("Bearer sk-e2e-owner")
+    await page
+      .getByRole("textbox", { name: "Request headers value 1" })
+      .fill("Bearer sk-e2e-owner")
     await page.getByRole("button", { name: "Load models" }).click()
     await expect(page.getByText("Choose models.")).toBeVisible({
       timeout: 30_000,

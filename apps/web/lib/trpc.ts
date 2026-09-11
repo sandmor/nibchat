@@ -17,11 +17,13 @@ import {
   createMessage,
   createPromptStack,
   createProvider,
+  createSpace,
   finishSetup,
   deleteChat,
   deleteNode,
   deletePromptStack,
   deleteProvider,
+  deleteSpace,
   duplicatePromptStack,
   forkMessageParts,
   moveNode,
@@ -42,16 +44,19 @@ import {
   updateTheme,
   setChatPromptStack,
   setChatVariables,
+  setChatSpace,
   setInstanceDefaultPromptStack,
   setInstanceTitleModel,
-  updateChat,
   updatePromptStack,
   updateProvider,
+  updateSpace,
+  updateChat,
   setChatViewState,
 } from "@/lib/chat-service"
 import { listAvailableProviders, listProviders } from "@/lib/providers"
 import { appearanceSchema } from "@/lib/appearance"
-import { MAX_NAME } from "@/lib/limits"
+import { MAX_DESCRIPTION, MAX_NAME } from "@/lib/limits"
+import { spaceSettingsSchema } from "@/lib/space"
 import {
   promptStackDocumentSchema,
   promptVariableValueSchema,
@@ -274,6 +279,7 @@ export const appRouter = t.router({
             variables: z
               .record(z.string(), promptVariableValueSchema)
               .optional(),
+            spaceId: z.string().nullable().optional(),
           })
           .optional()
       )
@@ -283,7 +289,8 @@ export const appRouter = t.router({
           input?.title,
           input?.config,
           input?.promptStackId,
-          input?.variables
+          input?.variables,
+          input?.spaceId
         )
       ),
     updateChat: userProcedure
@@ -804,6 +811,62 @@ export const appRouter = t.router({
       .mutation(async ({ ctx, input }) => {
         try {
           return await setChatVariables({ userId: ctx.user.id, ...input })
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    createSpace: userProcedure
+      .input(
+        z.object({
+          parentId: z.string().nullable().optional(),
+          name: z.string().trim().min(1).max(MAX_NAME).optional(),
+          description: z.string().max(MAX_DESCRIPTION).optional(),
+          settings: spaceSettingsSchema.optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await createSpace({ userId: ctx.user.id, ...input })
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    updateSpace: userProcedure
+      .input(
+        z.object({
+          spaceId: z.string(),
+          parentId: z.string().nullable().optional(),
+          name: z.string().trim().min(1).max(MAX_NAME).optional(),
+          description: z.string().max(MAX_DESCRIPTION).optional(),
+          settings: spaceSettingsSchema.optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await updateSpace({ userId: ctx.user.id, ...input })
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    deleteSpace: userProcedure
+      .input(z.object({ spaceId: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await deleteSpace(ctx.user.id, input.spaceId)
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    setChatSpace: userProcedure
+      .input(
+        z.object({
+          chatId: z.string(),
+          spaceId: z.string().nullable(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await setChatSpace(ctx.user.id, input.chatId, input.spaceId)
         } catch (error) {
           mapError(error)
         }

@@ -23,6 +23,8 @@ import {
   pickerModels,
   resolveModelLabel,
 } from "@/lib/provider-models"
+import type { SpaceLockSource } from "@/lib/space"
+import { LockedPickerTrigger } from "./space-lock-hint"
 import type { CatalogModel, ModelConfigLocal, ProviderSummary } from "./types"
 import { useMediaMdUp } from "./hooks"
 
@@ -58,6 +60,7 @@ export function ModelPicker({
   providers,
   showIds = false,
   successToast,
+  lockedBy,
   onChange,
 }: {
   config: ModelConfigLocal
@@ -65,6 +68,7 @@ export function ModelPicker({
   providers: ProviderSummary[]
   showIds?: boolean
   successToast?: string
+  lockedBy?: SpaceLockSource
   onChange: (config: ModelConfigLocal) => void | Promise<void>
 }) {
   const router = useRouter()
@@ -80,19 +84,16 @@ export function ModelPicker({
       parseProviderModelsJson(selectedProvider?.models_json ?? "[]"),
       modelId
     ) ?? modelId
-  const modelShort = displayName
-    ? displayName.includes("/")
-      ? displayName.slice(displayName.lastIndexOf("/") + 1)
-      : displayName
-    : null
   const fullLabel = joinLabel([selectedProvider?.name, displayName]) || "Model"
   const tooltipLabel =
     showIds && modelId && displayName && modelId !== displayName
       ? joinLabel([fullLabel, modelId])
       : fullLabel
-  const compactLabel = modelShort ?? selectedProvider?.name ?? "Model"
+  const locked = Boolean(lockedBy)
+  const triggerClassName = "w-full min-w-0 justify-start px-2"
 
   function setPickerOpen(next: boolean) {
+    if (locked) return
     setOpen(next)
     if (next) setQuery("")
   }
@@ -224,56 +225,76 @@ export function ModelPicker({
     </>
   )
 
+  if (locked && lockedBy) {
+    return (
+      <div className="flex w-full min-w-0">
+        <LockedPickerTrigger
+          lock={lockedBy}
+          label={tooltipLabel}
+          className={cn("max-w-none", triggerClassName)}
+        >
+          <span className="truncate">{fullLabel}</span>
+        </LockedPickerTrigger>
+      </div>
+    )
+  }
+
   if (!mdUp) {
     return (
-      <TooltipProvider delay={400}>
-        <WithTooltip label={tooltipLabel}>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="min-w-0 flex-1 justify-start truncate px-2"
-            onClick={() => setPickerOpen(true)}
-            aria-label={`Model: ${tooltipLabel}`}
-          >
-            <span className="truncate">{compactLabel}</span>
-          </Button>
-        </WithTooltip>
-        <Dialog open={open} onOpenChange={setPickerOpen}>
-          <DialogContent className="flex h-[100dvh] max-h-[100dvh] w-full max-w-none flex-col gap-3 rounded-none border-0 p-4 sm:h-auto sm:max-h-[90svh] sm:max-w-md sm:rounded-2xl sm:border">
-            <DialogHeader>
-              <DialogTitle>Choose model</DialogTitle>
-            </DialogHeader>
-            <div className="flex min-h-0 flex-1 flex-col gap-3">{listBody}</div>
-          </DialogContent>
-        </Dialog>
-      </TooltipProvider>
+      <div className="flex w-full min-w-0">
+        <TooltipProvider delay={400}>
+          <WithTooltip label={tooltipLabel}>
+            <Button
+              variant="ghost"
+              size="sm"
+              className={triggerClassName}
+              onClick={() => setPickerOpen(true)}
+              aria-label={`Model: ${tooltipLabel}`}
+            >
+              <span className="truncate">{fullLabel}</span>
+            </Button>
+          </WithTooltip>
+          <Dialog open={open} onOpenChange={setPickerOpen}>
+            <DialogContent className="flex h-[100dvh] max-h-[100dvh] w-full max-w-none flex-col gap-3 rounded-none border-0 p-4 sm:h-auto sm:max-h-[90svh] sm:max-w-md sm:rounded-2xl sm:border">
+              <DialogHeader>
+                <DialogTitle>Choose model</DialogTitle>
+              </DialogHeader>
+              <div className="flex min-h-0 flex-1 flex-col gap-3">
+                {listBody}
+              </div>
+            </DialogContent>
+          </Dialog>
+        </TooltipProvider>
+      </div>
     )
   }
 
   return (
-    <TooltipProvider delay={400}>
-      <Popover open={open} onOpenChange={setPickerOpen}>
-        <WithTooltip label={tooltipLabel}>
-          <PopoverTrigger
-            render={
-              <Button
-                variant="ghost"
-                size="sm"
-                className="max-w-[min(18rem,40vw)] min-w-0 truncate"
-                aria-label={`Model: ${tooltipLabel}`}
-              />
-            }
+    <div className="flex w-full min-w-0">
+      <TooltipProvider delay={400}>
+        <Popover open={open} onOpenChange={setPickerOpen}>
+          <WithTooltip label={tooltipLabel}>
+            <PopoverTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className={cn("truncate", triggerClassName)}
+                  aria-label={`Model: ${tooltipLabel}`}
+                />
+              }
+            >
+              <span className="truncate">{fullLabel}</span>
+            </PopoverTrigger>
+          </WithTooltip>
+          <PopoverContent
+            align="end"
+            className="flex max-h-[min(28rem,70vh)] w-[min(22rem,calc(100vw-2rem))] flex-col gap-3 p-3"
           >
-            <span className="truncate">{fullLabel}</span>
-          </PopoverTrigger>
-        </WithTooltip>
-        <PopoverContent
-          align="end"
-          className="flex max-h-[min(28rem,70vh)] w-[min(22rem,calc(100vw-2rem))] flex-col gap-3 p-3"
-        >
-          {listBody}
-        </PopoverContent>
-      </Popover>
-    </TooltipProvider>
+            {listBody}
+          </PopoverContent>
+        </Popover>
+      </TooltipProvider>
+    </div>
   )
 }

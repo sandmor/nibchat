@@ -28,6 +28,8 @@ import {
   type PromptVariableValues,
 } from "@/lib/prompt-stack"
 import { useTRPC } from "@/lib/trpc-react"
+import type { SpaceLockSource } from "@/lib/space"
+import { SpaceLockHint } from "./space-lock-hint"
 import { useMediaMdUp } from "./hooks"
 import {
   STRING_VARIABLE_FOCUS_DIALOG_CLASS,
@@ -120,6 +122,10 @@ export function ChatVariablesPicker({
   draftValues = EMPTY_VALUES,
   onDraftChange,
   onChanged,
+  lockedVariables,
+  open: openProp,
+  onOpenChange,
+  hideTrigger = false,
 }: {
   chatId?: string
   promptStackId: string | null
@@ -128,6 +134,10 @@ export function ChatVariablesPicker({
   draftValues?: PromptVariableValues
   onDraftChange?: (values: PromptVariableValues) => void
   onChanged?: () => void | Promise<void>
+  lockedVariables?: Record<string, SpaceLockSource>
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+  hideTrigger?: boolean
 }) {
   const trpc = useTRPC()
   const mdUp = useMediaMdUp()
@@ -227,6 +237,33 @@ export function ChatVariablesPicker({
     return typeof value === "string" ? value : fallback
   }
 
+  const overlayOpen = listOpen || Boolean(focus)
+  if (openProp === true && !overlayOpen) {
+    if (onlyString) {
+      setOverlay({
+        identity: sessionIdentity,
+        listOpen: false,
+        focus: {
+          name: onlyString.name,
+          snapshot: stringValue(onlyString.name, onlyString.default),
+          returnToList: false,
+        },
+      })
+    } else {
+      setOverlay({
+        identity: sessionIdentity,
+        listOpen: true,
+        focus: null,
+      })
+    }
+  } else if (openProp === false && overlayOpen) {
+    setOverlay({
+      identity: sessionIdentity,
+      listOpen: false,
+      focus: null,
+    })
+  }
+
   function setListOpen(next: boolean) {
     setOverlay({
       identity: sessionIdentity,
@@ -250,7 +287,7 @@ export function ChatVariablesPicker({
   }
 
   function closeFocus(commitValue?: string) {
-    if (commitValue !== undefined && focus) {
+    if (commitValue !== undefined && focus && !lockedVariables?.[focus.name]) {
       commit({ ...draftForRender, [focus.name]: commitValue })
     }
     const returnToList = focus?.returnToList ?? false
@@ -259,6 +296,7 @@ export function ChatVariablesPicker({
       listOpen: returnToList,
       focus: null,
     })
+    if (!returnToList) onOpenChange?.(false)
   }
 
   function openFromTrigger() {
@@ -278,6 +316,8 @@ export function ChatVariablesPicker({
         const value = draftForRender[variable.name] ?? variable.default
         const custom = value !== variable.default
         const stringVal = typeof value === "string" ? value : ""
+        const lock = lockedVariables?.[variable.name]
+        const fieldDisabled = saveMut.isPending || Boolean(lock)
         return (
           <div key={variable.name} className="grid gap-1">
             {variable.type === "boolean" ? (
@@ -300,7 +340,7 @@ export function ChatVariablesPicker({
                     id={`var-${variable.name}`}
                     size="sm"
                     checked={Boolean(value)}
-                    disabled={saveMut.isPending}
+                    disabled={fieldDisabled}
                     onCheckedChange={(checked) =>
                       commit({ ...draftForRender, [variable.name]: checked })
                     }
@@ -309,6 +349,7 @@ export function ChatVariablesPicker({
                     {value ? "On" : "Off"}
                   </span>
                 </div>
+                <SpaceLockHint lock={lock} />
               </>
             ) : mdUp ? (
               <>
@@ -331,7 +372,7 @@ export function ChatVariablesPicker({
                   value={stringVal}
                   placeholder="Value"
                   ariaLabel={variable.name}
-                  disabled={saveMut.isPending}
+                  disabled={fieldDisabled}
                   onChange={(next) =>
                     setDraft({
                       ...draftForRender,
@@ -347,12 +388,13 @@ export function ChatVariablesPicker({
                   }}
                   onExpand={() => openFocus(variable.name, false)}
                 />
+                <SpaceLockHint lock={lock} />
               </>
             ) : (
               <button
                 type="button"
                 className="flex items-center gap-2 rounded-xl border border-transparent px-1 py-1 text-left transition-colors hover:border-border hover:bg-muted/40"
-                disabled={saveMut.isPending}
+                disabled={fieldDisabled}
                 aria-label={`Edit ${variable.name}`}
                 onClick={() => openFocus(variable.name, true)}
               >
@@ -381,6 +423,9 @@ export function ChatVariablesPicker({
                 />
               </button>
             )}
+            {variable.type !== "boolean" && !mdUp ? (
+              <SpaceLockHint lock={lock} />
+            ) : null}
           </div>
         )
       })}
@@ -389,6 +434,75 @@ export function ChatVariablesPicker({
 
   const triggerLabel =
     variables.length === 1 ? variables[0]!.name : `${variables.length} vars`
+
+  function handleDialogOpenChange(open: boolean) {
+    if (open) {
+      openFromTrigger()
+      return
+    }
+    if (focus?.returnToList) {
+      setOverlay({
+        identity: sessionIdentity,
+        listOpen: true,
+        focus: null,
+      })
+      return
+    }
+    setOverlay({
+      identity: sessionIdentity,
+      listOpen: false,
+      focus: null,
+    })
+    onOpenChange?.(false)
+  }
+
+  const overlayDialog = (
+    <Dialog
+      open={listOpen || Boolean(focus)}
+      onOpenChange={handleDialogOpenChange}
+    >
+      <DialogContent
+        showCloseButton={!focus}
+        className={
+          focus
+            ? STRING_VARIABLE_FOCUS_DIALOG_CLASS
+            : "flex max-h-[90dvh] flex-col gap-3 overflow-y-auto sm:max-w-md"
+        }
+      >
+        {focus && focusVariable ? (
+          <StringVariableEditor
+            key={focus.name}
+            title={focusVariable.name}
+            description={focusVariable.description}
+            initialValue={focus.snapshot}
+            defaultValue={focusVariable.default}
+            disabled={Boolean(lockedVariables?.[focus.name])}
+            onCommit={(value) => closeFocus(value)}
+            onCancel={() => closeFocus()}
+            onBack={
+              focus.returnToList
+                ? () =>
+                    setOverlay({
+                      identity: sessionIdentity,
+                      listOpen: true,
+                      focus: null,
+                    })
+                : undefined
+            }
+          />
+        ) : (
+          <>
+            <DialogHeader>
+              <DialogTitle>Chat variables</DialogTitle>
+            </DialogHeader>
+            {body}
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+
+  if (hideTrigger) return overlayDialog
 
   if (mdUp) {
     return (
@@ -409,7 +523,7 @@ export function ChatVariablesPicker({
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="max-w-[min(9rem,24vw)] min-w-0"
+                className="max-w-[min(8rem,22vw)] min-w-0"
                 title={
                   hasCustom ? "Chat variables, custom values" : "Chat variables"
                 }
@@ -434,6 +548,7 @@ export function ChatVariablesPicker({
           description={focusVariable?.description}
           initialValue={focus?.snapshot ?? ""}
           defaultValue={focusVariable?.default}
+          disabled={Boolean(focus && lockedVariables?.[focus.name])}
           onCommit={(value) => closeFocus(value)}
           onOpenChange={(open) => {
             if (!open) closeFocus()
@@ -458,66 +573,7 @@ export function ChatVariablesPicker({
       >
         <TriggerLabel label="Vars" custom={hasCustom} />
       </Button>
-      <Dialog
-        open={listOpen || Boolean(focus)}
-        onOpenChange={(open) => {
-          if (open) {
-            openFromTrigger()
-            return
-          }
-          if (focus?.returnToList) {
-            setOverlay({
-              identity: sessionIdentity,
-              listOpen: true,
-              focus: null,
-            })
-            return
-          }
-          setOverlay({
-            identity: sessionIdentity,
-            listOpen: false,
-            focus: null,
-          })
-        }}
-      >
-        <DialogContent
-          showCloseButton={!focus}
-          className={
-            focus
-              ? STRING_VARIABLE_FOCUS_DIALOG_CLASS
-              : "flex max-h-[90dvh] flex-col gap-3 overflow-y-auto sm:max-w-md"
-          }
-        >
-          {focus && focusVariable ? (
-            <StringVariableEditor
-              key={focus.name}
-              title={focusVariable.name}
-              description={focusVariable.description}
-              initialValue={focus.snapshot}
-              defaultValue={focusVariable.default}
-              onCommit={(value) => closeFocus(value)}
-              onCancel={() => closeFocus()}
-              onBack={
-                focus.returnToList
-                  ? () =>
-                      setOverlay({
-                        identity: sessionIdentity,
-                        listOpen: true,
-                        focus: null,
-                      })
-                  : undefined
-              }
-            />
-          ) : (
-            <>
-              <DialogHeader>
-                <DialogTitle>Chat variables</DialogTitle>
-              </DialogHeader>
-              {body}
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
+      {overlayDialog}
     </>
   )
 }

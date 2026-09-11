@@ -118,6 +118,7 @@ export function ProviderSettings({
         toast.success("Provider deleted")
         void invalidateTitleModel()
         onSaved()
+        void queryClient.invalidateQueries(trpc.workspace.get.queryFilter())
       },
       onError: (error) => toast.error(error.message || "Could not delete"),
     })

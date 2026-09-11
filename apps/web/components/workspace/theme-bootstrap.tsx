@@ -1,5 +1,10 @@
 import { compileAppearance, type ThemeRecord } from "@/lib/appearance"
 import { usesDarkElevation } from "@/lib/appearance-color"
+import {
+  THEME_SLOT_LS_KEY,
+  type ThemeSlotMode,
+  userScopedStorageKey,
+} from "@/lib/theme-slot"
 
 type SlotTheme = {
   id: string
@@ -33,23 +38,28 @@ function safeJson(value: unknown): string {
 }
 
 /**
- * Runs immediately after next-themes' slot script and before the workspace
- * shell. This prevents the assigned theme from flashing its Paper fallback.
+ * Server-rendered blocking script: choose the color slot, then apply the
+ * assigned theme before the workspace shell paints.
  */
 export function ThemeBootstrap({
   themes,
   lightThemeId,
   darkThemeId,
+  userId,
+  initialMode = "system",
 }: {
   themes: ThemeRecord[]
   lightThemeId: string
   darkThemeId: string
+  userId?: string
+  initialMode?: ThemeSlotMode
 }) {
   const payload = {
     light: slotTheme(themes.find((theme) => theme.id === lightThemeId)),
     dark: slotTheme(themes.find((theme) => theme.id === darkThemeId)),
   }
-  const script = `(function(data){try{var root=document.documentElement;var slot=root.getAttribute("data-theme-slot")==="dark"?"dark":"light";var theme=data[slot]||data.light||data.dark;if(!theme)return;Object.keys(theme.vars).forEach(function(key){if(key.slice(0,2)==="--")root.style.setProperty(key,theme.vars[key])});root.dataset.density=theme.density;root.dataset.motionEnabled=String(theme.motionEnabled);root.dataset.motionReduced=theme.motionReduced;root.dataset.elevation=theme.elevation;root.classList.toggle("dark",theme.scheme==="dark");root.style.colorScheme=theme.scheme;root.dataset.nibchatThemeId=theme.id}catch(_){}})(${safeJson(payload)})`
+  const storageKey = userScopedStorageKey(THEME_SLOT_LS_KEY, userId)
+  const script = `(function(data,key,fallback){try{var root=document.documentElement;var mode;try{mode=localStorage.getItem(key)||fallback}catch(_){mode=fallback}var slot=mode==="dark"||mode==="light"?mode:(window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");root.setAttribute("data-theme-slot",slot);var theme=data[slot]||data.light||data.dark;if(!theme)return;Object.keys(theme.vars).forEach(function(name){if(name.slice(0,2)==="--")root.style.setProperty(name,theme.vars[name])});root.dataset.density=theme.density;root.dataset.motionEnabled=String(theme.motionEnabled);root.dataset.motionReduced=theme.motionReduced;root.dataset.elevation=theme.elevation;root.classList.toggle("dark",theme.scheme==="dark");root.style.colorScheme=theme.scheme;root.dataset.nibchatThemeId=theme.id}catch(_){}})(${safeJson(payload)},${safeJson(storageKey)},${safeJson(initialMode)})`
 
   return (
     <script

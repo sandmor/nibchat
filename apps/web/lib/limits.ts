@@ -11,6 +11,10 @@
  */
 export const MAX_NAME = 200
 export const MAX_COLLECTION = 100
+/** Nested chat groupings; folders run out faster than stack modules. */
+export const MAX_SPACES = 500
+export const MAX_SPACE_DEPTH = 8
+export const MAX_DESCRIPTION = 2_000
 export const MAX_PROMPT_CHARS = 50_000
 export const MAX_BLOB_CHARS = 10_000_000
 export const MAX_HEADER_VALUE_CHARS = 10_000

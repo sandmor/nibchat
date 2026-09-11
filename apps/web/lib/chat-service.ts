@@ -41,6 +41,7 @@ import type {
   NodeRow,
   Parts,
   PromptStackRow,
+  SpaceRow,
   ThemeRow,
 } from "@/lib/types"
 import { generateChatTitle } from "@/lib/agent/generate-title"
@@ -100,6 +101,28 @@ import {
   getUserSettings,
   setUserThemeSlots,
 } from "@/lib/user-settings"
+import { MAX_SPACE_DEPTH, MAX_SPACES } from "@/lib/limits"
+import {
+  assertSpaceMoveAllowed,
+  bindVariableLocksToStack,
+  mergeUnlockedModelConfig,
+  mergeUnlockedVariables,
+  omitModelProviderRef,
+  omitPromptStackRef,
+  parseSpaceSettings,
+  resolveChatSettings,
+  spaceDescriptionSchema,
+  spaceFromRow,
+  spaceNameSchema,
+  spaceSettingsSchema,
+  spaceSettingsToJson,
+  spaceDepth,
+  spacesById,
+  orderSpacesForInsert,
+  type ResolvedChatSettings,
+  type SpaceRecord,
+  type SpaceSettings,
+} from "@/lib/space"
 
 function normalizeNodeRow(node: NodeRow): NodeRow {
   return {
@@ -257,6 +280,115 @@ async function assertChatOwner(
   return chat
 }
 
+async function listSpaceRows(
+  userId: string,
+  executor: DbExecutor = db
+): Promise<SpaceRow[]> {
+  return await executor
+    .selectFrom("spaces")
+    .selectAll()
+    .where("user_id", "=", userId)
+    .orderBy("sort_key")
+    .orderBy("created_at")
+    .execute()
+}
+
+async function rewriteSpaceSettings(
+  rewrite: (settings: SpaceSettings) => SpaceSettings,
+  executor: DbExecutor = db,
+  userId?: string
+) {
+  let query = executor
+    .selectFrom("spaces")
+    .select(["id", "user_id", "settings_json"])
+  if (userId) query = query.where("user_id", "=", userId)
+  const rows = await query.execute()
+  const timestamp = now()
+  for (const row of rows) {
+    const current = parseSpaceSettings(row.settings_json)
+    const next = rewrite(current)
+    if (JSON.stringify(next) === JSON.stringify(current)) continue
+    await executor
+      .updateTable("spaces")
+      .set({
+        settings_json: spaceSettingsToJson(next),
+        updated_at: timestamp,
+      })
+      .where("id", "=", row.id)
+      .execute()
+  }
+}
+
+async function loadSpaceRecords(userId: string): Promise<SpaceRecord[]> {
+  return (await listSpaceRows(userId)).map(spaceFromRow)
+}
+
+async function assertSpaceOwner(spaceId: string, userId: string) {
+  const space = await db
+    .selectFrom("spaces")
+    .selectAll()
+    .where("id", "=", spaceId)
+    .where("user_id", "=", userId)
+    .executeTakeFirst()
+  if (!space) throw new Error("Space not found")
+  return space
+}
+
+function nextSpaceSortKey(
+  rows: readonly SpaceRow[],
+  parentId: string | null,
+  exceptId?: string
+) {
+  const siblings = rows.filter(
+    (space) => space.parent_id === parentId && space.id !== exceptId
+  )
+  const maxKey = siblings.reduce(
+    (max, space) => Math.max(max, space.sort_key),
+    0
+  )
+  return sortKeyAfter(maxKey || null)
+}
+
+async function assertSpaceSettingsStack(
+  userId: string,
+  settings: SpaceSettings
+) {
+  const stackId = settings.promptStack?.value
+  if (!stackId) return
+  const existing = await db
+    .selectFrom("prompt_stacks")
+    .select("id")
+    .where("id", "=", stackId)
+    .where("user_id", "=", userId)
+    .executeTakeFirst()
+  if (!existing) throw new Error("Prompt stack not found")
+}
+
+export async function resolveSettingsForChat(
+  chat: {
+    space_id?: string | null
+    prompt_stack_id: string | null
+    variables_json?: string
+    model_config_json?: string
+  },
+  userId: string,
+  spaces?: readonly SpaceRecord[]
+): Promise<ResolvedChatSettings> {
+  const records = spaces ?? (await loadSpaceRecords(userId))
+  return resolveChatSettings({
+    chat: {
+      spaceId: chat.space_id ?? null,
+      promptStackId: chat.prompt_stack_id,
+      variables: parseJson<Record<string, unknown>>(
+        chat.variables_json ?? "{}",
+        {}
+      ),
+      model: parseJson<ModelConfig>(chat.model_config_json ?? "{}", {}),
+    },
+    spaces: records,
+  })
+}
+
 async function assertNodeOwner(
   nodeId: string,
   userId: string,
@@ -298,6 +430,7 @@ export async function getWorkspace(
     .where("user_id", "=", userId)
     .orderBy("updated_at", "desc")
     .execute()
+  const spaces = await listSpaceRows(userId)
   let selected = input?.draft
     ? undefined
     : input?.chatId
@@ -335,6 +468,7 @@ export async function getWorkspace(
     : []
   return {
     chats,
+    spaces,
     chat: selected ?? null,
     nodes: nodes.map((node) => normalizeNodeRow(node)),
     activeGenerations,
@@ -346,12 +480,12 @@ export async function createChat(
   title: string | null = null,
   config?: ModelConfig,
   promptStackId?: string | null,
-  variables?: PromptVariableValues
+  variables?: PromptVariableValues,
+  spaceId?: string | null
 ) {
-  const resolved =
-    config && (config.providerId || config.model)
-      ? config
-      : await defaultModelConfig(userId)
+  const baseline = await defaultModelConfig(userId)
+  const incoming =
+    config && (config.providerId || config.model) ? config : baseline
   if (promptStackId) {
     const existing = await db
       .selectFrom("prompt_stacks")
@@ -361,16 +495,42 @@ export async function createChat(
       .executeTakeFirst()
     if (!existing) throw new Error("Prompt stack not found")
   }
+  const resolvedSpaceId = spaceId ?? null
+  if (resolvedSpaceId) await assertSpaceOwner(resolvedSpaceId, userId)
+  const lockPreview = await resolveSettingsForChat(
+    {
+      space_id: resolvedSpaceId,
+      prompt_stack_id: promptStackId ?? null,
+      model_config_json: JSON.stringify(incoming),
+      variables_json: "{}",
+    },
+    userId
+  )
+  const storedModel = mergeUnlockedModelConfig(
+    baseline,
+    incoming,
+    lockPreview.locks
+  )
   const storedVariables =
     variables && Object.keys(variables).length > 0
       ? sanitizePromptVariableOverrides(
           (
             await resolveStackForChat(
-              { prompt_stack_id: promptStackId ?? null },
+              {
+                prompt_stack_id: promptStackId ?? null,
+                space_id: resolvedSpaceId,
+                model_config_json: JSON.stringify(storedModel),
+                variables_json: "{}",
+              },
               userId
             )
           ).stack.variables ?? [],
-          variables
+          mergeUnlockedVariables(
+            {},
+            variables,
+            lockPreview.locks,
+            Object.keys(variables)
+          )
         )
       : {}
   const timestamp = now()
@@ -379,10 +539,13 @@ export async function createChat(
     user_id: userId,
     title,
     selected_root_node_id: null,
-    model_config_json: JSON.stringify(resolved),
+    model_config_json: JSON.stringify(storedModel),
     view_state_json: chatViewStateToJson({ mode: "linear", camera: null }),
-    prompt_stack_id: promptStackId ?? null,
+    prompt_stack_id: lockPreview.locks.promptStack
+      ? null
+      : (promptStackId ?? null),
     variables_json: JSON.stringify(storedVariables),
+    space_id: resolvedSpaceId,
     created_at: timestamp,
     updated_at: timestamp,
   }
@@ -701,13 +864,32 @@ export async function updateChat(
   userId?: string
 ) {
   if (userId) await assertChatOwner(chatId, userId)
+  let modelJson: string | undefined
+  if (patch.model) {
+    if (!userId) throw new Error("Chat not found")
+    const chat = await db
+      .selectFrom("chats")
+      .select([
+        "space_id",
+        "prompt_stack_id",
+        "model_config_json",
+        "variables_json",
+      ])
+      .where("id", "=", chatId)
+      .where("user_id", "=", userId)
+      .executeTakeFirst()
+    if (!chat) throw new Error("Chat not found")
+    const resolved = await resolveSettingsForChat(chat, userId)
+    const stored = parseJson<ModelConfig>(chat.model_config_json, {})
+    modelJson = JSON.stringify(
+      mergeUnlockedModelConfig(stored, patch.model, resolved.locks)
+    )
+  }
   await db
     .updateTable("chats")
     .set({
       ...(patch.title !== undefined ? { title: patch.title } : {}),
-      ...(patch.model
-        ? { model_config_json: JSON.stringify(patch.model) }
-        : {}),
+      ...(modelJson ? { model_config_json: modelJson } : {}),
       updated_at: now(),
     })
     .where("id", "=", chatId)
@@ -1885,10 +2067,16 @@ export async function updateProvider(
 }
 
 export async function deleteProvider(userId: string, providerId: string) {
-  await db
-    .deleteFrom("provider_profiles")
-    .where("id", "=", providerId)
-    .execute()
+  await db.transaction().execute(async (trx) => {
+    await rewriteSpaceSettings(
+      (settings) => omitModelProviderRef(settings, providerId),
+      trx
+    )
+    await trx
+      .deleteFrom("provider_profiles")
+      .where("id", "=", providerId)
+      .execute()
+  })
   await clearTitleModelIfUnavailable()
 }
 
@@ -2130,17 +2318,24 @@ export async function deletePromptStack(userId: string, stackId: string) {
     .where("user_id", "=", userId)
     .executeTakeFirst()
   if (!existing) throw new Error("Prompt stack not found")
-  await db
-    .updateTable("chats")
-    .set({ prompt_stack_id: null })
-    .where("prompt_stack_id", "=", stackId)
-    .where("user_id", "=", userId)
-    .execute()
-  await db
-    .deleteFrom("prompt_stacks")
-    .where("id", "=", stackId)
-    .where("user_id", "=", userId)
-    .execute()
+  await db.transaction().execute(async (trx) => {
+    await trx
+      .updateTable("chats")
+      .set({ prompt_stack_id: null })
+      .where("prompt_stack_id", "=", stackId)
+      .where("user_id", "=", userId)
+      .execute()
+    await rewriteSpaceSettings(
+      (settings) => omitPromptStackRef(settings, stackId),
+      trx,
+      userId
+    )
+    await trx
+      .deleteFrom("prompt_stacks")
+      .where("id", "=", stackId)
+      .where("user_id", "=", userId)
+      .execute()
+  })
 }
 
 export async function setInstanceDefaultPromptStack(
@@ -2167,7 +2362,25 @@ export async function setChatPromptStack(
   chatId: string,
   stackId: string | null
 ) {
-  await assertChatOwner(chatId, userId)
+  const chat = await db
+    .selectFrom("chats")
+    .select([
+      "id",
+      "space_id",
+      "prompt_stack_id",
+      "model_config_json",
+      "variables_json",
+    ])
+    .where("id", "=", chatId)
+    .where("user_id", "=", userId)
+    .executeTakeFirst()
+  if (!chat) throw new Error("Chat not found")
+  const resolved = await resolveSettingsForChat(chat, userId)
+  if (resolved.locks.promptStack) {
+    throw new Error(
+      `Prompt stack is locked by ${resolved.locks.promptStack.spaceName}`
+    )
+  }
   if (stackId) {
     const existing = await db
       .selectFrom("prompt_stacks")
@@ -2193,15 +2406,28 @@ export async function setChatVariables(input: {
 }) {
   const chat = await db
     .selectFrom("chats")
-    .select(["id", "prompt_stack_id"])
+    .select([
+      "id",
+      "prompt_stack_id",
+      "space_id",
+      "model_config_json",
+      "variables_json",
+    ])
     .where("id", "=", input.chatId)
     .where("user_id", "=", input.userId)
     .executeTakeFirst()
   if (!chat) throw new Error("Chat not found")
+  const settings = await resolveSettingsForChat(chat, input.userId)
   const resolved = await resolveStackForChat(chat, input.userId)
+  const declared = (resolved.stack.variables ?? []).map(
+    (variable) => variable.name
+  )
+  const locks = bindVariableLocksToStack(settings.locks, declared)
+  const stored = parseJson<Record<string, unknown>>(chat.variables_json, {})
+  const merged = mergeUnlockedVariables(stored, input.values, locks, declared)
   const values = sanitizePromptVariableOverrides(
     resolved.stack.variables ?? [],
-    input.values
+    merged
   )
   await db
     .updateTable("chats")
@@ -2228,16 +2454,173 @@ async function loadStacksById(userId: string) {
 export async function resolveStackForChat(
   chat: {
     prompt_stack_id: string | null
+    space_id?: string | null
+    variables_json?: string
+    model_config_json?: string
   },
   userId: string
 ) {
   const prefs = await ensureUserSettings(userId)
   const stacksById = await loadStacksById(userId)
+  const settings = await resolveSettingsForChat(chat, userId)
   return resolvePromptStack({
-    chatStackId: chat.prompt_stack_id,
+    chatStackId: settings.effective.promptStackId,
     defaultStackId: prefs.default_prompt_stack_id,
     stacksById,
   })
+}
+
+export async function createSpace(input: {
+  userId: string
+  parentId?: string | null
+  name?: string
+  description?: string
+  settings?: SpaceSettings
+}) {
+  const settings = spaceSettingsSchema.parse(input.settings ?? {})
+  await assertSpaceSettingsStack(input.userId, settings)
+  const settingsJson = spaceSettingsToJson(settings)
+  const name = spaceNameSchema.parse(input.name ?? "New space")
+  const description = spaceDescriptionSchema.parse(input.description ?? "")
+  const parentId = input.parentId ?? null
+
+  return await db.transaction().execute(async (trx) => {
+    const rows = await listSpaceRows(input.userId, trx)
+    if (rows.length >= MAX_SPACES) {
+      throw new Error(`You can create at most ${MAX_SPACES} spaces`)
+    }
+    const records = rows.map(spaceFromRow)
+    if (parentId) {
+      if (!records.some((space) => space.id === parentId)) {
+        throw new Error("Space not found")
+      }
+      if (spaceDepth(parentId, spacesById(records)) >= MAX_SPACE_DEPTH) {
+        throw new Error(`Spaces can nest at most ${MAX_SPACE_DEPTH} levels`)
+      }
+    }
+    const timestamp = now()
+    const row = {
+      id: id(),
+      user_id: input.userId,
+      parent_id: parentId,
+      sort_key: nextSpaceSortKey(rows, parentId),
+      name,
+      description,
+      metadata_json: "{}",
+      settings_json: settingsJson,
+      created_at: timestamp,
+      updated_at: timestamp,
+    }
+    await trx.insertInto("spaces").values(row).execute()
+    return row
+  })
+}
+
+export async function updateSpace(input: {
+  userId: string
+  spaceId: string
+  name?: string
+  description?: string
+  settings?: SpaceSettings
+  parentId?: string | null
+}) {
+  const row = await assertSpaceOwner(input.spaceId, input.userId)
+  const rows = await listSpaceRows(input.userId)
+  const records = rows.map(spaceFromRow)
+  const parentId = input.parentId === undefined ? row.parent_id : input.parentId
+  if (parentId) {
+    if (!records.some((space) => space.id === parentId)) {
+      throw new Error("Space not found")
+    }
+  }
+  if (parentId !== row.parent_id) {
+    assertSpaceMoveAllowed(input.spaceId, parentId, records)
+  }
+  let settingsJson: string | undefined
+  if (input.settings !== undefined) {
+    const settings = spaceSettingsSchema.parse(input.settings)
+    await assertSpaceSettingsStack(input.userId, settings)
+    settingsJson = spaceSettingsToJson(settings)
+  }
+  const moving = parentId !== row.parent_id
+  await db
+    .updateTable("spaces")
+    .set({
+      ...(input.name !== undefined
+        ? { name: spaceNameSchema.parse(input.name) }
+        : {}),
+      ...(input.description !== undefined
+        ? { description: spaceDescriptionSchema.parse(input.description) }
+        : {}),
+      ...(settingsJson ? { settings_json: settingsJson } : {}),
+      ...(input.parentId !== undefined ? { parent_id: parentId } : {}),
+      ...(moving
+        ? { sort_key: nextSpaceSortKey(rows, parentId, input.spaceId) }
+        : {}),
+      updated_at: now(),
+    })
+    .where("id", "=", input.spaceId)
+    .where("user_id", "=", input.userId)
+    .execute()
+  return await assertSpaceOwner(input.spaceId, input.userId)
+}
+
+export async function deleteSpace(userId: string, spaceId: string) {
+  const row = await assertSpaceOwner(spaceId, userId)
+  const destination = row.parent_id
+  await db.transaction().execute(async (trx) => {
+    const rows = await listSpaceRows(userId, trx)
+    const children = rows
+      .filter((space) => space.parent_id === spaceId)
+      .sort(siblingSort)
+    let maxKey = rows
+      .filter(
+        (space) => space.parent_id === destination && space.id !== spaceId
+      )
+      .reduce((max, space) => Math.max(max, space.sort_key), 0)
+    const timestamp = now()
+    for (const child of children) {
+      maxKey = sortKeyAfter(maxKey || null)
+      await trx
+        .updateTable("spaces")
+        .set({
+          parent_id: destination,
+          sort_key: maxKey,
+          updated_at: timestamp,
+        })
+        .where("id", "=", child.id)
+        .where("user_id", "=", userId)
+        .execute()
+    }
+    await trx
+      .updateTable("chats")
+      .set({ space_id: destination, updated_at: timestamp })
+      .where("space_id", "=", spaceId)
+      .where("user_id", "=", userId)
+      .execute()
+    await trx
+      .deleteFrom("spaces")
+      .where("id", "=", spaceId)
+      .where("user_id", "=", userId)
+      .execute()
+  })
+  return { ok: true as const, parentId: destination }
+}
+
+export async function setChatSpace(
+  userId: string,
+  chatId: string,
+  spaceId: string | null
+) {
+  await assertChatOwner(chatId, userId)
+  if (spaceId) await assertSpaceOwner(spaceId, userId)
+  await db
+    .updateTable("chats")
+    .set({ space_id: spaceId, updated_at: now() })
+    .where("id", "=", chatId)
+    .where("user_id", "=", userId)
+    .execute()
+  return { ok: true as const }
 }
 
 export async function getInstanceSettings(userId: string) {
@@ -2312,6 +2695,26 @@ async function restoreOwnerBackup(
     }
   }
 
+  for (const space of orderSpacesForInsert(backup.spaces)) {
+    await trx
+      .insertInto("spaces")
+      .values({
+        id: space.id,
+        user_id: userId,
+        parent_id: space.parent_id,
+        sort_key: space.sort_key,
+        name: space.name,
+        description: space.description,
+        metadata_json: space.metadata_json,
+        settings_json: spaceSettingsToJson(
+          parseSpaceSettings(space.settings_json)
+        ),
+        created_at: space.created_at,
+        updated_at: space.updated_at,
+      })
+      .execute()
+  }
+
   for (const chat of backup.chats) {
     await trx
       .insertInto("chats")
@@ -2324,6 +2727,7 @@ async function restoreOwnerBackup(
         view_state_json: chat.view_state_json,
         prompt_stack_id: chat.prompt_stack_id ?? null,
         variables_json: chat.variables_json ?? "{}",
+        space_id: chat.space_id ?? null,
         created_at: chat.created_at,
         updated_at: chat.updated_at,
       })
@@ -2500,6 +2904,10 @@ function validateMultiUserBackup(
     backup.promptStacks.map((stack) => stack.id),
     "prompt stack"
   )
+  unique(
+    backup.spaces.map((space) => space.id),
+    "space"
+  )
 
   for (const theme of backup.themes) {
     if (!users.has(theme.user_id))
@@ -2511,6 +2919,20 @@ function validateMultiUserBackup(
         `Backup prompt stack ${stack.id} references an unknown user`
       )
   }
+  const spacesByBackupId = new Map(
+    backup.spaces.map((space) => [space.id, space])
+  )
+  for (const space of backup.spaces) {
+    if (!users.has(space.user_id))
+      throw new Error(`Backup space ${space.id} references an unknown user`)
+    if (!space.parent_id) continue
+    const parent = spacesByBackupId.get(space.parent_id)
+    if (!parent || parent.user_id !== space.user_id)
+      throw new Error(
+        `Backup space ${space.id} references another user's space`
+      )
+  }
+  orderSpacesForInsert(backup.spaces)
 
   for (const chat of backup.chats) {
     if (!users.has(chat.user_id))
@@ -2518,6 +2940,7 @@ function validateMultiUserBackup(
   }
   const chats = new Set(backup.chats.map((chat) => chat.id))
   const stacks = new Map(backup.promptStacks.map((stack) => [stack.id, stack]))
+  const spaces = new Map(backup.spaces.map((space) => [space.id, space]))
   for (const chat of backup.chats) {
     if (!chat.prompt_stack_id) continue
     const stack = stacks.get(chat.prompt_stack_id)
@@ -2525,6 +2948,12 @@ function validateMultiUserBackup(
       throw new Error(
         `Backup chat ${chat.id} references another user's prompt stack`
       )
+  }
+  for (const chat of backup.chats) {
+    if (!chat.space_id) continue
+    const space = spaces.get(chat.space_id)
+    if (!space || space.user_id !== chat.user_id)
+      throw new Error(`Backup chat ${chat.id} references another user's space`)
   }
   for (const node of backup.nodes) {
     if (!chats.has(node.chat_id))
@@ -2653,6 +3082,9 @@ async function restoreMultiUserBackup(
     promptStacks: backup.promptStacks
       .filter((stack) => stack.user_id === sourceOwner.id)
       .map((stack) => ({ ...stack, user_id: ownerId })),
+    spaces: backup.spaces
+      .filter((space) => space.user_id === sourceOwner.id)
+      .map((space) => ({ ...space, user_id: ownerId })),
     themes: backup.themes
       .filter((theme) => theme.user_id === sourceOwner.id)
       .map((theme) => ({ ...theme, user_id: ownerId })),
@@ -2752,6 +3184,26 @@ async function restoreMultiUserBackup(
             updated_at: stack.updated_at,
           })
           .execute()
+      for (const space of orderSpacesForInsert(
+        backup.spaces.filter((space) => space.user_id === sourceUser.id)
+      ))
+        await trx
+          .insertInto("spaces")
+          .values({
+            id: space.id,
+            user_id: sourceUser.id,
+            parent_id: space.parent_id,
+            sort_key: space.sort_key,
+            name: space.name,
+            description: space.description,
+            metadata_json: space.metadata_json,
+            settings_json: spaceSettingsToJson(
+              parseSpaceSettings(space.settings_json)
+            ),
+            created_at: space.created_at,
+            updated_at: space.updated_at,
+          })
+          .execute()
       const prefs = backup.userPreferences.find(
         (prefs) => prefs.user_id === sourceUser.id
       )
@@ -2772,6 +3224,7 @@ async function restoreMultiUserBackup(
             view_state_json: chat.view_state_json,
             prompt_stack_id: chat.prompt_stack_id ?? null,
             variables_json: chat.variables_json ?? "{}",
+            space_id: chat.space_id ?? null,
             created_at: chat.created_at,
             updated_at: chat.updated_at,
           })
@@ -2898,6 +3351,7 @@ export async function createBackup() {
     createdAt: new Date().toISOString(),
     instance: { titleModelConfig },
     promptStacks: normalizedStacks,
+    spaces: await db.selectFrom("spaces").selectAll().execute(),
     themes: normalizedThemes,
     chats,
     nodes,

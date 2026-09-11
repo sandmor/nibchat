@@ -1,7 +1,6 @@
 "use client"
 
 import * as React from "react"
-import { ThemeProvider as NextThemesProvider, useTheme } from "next-themes"
 import {
   THEME_SLOT_LS_KEY,
   type ResolvedThemeSlot,
@@ -13,7 +12,7 @@ type ThemeSlotContextValue = {
   mode: ThemeSlotMode
   resolved: ResolvedThemeSlot
   toggle: () => void
-  /** False until next-themes has a real selected mode (not the SSR placeholder). */
+  /** False until the browser slot is known (not the SSR placeholder). */
   ready: boolean
 }
 
@@ -29,6 +28,61 @@ function isTypingTarget(target: EventTarget | null) {
   )
 }
 
+function isThemeMode(value: string | null): value is ThemeSlotMode {
+  return value === "light" || value === "dark" || value === "system"
+}
+
+function systemSlot(): ResolvedThemeSlot {
+  return window.matchMedia("(prefers-color-scheme: dark)").matches
+    ? "dark"
+    : "light"
+}
+
+function applySlot(slot: ResolvedThemeSlot) {
+  document.documentElement.setAttribute("data-theme-slot", slot)
+}
+
+function readStoredMode(key: string, fallback: ThemeSlotMode): ThemeSlotMode {
+  try {
+    const stored = localStorage.getItem(key)
+    if (isThemeMode(stored)) return stored
+  } catch {
+    /* ignore */
+  }
+  return fallback
+}
+
+function useStoredThemeMode(key: string, fallback: ThemeSlotMode) {
+  return React.useSyncExternalStore(
+    (onChange) => {
+      const onStorage = (event: StorageEvent) => {
+        if (event.key === key || event.key === null) onChange()
+      }
+      const onLocal = () => onChange()
+      window.addEventListener("storage", onStorage)
+      window.addEventListener(`nibchat:${key}`, onLocal)
+      return () => {
+        window.removeEventListener("storage", onStorage)
+        window.removeEventListener(`nibchat:${key}`, onLocal)
+      }
+    },
+    () => readStoredMode(key, fallback),
+    () => fallback
+  )
+}
+
+function useSystemPrefersDark() {
+  return React.useSyncExternalStore(
+    (onChange) => {
+      const media = window.matchMedia("(prefers-color-scheme: dark)")
+      media.addEventListener("change", onChange)
+      return () => media.removeEventListener("change", onChange)
+    },
+    () => window.matchMedia("(prefers-color-scheme: dark)").matches,
+    () => false
+  )
+}
+
 function useMounted() {
   return React.useSyncExternalStore(
     () => () => {},
@@ -37,27 +91,46 @@ function useMounted() {
   )
 }
 
-function ThemeSlotBridge({
+/** Workspace-only slot provider. The blocking bootstrap script selects the slot pre-paint. */
+function ThemeProvider({
   children,
   userId,
+  initialMode = "system",
 }: {
   children: React.ReactNode
   userId?: string
+  initialMode?: ThemeSlotMode
 }) {
-  const { theme, resolvedTheme, setTheme } = useTheme()
+  const storageKey = userScopedStorageKey(THEME_SLOT_LS_KEY, userId)
   const mounted = useMounted()
-  // The server and hydrating render intentionally use light. next-themes has
-  // already painted the correct CSS slot before this becomes interactive.
-  const selectedMode: ThemeSlotMode | null =
-    theme === "light" || theme === "dark" || theme === "system" ? theme : null
-  const ready = mounted && selectedMode != null
+  const storedMode = useStoredThemeMode(storageKey, initialMode)
+  const prefersDark = useSystemPrefersDark()
+  const mode: ThemeSlotMode = storedMode
   const resolved: ResolvedThemeSlot =
-    mounted && resolvedTheme === "dark" ? "dark" : "light"
-  const mode: ThemeSlotMode = selectedMode ?? "system"
+    mode === "system" ? (prefersDark ? "dark" : "light") : mode
+  const ready = mounted
+
+  const setMode = React.useCallback(
+    (next: ThemeSlotMode) => {
+      try {
+        localStorage.setItem(storageKey, next)
+      } catch {
+        /* ignore */
+      }
+      applySlot(next === "system" ? systemSlot() : next)
+      window.dispatchEvent(new Event(`nibchat:${storageKey}`))
+    },
+    [storageKey]
+  )
 
   const toggle = React.useCallback(() => {
-    setTheme(resolved === "dark" ? "light" : "dark")
-  }, [resolved, setTheme])
+    setMode(resolved === "dark" ? "light" : "dark")
+  }, [resolved, setMode])
+
+  React.useEffect(() => {
+    if (!mounted) return
+    applySlot(resolved)
+  }, [mounted, resolved])
 
   React.useEffect(() => {
     document.documentElement.dataset.nibchatUserId = userId ?? ""
@@ -87,31 +160,6 @@ function ThemeSlotBridge({
     <ThemeSlotContext.Provider value={value}>
       {children}
     </ThemeSlotContext.Provider>
-  )
-}
-
-/** Workspace-only slot provider. Its inline script selects the slot pre-paint. */
-function ThemeProvider({
-  children,
-  userId,
-  initialMode = "system",
-}: {
-  children: React.ReactNode
-  userId?: string
-  initialMode?: ThemeSlotMode
-}) {
-  return (
-    <NextThemesProvider
-      attribute="data-theme-slot"
-      storageKey={userScopedStorageKey(THEME_SLOT_LS_KEY, userId)}
-      defaultTheme={initialMode}
-      enableSystem
-      enableColorScheme={false}
-      disableTransitionOnChange
-      themes={["light", "dark"]}
-    >
-      <ThemeSlotBridge userId={userId}>{children}</ThemeSlotBridge>
-    </NextThemesProvider>
   )
 }
 

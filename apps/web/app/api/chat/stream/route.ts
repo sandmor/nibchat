@@ -21,6 +21,7 @@ import {
   nodeParts,
   loadEditSourceUserNode,
   resolveStackForChat,
+  resolveSettingsForChat,
   startRegenerate,
   startGeneration,
   submitUserTurn,
@@ -86,16 +87,21 @@ export async function POST(request: Request) {
     if (!chat)
       return Response.json({ error: "Chat not found" }, { status: 404 })
     const savedConfig = parseJson<ModelConfig>(chat.model_config_json, {})
-    let config = await resolveModelConfig(user.id, savedConfig)
-    if (JSON.stringify(config) !== JSON.stringify(savedConfig))
+    const normalizedStored = await resolveModelConfig(user.id, savedConfig)
+    if (JSON.stringify(normalizedStored) !== JSON.stringify(savedConfig))
       await db
         .updateTable("chats")
         .set({
-          model_config_json: JSON.stringify(config),
+          model_config_json: JSON.stringify(normalizedStored),
           updated_at: new Date().toISOString(),
         })
         .where("id", "=", chat.id)
         .execute()
+    const settings = await resolveSettingsForChat(
+      { ...chat, model_config_json: JSON.stringify(normalizedStored) },
+      user.id
+    )
+    let config = await resolveModelConfig(user.id, settings.effective.model)
     let languageModel = await modelFor(user.id, config, {
       chatId: chat.id,
       timeZone: body.timeZone,
@@ -362,6 +368,7 @@ export async function POST(request: Request) {
                     )
                 : undefined,
             promptStack: resolved.stack,
+            variableOverrides: settings.effective.variables,
             timeZone: body.timeZone,
             requestSignal: request.signal,
             allNodes,
@@ -409,6 +416,7 @@ export async function POST(request: Request) {
                 )
             : undefined,
         promptStack: resolved.stack,
+        variableOverrides: settings.effective.variables,
         timeZone: body.timeZone,
         requestSignal: request.signal,
         allNodes,

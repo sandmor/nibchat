@@ -63,3 +63,47 @@ export function useMediaMdUp() {
   }, [])
   return mdUp
 }
+
+function subscribeStorageKey(key: string) {
+  return (onChange: () => void) => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === key || event.key === null) onChange()
+    }
+    const onLocal = () => onChange()
+    window.addEventListener("storage", onStorage)
+    window.addEventListener(`nibchat:${key}`, onLocal)
+    return () => {
+      window.removeEventListener("storage", onStorage)
+      window.removeEventListener(`nibchat:${key}`, onLocal)
+    }
+  }
+}
+
+/** Same value on the server and during hydration; browser storage applies after. */
+export function useUserStorageValue(
+  userId: string,
+  baseKey: string,
+  serverValue: string
+) {
+  const key = `${baseKey}.${userId}`
+  const value = useSyncExternalStore(
+    subscribeStorageKey(key),
+    () => {
+      try {
+        return localStorage.getItem(key) ?? serverValue
+      } catch {
+        return serverValue
+      }
+    },
+    () => serverValue
+  )
+  function setValue(next: string) {
+    try {
+      localStorage.setItem(key, next)
+    } catch {
+      /* ignore */
+    }
+    window.dispatchEvent(new Event(`nibchat:${key}`))
+  }
+  return [value, setValue] as const
+}

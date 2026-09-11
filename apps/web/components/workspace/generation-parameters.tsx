@@ -3,17 +3,20 @@
 import { useId, useState } from "react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover"
 import { hasCustomReasoning, withReasoning } from "@/lib/reasoning"
 import type { ModelConfigLocal } from "./types"
+import type { ChatSettingLocks } from "@/lib/space"
+import { SpaceLockHint } from "./space-lock-hint"
 
 export function GenerationParameters({
   open,
@@ -21,12 +24,14 @@ export function GenerationParameters({
   config: existing,
   chatId,
   onChange,
+  locks,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   config: ModelConfigLocal
   chatId?: string
   onChange: (config: ModelConfigLocal) => void | Promise<void>
+  locks?: ChatSettingLocks
 }) {
   const replayId = useId()
   const [config, setConfig] = useState(existing)
@@ -88,23 +93,11 @@ export function GenerationParameters({
   }
 
   return (
-    <Popover
-      open={open}
-      onOpenChange={onOpenChange}
-    >
-      <PopoverTrigger
-        render={
-          <Button variant="ghost" size="sm" className="shrink-0 px-2 sm:px-3" />
-        }
-      >
-        <span className="sm:hidden">Params</span>
-        <span className="hidden sm:inline">Parameters</span>
-      </PopoverTrigger>
-      <PopoverContent
-        align="end"
-        className="max-h-[min(36rem,calc(100dvh-6rem))] w-[min(20rem,calc(100vw-2rem))] gap-3 overflow-y-auto p-3"
-      >
-        <p className="text-sm font-medium">Generation parameters</p>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[min(36rem,calc(100dvh-2rem))] gap-3 overflow-y-auto sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Generation parameters</DialogTitle>
+        </DialogHeader>
         <div className="grid grid-cols-2 gap-2">
           {(
             [
@@ -122,6 +115,7 @@ export function GenerationParameters({
               <Input
                 id={`gen-${field}`}
                 type="number"
+                disabled={Boolean(locks?.[field])}
                 value={config[field] ?? ""}
                 onChange={(event) =>
                   setConfig({
@@ -133,6 +127,7 @@ export function GenerationParameters({
                   })
                 }
               />
+              <SpaceLockHint lock={locks?.[field]} />
             </div>
           ))}
         </div>
@@ -143,20 +138,25 @@ export function GenerationParameters({
           <Input
             id="gen-stop"
             value={stopText}
+            disabled={Boolean(locks?.stopSequences)}
             onChange={(e) => setStopText(e.target.value)}
             placeholder="comma-separated"
           />
+          <SpaceLockHint lock={locks?.stopSequences} />
         </div>
         <Textarea
           value={optionsText}
+          disabled={Boolean(locks?.providerOptions)}
           onChange={(e) => setOptionsText(e.target.value)}
           rows={4}
           className="font-mono text-xs"
           aria-label="Provider-specific JSON"
         />
+        <SpaceLockHint lock={locks?.providerOptions} />
         <div className="flex items-center gap-2">
           <Switch
             id={replayId}
+            disabled={Boolean(locks?.replayReasoning)}
             checked={config.replayReasoning ?? true}
             onCheckedChange={(checked) =>
               setConfig({ ...config, replayReasoning: checked })
@@ -166,6 +166,7 @@ export function GenerationParameters({
             Replay saved reasoning when supported
           </Label>
         </div>
+        <SpaceLockHint lock={locks?.replayReasoning} />
         <Button
           onClick={() => void save()}
           className="w-full"
@@ -173,7 +174,7 @@ export function GenerationParameters({
         >
           {chatId ? "Apply to this chat" : "Use for next message"}
         </Button>
-      </PopoverContent>
-    </Popover>
+      </DialogContent>
+    </Dialog>
   )
 }

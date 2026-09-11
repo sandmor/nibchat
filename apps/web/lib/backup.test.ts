@@ -58,6 +58,8 @@ describe("parseBackup", () => {
     expect(backup.version).toBe(1)
     expect(backup.providerProfiles).toHaveLength(1)
     expect(backup.promptStacks).toHaveLength(1)
+    expect(backup.spaces).toEqual([])
+    expect(backup.chats[0]?.space_id).toBeNull()
   })
 
   it("parses a null chat title and optional title model", () => {

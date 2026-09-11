@@ -19,7 +19,7 @@ export function AppearanceRuntime({
   activeThemeId: string
   fallback: Appearance
   userId: string
-  /** Wait for next-themes to resolve the real browser slot. */
+  /** Wait for the browser color slot to resolve. */
   ready: boolean
 }) {
   const hydrateThemeLibrary = useAppearanceStore((s) => s.hydrateThemeLibrary)

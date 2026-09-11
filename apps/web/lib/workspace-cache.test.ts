@@ -18,6 +18,7 @@ function sample(chatId: string, title: string): WorkspaceData {
         view_state_json: '{"mode":"linear","camera":null}',
         prompt_stack_id: null,
         variables_json: "{}",
+        space_id: null,
         selected_root_node_id: null,
         created_at: "",
         updated_at: "",
@@ -31,11 +32,13 @@ function sample(chatId: string, title: string): WorkspaceData {
       view_state_json: '{"mode":"linear","camera":null}',
       prompt_stack_id: null,
       variables_json: "{}",
+      space_id: null,
       selected_root_node_id: null,
       created_at: "",
       updated_at: "",
     },
     nodes: [],
+    spaces: [],
     activeGenerations: [],
   }
 }
@@ -301,6 +304,7 @@ describe("patchChatTitle", () => {
           view_state_json: '{"mode":"linear","camera":null}',
           prompt_stack_id: null,
           variables_json: "{}",
+          space_id: null,
           selected_root_node_id: null,
           created_at: "",
           updated_at: "",
@@ -313,6 +317,7 @@ describe("patchChatTitle", () => {
           view_state_json: '{"mode":"linear","camera":null}',
           prompt_stack_id: null,
           variables_json: "{}",
+          space_id: null,
           selected_root_node_id: null,
           created_at: "",
           updated_at: "",
@@ -320,6 +325,7 @@ describe("patchChatTitle", () => {
       ],
       chat: null,
       nodes: [],
+      spaces: [],
       activeGenerations: [],
     }
     const next = patchChatTitle(data, "c2", "B2")

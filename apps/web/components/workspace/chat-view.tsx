@@ -43,6 +43,12 @@ import {
   type PromptVariableValues,
 } from "@/lib/prompt-stack"
 import {
+  bindVariableLocksToStack,
+  resolveChatSettings,
+  spaceFromRow,
+} from "@/lib/space"
+import { SpacePicker } from "./space-picker"
+import {
   abortChatStreamReaders,
   chatStreamEntries,
   collectStoppingBuffers,
@@ -75,6 +81,7 @@ import { ModelPicker } from "./model-picker"
 import { GenerationParameters } from "./generation-parameters"
 import { PromptStackPicker } from "./prompt-stack-picker"
 import { ChatVariablesPicker } from "./chat-variables-picker"
+import { ChatHeaderMore } from "./chat-header-more"
 import { ChatTranscript } from "./chat-transcript"
 import { ChatTree } from "./chat-tree"
 import { drainChatViewStateSaves } from "./chat-view-state-persistence"
@@ -145,6 +152,7 @@ type Props = {
   initial: WorkspaceData
   /** When set, select this node into the active path on mount. */
   selectNodeId?: string | null
+  draftSpaceId?: string | null
 }
 
 function isPdfFile(file: File) {
@@ -157,7 +165,13 @@ function readChatViewState(raw: string | undefined): ChatViewState {
   return raw ? parseChatViewState(raw) : DEFAULT_CHAT_VIEW_STATE
 }
 
-export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
+export function ChatView({
+  mode,
+  chatId,
+  initial,
+  selectNodeId,
+  draftSpaceId: initialDraftSpaceId = null,
+}: Props) {
   const { appearance, providers: chromeProviders } = useWorkspaceChrome()
   const trpc = useTRPC()
   const queryClient = useQueryClient()
@@ -184,6 +198,9 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameTitle, setRenameTitle] = useState("")
   const [parametersOpen, setParametersOpen] = useState(false)
+  const [stackOpen, setStackOpen] = useState(false)
+  const [variablesOpen, setVariablesOpen] = useState(false)
+  const [spaceOpen, setSpaceOpen] = useState(false)
   const [draftModelConfig, setDraftModelConfig] = useState<ModelConfigLocal>(
     () => seedDraftModelConfig(initial.chats, chromeProviders)
   )
@@ -191,6 +208,9 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     null
   )
   const [draftVariables, setDraftVariables] = useState<PromptVariableValues>({})
+  const [draftSpaceId, setDraftSpaceId] = useState<string | null>(
+    initialDraftSpaceId
+  )
   const [treeComposerRoles, setTreeComposerRoles] = useState<
     Record<string, "user" | "assistant">
   >({})
@@ -540,9 +560,51 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
     workspace.nodes,
   ])
 
-  const activeModelConfig: ModelConfigLocal = data.chat
+  const storedModelConfig: ModelConfigLocal = data.chat
     ? parseJson<ModelConfigLocal>(data.chat.model_config_json, {})
     : draftModelConfig
+  const storedVariables = data.chat
+    ? parsePromptVariableValues(data.chat.variables_json)
+    : draftVariables
+  const spaceId = data.chat?.space_id ?? draftSpaceId
+  const storedPromptStackId = data.chat?.prompt_stack_id ?? draftPromptStackId
+  const resolvedSettings = useMemo(
+    () =>
+      resolveChatSettings({
+        chat: {
+          spaceId,
+          promptStackId: storedPromptStackId,
+          variables: storedVariables,
+          model: storedModelConfig,
+        },
+        spaces: (data.spaces ?? []).map(spaceFromRow),
+      }),
+    [
+      spaceId,
+      storedPromptStackId,
+      storedVariables,
+      storedModelConfig,
+      data.spaces,
+    ]
+  )
+  const activeModelConfig = resolvedSettings.effective.model
+  const effectivePromptStackId = resolvedSettings.effective.promptStackId
+  const settingsQuery = useQuery(trpc.workspace.getSettings.queryOptions())
+  const declaredVariableNames = useMemo(() => {
+    const stacks = settingsQuery.data?.promptStacks ?? []
+    const defaultId = settingsQuery.data?.defaultPromptStackId
+    const stackId = effectivePromptStackId ?? defaultId
+    const stack = stacks.find((row) => row.id === stackId)
+    return (stack?.stack.variables ?? []).map((variable) => variable.name)
+  }, [
+    settingsQuery.data?.promptStacks,
+    settingsQuery.data?.defaultPromptStackId,
+    effectivePromptStackId,
+  ])
+  const settingLocks = bindVariableLocksToStack(
+    resolvedSettings.locks,
+    declaredVariableNames
+  )
 
   const invalidateWorkspace = async () => {
     await queryClient.invalidateQueries(trpc.workspace.get.queryFilter())
@@ -996,6 +1058,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
           config: modelConfig,
           promptStackId: draftPromptStackId,
           variables: draftVariables,
+          spaceId: draftSpaceId,
         })
         .then((chat) => {
           // Track the new id before replace so stream UI still matches on /chat/new.
@@ -1003,6 +1066,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
           setPendingChatId(chat.id)
           const payload: WorkspaceData = {
             chats: [chat, ...knownChats.filter((c) => c.id !== chat.id)],
+            spaces: workspace.spaces,
             chat,
             nodes: [],
             activeGenerations: [],
@@ -1015,6 +1079,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
             trpc.workspace.get.queryKey({ draft: true }),
             {
               chats: payload.chats,
+              spaces: payload.spaces,
               chat: null,
               nodes: [],
               activeGenerations: [],
@@ -1543,6 +1608,15 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       },
     })
   )
+  const setChatSpaceMutation = useMutation(
+    trpc.workspace.setChatSpace.mutationOptions({
+      onSuccess: async () => {
+        await invalidateWorkspace()
+        toast.success("Moved")
+      },
+      onError: (error) => toast.error(error.message || "Could not move chat"),
+    })
+  )
 
   async function commitModelConfig(next: ModelConfigLocal) {
     if (data.chat) {
@@ -1553,6 +1627,15 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
       return
     }
     setDraftModelConfig(next)
+  }
+
+  function assignDraftSpace(next: string | null) {
+    setDraftSpaceId(next)
+    if (mode !== "draft") return
+    const url = next
+      ? `/chat/new?space=${encodeURIComponent(next)}`
+      : "/chat/new"
+    window.history.replaceState(window.history.state, "", url)
   }
 
   const streamsForActiveChat = chatStreamEntries(streamMetas, [
@@ -1645,19 +1728,15 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   return (
     <ContextPreviewProvider
       nodes={data.nodes}
-      chatStackId={data.chat?.prompt_stack_id ?? null}
-      draftStackId={draftPromptStackId}
+      chatStackId={effectivePromptStackId}
+      draftStackId={effectivePromptStackId}
       hasChat={Boolean(data.chat)}
       chat={
         data.chat
           ? { id: data.chat.id, created_at: data.chat.created_at }
           : undefined
       }
-      variableOverrides={
-        data.chat
-          ? parsePromptVariableValues(data.chat.variables_json)
-          : draftVariables
-      }
+      variableOverrides={resolvedSettings.effective.variables}
       modelConfig={previewModelConfig}
       providers={providers}
     >
@@ -1692,13 +1771,14 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
               Each reply can become its own direction.
             </p>
           </div>
-          <div className="flex min-w-0 items-center gap-0.5 sm:max-w-[min(44rem,78%)] sm:shrink-0 sm:gap-1">
+          <div className="flex min-w-0 flex-nowrap items-center gap-0.5 overflow-hidden sm:max-w-[min(44rem,78%)] sm:shrink-0 sm:gap-1">
             <Button
               type="button"
               variant="ghost"
               size="sm"
-              className="gap-1.5"
+              className="shrink-0 gap-1.5"
               disabled={!data.chat}
+              aria-label={view === "tree" ? "Linear" : "Tree"}
               onClick={() =>
                 setPersistedView((current) =>
                   current === "tree" ? "linear" : "tree"
@@ -1710,49 +1790,155 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
                 strokeWidth={2}
                 className="size-3.5"
               />
-              <span className="hidden sm:inline">
+              <span className="hidden md:inline">
                 {view === "tree" ? "Linear" : "Tree"}
               </span>
             </Button>
-            <PromptStackPicker
-              chatId={data.chat?.id}
-              promptStackId={data.chat?.prompt_stack_id ?? null}
-              draftStackId={draftPromptStackId}
-              onDraftChange={setDraftPromptStackId}
-              onChanged={invalidateWorkspace}
-            />
-            <ChatVariablesPicker
-              chatId={data.chat?.id}
-              promptStackId={data.chat?.prompt_stack_id ?? null}
-              draftStackId={draftPromptStackId}
-              variablesJson={data.chat?.variables_json ?? "{}"}
-              draftValues={draftVariables}
-              onDraftChange={setDraftVariables}
-              onChanged={invalidateWorkspace}
-            />
-            <ModelPicker
-              config={activeModelConfig}
-              chatId={data.chat?.id}
-              providers={providers}
-              showIds={appearance.modelPicker.showIds}
-              onChange={commitModelConfig}
-            />
+            <div className="hidden min-w-0 md:contents">
+              <PromptStackPicker
+                chatId={data.chat?.id}
+                promptStackId={effectivePromptStackId}
+                draftStackId={effectivePromptStackId}
+                onDraftChange={setDraftPromptStackId}
+                onChanged={invalidateWorkspace}
+                lockedBy={settingLocks.promptStack}
+              />
+              <ChatVariablesPicker
+                chatId={data.chat?.id}
+                promptStackId={effectivePromptStackId}
+                draftStackId={effectivePromptStackId}
+                variablesJson={JSON.stringify(
+                  resolvedSettings.effective.variables
+                )}
+                draftValues={
+                  resolvedSettings.effective.variables as PromptVariableValues
+                }
+                onDraftChange={setDraftVariables}
+                onChanged={invalidateWorkspace}
+                lockedVariables={settingLocks.variables}
+              />
+            </div>
+            <div className="min-w-0 flex-1 overflow-hidden">
+              <ModelPicker
+                config={activeModelConfig}
+                chatId={data.chat?.id}
+                providers={providers}
+                showIds={appearance.modelPicker.showIds}
+                onChange={commitModelConfig}
+                lockedBy={settingLocks.model}
+              />
+            </div>
             <ReasoningPicker
               config={activeModelConfig}
               providers={providers}
               onChange={commitModelConfig}
               onEditParameters={() => setParametersOpen(true)}
+              lockedBy={settingLocks.reasoning}
             />
-            <GenerationParameters
-              open={parametersOpen}
-              onOpenChange={setParametersOpen}
-              key={`${data.chat?.id ?? "draft"}:${activeModelConfig.providerId ?? ""}:${activeModelConfig.model ?? ""}`}
-              config={activeModelConfig}
-              chatId={data.chat?.id}
-              onChange={commitModelConfig}
+            <div className="hidden min-w-0 md:contents">
+              <SpacePicker
+                spaces={data.spaces ?? []}
+                value={spaceId}
+                showMembership
+                onSelect={(next) => {
+                  if (data.chat) {
+                    void setChatSpaceMutation.mutateAsync({
+                      chatId: data.chat.id,
+                      spaceId: next,
+                    })
+                    return
+                  }
+                  assignDraftSpace(next)
+                }}
+              />
+            </div>
+            <ChatHeaderMore
+              compactItems={[
+                {
+                  label: "Prompt stack",
+                  onSelect: () => {
+                    if (settingLocks.promptStack) {
+                      router.push(`/space/${settingLocks.promptStack.spaceId}`)
+                      return
+                    }
+                    setStackOpen(true)
+                  },
+                },
+                {
+                  label: "Variables",
+                  onSelect: () => setVariablesOpen(true),
+                },
+                {
+                  label: `Space · ${
+                    (data.spaces ?? []).find((space) => space.id === spaceId)
+                      ?.name ?? "Ungrouped"
+                  }`,
+                  onSelect: () => setSpaceOpen(true),
+                },
+              ]}
+              items={[
+                {
+                  label: "Parameters",
+                  onSelect: () => setParametersOpen(true),
+                },
+              ]}
             />
           </div>
         </header>
+        <PromptStackPicker
+          hideTrigger
+          open={stackOpen}
+          onOpenChange={setStackOpen}
+          chatId={data.chat?.id}
+          promptStackId={effectivePromptStackId}
+          draftStackId={effectivePromptStackId}
+          onDraftChange={setDraftPromptStackId}
+          onChanged={invalidateWorkspace}
+          lockedBy={settingLocks.promptStack}
+        />
+        <ChatVariablesPicker
+          hideTrigger
+          open={variablesOpen}
+          onOpenChange={setVariablesOpen}
+          chatId={data.chat?.id}
+          promptStackId={effectivePromptStackId}
+          draftStackId={effectivePromptStackId}
+          variablesJson={JSON.stringify(resolvedSettings.effective.variables)}
+          draftValues={
+            resolvedSettings.effective.variables as PromptVariableValues
+          }
+          onDraftChange={setDraftVariables}
+          onChanged={invalidateWorkspace}
+          lockedVariables={settingLocks.variables}
+        />
+        <GenerationParameters
+          open={parametersOpen}
+          onOpenChange={setParametersOpen}
+          key={`${data.chat?.id ?? "draft"}:${activeModelConfig.providerId ?? ""}:${activeModelConfig.model ?? ""}`}
+          config={activeModelConfig}
+          chatId={data.chat?.id}
+          onChange={commitModelConfig}
+          locks={settingLocks}
+        />
+        <SpacePicker
+          hideTrigger
+          open={spaceOpen}
+          onOpenChange={setSpaceOpen}
+          spaces={data.spaces ?? []}
+          value={spaceId}
+          triggerLabel="Move this chat"
+          showMembership
+          onSelect={(next) => {
+            if (data.chat) {
+              void setChatSpaceMutation.mutateAsync({
+                chatId: data.chat.id,
+                spaceId: next,
+              })
+              return
+            }
+            assignDraftSpace(next)
+          }}
+        />
 
         <ConversationFindLayer value={find.layerValue}>
           {view === "linear" ? (

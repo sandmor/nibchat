@@ -18,6 +18,8 @@ import {
 } from "@/components/ui/popover"
 import { isOrphanPromptStackRef } from "@/lib/prompt-stack"
 import { cn } from "@/lib/utils"
+import type { SpaceLockSource } from "@/lib/space"
+import { LockedPickerTrigger } from "./space-lock-hint"
 import { useTRPC } from "@/lib/trpc-react"
 import { useMediaMdUp } from "./hooks"
 
@@ -27,6 +29,10 @@ export function PromptStackPicker({
   onChanged,
   draftStackId,
   onDraftChange,
+  lockedBy,
+  open: openProp,
+  onOpenChange,
+  hideTrigger = false,
 }: {
   chatId?: string
   /** Chat's prompt_stack_id (null = inherit). */
@@ -35,11 +41,21 @@ export function PromptStackPicker({
   /** Draft chats before first message: local-only selection. */
   draftStackId?: string | null
   onDraftChange?: (stackId: string | null) => void
+  lockedBy?: SpaceLockSource
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+  hideTrigger?: boolean
 }) {
   const trpc = useTRPC()
   const router = useRouter()
   const mdUp = useMediaMdUp()
-  const [open, setOpen] = useState(false)
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false)
+  const controlled = openProp !== undefined
+  const open = controlled ? openProp : uncontrolledOpen
+  function setOpen(next: boolean) {
+    if (!controlled) setUncontrolledOpen(next)
+    onOpenChange?.(next)
+  }
 
   const settingsQuery = useQuery(trpc.workspace.getSettings.queryOptions())
   const stacks = settingsQuery.data?.promptStacks ?? []
@@ -72,7 +88,10 @@ export function PromptStackPicker({
     })
   )
 
+  const locked = Boolean(lockedBy)
+
   async function selectStack(stackId: string | null) {
+    if (locked) return
     if (!chatId) {
       onDraftChange?.(stackId)
       setOpen(false)
@@ -150,6 +169,24 @@ export function PromptStackPicker({
     </div>
   )
 
+  if (hideTrigger) {
+    if (locked) return null
+    return (
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Prompt stack</DialogTitle>
+          </DialogHeader>
+          {listBody}
+        </DialogContent>
+      </Dialog>
+    )
+  }
+
+  if (locked && lockedBy) {
+    return <LockedPickerTrigger lock={lockedBy} label={label} />
+  }
+
   if (mdUp) {
     return (
       <Popover open={open} onOpenChange={setOpen}>
@@ -160,7 +197,7 @@ export function PromptStackPicker({
               variant="ghost"
               size="sm"
               className={cn(
-                "max-w-[min(12rem,30vw)] min-w-0 truncate",
+                "max-w-[min(9rem,24vw)] min-w-0 truncate",
                 isOrphan && "text-destructive"
               )}
               title={label}

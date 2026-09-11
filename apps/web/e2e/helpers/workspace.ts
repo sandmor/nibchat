@@ -73,8 +73,12 @@ async function ensureMockProviderViaSettingsUi(page: Page, baseUrl: string) {
   }
 
   await page.getByLabel("Base URL").fill(baseUrl)
-  const headerName = page.getByLabel("Request headers name 1")
-  const headerValue = page.getByLabel("Request headers value 1")
+  const headerName = page.getByRole("textbox", {
+    name: "Request headers name 1",
+  })
+  const headerValue = page.getByRole("textbox", {
+    name: "Request headers value 1",
+  })
   if ((await headerName.count()) === 0) {
     await page.getByRole("button", { name: "Add header" }).click()
   }
@@ -139,6 +143,19 @@ export async function openChatByTitle(page: Page, title: string) {
   await expect(page.getByRole("heading", { name: title })).toBeVisible({
     timeout: 15_000,
   })
+}
+
+export async function openChatHeaderMore(page: Page) {
+  await page.getByRole("button", { name: "More" }).click()
+}
+
+export async function openChatParameters(page: Page) {
+  await openChatHeaderMore(page)
+  await page.getByRole("menuitem", { name: "Parameters", exact: true }).click()
+}
+
+export async function openChatReasoning(page: Page, name: string) {
+  await page.getByRole("button", { name, exact: true }).click()
 }
 
 export async function sendMessage(page: Page, content: string) {

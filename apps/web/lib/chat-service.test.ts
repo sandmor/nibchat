@@ -6,6 +6,8 @@ import {
   createBackupArchive,
   createChat,
   createProvider,
+  createSpace,
+  deleteSpace,
   finishSetup,
   getTitleModelConfig,
   createMessage,
@@ -25,6 +27,9 @@ import {
   startGeneration,
   submitUserTurn,
   setChatViewState,
+  setChatPromptStack,
+  setChatSpace,
+  updateChat,
 } from "@/lib/chat-service"
 import { getGenerationRun } from "@/lib/generation-runs"
 import { generationStreamStore } from "@/lib/generation-streams/default-port"
@@ -2257,6 +2262,19 @@ describe("multi-user restore", () => {
     expect(ownerPrefs.builtin_tools_json).toBe(JSON.stringify({ disabled: [] }))
   })
 
+  it("rejects a space whose parent belongs to another user", async () => {
+    const backup = multiUserBackup("guest-space-parent@test.local")
+    await expect(
+      restoreBackup(userId, {
+        ...backup,
+        spaces: [
+          fixtureSpace("ospace", "src-owner"),
+          fixtureSpace("gspace", "src-guest", "ospace"),
+        ],
+      })
+    ).rejects.toThrow(/another user's space/)
+  })
+
   it("rolls back owner rows when guest restore fails", async () => {
     await db.deleteFrom("chats").execute()
     await db.deleteFrom("user").where("id", "!=", userId).execute()
@@ -2477,6 +2495,25 @@ function fixturePrefs(
   }
 }
 
+function fixtureSpace(
+  id: string,
+  ownerId: string,
+  parentId: string | null = null
+) {
+  return {
+    id,
+    user_id: ownerId,
+    parent_id: parentId,
+    sort_key: 1,
+    name: id,
+    description: "",
+    metadata_json: "{}",
+    settings_json: "{}",
+    created_at: "t",
+    updated_at: "t",
+  }
+}
+
 function fixtureChat(id: string, ownerId: string) {
   return {
     id,
@@ -2486,6 +2523,8 @@ function fixtureChat(id: string, ownerId: string) {
     model_config_json: "{}",
     view_state_json: '{"mode":"linear","camera":null}',
     prompt_stack_id: null,
+    variables_json: "{}",
+    space_id: null,
     created_at: "t",
     updated_at: "t",
   }
@@ -2543,3 +2582,99 @@ function multiUserBackup(guestEmail: string) {
     nodes: [fixtureNode("on", "oc"), fixtureNode("gn", "gc")],
   }
 }
+
+describe("spaces", () => {
+  it("reparents chats and child spaces on delete", async () => {
+    const parent = await createSpace({ userId, name: "Parent" })
+    const child = await createSpace({
+      userId,
+      parentId: parent.id,
+      name: "Child",
+    })
+    const chat = await createChat(
+      userId,
+      "In child",
+      undefined,
+      null,
+      undefined,
+      child.id
+    )
+    await deleteSpace(userId, child.id)
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    expect(workspace.chat?.space_id).toBe(parent.id)
+    expect(
+      workspace.spaces.find((space) => space.id === child.id)
+    ).toBeUndefined()
+    expect(
+      workspace.spaces.find((space) => space.id === parent.id)?.parent_id
+    ).toBeNull()
+    await deleteSpace(userId, parent.id)
+    const after = await getWorkspace(userId, { chatId: chat.id })
+    expect(after.chat?.space_id).toBeNull()
+  })
+
+  it("rejects prompt stack changes while a space locks the stack", async () => {
+    const prefs = await getUserSettings(userId)
+    const stackId = prefs.default_prompt_stack_id
+    const space = await createSpace({
+      userId,
+      name: "Locked stack",
+      settings: {
+        promptStack: { enabled: true, value: stackId },
+      },
+    })
+    const chat = await createChat(
+      userId,
+      "Locked",
+      undefined,
+      null,
+      undefined,
+      space.id
+    )
+    await expect(setChatPromptStack(userId, chat.id, stackId)).rejects.toThrow(
+      /locked/i
+    )
+    await setChatSpace(userId, chat.id, null)
+    await expect(setChatPromptStack(userId, chat.id, stackId)).resolves.toEqual(
+      { ok: true }
+    )
+  })
+
+  it("stores chat settings separately from space locks", async () => {
+    const prefs = await getUserSettings(userId)
+    const stackId = prefs.default_prompt_stack_id
+    const space = await createSpace({
+      userId,
+      name: "Locked",
+      settings: {
+        promptStack: { enabled: true, value: stackId },
+        temperature: { enabled: true, value: 0.15 },
+      },
+    })
+    const chat = await createChat(
+      userId,
+      "Draft",
+      { temperature: 0.9 },
+      stackId,
+      undefined,
+      space.id
+    )
+    expect(chat.prompt_stack_id).toBeNull()
+    expect(chat.space_id).toBe(space.id)
+    const stored = parseJson<ModelConfig>(chat.model_config_json, {})
+    expect(stored.temperature).not.toBe(0.15)
+    await updateChat(
+      chat.id,
+      { model: { ...stored, temperature: 0.2 } },
+      userId
+    )
+    const row = await db
+      .selectFrom("chats")
+      .select("model_config_json")
+      .where("id", "=", chat.id)
+      .executeTakeFirstOrThrow()
+    expect(parseJson<ModelConfig>(row.model_config_json, {}).temperature).toBe(
+      stored.temperature
+    )
+  })
+})

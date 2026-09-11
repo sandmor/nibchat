@@ -137,6 +137,8 @@ export interface ChatsTable {
   prompt_stack_id: string | null
   /** Explicit prompt-stack variable overrides for this conversation. */
   variables_json: string
+  /** Innermost space; null = ungrouped. */
+  space_id: string | null
   created_at: string
   updated_at: string
 }
@@ -200,6 +202,18 @@ export interface PromptStacksTable {
   created_at: string
   updated_at: string
 }
+export interface SpacesTable {
+  id: string
+  user_id: string
+  parent_id: string | null
+  sort_key: number
+  name: string
+  description: string
+  metadata_json: string
+  settings_json: string
+  created_at: string
+  updated_at: string
+}
 export interface ThemesTable {
   id: string
   user_id: string
@@ -248,6 +262,7 @@ export interface McpServerProfilesTable {
 }
 export interface DB {
   chats: ChatsTable
+  spaces: SpacesTable
   message_nodes: MessageNodesTable
   generation_runs: GenerationRunsTable
   attachments: AttachmentsTable
@@ -321,4 +336,5 @@ export interface DB {
 export type ChatRow = Selectable<ChatsTable>
 export type NodeRow = Selectable<MessageNodesTable>
 export type PromptStackRow = Selectable<PromptStacksTable>
+export type SpaceRow = Selectable<SpacesTable>
 export type ThemeRow = Selectable<ThemesTable>

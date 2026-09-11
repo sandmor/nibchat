@@ -20,26 +20,30 @@ export default async function WorkspaceLayout({
     getWorkspace(user.id, { draft: true }),
     user.id === ownerId ? listProviders() : listAvailableProviders(),
   ])
-  const visibleSettings = user.id === ownerId
-    ? settings
-    : { ...settings, titleModelConfig: null }
+  const visibleSettings =
+    user.id === ownerId ? settings : { ...settings, titleModelConfig: null }
 
   return (
-    <ThemeProvider userId={user.id} initialMode={settings.themeMode}>
+    <>
       <ThemeBootstrap
         themes={visibleSettings.themes}
         lightThemeId={visibleSettings.lightThemeId}
         darkThemeId={visibleSettings.darkThemeId}
+        userId={user.id}
+        initialMode={settings.themeMode}
       />
-      <WorkspaceShell
-        initialChats={workspace.chats}
-        providers={providers}
-        initialSettings={visibleSettings}
-        user={user}
-        isOwner={user.id === ownerId}
-      >
-        {children}
-      </WorkspaceShell>
-    </ThemeProvider>
+      <ThemeProvider userId={user.id} initialMode={settings.themeMode}>
+        <WorkspaceShell
+          initialChats={workspace.chats}
+          initialSpaces={workspace.spaces}
+          providers={providers}
+          initialSettings={visibleSettings}
+          user={user}
+          isOwner={user.id === ownerId}
+        >
+          {children}
+        </WorkspaceShell>
+      </ThemeProvider>
+    </>
   )
 }

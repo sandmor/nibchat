@@ -84,6 +84,8 @@ export type GenerationSetup = {
   selectedProtocol?: () => string | undefined
   rememberProtocol?: (protocol: string) => Promise<void>
   promptStack: PromptStackDocument
+  /** Space-resolved overrides; when omitted, the chat row is read. */
+  variableOverrides?: Record<string, unknown>
   /** Browser IANA time zone supplied for prompt macro expansion. */
   timeZone: string
   requestSignal: AbortSignal
@@ -127,6 +129,7 @@ export async function createGenerationResponse(
     selectedProtocol,
     rememberProtocol,
     promptStack,
+    variableOverrides,
     timeZone,
     requestSignal,
     allNodes,
@@ -289,7 +292,7 @@ export async function createGenerationResponse(
       ...(chatIdentity ? { chat: chatIdentity } : {}),
       variables: resolvePromptVariableValues(
         promptStack.variables ?? [],
-        parsePromptVariableValues(chat?.variables_json)
+        variableOverrides ?? parsePromptVariableValues(chat?.variables_json)
       ),
     }
     const [mcp, builtInPrefs] = await Promise.all([

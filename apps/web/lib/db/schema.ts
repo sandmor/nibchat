@@ -29,11 +29,14 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create table if not exists instance (id integer primary key, owner_user_id text unique, title_model_config_json text, onboarding_completed_at text, created_at text not null)`.execute(
     db
   )
-  await sql`create table if not exists chats (id text primary key, user_id text not null references "user"(id) on delete cascade, title text, selected_root_node_id text, model_config_json text not null, view_state_json text not null, prompt_stack_id text, variables_json text not null default '{}', created_at text not null, updated_at text not null)`.execute(
-    db
-  )
   const sortKeyType =
     kind === "postgres" ? sql.raw("double precision") : sql.raw("real")
+  await sql`create table if not exists spaces (id text primary key, user_id text not null references "user"(id) on delete cascade, parent_id text references spaces(id) on delete set null, sort_key ${sortKeyType} not null, name text not null, description text not null default '', metadata_json text not null default '{}', settings_json text not null default '{}', created_at text not null, updated_at text not null)`.execute(
+    db
+  )
+  await sql`create table if not exists chats (id text primary key, user_id text not null references "user"(id) on delete cascade, title text, selected_root_node_id text, model_config_json text not null, view_state_json text not null, prompt_stack_id text, variables_json text not null default '{}', space_id text references spaces(id) on delete set null, created_at text not null, updated_at text not null)`.execute(
+    db
+  )
   await sql`create table if not exists message_nodes (id text primary key, chat_id text not null references chats(id) on delete cascade, parent_id text references message_nodes(id) on delete cascade, selected_child_id text, sort_key ${sortKeyType} not null, revision integer not null default 0, role text not null, parts_json text not null, search_text text not null, metadata_json text not null, excluded_from_context boolean not null default false, status text not null, created_at text not null, updated_at text not null)`.execute(
     db
   )
@@ -77,6 +80,12 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
     db
   )
   await sql`create index if not exists message_nodes_search_idx on message_nodes(chat_id, search_text)`.execute(
+    db
+  )
+  await sql`create index if not exists spaces_user_idx on spaces(user_id, parent_id, sort_key)`.execute(
+    db
+  )
+  await sql`create index if not exists chats_space_idx on chats(space_id)`.execute(
     db
   )
 

@@ -9,9 +9,23 @@ export const metadata: Metadata = {
   title: "New conversation",
 }
 
-export default async function NewChatPage() {
+export default async function NewChatPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ space?: string }>
+}) {
   const user = await requireWorkspaceUser()
   const workspace = await getWorkspace(user.id, { draft: true })
+  const { space } = await searchParams
+  const draftSpaceId =
+    space && workspace.spaces.some((row) => row.id === space) ? space : null
 
-  return <ChatView mode="draft" chatId={null} initial={workspace} />
+  return (
+    <ChatView
+      mode="draft"
+      chatId={null}
+      initial={workspace}
+      draftSpaceId={draftSpaceId}
+    />
+  )
 }

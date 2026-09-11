@@ -20,6 +20,7 @@ const chatRowSchema = z
     }, "Invalid chat view state"),
     prompt_stack_id: z.string().nullable(),
     variables_json: z.string().default("{}"),
+    space_id: z.string().nullable().optional().default(null),
     created_at: z.string(),
     updated_at: z.string(),
   })
@@ -67,6 +68,21 @@ const providerProfileSchema = z
     models_json: z.string().refine(isProviderModelsJson, {
       message: "Invalid provider model preferences",
     }),
+    created_at: z.string(),
+    updated_at: z.string(),
+  })
+  .loose()
+
+const spaceRowSchema = z
+  .object({
+    id: z.string(),
+    user_id: z.string(),
+    parent_id: z.string().nullable(),
+    sort_key: z.number(),
+    name: z.string(),
+    description: z.string().default(""),
+    metadata_json: z.string().default("{}"),
+    settings_json: z.string().default("{}"),
     created_at: z.string(),
     updated_at: z.string(),
   })
@@ -167,6 +183,7 @@ export const backupSchema = z.object({
   providerProfiles: z.array(providerProfileSchema).optional().default([]),
   mcpServerProfiles: z.array(mcpServerProfileSchema).optional().default([]),
   promptStacks: z.array(promptStackRowSchema).optional().default([]),
+  spaces: z.array(spaceRowSchema).optional().default([]),
   themes: z.array(themeBackupSchema).optional().default([]),
   attachments: z.array(attachmentBackupSchema).optional().default([]),
   messageAttachments: z

@@ -16,21 +16,18 @@ import { motion } from "motion/react"
 import { toast } from "sonner"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
-  Add01Icon,
-  Delete02Icon,
+  Cancel01Icon,
   MessageMultiple01Icon,
   Settings01Icon,
   SidebarLeft01Icon,
   SidebarRight01Icon,
 } from "@hugeicons/core-free-icons"
 import { Button, buttonVariants } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { ScrollArea } from "@/components/ui/scroll-area"
 import { TooltipProvider, WithTooltip } from "@/components/ui/tooltip"
 import {
   Dialog,
+  DialogClose,
   DialogContent,
-  DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
 import {
@@ -44,10 +41,13 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { cn } from "@/lib/utils"
-import type { ChatRow } from "@/lib/types"
-import { displayChatTitle } from "@/lib/chat-title"
+import type { ChatRow, SpaceRow } from "@/lib/types"
 import type { Appearance, ThemeRecord } from "@/lib/appearance"
-import { defaultAppearance, motionTransition } from "@/lib/appearance"
+import {
+  defaultAppearance,
+  motionTransition,
+  shouldAnimate,
+} from "@/lib/appearance"
 import type { PromptStackDocument } from "@/lib/prompt-stack"
 import type { BuiltInToolsPrefs } from "@/lib/agent/tools/catalog"
 import { useAppearanceStore } from "@/lib/appearance-store"
@@ -57,10 +57,15 @@ import { useTRPC } from "@/lib/trpc-react"
 import { omitChat, type WorkspaceData } from "@/lib/workspace-cache"
 import type { ProviderSummary } from "./types"
 import { AccountMenu } from "./account-menu"
-import { ChatListItem } from "./chat-list"
 import { BrandMark } from "@/components/logo"
 import { AppearanceMagicChrome } from "./appearance-magic"
 import { AppearanceRuntime } from "./appearance-runtime"
+import {
+  useMediaMdUp,
+  usePrefersReducedMotion,
+  useUserStorageValue,
+} from "./hooks"
+import { SidebarNav } from "./sidebar-nav"
 
 type ChromeContextValue = {
   appearance: Appearance
@@ -103,6 +108,7 @@ type InstanceSettings = {
 
 export function WorkspaceShell({
   initialChats,
+  initialSpaces,
   providers: initialProviders,
   initialSettings,
   user,
@@ -110,6 +116,7 @@ export function WorkspaceShell({
   children,
 }: {
   initialChats: ChatRow[]
+  initialSpaces: SpaceRow[]
   providers: ProviderSummary[]
   initialSettings: InstanceSettings
   user: { id: string; name: string; email: string }
@@ -127,24 +134,34 @@ export function WorkspaceShell({
   } = useThemeSlot()
   const [search, setSearch] = useState("")
   const [chatsOpen, setChatsOpen] = useState(false)
+  const mdUp = useMediaMdUp()
   const [chatIdToDelete, setChatIdToDelete] = useState<string | null>(null)
+  const [spaceIdToDelete, setSpaceIdToDelete] = useState<string | null>(null)
+  const [listStored, setListStored] = useUserStorageValue(
+    user.id,
+    "nibchat.sidebarList",
+    "recents"
+  )
+  const listMode = listStored === "spaces" ? "spaces" : "recents"
+  const [expandedSpaces, setExpandedSpaces] = useState<Set<string>>(
+    () => new Set()
+  )
   const draftDensity = useAppearanceStore((s) => s.draft?.density)
   const draftMotion = useAppearanceStore((s) => s.draft?.motion)
   const draftMessageActions = useAppearanceStore((s) => s.draft?.messageActions)
   const draftModelPicker = useAppearanceStore((s) => s.draft?.modelPicker)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    if (typeof window === "undefined") return false
-    try {
-      return localStorage.getItem(`nibchat.sidebarCollapsed.${user.id}`) === "1"
-    } catch {
-      return false
-    }
-  })
+  const [collapsedStored, setCollapsedStored] = useUserStorageValue(
+    user.id,
+    "nibchat.sidebarCollapsed",
+    "0"
+  )
+  const sidebarCollapsed = collapsedStored === "1"
 
   const chatsQuery = useQuery({
     ...trpc.workspace.get.queryOptions({ draft: true }),
     initialData: {
       chats: initialChats,
+      spaces: initialSpaces,
       chat: null,
       nodes: [],
       activeGenerations: [],
@@ -208,18 +225,12 @@ export function WorkspaceShell({
       draftMotion,
     ]
   )
+  const prefersReduced = usePrefersReducedMotion()
+  const animate = shouldAnimate(appearance.motion, prefersReduced)
   const transition = motionTransition(appearance.motion)
 
   function setSidebarCollapsedPersist(next: boolean) {
-    setSidebarCollapsed(next)
-    try {
-      localStorage.setItem(
-        `nibchat.sidebarCollapsed.${user.id}`,
-        next ? "1" : "0"
-      )
-    } catch {
-      /* ignore */
-    }
+    setCollapsedStored(next ? "1" : "0")
   }
 
   const searchQuery = useQuery({
@@ -228,13 +239,38 @@ export function WorkspaceShell({
   })
 
   const chats = chatsQuery.data?.chats ?? initialChats
+  const spaces = chatsQuery.data?.spaces ?? initialSpaces
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(`nibchat.spaceExpanded.${user.id}`)
+      if (raw != null) {
+        const parsed = JSON.parse(raw) as unknown
+        if (Array.isArray(parsed)) {
+          setExpandedSpaces(new Set(parsed.map(String)))
+        }
+        return
+      }
+      if (spaces.length === 0) return
+      setExpandedSpacesPersist(() => new Set(spaces.map((space) => space.id)))
+    } catch {
+      /* ignore */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spaces, user.id])
+  const spaceById = useMemo(
+    () => new Map(spaces.map((space) => [space.id, space])),
+    [spaces]
+  )
   const results = searchQuery.data ?? []
   const providers = providersQuery.data ?? initialProviders
   const onSettings = pathname.startsWith("/settings")
   const activeChatId = pathname.startsWith("/chat/")
-    ? pathname.slice("/chat/".length).split(/[/?#]/)[0]
+    ? (pathname.slice("/chat/".length).split(/[/?#]/)[0] ?? null)
     : null
   const isDraft = activeChatId === "new"
+  const activeSpaceId = pathname.startsWith("/space/")
+    ? (pathname.slice("/space/".length).split(/[/?#]/)[0] ?? null)
+    : null
   const density = appearance.density
   const pad = density === "compact" ? "p-2 gap-1" : "p-3 gap-2"
   const collapsed = sidebarCollapsed
@@ -252,6 +288,14 @@ export function WorkspaceShell({
     setLastChatHref(pathChatHref)
   }
   const settingsHref = onSettings ? lastChatHref : "/settings"
+
+  useEffect(() => {
+    setChatsOpen(false)
+  }, [pathname])
+
+  useEffect(() => {
+    if (mdUp) setChatsOpen(false)
+  }, [mdUp])
 
   const chromeValue = useMemo(
     () => ({
@@ -315,6 +359,75 @@ export function WorkspaceShell({
       },
     })
   )
+
+  const deleteSpaceMutation = useMutation(
+    trpc.workspace.deleteSpace.mutationOptions({
+      onSuccess: async (_result, input) => {
+        if (activeSpaceId === input.spaceId) router.replace("/chat/new")
+        await queryClient.invalidateQueries(trpc.workspace.get.queryFilter())
+        toast.success("Space deleted")
+      },
+      onError: (error) =>
+        toast.error(error.message || "Could not delete space"),
+      onSettled: () => setSpaceIdToDelete(null),
+    })
+  )
+  const createSpaceMutation = useMutation(
+    trpc.workspace.createSpace.mutationOptions({
+      onSuccess: async (row) => {
+        await queryClient.invalidateQueries(trpc.workspace.get.queryFilter())
+        setListModePersist("spaces")
+        setExpandedSpacesPersist((current) => {
+          const next = new Set(current)
+          if (row.parent_id) next.add(row.parent_id)
+          next.add(row.id)
+          return next
+        })
+        router.push(`/space/${row.id}`)
+      },
+      onError: (error) =>
+        toast.error(error.message || "Could not create space"),
+    })
+  )
+  const setChatSpaceMutation = useMutation(
+    trpc.workspace.setChatSpace.mutationOptions({
+      onSuccess: async () => {
+        await queryClient.invalidateQueries(trpc.workspace.get.queryFilter())
+        toast.success("Moved")
+      },
+      onError: (error) => toast.error(error.message || "Could not move chat"),
+    })
+  )
+
+  function setListModePersist(next: "recents" | "spaces") {
+    setListStored(next)
+  }
+
+  function setExpandedSpacesPersist(
+    update: (current: Set<string>) => Set<string>
+  ) {
+    setExpandedSpaces((current) => {
+      const next = update(current)
+      try {
+        localStorage.setItem(
+          `nibchat.spaceExpanded.${user.id}`,
+          JSON.stringify([...next])
+        )
+      } catch {
+        /* ignore */
+      }
+      return next
+    })
+  }
+
+  function toggleSpace(id: string) {
+    setExpandedSpacesPersist((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
 
   return (
     <ChromeContext.Provider value={chromeValue}>
@@ -462,90 +575,35 @@ export function WorkspaceShell({
                 </div>
               </div>
             </TooltipProvider>
-            {!collapsed ? (
-              <>
-                <Link
-                  href="/chat/new"
-                  data-theme-group="button"
-                  data-theme-target="button"
-                  className={cn(buttonVariants(), "mb-3 w-full gap-1.5")}
-                >
-                  <HugeiconsIcon
-                    icon={Add01Icon}
-                    strokeWidth={2}
-                    className="size-4"
-                    aria-hidden
-                  />
-                  New conversation
-                </Link>
-                <Input
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Search every branch"
-                  aria-label="Search every branch"
-                  className="mb-2"
-                />
-              </>
-            ) : (
-              <WithTooltip label="New conversation" side="right">
-                <Link
-                  href="/chat/new"
-                  data-theme-group="button"
-                  data-theme-target="button"
-                  className={cn(
-                    buttonVariants({ size: "icon" }),
-                    "mb-2 w-full"
-                  )}
-                  aria-label="New conversation"
-                >
-                  <HugeiconsIcon
-                    icon={Add01Icon}
-                    strokeWidth={2}
-                    className="size-4"
-                    aria-hidden
-                  />
-                </Link>
-              </WithTooltip>
-            )}
-            {results.length > 0 && !collapsed && (
-              <ScrollArea className="mb-2 max-h-40 rounded-lg border bg-background">
-                <div className="space-y-1 p-1">
-                  {results.map((result) => (
-                    <Link
-                      key={result.id}
-                      href={`/chat/${result.chat_id}?node=${encodeURIComponent(result.id)}`}
-                      onClick={() => setSearch("")}
-                      className={cn(
-                        buttonVariants({ variant: "ghost" }),
-                        "h-auto w-full flex-col items-start gap-0.5 px-2 py-2 text-left"
-                      )}
-                    >
-                      <span className="font-medium">
-                        {displayChatTitle(result.title)}
-                      </span>
-                      <span className="w-full truncate text-xs text-muted-foreground">
-                        {result.search_text}
-                      </span>
-                    </Link>
-                  ))}
-                </div>
-              </ScrollArea>
-            )}
-            <ScrollArea className="min-h-0 flex-1">
-              <TooltipProvider delay={400}>
-                <div className="space-y-1">
-                  {chats.map((chat) => (
-                    <ChatListItem
-                      key={chat.id}
-                      chat={chat}
-                      compact={collapsed}
-                      active={!isDraft && activeChatId === chat.id}
-                      onDelete={setChatIdToDelete}
-                    />
-                  ))}
-                </div>
-              </TooltipProvider>
-            </ScrollArea>
+            <SidebarNav
+              chats={chats}
+              spaces={spaces}
+              spaceById={spaceById}
+              search={search}
+              onSearchChange={setSearch}
+              results={results}
+              listMode={listMode}
+              onListMode={setListModePersist}
+              collapsed={collapsed}
+              activeChatId={activeChatId}
+              activeSpaceId={activeSpaceId}
+              isDraft={isDraft}
+              expandedSpaces={expandedSpaces}
+              animate={animate}
+              transition={transition}
+              onToggleSpace={toggleSpace}
+              onDeleteChat={setChatIdToDelete}
+              onDeleteSpace={setSpaceIdToDelete}
+              onCreateSpace={(parentId) =>
+                createSpaceMutation.mutate(parentId ? { parentId } : {})
+              }
+              onCreateChat={(spaceId) =>
+                router.push(`/chat/new?space=${spaceId}`)
+              }
+              onMoveChat={(chatId, spaceId) =>
+                setChatSpaceMutation.mutate({ chatId, spaceId })
+              }
+            />
             <div
               className={cn(
                 "mt-2 shrink-0 border-t pt-2",
@@ -572,104 +630,70 @@ export function WorkspaceShell({
           </div>
         </div>
 
-        <Dialog open={chatsOpen} onOpenChange={setChatsOpen}>
-          <DialogContent className="flex max-h-[90svh] flex-col gap-3 sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle>Conversations</DialogTitle>
-            </DialogHeader>
-            <Link
-              href="/chat/new"
-              data-theme-group="button"
-              data-theme-target="button"
-              onClick={() => setChatsOpen(false)}
-              className={cn(buttonVariants(), "w-full gap-1.5")}
-            >
-              <HugeiconsIcon
-                icon={Add01Icon}
-                strokeWidth={2}
-                className="size-4"
-              />
-              New conversation
-            </Link>
-            <Input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search every branch"
-              aria-label="Search every branch"
-            />
-            {results.length > 0 && (
-              <ScrollArea className="max-h-32 rounded-lg border">
-                <div className="space-y-1 p-1">
-                  {results.map((result) => (
-                    <Link
-                      key={result.id}
-                      href={`/chat/${result.chat_id}?node=${encodeURIComponent(result.id)}`}
-                      onClick={() => {
-                        setSearch("")
-                        setChatsOpen(false)
-                      }}
-                      className={cn(
-                        buttonVariants({ variant: "ghost" }),
-                        "h-auto w-full flex-col items-start gap-0.5 px-2 py-2 text-left"
-                      )}
-                    >
-                      <span className="font-medium">
-                        {displayChatTitle(result.title)}
-                      </span>
-                      <span className="w-full truncate text-xs text-muted-foreground">
-                        {result.search_text}
-                      </span>
-                    </Link>
-                  ))}
-                </div>
-              </ScrollArea>
+        <Dialog open={chatsOpen && !mdUp} onOpenChange={setChatsOpen}>
+          <DialogContent
+            showCloseButton={false}
+            showOverlay={false}
+            className={cn(
+              "fixed inset-0 top-0 left-0 z-50 flex h-dvh max-h-dvh w-full max-w-none flex-col",
+              "translate-x-0 translate-y-0 gap-0 rounded-none border-0 ring-0",
+              "bg-sidebar text-sidebar-foreground sm:max-w-none",
+              "overflow-hidden duration-0!",
+              "data-open:animate-none data-open:fade-in-0 data-open:zoom-in-100",
+              "data-closed:animate-none data-closed:fade-out-0 data-closed:zoom-out-100",
+              density === "compact" ? "p-2" : "p-3"
             )}
-            <ScrollArea className="min-h-0 flex-1">
-              <div className="space-y-1 pr-2">
-                {chats.map((chat) => (
-                  <div key={chat.id} className="flex items-center gap-0.5">
-                    <Link
-                      href={`/chat/${chat.id}`}
-                      onClick={() => setChatsOpen(false)}
-                      className={cn(
-                        buttonVariants({
-                          variant:
-                            !isDraft && activeChatId === chat.id
-                              ? "secondary"
-                              : "ghost",
-                        }),
-                        "h-auto min-w-0 flex-1 justify-start px-3 py-2 text-left"
-                      )}
-                    >
-                      <span className="flex min-w-0 flex-col gap-0.5">
-                        <span className="truncate">
-                          {displayChatTitle(chat.title)}
-                        </span>
-                        <span className="text-xs text-muted-foreground">
-                          {new Date(chat.updated_at).toLocaleDateString()}
-                        </span>
-                      </span>
-                    </Link>
-                    <WithTooltip label="Delete conversation">
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        className="shrink-0 text-muted-foreground hover:text-destructive"
-                        aria-label={`Delete ${displayChatTitle(chat.title)}`}
-                        onClick={() => setChatIdToDelete(chat.id)}
-                      >
-                        <HugeiconsIcon
-                          icon={Delete02Icon}
-                          strokeWidth={2}
-                          className="size-4"
-                          aria-hidden
-                        />
-                      </Button>
-                    </WithTooltip>
-                  </div>
-                ))}
+          >
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+              <div className="mb-3 flex shrink-0 items-center justify-between gap-2">
+                <DialogTitle>Chats</DialogTitle>
+                <DialogClose
+                  render={
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label="Close"
+                    />
+                  }
+                >
+                  <HugeiconsIcon
+                    icon={Cancel01Icon}
+                    strokeWidth={2}
+                    className="size-4"
+                  />
+                </DialogClose>
               </div>
-            </ScrollArea>
+              <SidebarNav
+                chats={chats}
+                spaces={spaces}
+                spaceById={spaceById}
+                search={search}
+                onSearchChange={setSearch}
+                results={results}
+                listMode={listMode}
+                onListMode={setListModePersist}
+                activeChatId={activeChatId}
+                activeSpaceId={activeSpaceId}
+                isDraft={isDraft}
+                expandedSpaces={expandedSpaces}
+                animate={animate}
+                transition={transition}
+                onToggleSpace={toggleSpace}
+                onDeleteChat={setChatIdToDelete}
+                onDeleteSpace={setSpaceIdToDelete}
+                onCreateSpace={(parentId) =>
+                  createSpaceMutation.mutate(parentId ? { parentId } : {})
+                }
+                onCreateChat={(spaceId) =>
+                  router.push(`/chat/new?space=${spaceId}`)
+                }
+                onMoveChat={(chatId, spaceId) =>
+                  setChatSpaceMutation.mutate({ chatId, spaceId })
+                }
+                onNavigate={() => setChatsOpen(false)}
+              />
+            </div>
           </DialogContent>
         </Dialog>
 
@@ -695,6 +719,37 @@ export function WorkspaceShell({
                   if (!chatIdToDelete) return
                   await deleteChatMutation.mutateAsync({
                     chatId: chatIdToDelete,
+                  })
+                }}
+              >
+                Delete
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        <AlertDialog
+          open={spaceIdToDelete !== null}
+          onOpenChange={(open) => {
+            if (!open) setSpaceIdToDelete(null)
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete space?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Chats and nested spaces move to the parent (or ungrouped). Chats
+                are not deleted.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                variant="destructive"
+                onClick={async () => {
+                  if (!spaceIdToDelete) return
+                  await deleteSpaceMutation.mutateAsync({
+                    spaceId: spaceIdToDelete,
                   })
                 }}
               >

@@ -18,7 +18,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
 import { CSS } from "@dnd-kit/utilities"
-import { useMutation, useQuery } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { Delete02Icon, DragDropVerticalIcon } from "@hugeicons/core-free-icons"
@@ -97,6 +97,7 @@ const ROLE_ITEMS = {
 
 export function PromptStackSettings() {
   const trpc = useTRPC()
+  const queryClient = useQueryClient()
   const settingsQuery = useQuery(trpc.workspace.getSettings.queryOptions())
   const stacks = settingsQuery.data?.promptStacks ?? []
   const defaultId = settingsQuery.data?.defaultPromptStackId ?? null
@@ -207,7 +208,10 @@ export function PromptStackSettings() {
         toast.success("Stack deleted")
         setSelectedId(null)
         setDraft(null)
-        await refetch()
+        await Promise.all([
+          refetch(),
+          queryClient.invalidateQueries(trpc.workspace.get.queryFilter()),
+        ])
       },
       onError: (e) => toast.error(e.message || "Could not delete"),
     })

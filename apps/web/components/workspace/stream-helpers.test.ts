@@ -422,6 +422,7 @@ describe("applyStoppingStreamPatches", () => {
   it("paints aborted parts and keeps activeGenerations", () => {
     const data: WorkspaceData = {
       chats: [],
+      spaces: [],
       chat: null,
       nodes: [{ ...node("a1"), role: "assistant", status: "streaming" }],
       activeGenerations: [

@@ -4,6 +4,8 @@ import {
   ensureMockProvider,
   ensureWorkspace,
   expectAssistantText,
+  openChatParameters,
+  openChatReasoning,
   sendMessage,
 } from "./helpers/workspace"
 
@@ -34,9 +36,7 @@ test("configures compatible reasoning, persists the choice, and sends it through
       page.getByText("Provider saved", { exact: false })
     ).toBeVisible()
     await page.goto("/chat/new")
-    await page
-      .getByRole("button", { name: "Reasoning: Default", exact: true })
-      .click()
+    await openChatReasoning(page, "Reasoning: Default")
     await page.getByRole("button", { name: "High", exact: true }).click()
     await expect(
       page.getByRole("button", { name: "Reasoning: High", exact: true })
@@ -51,12 +51,7 @@ test("configures compatible reasoning, persists the choice, and sends it through
         .at(-1)?.reasoning_effort
     ).toBe("high")
     await page.reload()
-    await expect(
-      page.getByRole("button", { name: "Reasoning: High", exact: true })
-    ).toBeVisible()
-    await page
-      .getByRole("button", { name: "Reasoning: High", exact: true })
-      .click()
+    await openChatReasoning(page, "Reasoning: High")
     await expect(
       page.getByRole("button", { name: "High", exact: true })
     ).toHaveAttribute("aria-pressed", "true")
@@ -71,9 +66,7 @@ test("configures compatible reasoning, persists the choice, and sends it through
         .at(-1)
     ).not.toHaveProperty("reasoning_effort")
     await page.setViewportSize({ width: 390, height: 844 })
-    await page
-      .getByRole("button", { name: "Reasoning: Default", exact: true })
-      .click()
+    await openChatReasoning(page, "Reasoning: Default")
     await page.getByRole("button", { name: "Low", exact: true }).focus()
     await page.keyboard.press("ArrowDown")
     await expect(
@@ -83,15 +76,13 @@ test("configures compatible reasoning, persists the choice, and sends it through
     await expect(
       page.getByRole("button", { name: "Reasoning: Medium", exact: true })
     ).toBeVisible()
-    await page.getByRole("button", { name: "Params", exact: true }).click()
+    await openChatParameters(page)
     const json = '{"E2E Mock":{"reasoningEffort":"low","other":"kept"}}'
     await page.getByLabel("Provider-specific JSON").fill(json)
     await page
       .getByRole("button", { name: "Apply to this chat", exact: true })
       .click()
-    await page
-      .getByRole("button", { name: "Reasoning: Custom", exact: true })
-      .click()
+    await openChatReasoning(page, "Reasoning: Custom")
     await page
       .getByRole("button", { name: "Edit provider JSON", exact: true })
       .click()
@@ -99,16 +90,14 @@ test("configures compatible reasoning, persists the choice, and sends it through
       JSON.parse(await page.getByLabel("Provider-specific JSON").inputValue())
     ).toEqual(JSON.parse(json))
     await page.keyboard.press("Escape")
-    await page
-      .getByRole("button", { name: "Reasoning: Custom", exact: true })
-      .click()
+    await openChatReasoning(page, "Reasoning: Custom")
     await page
       .getByRole("button", { name: "Use managed controls", exact: true })
       .click()
     await expect(
       page.getByRole("button", { name: "Reasoning: Default", exact: true })
     ).toBeVisible()
-    await page.getByRole("button", { name: "Params", exact: true }).click()
+    await openChatParameters(page)
     expect(
       JSON.parse(await page.getByLabel("Provider-specific JSON").inputValue())
     ).toEqual({ "E2E Mock": { other: "kept" } })

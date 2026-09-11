@@ -3,11 +3,12 @@ import {
   searchTextFromParts,
   terminalStatusForParts,
 } from "@/lib/agent/parts"
-import type { ChatRow, NodeRow, Parts } from "@/lib/types"
+import type { ChatRow, NodeRow, SpaceRow, Parts } from "@/lib/types"
 import { chatViewStateToJson, type ChatViewState } from "@/lib/chat-view-state"
 
 export type WorkspaceData = {
   chats: ChatRow[]
+  spaces: SpaceRow[]
   chat: ChatRow | null
   nodes: NodeRow[]
   activeGenerations: Array<{
@@ -70,6 +71,7 @@ export function omitChat(
   const wasActive = data.chat?.id === chatId
   return {
     chats,
+    spaces: data.spaces,
     chat: wasActive ? null : data.chat,
     nodes: wasActive ? [] : data.nodes,
     activeGenerations: wasActive ? [] : data.activeGenerations,

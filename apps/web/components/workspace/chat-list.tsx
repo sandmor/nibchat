@@ -1,26 +1,42 @@
 "use client"
 
+import { useState } from "react"
 import Link from "next/link"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { Delete02Icon } from "@hugeicons/core-free-icons"
+import { CircleEllipsisIcon, Delete02Icon } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { WithTooltip } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
-import type { ChatRow } from "@/lib/types"
+import type { ChatRow, SpaceRow } from "@/lib/types"
 import { displayChatTitle } from "@/lib/chat-title"
+import { SpacePicker } from "./space-picker"
 
 export function ChatListItem({
   chat,
   active,
   compact,
+  spaceName,
+  spaces,
+  onMove,
   onDelete,
 }: {
   chat: ChatRow
   active: boolean
   compact?: boolean
+  spaceName?: string | null
+  spaces?: SpaceRow[]
+  onMove?: (spaceId: string | null) => void
   onDelete: (chatId: string) => void
 }) {
   const title = displayChatTitle(chat.title)
+  const [moveOpen, setMoveOpen] = useState(false)
   const selectLink = (
     <Link
       href={`/chat/${chat.id}`}
@@ -41,7 +57,9 @@ export function ChatListItem({
         <span className="flex min-w-0 flex-col gap-0.5">
           <span className="truncate text-sm font-medium">{title}</span>
           <span className="text-xs text-muted-foreground">
-            {new Date(chat.updated_at).toLocaleDateString()}
+            {spaceName
+              ? `${spaceName} · ${new Date(chat.updated_at).toLocaleDateString()}`
+              : new Date(chat.updated_at).toLocaleDateString()}
           </span>
         </span>
       )}
@@ -74,6 +92,57 @@ export function ChatListItem({
     </Button>
   )
 
+  const actions =
+    onMove && spaces && !compact ? (
+      <>
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                className="me-1 shrink-0 opacity-70 group-hover/row:opacity-100"
+                aria-label={`${title} actions`}
+              />
+            }
+          >
+            <HugeiconsIcon
+              icon={CircleEllipsisIcon}
+              strokeWidth={2}
+              className="size-4"
+            />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-40">
+            <DropdownMenuItem onClick={() => setMoveOpen(true)}>
+              Move to…
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              variant="destructive"
+              onClick={() => onDelete(chat.id)}
+            >
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <SpacePicker
+          spaces={spaces}
+          value={chat.space_id}
+          triggerLabel="Move to…"
+          open={moveOpen}
+          onOpenChange={setMoveOpen}
+          hideTrigger
+          onSelect={(spaceId) => {
+            onMove(spaceId)
+            setMoveOpen(false)
+          }}
+        />
+      </>
+    ) : !compact ? (
+      <WithTooltip label="Delete conversation">{deleteButton}</WithTooltip>
+    ) : null
+
   return (
     <div
       className={cn(
@@ -89,9 +158,7 @@ export function ChatListItem({
       ) : (
         selectLink
       )}
-      {!compact && (
-        <WithTooltip label="Delete conversation">{deleteButton}</WithTooltip>
-      )}
+      {actions}
     </div>
   )
 }

@@ -479,7 +479,7 @@ export const useAppearanceStore = create<AppearanceStore>((set, get) => ({
     }
     // The assigned light/dark slot owns the page appearance. Local state keeps
     // unsaved drafts, but it must not replace that slot after a reload or while
-    // next-themes is resolving the browser preference.
+    // the browser color slot is still resolving.
     const themeId = library.has(activeThemeId) ? activeThemeId : themes[0]?.id
     if (!themeId) return
     const saved = library.get(themeId) ?? active

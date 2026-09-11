@@ -29,7 +29,7 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create table if not exists instance (id integer primary key, owner_user_id text unique, title_model_config_json text, onboarding_completed_at text, created_at text not null)`.execute(
     db
   )
-  await sql`create table if not exists chats (id text primary key, user_id text not null references "user"(id) on delete cascade, title text, selected_root_node_id text, model_config_json text not null, view_state_json text not null, prompt_stack_id text, created_at text not null, updated_at text not null)`.execute(
+  await sql`create table if not exists chats (id text primary key, user_id text not null references "user"(id) on delete cascade, title text, selected_root_node_id text, model_config_json text not null, view_state_json text not null, prompt_stack_id text, variables_json text not null default '{}', created_at text not null, updated_at text not null)`.execute(
     db
   )
   const sortKeyType =

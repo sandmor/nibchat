@@ -77,7 +77,9 @@ import {
   readStackJson,
   requirePromptStack,
   resolvePromptStack,
+  sanitizePromptVariableOverrides,
   type PromptStackDocument,
+  type PromptVariableValues,
 } from "@/lib/prompt-stack"
 import {
   claimUploadedAttachments,
@@ -343,7 +345,8 @@ export async function createChat(
   userId: string,
   title: string | null = null,
   config?: ModelConfig,
-  promptStackId?: string | null
+  promptStackId?: string | null,
+  variables?: PromptVariableValues
 ) {
   const resolved =
     config && (config.providerId || config.model)
@@ -358,6 +361,18 @@ export async function createChat(
       .executeTakeFirst()
     if (!existing) throw new Error("Prompt stack not found")
   }
+  const storedVariables =
+    variables && Object.keys(variables).length > 0
+      ? sanitizePromptVariableOverrides(
+          (
+            await resolveStackForChat(
+              { prompt_stack_id: promptStackId ?? null },
+              userId
+            )
+          ).stack.variables ?? [],
+          variables
+        )
+      : {}
   const timestamp = now()
   const chat = {
     id: id(),
@@ -367,6 +382,7 @@ export async function createChat(
     model_config_json: JSON.stringify(resolved),
     view_state_json: chatViewStateToJson({ mode: "linear", camera: null }),
     prompt_stack_id: promptStackId ?? null,
+    variables_json: JSON.stringify(storedVariables),
     created_at: timestamp,
     updated_at: timestamp,
   }
@@ -969,8 +985,7 @@ export async function forkMessageParts(input: {
   if (original.status === "awaiting_input")
     throw new Error("Cannot edit a message that is still in progress.")
   const role =
-    input.role ??
-    (original.role as Extract<MessageRole, "user" | "assistant">)
+    input.role ?? (original.role as Extract<MessageRole, "user" | "assistant">)
   if (role !== "user" && role !== "assistant")
     throw new Error("Only user and assistant messages can be edited.")
   const parts = await prepareAuthoredParts({
@@ -1449,7 +1464,9 @@ async function deleteStreamingShell(
       if (state.camera?.anchorNodeId === node.id)
         await trx
           .updateTable("chats")
-          .set({ view_state_json: chatViewStateToJson({ ...state, camera: null }) })
+          .set({
+            view_state_json: chatViewStateToJson({ ...state, camera: null }),
+          })
           .where("id", "=", node.chat_id)
           .execute()
     }
@@ -1513,14 +1530,16 @@ async function deleteNodeInternal(
     if (node.chat_id !== chatId) throw new Error("Message not found")
     const deletedIds =
       mode === "subtree"
-        ? [...subtreeNodeIds(
-            await trx
-              .selectFrom("message_nodes")
-              .select(["id", "parent_id"])
-              .where("chat_id", "=", chatId)
-              .execute(),
-            node.id
-          )]
+        ? [
+            ...subtreeNodeIds(
+              await trx
+                .selectFrom("message_nodes")
+                .select(["id", "parent_id"])
+                .where("chat_id", "=", chatId)
+                .execute(),
+              node.id
+            ),
+          ]
         : [node.id]
     const generationRunIds = deletedIds.length
       ? await trx
@@ -2167,6 +2186,32 @@ export async function setChatPromptStack(
   return { ok: true as const }
 }
 
+export async function setChatVariables(input: {
+  userId: string
+  chatId: string
+  values: PromptVariableValues
+}) {
+  const chat = await db
+    .selectFrom("chats")
+    .select(["id", "prompt_stack_id"])
+    .where("id", "=", input.chatId)
+    .where("user_id", "=", input.userId)
+    .executeTakeFirst()
+  if (!chat) throw new Error("Chat not found")
+  const resolved = await resolveStackForChat(chat, input.userId)
+  const values = sanitizePromptVariableOverrides(
+    resolved.stack.variables ?? [],
+    input.values
+  )
+  await db
+    .updateTable("chats")
+    .set({ variables_json: JSON.stringify(values), updated_at: now() })
+    .where("id", "=", input.chatId)
+    .where("user_id", "=", input.userId)
+    .execute()
+  return { ok: true as const, variables: values }
+}
+
 async function loadStacksById(userId: string) {
   const query = db
     .selectFrom("prompt_stacks")
@@ -2278,6 +2323,7 @@ async function restoreOwnerBackup(
         model_config_json: chat.model_config_json,
         view_state_json: chat.view_state_json,
         prompt_stack_id: chat.prompt_stack_id ?? null,
+        variables_json: chat.variables_json ?? "{}",
         created_at: chat.created_at,
         updated_at: chat.updated_at,
       })
@@ -2725,6 +2771,7 @@ async function restoreMultiUserBackup(
             model_config_json: chat.model_config_json,
             view_state_json: chat.view_state_json,
             prompt_stack_id: chat.prompt_stack_id ?? null,
+            variables_json: chat.variables_json ?? "{}",
             created_at: chat.created_at,
             updated_at: chat.updated_at,
           })

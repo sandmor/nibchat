@@ -64,6 +64,7 @@ type ContextPreviewGraph = {
   draftStackId: string | null
   hasChat: boolean
   chat?: { id: string; created_at: string }
+  variableOverrides?: Record<string, unknown>
   modelConfig: PreviewModelConfig
   providers: ReadonlyArray<PreviewProviderKind>
 }
@@ -78,6 +79,7 @@ export function ContextPreviewProvider({
   draftStackId,
   hasChat,
   chat,
+  variableOverrides,
   modelConfig,
   providers,
   children,
@@ -97,6 +99,7 @@ export function ContextPreviewProvider({
         chatId && chatCreatedAt
           ? { id: chatId, created_at: chatCreatedAt }
           : undefined,
+      variableOverrides,
       modelConfig: { providerId, model, replayReasoning },
       providers,
     }),
@@ -107,6 +110,7 @@ export function ContextPreviewProvider({
       hasChat,
       chatId,
       chatCreatedAt,
+      variableOverrides,
       providerId,
       model,
       replayReasoning,
@@ -175,6 +179,7 @@ function useAssembledContextPreview(
       now: timeZone ? (refreshedAt ?? new Date()) : HYDRATION_PREVIEW_NOW,
       overlay,
       chat: graph.chat,
+      variableOverrides: graph.variableOverrides,
     })
   }, [
     graph,

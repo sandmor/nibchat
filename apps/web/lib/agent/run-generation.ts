@@ -36,6 +36,8 @@ import {
 } from "@/lib/providers"
 import {
   assemblePromptContext,
+  parsePromptVariableValues,
+  resolvePromptVariableValues,
   type PromptStackDocument,
 } from "@/lib/prompt-stack"
 import {
@@ -275,7 +277,7 @@ export async function createGenerationResponse(
     // injects server initialize instructions (if any) at its stack position.
     const chat = await db
       .selectFrom("chats")
-      .select(["id", "created_at"])
+      .select(["id", "created_at", "variables_json"])
       .where("id", "=", assistant.chat_id)
       .where("user_id", "=", userId)
       .executeTakeFirst()
@@ -285,6 +287,10 @@ export async function createGenerationResponse(
       timeZone: normalizeTimeZone(timeZone),
       idleSince: idleSinceFromPath(contextNodes),
       ...(chatIdentity ? { chat: chatIdentity } : {}),
+      variables: resolvePromptVariableValues(
+        promptStack.variables ?? [],
+        parsePromptVariableValues(chat?.variables_json)
+      ),
     }
     const [mcp, builtInPrefs] = await Promise.all([
       prepareMcpTools({

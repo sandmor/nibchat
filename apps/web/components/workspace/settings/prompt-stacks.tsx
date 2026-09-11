@@ -67,8 +67,10 @@ import {
   defaultPromptStack,
   findSystemAfterNonSystemWarnings,
   placementLabel,
+  resolvePromptVariableValues,
   type ModulePlacement,
   type PromptModule,
+  type PromptVariable,
   type PromptStackDocument,
   type StackModule,
 } from "@/lib/prompt-stack"
@@ -102,10 +104,12 @@ export function PromptStackSettings() {
     stackId: string
     name: string
     modules: StackModule[]
+    variables: PromptVariable[]
   } | null>(null)
   const activeDraft =
     draft && selected && draft.stackId === selected.id ? draft : null
   const modules = activeDraft?.modules ?? selected?.stack.modules ?? []
+  const variables = activeDraft?.variables ?? selected?.stack.variables ?? []
   const name = activeDraft?.name ?? selected?.name ?? ""
 
   const warningIds = useMemo(() => {
@@ -119,7 +123,9 @@ export function PromptStackSettings() {
     activeDraft &&
     (activeDraft.name !== selected.name ||
       JSON.stringify(activeDraft.modules) !==
-        JSON.stringify(selected.stack.modules))
+        JSON.stringify(selected.stack.modules) ||
+      JSON.stringify(activeDraft.variables) !==
+        JSON.stringify(selected.stack.variables ?? []))
   )
 
   const refetch = async () => {
@@ -133,6 +139,7 @@ export function PromptStackSettings() {
       stackId: base.id,
       name: base.name,
       modules: base.stack.modules.map((m) => ({ ...m })),
+      variables: (base.stack.variables ?? []).map((v) => ({ ...v })),
     }
     setDraft(next)
     return next
@@ -150,6 +157,11 @@ export function PromptStackSettings() {
     const d = ensureDraft(selected)
     if (!d) return
     setDraft({ ...d, name: next })
+  }
+  function setVariables(next: PromptVariable[]) {
+    if (!selected) return
+    const d = ensureDraft(selected)
+    if (d) setDraft({ ...d, variables: next })
   }
 
   const createMut = useMutation(
@@ -248,7 +260,7 @@ export function PromptStackSettings() {
 
   function save() {
     if (!selected) return
-    const stack: PromptStackDocument = { modules }
+    const stack: PromptStackDocument = { modules, variables }
     updateMut.mutate({
       id: selected.id,
       name,
@@ -266,8 +278,8 @@ export function PromptStackSettings() {
         <CardDescription>
           Ordered modules that build model context. Reorder Chat history like
           any other row; inject with Relative or In chat depth. Prompt bodies
-          can expand date, time, and chat macros at send time. Edits apply
-          everywhere this stack is used.
+          can expand date, time, chat macros, and per-chat variables at send
+          time. Edits apply everywhere this stack is used.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -435,6 +447,7 @@ export function PromptStackSettings() {
                         <SortablePromptModule
                           key={mod.id}
                           module={mod}
+                          variables={variables}
                           warnSystem={warningIds.has(mod.id)}
                           onChange={(patch) =>
                             updatePromptModule(mod.id, patch)
@@ -449,6 +462,11 @@ export function PromptStackSettings() {
                 </SortableContext>
               </DndContext>
             </div>
+
+            <PromptVariablesEditor
+              variables={variables}
+              onChange={setVariables}
+            />
 
             <Button
               type="button"
@@ -480,13 +498,185 @@ function sortableStyle(
   }
 }
 
+const VARIABLE_TYPE_ITEMS = {
+  string: "String",
+  boolean: "Boolean",
+} as const
+
+function nextVariableName(existing: readonly PromptVariable[]): string {
+  const names = new Set(existing.map((variable) => variable.name))
+  if (!names.has("variable")) return "variable"
+  let index = 2
+  while (names.has(`variable_${index}`)) index++
+  return `variable_${index}`
+}
+
+function PromptVariablesEditor({
+  variables,
+  onChange,
+}: {
+  variables: PromptVariable[]
+  onChange: (next: PromptVariable[]) => void
+}) {
+  function patch(index: number, next: PromptVariable) {
+    onChange(variables.map((variable, i) => (i === index ? next : variable)))
+  }
+
+  return (
+    <div className="space-y-2 rounded-lg border p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <Label>Chat variables</Label>
+          <p className="text-xs text-muted-foreground">
+            Defaults for this stack. Each chat can override them from the
+            header.
+          </p>
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          onClick={() =>
+            onChange([
+              ...variables,
+              {
+                name: nextVariableName(variables),
+                type: "string",
+                default: "",
+              },
+            ])
+          }
+        >
+          Add variable
+        </Button>
+      </div>
+      <div className="space-y-3">
+        {variables.map((variable, index) => (
+          <div key={index} className="space-y-2 rounded-lg border bg-card p-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                className="h-8 w-40"
+                value={variable.name}
+                placeholder="name"
+                aria-label={`Variable name ${index + 1}`}
+                onChange={(event) =>
+                  patch(index, { ...variable, name: event.target.value })
+                }
+              />
+              <Select
+                value={variable.type}
+                items={VARIABLE_TYPE_ITEMS}
+                onValueChange={(type) => {
+                  if (type !== "string" && type !== "boolean") return
+                  if (type === variable.type) return
+                  patch(
+                    index,
+                    type === "boolean"
+                      ? {
+                          name: variable.name,
+                          type: "boolean",
+                          default: false,
+                          ...(variable.description
+                            ? { description: variable.description }
+                            : {}),
+                        }
+                      : {
+                          name: variable.name,
+                          type: "string",
+                          default: "",
+                          ...(variable.description
+                            ? { description: variable.description }
+                            : {}),
+                        }
+                  )
+                }}
+              >
+                <SelectTrigger size="sm" className="min-w-[7rem]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="string">String</SelectItem>
+                  <SelectItem value="boolean">Boolean</SelectItem>
+                </SelectContent>
+              </Select>
+              {variable.type === "string" ? (
+                <Input
+                  className="h-8 min-w-40 flex-1"
+                  value={variable.default}
+                  placeholder="Default"
+                  aria-label={`Default for ${variable.name || "variable"}`}
+                  onChange={(event) =>
+                    patch(index, { ...variable, default: event.target.value })
+                  }
+                />
+              ) : (
+                <label className="flex items-center gap-2 text-sm">
+                  <Switch
+                    size="sm"
+                    checked={variable.default}
+                    onCheckedChange={(checked) =>
+                      patch(index, { ...variable, default: checked })
+                    }
+                  />
+                  <span className="text-muted-foreground">
+                    {variable.default ? "On" : "Off"} by default
+                  </span>
+                </label>
+              )}
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="ml-auto"
+                onClick={() =>
+                  onChange(variables.filter((_, i) => i !== index))
+                }
+              >
+                Remove
+              </Button>
+            </div>
+            <Input
+              className="h-8"
+              value={variable.description ?? ""}
+              placeholder="Optional description"
+              aria-label={`Description for ${variable.name || "variable"}`}
+              onChange={(event) => {
+                const description = event.target.value
+                if (description) {
+                  patch(index, { ...variable, description })
+                  return
+                }
+                if (variable.type === "string") {
+                  patch(index, {
+                    name: variable.name,
+                    type: "string",
+                    default: variable.default,
+                  })
+                  return
+                }
+                patch(index, {
+                  name: variable.name,
+                  type: "boolean",
+                  default: variable.default,
+                })
+              }}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function PromptModuleBodyEditor({
   value,
   onChange,
+  variables = [],
   macros = builtInMacroDefinitions,
 }: {
   value: string
   onChange: (body: string) => void
+  variables?: readonly PromptVariable[]
   macros?: readonly MacroDefinition[]
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -495,13 +685,25 @@ function PromptModuleBodyEditor({
   const registry = useMemo(() => createMacroRegistry(macros), [macros])
   const catalogContext = useMemo(() => {
     if (!timeZone) return null
-    return catalogMacroContext(timeZone)
-  }, [timeZone])
+    return catalogMacroContext(
+      timeZone,
+      undefined,
+      resolvePromptVariableValues(variables)
+    )
+  }, [timeZone, variables])
   const expanded = useMemo(() => {
     if (!catalogContext) return value
     return expandPromptMacros(value, catalogContext, registry)
   }, [catalogContext, registry, value])
   const showPreview = catalogContext !== null && expanded !== value
+  const pickerVariables = useMemo(
+    () =>
+      variables.map((variable) => ({
+        name: variable.name,
+        summary: variable.description ?? variable.name,
+      })),
+    [variables]
+  )
 
   function insertSnippet(snippet: string) {
     const el = textareaRef.current
@@ -530,7 +732,7 @@ function PromptModuleBodyEditor({
       />
       <div className="flex items-start gap-2">
         {showPreview ? (
-          <p className="line-clamp-2 min-w-0 flex-1 text-xs text-muted-foreground">
+          <p className="max-h-24 min-w-0 flex-1 overflow-y-auto text-xs break-words whitespace-pre-wrap text-muted-foreground">
             <span className="mr-1 text-[11px] tracking-wide text-muted-foreground/80 uppercase">
               Sends as
             </span>
@@ -539,7 +741,9 @@ function PromptModuleBodyEditor({
         ) : null}
         <MacroPicker
           macros={macros}
+          variables={pickerVariables}
           catalogContext={catalogContext}
+          blockSnippets
           onInsert={insertSnippet}
         />
       </div>
@@ -653,11 +857,13 @@ function SortableMcpInstructionsModule({
 
 function SortablePromptModule({
   module: mod,
+  variables,
   warnSystem,
   onChange,
   onRemove,
 }: {
   module: PromptModule
+  variables: readonly PromptVariable[]
   warnSystem: boolean
   onChange: (patch: Partial<PromptModule>) => void
   onRemove: () => void
@@ -780,6 +986,7 @@ function SortablePromptModule({
           ) : null}
           <PromptModuleBodyEditor
             value={mod.body}
+            variables={variables}
             onChange={(body) => onChange({ body })}
           />
         </div>

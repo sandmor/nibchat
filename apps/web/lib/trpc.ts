@@ -41,6 +41,7 @@ import {
   setThemeSlots,
   updateTheme,
   setChatPromptStack,
+  setChatVariables,
   setInstanceDefaultPromptStack,
   setInstanceTitleModel,
   updateChat,
@@ -266,6 +267,9 @@ export const appRouter = t.router({
             title: z.string().trim().min(1).max(200).optional(),
             config: modelConfigSchema.optional(),
             promptStackId: z.string().nullable().optional(),
+            variables: z
+              .record(z.string(), z.union([z.string(), z.boolean()]))
+              .optional(),
           })
           .optional()
       )
@@ -274,7 +278,8 @@ export const appRouter = t.router({
           ctx.user.id,
           input?.title,
           input?.config,
-          input?.promptStackId
+          input?.promptStackId,
+          input?.variables
         )
       ),
     updateChat: userProcedure
@@ -781,6 +786,20 @@ export const appRouter = t.router({
             input.chatId,
             input.stackId
           )
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    setChatVariables: userProcedure
+      .input(
+        z.object({
+          chatId: z.string(),
+          values: z.record(z.string(), z.union([z.string(), z.boolean()])),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await setChatVariables({ userId: ctx.user.id, ...input })
         } catch (error) {
           mapError(error)
         }

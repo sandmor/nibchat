@@ -28,22 +28,29 @@ describe("prompt macros", () => {
   it("formats the built-in date and time macros in the supplied time zone", () => {
     expect(
       expandPromptMacros(
-        "{{time}} | {{time::UTC+5:30}} | {{date}} | {{weekday}} | {{isotime}} | {{isodate}} | {{datetimeformat::YYYY-MM-DD HH:mm}}",
+        '{{time}} | {{time("UTC+5:30")}} | {{date}} | {{weekday}} | {{isotime}} | {{isodate}} | {{datetimeformat("YYYY-MM-DD HH:mm")}}',
         context
       )
     ).toBe(
       "4:28 AM | 2:58 PM | 4/16/2026 | Thursday | 04:28 | 2026-04-16 | 2026-04-16 04:28"
     )
+    expect(expandPromptMacros("{{idleDuration}}", context)).toBe("2 hours")
   })
 
-  it("expands nested macro arguments and humanizes time values", () => {
-    expect(expandPromptMacros("{{idleDuration}}", context)).toBe("2 hours")
+  it("evaluates expressions and conditional blocks", () => {
     expect(
       expandPromptMacros(
-        "{{timeDiff::{{isodate}} 12:00::2026-04-16 15:00}}",
-        context
+        '{{if vars.enabled && vars.setting == "Example"}}yes{{else}}no{{/if}}',
+        { ...context, variables: { enabled: true, setting: "Example" } }
       )
-    ).toBe("3 hours")
+    ).toBe("yes")
+    expect(
+      expandPromptMacros(
+        "{{if vars.enabled}}outer {{if vars.nested}}inner{{else}}skip{{/if}}{{else}}off{{/if}}",
+        { ...context, variables: { enabled: true, nested: false } }
+      )
+    ).toBe("outer skip")
+    expect(expandPromptMacros("{{1 + 2 * 3}}", context)).toBe("7")
   })
 
   it("expands chat identity and integer transforms", () => {
@@ -51,19 +58,17 @@ describe("prompt macros", () => {
     expect(expandPromptMacros("{{chatCreatedAt}}", context)).toBe(
       "2026-04-16T08:00:00.000Z"
     )
-    expect(expandPromptMacros("{{chatCreatedAt::x}}", context)).toBe(
+    expect(expandPromptMacros('{{chatCreatedAt("x")}}', context)).toBe(
       String(context.chat!.createdAt.getTime())
     )
-    expect(expandPromptMacros("{{add::1::2}} {{mul::2::4096}}", context)).toBe(
-      "3 8192"
-    )
-    expect(expandPromptMacros("{{bitnot::1}} {{hex::255}}", context)).toBe(
+    expect(expandPromptMacros("{{1 + 2}} {{2 * 4096}}", context)).toBe("3 8192")
+    expect(expandPromptMacros("{{bitnot(1)}} {{hex(255)}}", context)).toBe(
       "-2 ff"
     )
   })
 
   it("hashes and slices nested chat identity", () => {
-    const nested = "{{slice::{{hash::{{chatId}}::base62}}::0::14}}"
+    const nested = '{{slice(hash(chatId, "base62"), 0, 14)}}'
     const value = expandPromptMacros(nested, context)
     expect(value).toHaveLength(14)
     expect(value).not.toContain("{")
@@ -74,8 +79,8 @@ describe("prompt macros", () => {
 
   it("preserves unknown and invalid expressions literally", () => {
     expect(
-      expandPromptMacros("{{unknown::{{date}}}} {{time::Mars}} {{date")
-    ).toBe("{{unknown::{{date}}}} {{time::Mars}} {{date")
+      expandPromptMacros('{{unknown(date)}} {{time("Mars")}} {{date')
+    ).toBe('{{unknown(date)}} {{time("Mars")}} {{date')
   })
 
   it("accepts an omitted context without throwing", () => {

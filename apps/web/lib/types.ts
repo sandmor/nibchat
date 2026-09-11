@@ -133,6 +133,8 @@ export interface ChatsTable {
   view_state_json: string
   /** Library stack ref; null = use instance default. */
   prompt_stack_id: string | null
+  /** Explicit prompt-stack variable overrides for this conversation. */
+  variables_json: string
   created_at: string
   updated_at: string
 }

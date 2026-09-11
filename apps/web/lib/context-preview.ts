@@ -3,6 +3,7 @@ import { searchTextFromParts } from "@/lib/agent/parts"
 import { ancestorPath, parseJson } from "@/lib/domain"
 import {
   assemblePromptContext,
+  resolvePromptVariableValues,
   isOrphanPromptStackRef,
   resolvePromptStack,
   type AssembledTurn,
@@ -293,6 +294,7 @@ export type AssembleContextPreviewInput = {
   overlay?: ContextPreviewOverlay
   /** Conversation identity for chat-scoped prompt macros. */
   chat?: { id: string; created_at: string } | null
+  variableOverrides?: Record<string, unknown>
 }
 
 function overlayContextNodes(
@@ -348,6 +350,10 @@ export function assembleContextPreview(
       timeZone: normalizeTimeZone(input.timeZone),
       idleSince: idleSinceFromPath(contextNodes),
       ...(chat ? { chat } : {}),
+      variables: resolvePromptVariableValues(
+        resolved.stack.variables ?? [],
+        input.variableOverrides
+      ),
     },
   })
   const preview = summarizeAssembledContext({

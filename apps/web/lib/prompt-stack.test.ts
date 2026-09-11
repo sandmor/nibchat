@@ -7,10 +7,14 @@ import {
   HISTORY_MODULE_NAME,
   isOrphanPromptStackRef,
   normalizePromptStack,
+  parsePromptVariableValues,
   promptStackToJson,
+  reconcilePromptVariableDraft,
   readStackJson,
   requirePromptStack,
   resolvePromptStack,
+  resolvePromptVariableValues,
+  sanitizePromptVariableOverrides,
   type PromptStackDocument,
   type StackModule,
 } from "@/lib/prompt-stack"
@@ -718,5 +722,72 @@ describe("isOrphanPromptStackRef", () => {
 
   it("is true only after the catalog loads without the ref", () => {
     expect(isOrphanPromptStackRef("gone", [{ id: "def" }])).toBe(true)
+  })
+})
+
+describe("prompt stack variables", () => {
+  const variables = [
+    { name: "setting", type: "string", default: "Example" },
+    { name: "enabled", type: "boolean", default: true },
+  ] as const
+
+  it("rejects duplicate variable names", () => {
+    expect(() =>
+      normalizePromptStack({
+        modules: [],
+        variables: [
+          { name: "setting", type: "string", default: "" },
+          { name: "setting", type: "boolean", default: false },
+        ],
+      })
+    ).toThrow(/unique/)
+  })
+
+  it("resolves defaults and type-compatible overrides", () => {
+    expect(resolvePromptVariableValues(variables)).toEqual({
+      setting: "Example",
+      enabled: true,
+    })
+    expect(
+      resolvePromptVariableValues(variables, {
+        setting: "Local",
+        enabled: false,
+      })
+    ).toEqual({ setting: "Local", enabled: false })
+    expect(
+      resolvePromptVariableValues(variables, { setting: true, enabled: "no" })
+    ).toEqual({ setting: "Example", enabled: true })
+  })
+
+  it("refreshes untouched drafts while preserving local edits", () => {
+    expect(
+      reconcilePromptVariableDraft(
+        variables,
+        { setting: "Example", enabled: true },
+        { setting: "Example", enabled: false },
+        { setting: "Updated", enabled: false }
+      )
+    ).toEqual({ setting: "Updated", enabled: false })
+    expect(
+      reconcilePromptVariableDraft(
+        variables,
+        { setting: "Example", enabled: true },
+        { setting: "Local", enabled: true },
+        { setting: "Updated", enabled: false }
+      )
+    ).toEqual({ setting: "Local", enabled: false })
+  })
+
+  it("drops unknown overrides and rejects the wrong type", () => {
+    expect(parsePromptVariableValues("{not json")).toEqual({})
+    expect(
+      sanitizePromptVariableOverrides(variables, {
+        setting: "Local",
+        unknown: "drop",
+      })
+    ).toEqual({ setting: "Local" })
+    expect(() =>
+      sanitizePromptVariableOverrides(variables, { enabled: "yes" })
+    ).toThrow(/wrong type/)
   })
 })

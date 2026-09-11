@@ -1,5 +1,6 @@
 import type { ModelMessage } from "ai"
 import { z } from "zod"
+import { parseJson } from "@/lib/domain"
 import {
   defaultMacroContext,
   expandPromptMacros,
@@ -17,6 +18,21 @@ const SYSTEM_AFTER_NON_SYSTEM_MSG =
 
 const moduleRoleSchema = z.enum(["system", "user", "assistant"])
 const placementSchema = z.enum(["relative", "in_chat"])
+const variableNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
+const promptVariableSchema = z.discriminatedUnion("type", [
+  z.object({
+    name: variableNameSchema,
+    type: z.literal("string"),
+    default: z.string().max(10_000),
+    description: z.string().max(500).optional(),
+  }),
+  z.object({
+    name: variableNameSchema,
+    type: z.literal("boolean"),
+    default: z.boolean(),
+    description: z.string().max(500).optional(),
+  }),
+])
 
 export const historyModuleSchema = z.object({
   id: z.string().min(1),
@@ -53,6 +69,7 @@ export const stackModuleSchema = z.discriminatedUnion("kind", [
 
 export const promptStackDocumentSchema = z.object({
   modules: z.array(stackModuleSchema).max(100),
+  variables: z.array(promptVariableSchema).max(100).default([]),
 })
 
 export type HistoryModule = {
@@ -69,7 +86,86 @@ export type McpInstructionsModule = {
 }
 export type PromptModule = z.infer<typeof promptModuleSchema>
 export type StackModule = HistoryModule | McpInstructionsModule | PromptModule
-export type PromptStackDocument = { modules: StackModule[] }
+export type PromptVariable = z.infer<typeof promptVariableSchema>
+export type PromptStackDocument = {
+  modules: StackModule[]
+  variables?: PromptVariable[]
+}
+export type PromptVariableValues = Record<string, string | boolean>
+
+/** Parse a chat `variables_json` blob; invalid JSON becomes an empty map. */
+export function parsePromptVariableValues(
+  json: string | null | undefined
+): Record<string, unknown> {
+  const parsed = parseJson<unknown>(json ?? "{}", {})
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {}
+  return parsed as Record<string, unknown>
+}
+
+/** Resolve declared defaults plus type-compatible chat overrides. */
+export function resolvePromptVariableValues(
+  variables: readonly PromptVariable[],
+  overrides: Readonly<Record<string, unknown>> = {}
+): PromptVariableValues {
+  const values: PromptVariableValues = {}
+  for (const variable of variables) {
+    const candidate = overrides[variable.name]
+    values[variable.name] =
+      typeof candidate === variable.type
+        ? (candidate as string | boolean)
+        : variable.default
+  }
+  return values
+}
+
+/**
+ * Apply updated stack defaults without overwriting values edited in the picker.
+ * Values that still match the previous resolution continue following defaults.
+ */
+export function reconcilePromptVariableDraft(
+  variables: readonly PromptVariable[],
+  previousResolved: PromptVariableValues,
+  draft: PromptVariableValues,
+  resolved: PromptVariableValues
+): PromptVariableValues {
+  const next: PromptVariableValues = {}
+  for (const variable of variables) {
+    const local = draft[variable.name]
+    next[variable.name] =
+      local !== undefined &&
+      local !== previousResolved[variable.name] &&
+      typeof local === variable.type
+        ? local
+        : resolved[variable.name]!
+  }
+  return next
+}
+
+/** Keep only declared names with matching types. Throws on a wrong-typed value. */
+export function sanitizePromptVariableOverrides(
+  variables: readonly PromptVariable[],
+  values: Readonly<Record<string, unknown>>
+): PromptVariableValues {
+  const declarations = new Map(
+    variables.map((variable) => [variable.name, variable])
+  )
+  const sanitized: PromptVariableValues = {}
+  for (const [name, value] of Object.entries(values)) {
+    const declaration = declarations.get(name)
+    if (!declaration) continue
+    if (declaration.type === "string") {
+      if (typeof value !== "string")
+        throw new Error(`Prompt variable ${name} has the wrong type`)
+      sanitized[name] = value
+      continue
+    }
+    if (typeof value !== "boolean")
+      throw new Error(`Prompt variable ${name} has the wrong type`)
+    sanitized[name] = value
+  }
+  return sanitized
+}
+
 export type ModuleRole = z.infer<typeof moduleRoleSchema>
 export type ModulePlacement = z.infer<typeof placementSchema>
 
@@ -97,6 +193,7 @@ export function defaultMcpInstructionsModule(
 
 export function defaultPromptStack(): PromptStackDocument {
   return {
+    variables: [],
     modules: [
       {
         id: "default-system",
@@ -205,7 +302,15 @@ export function normalizePromptStack(
     )
   }
 
-  return { modules }
+  const names = new Set<string>()
+  for (const variable of doc.variables ?? []) {
+    if (names.has(variable.name))
+      throw new Error(
+        `Prompt stack variable names must be unique: ${variable.name}`
+      )
+    names.add(variable.name)
+  }
+  return { modules, variables: doc.variables ?? [] }
 }
 
 /** Zod parse + normalize; throws on invalid shape or multi-history. */

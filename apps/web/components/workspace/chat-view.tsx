@@ -39,6 +39,10 @@ import { cn } from "@/lib/utils"
 import { parseJson, resolveActivePath } from "@/lib/domain"
 import { displayChatTitle } from "@/lib/chat-title"
 import {
+  parsePromptVariableValues,
+  type PromptVariableValues,
+} from "@/lib/prompt-stack"
+import {
   abortChatStreamReaders,
   chatStreamEntries,
   collectStoppingBuffers,
@@ -70,6 +74,7 @@ import { ReasoningPicker } from "./reasoning-picker"
 import { ModelPicker } from "./model-picker"
 import { GenerationParameters } from "./generation-parameters"
 import { PromptStackPicker } from "./prompt-stack-picker"
+import { ChatVariablesPicker } from "./chat-variables-picker"
 import { ChatTranscript } from "./chat-transcript"
 import { ChatTree } from "./chat-tree"
 import { drainChatViewStateSaves } from "./chat-view-state-persistence"
@@ -185,6 +190,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
   const [draftPromptStackId, setDraftPromptStackId] = useState<string | null>(
     null
   )
+  const [draftVariables, setDraftVariables] = useState<PromptVariableValues>({})
   const [treeComposerRoles, setTreeComposerRoles] = useState<
     Record<string, "user" | "assistant">
   >({})
@@ -989,6 +995,7 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
         .mutateAsync({
           config: modelConfig,
           promptStackId: draftPromptStackId,
+          variables: draftVariables,
         })
         .then((chat) => {
           // Track the new id before replace so stream UI still matches on /chat/new.
@@ -1646,6 +1653,11 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
           ? { id: data.chat.id, created_at: data.chat.created_at }
           : undefined
       }
+      variableOverrides={
+        data.chat
+          ? parsePromptVariableValues(data.chat.variables_json)
+          : draftVariables
+      }
       modelConfig={previewModelConfig}
       providers={providers}
     >
@@ -1707,6 +1719,15 @@ export function ChatView({ mode, chatId, initial, selectNodeId }: Props) {
               promptStackId={data.chat?.prompt_stack_id ?? null}
               draftStackId={draftPromptStackId}
               onDraftChange={setDraftPromptStackId}
+              onChanged={invalidateWorkspace}
+            />
+            <ChatVariablesPicker
+              chatId={data.chat?.id}
+              promptStackId={data.chat?.prompt_stack_id ?? null}
+              draftStackId={draftPromptStackId}
+              variablesJson={data.chat?.variables_json ?? "{}"}
+              draftValues={draftVariables}
+              onDraftChange={setDraftVariables}
               onChanged={invalidateWorkspace}
             />
             <ModelPicker

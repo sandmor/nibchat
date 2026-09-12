@@ -1,10 +1,15 @@
 import type { QueryClient } from "@tanstack/react-query"
-import type { AttachmentReference, MessageStatus, NodeRow } from "@/lib/types"
+import type {
+  AttachmentReference,
+  MessageStatus,
+  NodeRow,
+  Parts,
+} from "@/lib/types"
 import type {
   GenerationPayload,
   GenerationTerminalPayload,
 } from "@/lib/generation-streams/events"
-import { resolveActivePath } from "@/lib/domain"
+import { parseJson, resolveActivePath } from "@/lib/domain"
 import {
   hasLiveStreamReader,
   type StreamBuffer,
@@ -140,6 +145,30 @@ export function streamPlacement(
   if (tip.selected_child_id != null && tip.selected_child_id !== stream.nodeId)
     return "hidden"
   return "after-tip"
+}
+
+/**
+ * Prefer the live overlay once it has payload. An empty buffer must not
+ * clobber durable parts: startStream seeds when it can, but discovery/follow
+ * may still attach before the first event.
+ */
+export function overlayStreamParts(
+  durable: Parts,
+  live: Parts,
+  streamId: string | null | undefined
+): Parts {
+  if (!streamId || live.length === 0) return durable
+  return live
+}
+
+export function durablePartsForNode(
+  nodes: readonly NodeRow[] | undefined,
+  nodeId: string
+): Parts {
+  const row = nodes?.find((node) => node.id === nodeId)
+  if (!row) return []
+  const parsed = parseJson<Parts>(row.parts_json, [])
+  return Array.isArray(parsed) ? parsed : []
 }
 
 export function shouldFollowGeneration(input: {

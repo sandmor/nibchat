@@ -410,6 +410,30 @@ export function allPendingResultsReady(
   )
 }
 
+/**
+ * Optimistic client-tool answers belong to one awaiting_input checkpoint.
+ * Keep only results that still match pending ids; drop them once the node
+ * leaves that checkpoint so a later pause on the same assistant is interactive.
+ */
+export function retainedClientToolResults(
+  results: Record<string, unknown>,
+  status: MessageStatus,
+  pendingIds: readonly string[]
+): Record<string, unknown> {
+  const submittedIds = Object.keys(results)
+  if (submittedIds.length === 0) return results
+  if (status !== "awaiting_input") return {}
+  const pending = new Set(pendingIds)
+  let changed = false
+  const next: Record<string, unknown> = {}
+  for (const id of submittedIds) {
+    if (pending.has(id)) next[id] = results[id]
+    else changed = true
+  }
+  if (!changed) return results
+  return next
+}
+
 export function partsHavePendingClientTools(parts: Parts): boolean {
   return pendingToolInvocations(parts).length > 0
 }

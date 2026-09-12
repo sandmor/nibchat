@@ -23,7 +23,7 @@ describe("stream identity vs payload", () => {
 
   it("keeps stream metas stable when only tokens change", () => {
     const { start, applyEvent } = useStreamStore.getState()
-    start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null })
+    start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null, parts: [] })
     const metasBefore = useStreamStore.getState().streams
     const buffersBefore = useStreamStore.getState().buffers
     applyEvent("s1", { type: "text-delta", id: "t1", delta: "Hel" })
@@ -40,7 +40,7 @@ describe("stream identity vs payload", () => {
   it("replaces stream metas when a generation starts or finishes", () => {
     const { start, finish } = useStreamStore.getState()
     expect(useStreamStore.getState().streams).toEqual({})
-    start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null })
+    start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null, parts: [] })
     const open = useStreamStore.getState().streams
     expect(Object.keys(open)).toEqual(["s1"])
     finish("s1")
@@ -52,7 +52,7 @@ describe("stream identity vs payload", () => {
   it("settles a terminal reader until workspace confirms collection", () => {
     const { start, applyEvent, attachController, settle, finish } =
       useStreamStore.getState()
-    start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null })
+    start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null, parts: [] })
     applyEvent("s1", { type: "text-delta", id: "t1", delta: "Hello" })
     attachController("s1", new AbortController())
 
@@ -75,10 +75,15 @@ describe("stream identity vs payload", () => {
 
   it("does not reset an existing buffer when start is called again", () => {
     const { start, applyEvent } = useStreamStore.getState()
-    start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null })
+    start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null, parts: [] })
     applyEvent("s1", { type: "text-delta", id: "t1", delta: "Hello" })
     const buffersBefore = useStreamStore.getState().buffers
-    start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: "p1" })
+    start("s1", {
+      nodeId: "n1",
+      chatId: "c1",
+      parentNodeId: "p1",
+      parts: [],
+    })
     expect(useStreamStore.getState().buffers).toBe(buffersBefore)
     expect(useStreamStore.getState().buffers.s1?.parts).toEqual([
       { type: "text", text: "Hello", streamId: "t1" },
@@ -89,7 +94,7 @@ describe("stream identity vs payload", () => {
   it("keeps the token buffer when a reader detaches", () => {
     const { start, applyEvent, attachController, detachController } =
       useStreamStore.getState()
-    start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null })
+    start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null, parts: [] })
     applyEvent("s1", { type: "text-delta", id: "t1", delta: "Hello" })
     const controller = new AbortController()
     attachController("s1", controller)
@@ -108,7 +113,7 @@ describe("stream identity vs payload", () => {
     )
     const { start, applyEvent, attachController, stop } =
       useStreamStore.getState()
-    start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null })
+    start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null, parts: [] })
     applyEvent("s1", { type: "text-delta", id: "t1", delta: "Hello" })
     const controller = new AbortController()
     attachController("s1", controller)
@@ -123,8 +128,8 @@ describe("stream identity vs payload", () => {
 
   it("lists only the requested chats and ignores token payload", () => {
     const { start, applyEvent } = useStreamStore.getState()
-    start("a", { nodeId: "n1", chatId: "c1", parentNodeId: null })
-    start("b", { nodeId: "n2", chatId: "c2", parentNodeId: null })
+    start("a", { nodeId: "n1", chatId: "c1", parentNodeId: null, parts: [] })
+    start("b", { nodeId: "n2", chatId: "c2", parentNodeId: null, parts: [] })
     applyEvent("a", { type: "text-delta", id: "t1", delta: "nope" })
     expect(
       chatStreamEntries(useStreamStore.getState().streams, ["c1", null]).map(
@@ -139,7 +144,7 @@ describe("stream identity vs payload", () => {
       vi.fn().mockResolvedValue(new Response(null, { status: 202 }))
     )
     const { start, stop } = useStreamStore.getState()
-    start("a", { nodeId: "n1", chatId: "c1", parentNodeId: null })
+    start("a", { nodeId: "n1", chatId: "c1", parentNodeId: null, parts: [] })
     stop("a")
     expect(
       chatStreamEntries(useStreamStore.getState().streams, ["c1"]).map(
@@ -155,7 +160,7 @@ describe("stream identity vs payload", () => {
 
   it("reports a live reader only while the controller is attached and open", () => {
     const { start, attachController } = useStreamStore.getState()
-    start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null })
+    start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null, parts: [] })
     expect(
       hasLiveStreamReader(useStreamStore.getState().controllers, "s1")
     ).toBe(false)
@@ -172,8 +177,8 @@ describe("stream identity vs payload", () => {
 
   it("aborts readers for one chat and keeps the token buffer", () => {
     const { start, applyEvent, attachController } = useStreamStore.getState()
-    start("a", { nodeId: "n1", chatId: "c1", parentNodeId: null })
-    start("b", { nodeId: "n2", chatId: "c2", parentNodeId: null })
+    start("a", { nodeId: "n1", chatId: "c1", parentNodeId: null, parts: [] })
+    start("b", { nodeId: "n2", chatId: "c2", parentNodeId: null, parts: [] })
     applyEvent("a", { type: "text-delta", id: "t1", delta: "Hello" })
     const keep = new AbortController()
     const drop = new AbortController()
@@ -197,7 +202,7 @@ describe("stream identity vs payload", () => {
     )
     const { start, applyEvent, attachController, stop } =
       useStreamStore.getState()
-    start("a", { nodeId: "n1", chatId: "c1", parentNodeId: null })
+    start("a", { nodeId: "n1", chatId: "c1", parentNodeId: null, parts: [] })
     applyEvent("a", { type: "text-delta", id: "t1", delta: "Hello" })
     const controller = new AbortController()
     attachController("a", controller)
@@ -214,7 +219,7 @@ describe("stream identity vs payload", () => {
   it("does not detach a replacement reader for the same stream", () => {
     const { start, attachController, detachController } =
       useStreamStore.getState()
-    start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null })
+    start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null, parts: [] })
     const first = new AbortController()
     const second = new AbortController()
     attachController("s1", first)

@@ -22,6 +22,14 @@ export type StreamBuffer = {
   parts: Parts
 }
 
+export type StreamStart = {
+  nodeId: string
+  chatId: string
+  parentNodeId: string | null
+  /** Initial overlay payload. Empty for a new generation. */
+  parts: Parts
+}
+
 const emptyBuffer = (): StreamBuffer => ({
   parts: [],
 })
@@ -35,14 +43,7 @@ type StreamState = {
   controllers: Record<string, AbortController>
   /** SSE resume cursors; not subscribed by placement or bubble UI. */
   cursors: Record<string, string>
-  start: (
-    streamId: string,
-    value: {
-      nodeId: string
-      chatId: string
-      parentNodeId: string | null
-    }
-  ) => void
+  start: (streamId: string, value: StreamStart) => void
   applyEvent: (streamId: string, event: GenerationPayload) => void
   setCursor: (streamId: string, cursor: string) => void
   attachController: (streamId: string, controller: AbortController) => void
@@ -61,7 +62,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
   buffers: {},
   controllers: {},
   cursors: {},
-  start: (streamId, value) =>
+  start: (streamId, { parts, ...value }) =>
     set((state) => {
       const existing = state.streams[streamId]
       if (existing) {
@@ -88,7 +89,7 @@ export const useStreamStore = create<StreamState>((set, get) => ({
         },
         buffers: {
           ...state.buffers,
-          [streamId]: emptyBuffer(),
+          [streamId]: { parts: [...parts] },
         },
       }
     }),

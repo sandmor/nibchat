@@ -10,6 +10,7 @@ import {
   hasToolInvocations,
   partsHavePendingClientTools,
   pendingToolInvocations,
+  retainedClientToolResults,
   resolveStreamTerminalOutcome,
   conversationFindTextFromParts,
   searchTextFromParts,
@@ -332,6 +333,24 @@ describe("parts helpers", () => {
     expect(allPendingResultsReady(["a", "b"], { a: 1, b: 2 })).toBe(true)
     expect(allPendingResultsReady([], {})).toBe(false)
     expect(allPendingResultsReady(["a"], { a: [] })).toBe(true)
+  })
+
+  it("keeps client-tool answers for the current checkpoint only", () => {
+    const submitted = { q1: [["A"]] }
+    expect(retainedClientToolResults(submitted, "awaiting_input", ["q1"])).toBe(
+      submitted
+    )
+    expect(retainedClientToolResults(submitted, "streaming", ["q1"])).toEqual(
+      {}
+    )
+    expect(
+      retainedClientToolResults(submitted, "awaiting_input", ["q2"])
+    ).toEqual({})
+
+    const partial = { q1: [["A"]] }
+    expect(
+      retainedClientToolResults(partial, "awaiting_input", ["q1", "q2"])
+    ).toBe(partial)
   })
 
   it("upserts tool invocations by id", () => {

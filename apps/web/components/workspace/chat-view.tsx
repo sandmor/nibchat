@@ -125,6 +125,7 @@ import { analyzePdf } from "@/lib/pdf-analysis-client"
 import type { PdfAnalysis } from "@/lib/pdf-analysis"
 import {
   applyStoppingStreamPatches,
+  durablePartsForNode,
   followGenerationStream,
   planStreamEnd,
   readStreamEvents,
@@ -516,6 +517,7 @@ export function ChatView({
         nodeId: generation.nodeId,
         chatId: generation.chatId,
         parentNodeId: generation.parentNodeId,
+        parts: durablePartsForNode(workspace.nodes, generation.nodeId),
       })
       attachController(streamId, controller)
       void followGenerationStream({
@@ -918,10 +920,14 @@ export function ChatView({
       // Prefer structural parent from the server; fall back to request body.
       const parentNodeId =
         parentHeader ?? (body.intent === "submit" ? userNodeId : null)
+      const cached = queryClient.getQueryData<WorkspaceData>(
+        trpc.workspace.get.queryKey({ chatId: body.chatId })
+      )
       startStream(streamId, {
         nodeId,
         chatId: body.chatId,
         parentNodeId,
+        parts: durablePartsForNode(cached?.nodes, nodeId),
       })
       options?.onStreamStarted?.({
         userNodeId,

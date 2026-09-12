@@ -82,6 +82,7 @@ import {
   isEmptyParts,
   messagePartsSchema,
   pendingToolInvocations,
+  retainedClientToolResults,
 } from "@/lib/agent/parts"
 import {
   authoredPartsFromSession,
@@ -95,6 +96,7 @@ import {
 } from "./conversation-session-store"
 import { SessionMessageEditor } from "./message-editor"
 import { useStreamBuffer, useStreamStore } from "@/lib/stream-store"
+import { overlayStreamParts } from "./stream-helpers"
 import { siblingSort } from "@/lib/sort-key"
 
 export function MessageAction({
@@ -223,7 +225,7 @@ export function Message({
   const queryClient = useQueryClient()
   const parts = parseJson<Parts>(node.parts_json, [])
   const streamBuffer = useStreamBuffer(streamId ?? "")
-  const sourceParts = streamId ? streamBuffer.parts : parts
+  const sourceParts = overlayStreamParts(parts, streamBuffer.parts, streamId)
   const metadata = parseJson<Record<string, unknown>>(node.metadata_json, {})
   const text = textFromParts(sourceParts)
   const editSlot = messageEditSlotId(node.chat_id, node.id)
@@ -250,10 +252,6 @@ export function Message({
     canEditMessage(node.status, editSourceParts) &&
     !isEmptyParts(editSourceParts) &&
     (node.role === "assistant" || Boolean(editor))
-  const interactiveTools =
-    node.role === "assistant" &&
-    node.status === "awaiting_input" &&
-    Boolean(onAnswerTools)
   const pendingIds = pendingToolInvocations(sourceParts).map((p) => p.toolCallId)
   const siblings = nodes.filter(
     (candidate) =>
@@ -276,14 +274,15 @@ export function Message({
   const dismissReplacement = () => {
     setReplaceOpen(false)
   }
-  /** Local answers for multi-pending tools before a single resume fires. */
+  /** Local answers for the current awaiting_input checkpoint. */
   const [localToolResults, setLocalToolResults] = useState<
     Record<string, unknown>
   >({})
-  const [resumeInFlight, setResumeInFlight] = useState(false)
+  const resumeInFlightRef = useRef(false)
   // Path slots reuse this instance across sibling switches. Reset UI when the
   // bound node identity changes (render-time adjust; keep article shell mounted).
   const [boundNodeId, setBoundNodeId] = useState(node.id)
+  let toolResults = localToolResults
   if (node.id !== boundNodeId) {
     setBoundNodeId(node.id)
     setDetailsOpen(false)
@@ -291,22 +290,40 @@ export function Message({
     setTeleportOpen(false)
     setReplaceOpen(false)
     setTeleportMode("reply")
+    toolResults = {}
+    resumeInFlightRef.current = false
     setLocalToolResults({})
-    setResumeInFlight(false)
+  } else {
+    const nextResults = retainedClientToolResults(
+      localToolResults,
+      node.status,
+      pendingIds
+    )
+    if (nextResults !== localToolResults) {
+      toolResults = nextResults
+      setLocalToolResults(nextResults)
+    }
   }
+  const answersHeld = allPendingResultsReady(pendingIds, toolResults)
+  if (node.status !== "awaiting_input" || !answersHeld) {
+    resumeInFlightRef.current = false
+  }
+  const interactiveTools =
+    node.role === "assistant" &&
+    node.status === "awaiting_input" &&
+    Boolean(onAnswerTools) &&
+    !answersHeld
 
   // Preview locally submitted tools until the workspace refresh lands.
   const displayParts: Parts = sourceParts.map((part) => {
     if (part.type !== "tool-invocation") return part
-    if (
-      !Object.prototype.hasOwnProperty.call(localToolResults, part.toolCallId)
-    )
+    if (!Object.prototype.hasOwnProperty.call(toolResults, part.toolCallId))
       return part
     if (part.state !== "input-available") return part
     return {
       ...part,
       state: "output-available" as const,
-      output: localToolResults[part.toolCallId],
+      output: toolResults[part.toolCallId],
       errorText: undefined,
     }
   })
@@ -460,9 +477,11 @@ export function Message({
   }
   const beginEdit = () => {
     if (hasEditorSession(editSlot)) return
-    const latest = streamId
-      ? (useStreamStore.getState().buffers[streamId]?.parts ?? parts)
-      : parts
+    const latest = overlayStreamParts(
+      parts,
+      useStreamStore.getState().buffers[streamId ?? ""]?.parts ?? [],
+      streamId
+    )
     const editParts =
       node.status === "streaming" || streamId
         ? durableAuthoredParts(latest)
@@ -723,18 +742,18 @@ export function Message({
           <MessageParts
             parts={displayParts}
             streaming={node.status === "streaming" || Boolean(streamId)}
-            interactiveTools={interactiveTools && !resumeInFlight}
+            interactiveTools={interactiveTools}
             onAnswerTool={
               onAnswerTools
                 ? async (toolCallId, _toolName, output) => {
-                    if (resumeInFlight) return
+                    if (resumeInFlightRef.current || answersHeld) return
                     const next = {
-                      ...localToolResults,
+                      ...toolResults,
                       [toolCallId]: output,
                     }
                     setLocalToolResults(next)
                     if (!allPendingResultsReady(pendingIds, next)) return
-                    setResumeInFlight(true)
+                    resumeInFlightRef.current = true
                     try {
                       await onAnswerTools(
                         node.id,
@@ -744,7 +763,8 @@ export function Message({
                         }))
                       )
                     } catch {
-                      setResumeInFlight(false)
+                      resumeInFlightRef.current = false
+                      setLocalToolResults({})
                     }
                   }
                 : undefined

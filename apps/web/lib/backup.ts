@@ -173,6 +173,15 @@ const userPreferencesSchema = z.object({
   created_at: z.string(),
   updated_at: z.string(),
 })
+const importReceiptSchema = z.object({
+  user_id: z.string(),
+  source: z.string(),
+  parser_version: z.number().int().positive(),
+  source_conversation_id: z.string(),
+  source_fingerprint: z.string(),
+  chat_id: z.string().nullable(),
+  created_at: z.string(),
+})
 
 /** Portable snapshot (no passwords, sessions, or attachment bytes).
  * Bytes live next to this manifest in the backup zip. */
@@ -203,6 +212,7 @@ export const backupSchema = z.object({
     .optional(),
   users: z.array(userBackupSchema).optional().default([]),
   userPreferences: z.array(userPreferencesSchema).optional().default([]),
+  importReceipts: z.array(importReceiptSchema).optional().default([]),
   createdAt: z.string().optional(),
 })
 

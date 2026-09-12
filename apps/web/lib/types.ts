@@ -194,6 +194,56 @@ export interface AttachmentDerivationsTable {
   created_at: string
   updated_at: string
 }
+/** Source identities make imports safe to retry without mutating local chats. */
+export interface ImportReceiptsTable {
+  user_id: string
+  source: string
+  parser_version: number
+  source_conversation_id: string
+  source_fingerprint: string
+  chat_id: string | null
+  created_at: string
+}
+export interface ImportSessionsTable {
+  id: string
+  user_id: string
+  source: string
+  parser_version: number
+  source_conversation_id: string
+  source_fingerprint: string
+  title: string | null
+  space_id: string
+  source_created_at: string
+  source_updated_at: string
+  node_count: number
+  selected_root_source_id: string | null
+  created_at: string
+  updated_at: string
+}
+export interface ImportNodesTable {
+  session_id: string
+  position: number
+  source_node_id: string
+  parent_source_id: string | null
+  selected_child_source_id: string | null
+  role: MessageRole
+  parts_json: string
+  source_model: string | null
+  excluded: boolean
+  created_at: string
+}
+export interface ImportAssetsTable {
+  session_id: string
+  source_asset_id: string
+  filename: string
+  media_type: string
+  byte_size: number
+  sha256: string | null
+  attachment_id: string | null
+  state: "uploading" | "ready" | "omitted"
+  reason: string | null
+  data: Uint8Array | null
+}
 export interface PromptStacksTable {
   id: string
   user_id: string
@@ -268,6 +318,10 @@ export interface DB {
   attachments: AttachmentsTable
   message_attachments: MessageAttachmentsTable
   attachment_derivations: AttachmentDerivationsTable
+  import_receipts: ImportReceiptsTable
+  import_sessions: ImportSessionsTable
+  import_nodes: ImportNodesTable
+  import_assets: ImportAssetsTable
   prompt_stacks: PromptStacksTable
   themes: ThemesTable
   instance: InstanceTable

@@ -22,6 +22,12 @@ export const MAX_HEADER_VALUE_CHARS = 10_000
 export const MAX_FILE_ATTACHMENTS = 4
 export const MAX_FILE_ATTACHMENT_BYTES = 10 * 1024 * 1024
 export const MAX_FILE_ATTACHMENT_TOTAL_BYTES = 20 * 1024 * 1024
+/** Chunked uploads and import node batches share this request ceiling. */
+export const MAX_UPLOAD_CHUNK_BYTES = 1024 * 1024
+/** Unclaimed uploads and incomplete import sessions. */
+export const MAX_PENDING_MS = 24 * 60 * 60 * 1000
+/** Staged import graphs; larger than user-authored collections. */
+export const MAX_IMPORT_NODES = 100_000
 
 /** @alias MAX_BLOB_CHARS */
 export const MAX_ATTACHMENT_TEXT_CHARS = MAX_BLOB_CHARS

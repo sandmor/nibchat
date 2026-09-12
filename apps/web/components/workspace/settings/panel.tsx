@@ -9,6 +9,7 @@ import { BackupSettings } from "./backup"
 import { AppearanceSettings } from "./appearance"
 import { McpSettings } from "./mcp"
 import { UsersSettings } from "./users"
+import { ChatgptImportSettings } from "./chatgpt-import"
 
 export function SettingsPanel({
   providers,
@@ -48,6 +49,7 @@ export function SettingsPanel({
           )}
           <PromptStackSettings />
           <BuiltInToolsSettings />
+          <ChatgptImportSettings />
           {isOwner && (
             <>
               <BackupSettings />

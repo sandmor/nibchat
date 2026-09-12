@@ -4,20 +4,29 @@ import { db } from "@/lib/db"
 import { attachmentStorage } from "@/lib/attachments/default-port"
 import { createDatabaseAttachmentStoragePort } from "@/lib/attachments/adapters/database"
 import { createFilesystemAttachmentStoragePort } from "@/lib/attachments/adapters/filesystem"
-import { validateAttachmentBlob } from "@/lib/file-signatures"
+import {
+  FILE_SIGNATURE_BYTES,
+  validateAttachmentSignature,
+} from "@/lib/file-signatures"
 import { pdfAnalysisFromRow, type PdfAnalysis } from "@/lib/pdf-analysis"
 import type { AttachmentStorageBackend } from "@/lib/attachments/ports"
 import {
   MAX_FILE_ATTACHMENT_BYTES,
   MAX_FILE_ATTACHMENTS,
   MAX_FILE_ATTACHMENT_TOTAL_BYTES,
-  type AttachmentPart,
-  type AttachmentReference,
-} from "@/lib/types"
+  MAX_PENDING_MS,
+} from "@/lib/limits"
+import type { AttachmentPart, AttachmentReference } from "@/lib/types"
 
 export type { AttachmentStorageBackend } from "@/lib/attachments/ports"
 
-const PENDING_UPLOAD_MAX_AGE_MS = 24 * 60 * 60 * 1000
+export class AttachmentValidationError extends Error {}
+
+function validateAttachmentSize(size: number) {
+  if (size === 0) throw new AttachmentValidationError("File is empty")
+  if (size > MAX_FILE_ATTACHMENT_BYTES)
+    throw new AttachmentValidationError("Files must be 10 MiB or smaller")
+}
 
 function cleanFilename(filename: string) {
   return (
@@ -30,18 +39,40 @@ export function headerSafeFilename(filename: string) {
 }
 
 export async function createUploadedFile(userId: string, file: File) {
+  validateAttachmentSize(file.size)
+  return createUploadedBytes(userId, {
+    filename: file.name,
+    declaredMediaType: file.type,
+    bytes: new Uint8Array(await file.arrayBuffer()),
+  })
+}
+
+export async function createUploadedBytes(
+  userId: string,
+  input: { filename: string; declaredMediaType?: string; bytes: Uint8Array }
+) {
   await cleanupExpiredPendingAttachments()
-  if (file.size === 0) throw new Error("File is empty")
-  if (file.size > MAX_FILE_ATTACHMENT_BYTES)
-    throw new Error("Files must be 10 MiB or smaller")
-  const mediaType = await validateAttachmentBlob(file, file.type)
-  const bytes = new Uint8Array(await file.arrayBuffer())
+  validateAttachmentSize(input.bytes.byteLength)
+  let mediaType
+  try {
+    mediaType = validateAttachmentSignature(
+      input.bytes.subarray(0, FILE_SIGNATURE_BYTES),
+      input.declaredMediaType
+    )
+  } catch (error) {
+    throw new AttachmentValidationError(
+      error instanceof Error
+        ? error.message
+        : "Upload a valid JPEG, PNG, WebP, GIF, or PDF file"
+    )
+  }
+  const bytes = input.bytes
   const sha256 = createHash("sha256").update(bytes).digest("hex")
   const stored = await attachmentStorage.put({ sha256, data: bytes })
   const row = {
     id: crypto.randomUUID(),
     user_id: userId,
-    filename: cleanFilename(file.name),
+    filename: cleanFilename(input.filename),
     media_type: mediaType,
     byte_size: bytes.byteLength,
     sha256,
@@ -292,16 +323,28 @@ export async function cleanupDetachedAttachments() {
 
 /** Best-effort recovery for interrupted or client-cancelled uploads. */
 export async function cleanupExpiredPendingAttachments() {
-  const expiredBefore = new Date(
-    Date.now() - PENDING_UPLOAD_MAX_AGE_MS
-  ).toISOString()
+  const expiredBefore = new Date(Date.now() - MAX_PENDING_MS).toISOString()
   const rows = await db
     .selectFrom("attachments")
     .selectAll()
     .where("claimed_at", "is", null)
     .where("created_at", "<", expiredBefore)
     .execute()
+  const staged = rows.length
+    ? await db
+        .selectFrom("import_assets")
+        .select("attachment_id")
+        .where(
+          "attachment_id",
+          "in",
+          rows.map((row) => row.id)
+        )
+        .execute()
+    : []
+  const stagedIds = new Set(staged.map((row) => row.attachment_id))
   for (const row of rows) {
+    // Resumable imports own their pending files until the import session expires.
+    if (stagedIds.has(row.id)) continue
     await db.deleteFrom("attachments").where("id", "=", row.id).execute()
     if (row.storage_key) await removeFileIfUnreferenced(row.storage_key)
   }

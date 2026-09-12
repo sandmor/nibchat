@@ -53,9 +53,30 @@ import {
   updateChat,
   setChatViewState,
 } from "@/lib/chat-service"
+import {
+  appendImportAsset,
+  appendImportNodes,
+  beginImport,
+  finishImportAsset,
+  getOrCreateImportSpace,
+  importAssetStatus,
+  omitImportAsset,
+  publishImport,
+} from "@/lib/imports/adapters/database"
+import {
+  assetSchema,
+  importNodeSchema,
+  manifestSchema,
+  sourceSchema,
+} from "@/lib/imports/model"
 import { listAvailableProviders, listProviders } from "@/lib/providers"
 import { appearanceSchema } from "@/lib/appearance"
-import { MAX_DESCRIPTION, MAX_NAME } from "@/lib/limits"
+import {
+  MAX_COLLECTION,
+  MAX_DESCRIPTION,
+  MAX_NAME,
+  MAX_UPLOAD_CHUNK_BYTES,
+} from "@/lib/limits"
 import { spaceSettingsSchema } from "@/lib/space"
 import {
   promptStackDocumentSchema,
@@ -158,6 +179,11 @@ const modelConfigSchema = z.object({
   stopSequences: z.array(z.string()).optional(),
   providerOptions: z.record(z.string(), z.unknown()).optional(),
   replayReasoning: z.boolean().optional(),
+})
+const importScopeSchema = z.object({
+  source: sourceSchema,
+  parserVersion: z.number().int().positive(),
+  conversationId: z.string().min(1).max(256),
 })
 const providerModelSchema = z.object({
   reasoning: reasoningSupportSchema.optional(),
@@ -292,6 +318,103 @@ export const appRouter = t.router({
           input?.variables,
           input?.spaceId
         )
+      ),
+    getOrCreateImportSpace: userProcedure
+      .input(
+        z.object({
+          source: sourceSchema,
+          label: z.string().trim().min(1).max(MAX_NAME),
+        })
+      )
+      .mutation(({ ctx, input }) =>
+        getOrCreateImportSpace(ctx.user.id, input.source, input.label)
+      ),
+    beginImport: userProcedure
+      .input(
+        importScopeSchema.extend({
+          manifest: manifestSchema.extend({
+            spaceId: z.string().min(1),
+          }),
+        })
+      )
+      .mutation(({ ctx, input }) =>
+        beginImport({ ...input, userId: ctx.user.id }, input.manifest)
+      ),
+    importAssetStatus: userProcedure
+      .input(importScopeSchema.extend({ asset: assetSchema }))
+      .query(({ ctx, input }) =>
+        importAssetStatus({ ...input, userId: ctx.user.id }, input.asset)
+      ),
+    appendImportAsset: userProcedure
+      .input(
+        importScopeSchema.extend({
+          asset: assetSchema,
+          offset: z.number().int().nonnegative(),
+          base64: z
+            .string()
+            .max(Math.ceil((MAX_UPLOAD_CHUNK_BYTES * 4) / 3) + 16),
+        })
+      )
+      .mutation(({ ctx, input }) =>
+        appendImportAsset(
+          { ...input, userId: ctx.user.id },
+          input.asset,
+          input.offset,
+          new Uint8Array(Buffer.from(input.base64, "base64"))
+        )
+      ),
+    finishImportAsset: userProcedure
+      .input(
+        importScopeSchema.extend({
+          asset: assetSchema,
+          byteSize: z.number().int().positive(),
+          sha256: z.string().regex(/^[a-f0-9]{64}$/),
+        })
+      )
+      .mutation(({ ctx, input }) =>
+        finishImportAsset(
+          { ...input, userId: ctx.user.id },
+          input.asset,
+          input.byteSize,
+          input.sha256
+        )
+      ),
+    omitImportAsset: userProcedure
+      .input(
+        importScopeSchema.extend({
+          asset: assetSchema,
+          reason: z.string().min(1).max(MAX_DESCRIPTION),
+        })
+      )
+      .mutation(({ ctx, input }) =>
+        omitImportAsset(
+          { ...input, userId: ctx.user.id },
+          input.asset,
+          input.reason
+        )
+      ),
+    appendImportNodes: userProcedure
+      .input(
+        importScopeSchema.extend({
+          offset: z.number().int().nonnegative(),
+          nodes: z.array(importNodeSchema).min(1).max(MAX_COLLECTION),
+        })
+      )
+      .mutation(({ ctx, input }) =>
+        appendImportNodes(
+          { ...input, userId: ctx.user.id },
+          input.offset,
+          input.nodes
+        )
+      ),
+    publishImport: userProcedure
+      .input(
+        importScopeSchema.extend({
+          fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+        })
+      )
+      .mutation(({ ctx, input }) =>
+        publishImport({ ...input, userId: ctx.user.id }, input.fingerprint)
       ),
     updateChat: userProcedure
       .input(

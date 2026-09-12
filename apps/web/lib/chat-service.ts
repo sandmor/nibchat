@@ -483,6 +483,27 @@ export async function createChat(
   variables?: PromptVariableValues,
   spaceId?: string | null
 ) {
+  const chat = await prepareChatRow(
+    userId,
+    title,
+    config,
+    promptStackId,
+    variables,
+    spaceId
+  )
+  await db.insertInto("chats").values(chat).execute()
+  return chat
+}
+
+/** Prepare a validated chat row for callers that must publish it in a wider transaction. */
+export async function prepareChatRow(
+  userId: string,
+  title: string | null = null,
+  config?: ModelConfig,
+  promptStackId?: string | null,
+  variables?: PromptVariableValues,
+  spaceId?: string | null
+) {
   const baseline = await defaultModelConfig(userId)
   const incoming =
     config && (config.providerId || config.model) ? config : baseline
@@ -549,7 +570,6 @@ export async function createChat(
     created_at: timestamp,
     updated_at: timestamp,
   }
-  await db.insertInto("chats").values(chat).execute()
   return chat
 }
 
@@ -2733,6 +2753,12 @@ async function restoreOwnerBackup(
       })
       .execute()
   }
+  for (const receipt of backup.importReceipts) {
+    await trx
+      .insertInto("import_receipts")
+      .values({ ...receipt, user_id: userId })
+      .execute()
+  }
 
   const restoredAttachmentIds = new Set<string>()
   for (const attachment of backup.attachments) {
@@ -2939,6 +2965,9 @@ function validateMultiUserBackup(
       throw new Error(`Backup chat ${chat.id} references an unknown user`)
   }
   const chats = new Set(backup.chats.map((chat) => chat.id))
+  const chatOwners = new Map(
+    backup.chats.map((chat) => [chat.id, chat.user_id])
+  )
   const stacks = new Map(backup.promptStacks.map((stack) => [stack.id, stack]))
   const spaces = new Map(backup.spaces.map((space) => [space.id, space]))
   for (const chat of backup.chats) {
@@ -3010,6 +3039,16 @@ function validateMultiUserBackup(
       stack.user_id !== prefs.user_id
     )
       throw new Error("Backup preferences reference another user's settings")
+  }
+  for (const receipt of backup.importReceipts) {
+    const chatOwner = receipt.chat_id
+      ? chatOwners.get(receipt.chat_id)
+      : undefined
+    if (
+      !users.has(receipt.user_id) ||
+      (receipt.chat_id && chatOwner !== receipt.user_id)
+    )
+      throw new Error("Backup import receipt references another user's data")
   }
   const preferenceUsers = backup.userPreferences.map((prefs) => prefs.user_id)
   if (
@@ -3090,6 +3129,9 @@ async function restoreMultiUserBackup(
       .map((theme) => ({ ...theme, user_id: ownerId })),
     users: [sourceOwner],
     userPreferences: [],
+    importReceipts: backup.importReceipts
+      .filter((receipt) => receipt.user_id === sourceOwner.id)
+      .map((receipt) => ({ ...receipt, user_id: ownerId })),
   }
 
   await db.transaction().execute(async (trx) => {
@@ -3258,6 +3300,10 @@ async function restoreMultiUserBackup(
       }
       for (const link of userLinks)
         await trx.insertInto("message_attachments").values(link).execute()
+      for (const receipt of backup.importReceipts.filter(
+        (row) => row.user_id === sourceUser.id
+      ))
+        await trx.insertInto("import_receipts").values(receipt).execute()
     }
   })
 }
@@ -3346,6 +3392,10 @@ export async function createBackup() {
     .selectFrom("user_preferences")
     .selectAll()
     .execute()
+  const importReceipts = await db
+    .selectFrom("import_receipts")
+    .selectAll()
+    .execute()
   return {
     version: 1 as const,
     createdAt: new Date().toISOString(),
@@ -3372,6 +3422,7 @@ export async function createBackup() {
       updatedAt: user.updatedAt,
     })),
     userPreferences,
+    importReceipts,
   }
 }
 

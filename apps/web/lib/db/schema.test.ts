@@ -52,6 +52,10 @@ describe("applySchema", () => {
     await db.selectFrom("themes").select("id").limit(1).execute()
     await db.selectFrom("user").select("id").limit(1).execute()
     await db.selectFrom("attachments").select("id").limit(1).execute()
+    await db.selectFrom("import_receipts").select("source").limit(1).execute()
+    await db.selectFrom("import_sessions").select("id").limit(1).execute()
+    await db.selectFrom("import_nodes").select("position").limit(1).execute()
+    await db.selectFrom("import_assets").select("state").limit(1).execute()
     await db
       .selectFrom("message_attachments")
       .select("attachment_id")

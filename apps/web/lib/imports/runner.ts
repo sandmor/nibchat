@@ -34,6 +34,10 @@ export async function runImportConversation(
     updatedAt: conversation.updatedAt,
     nodeCount: conversation.nodeCount,
     selectedRootId: conversation.selectedRootId,
+    ...(conversation.sourceAliases
+      ? { sourceAliases: conversation.sourceAliases }
+      : {}),
+    ...(conversation.variables ? { variables: conversation.variables } : {}),
   }
   const begun = await transport.begin(manifest)
   if (begun.status !== "staging") return begun

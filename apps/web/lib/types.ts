@@ -217,6 +217,7 @@ export interface ImportSessionsTable {
   source_updated_at: string
   node_count: number
   selected_root_source_id: string | null
+  variables_json: string
   created_at: string
   updated_at: string
 }
@@ -229,6 +230,7 @@ export interface ImportNodesTable {
   role: MessageRole
   parts_json: string
   source_model: string | null
+  speaker_json: string | null
   excluded: boolean
   created_at: string
 }
@@ -243,6 +245,13 @@ export interface ImportAssetsTable {
   state: "uploading" | "ready" | "omitted"
   reason: string | null
   data: Uint8Array | null
+}
+export interface ImportSpaceMappingsTable {
+  user_id: string
+  source: string
+  entity_id: string
+  space_id: string
+  created_at: string
 }
 export interface PromptStacksTable {
   id: string
@@ -322,6 +331,7 @@ export interface DB {
   import_sessions: ImportSessionsTable
   import_nodes: ImportNodesTable
   import_assets: ImportAssetsTable
+  import_space_mappings: ImportSpaceMappingsTable
   prompt_stacks: PromptStacksTable
   themes: ThemesTable
   instance: InstanceTable

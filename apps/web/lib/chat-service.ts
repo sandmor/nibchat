@@ -2759,6 +2759,11 @@ async function restoreOwnerBackup(
       .values({ ...receipt, user_id: userId })
       .execute()
   }
+  for (const mapping of backup.importSpaceMappings)
+    await trx
+      .insertInto("import_space_mappings")
+      .values({ ...mapping, user_id: userId })
+      .execute()
 
   const restoredAttachmentIds = new Set<string>()
   for (const attachment of backup.attachments) {
@@ -3050,6 +3055,15 @@ function validateMultiUserBackup(
     )
       throw new Error("Backup import receipt references another user's data")
   }
+  for (const mapping of backup.importSpaceMappings) {
+    const space = spaces.get(mapping.space_id)
+    if (
+      !users.has(mapping.user_id) ||
+      !space ||
+      space.user_id !== mapping.user_id
+    )
+      throw new Error("Backup import mapping references another user's space")
+  }
   const preferenceUsers = backup.userPreferences.map((prefs) => prefs.user_id)
   if (
     preferenceUsers.length !== users.size ||
@@ -3132,6 +3146,9 @@ async function restoreMultiUserBackup(
     importReceipts: backup.importReceipts
       .filter((receipt) => receipt.user_id === sourceOwner.id)
       .map((receipt) => ({ ...receipt, user_id: ownerId })),
+    importSpaceMappings: backup.importSpaceMappings
+      .filter((mapping) => mapping.user_id === sourceOwner.id)
+      .map((mapping) => ({ ...mapping, user_id: ownerId })),
   }
 
   await db.transaction().execute(async (trx) => {
@@ -3304,6 +3321,10 @@ async function restoreMultiUserBackup(
         (row) => row.user_id === sourceUser.id
       ))
         await trx.insertInto("import_receipts").values(receipt).execute()
+      for (const mapping of backup.importSpaceMappings.filter(
+        (row) => row.user_id === sourceUser.id
+      ))
+        await trx.insertInto("import_space_mappings").values(mapping).execute()
     }
   })
 }
@@ -3396,6 +3417,10 @@ export async function createBackup() {
     .selectFrom("import_receipts")
     .selectAll()
     .execute()
+  const importSpaceMappings = await db
+    .selectFrom("import_space_mappings")
+    .selectAll()
+    .execute()
   return {
     version: 1 as const,
     createdAt: new Date().toISOString(),
@@ -3423,6 +3448,7 @@ export async function createBackup() {
     })),
     userPreferences,
     importReceipts,
+    importSpaceMappings,
   }
 }
 

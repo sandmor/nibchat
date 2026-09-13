@@ -182,6 +182,13 @@ const importReceiptSchema = z.object({
   chat_id: z.string().nullable(),
   created_at: z.string(),
 })
+const importSpaceMappingSchema = z.object({
+  user_id: z.string(),
+  source: z.string(),
+  entity_id: z.string(),
+  space_id: z.string(),
+  created_at: z.string(),
+})
 
 /** Portable snapshot (no passwords, sessions, or attachment bytes).
  * Bytes live next to this manifest in the backup zip. */
@@ -213,6 +220,7 @@ export const backupSchema = z.object({
   users: z.array(userBackupSchema).optional().default([]),
   userPreferences: z.array(userPreferencesSchema).optional().default([]),
   importReceipts: z.array(importReceiptSchema).optional().default([]),
+  importSpaceMappings: z.array(importSpaceMappingSchema).optional().default([]),
   createdAt: z.string().optional(),
 })
 

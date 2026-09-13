@@ -7,16 +7,20 @@ import {
   type ImportConversation,
   type ImportFilter,
   type ImportFormatPort,
+  type ImportEntity,
   type ImportRecord,
   type ImportSourcePort,
 } from "@/lib/imports/model"
 
 type StoredSearch = { sourceId: string; searchText: string }
+type StoredConversation = Omit<ImportConversation, "entity">
 type PendingRecord = {
   conversation: ImportConversation
   record: ImportRecord
   search: StoredSearch
 }
+
+const STORES = ["conversations", "records", "search", "entities"] as const
 
 export class IndexedImportStore {
   private constructor(
@@ -25,41 +29,38 @@ export class IndexedImportStore {
   ) {}
 
   static async open(format: ImportFormatPort) {
-    const request = indexedDB.open(
-      `nibchat-import-${format.id}`,
-      format.version
-    )
-    request.onupgradeneeded = () => {
-      for (const name of ["conversations", "records", "search"]) {
-        if (request.result.objectStoreNames.contains(name)) {
-          request.result.deleteObjectStore(name)
-        }
-      }
-      request.result.createObjectStore("conversations", {
-        keyPath: "sourceId",
-      })
-      request.result.createObjectStore("records", { keyPath: "sourceId" })
-      request.result.createObjectStore("search", { keyPath: "sourceId" })
+    const name = `nibchat-import-${format.id}`
+    try {
+      const db = await openDatabase(name, format.version)
+      if (STORES.every((store) => db.objectStoreNames.contains(store)))
+        return new IndexedImportStore(db, format)
+      db.close()
+    } catch {
+      /* Cached schema from a higher version or a partial upgrade. */
     }
-    return new IndexedImportStore(await idb<IDBDatabase>(request), format)
+    await deleteDatabase(name)
+    return new IndexedImportStore(
+      await openDatabase(name, format.version),
+      format
+    )
+  }
+
+  close() {
+    this.db.close()
   }
 
   async index(
     archive: ImportArchivePort,
     progress: (record: ImportRecord) => void
   ) {
-    await transaction(
-      this.db,
-      ["conversations", "records", "search"],
-      "readwrite",
-      async (tx) => {
-        await Promise.all([
-          request(tx.objectStore("conversations").clear()),
-          request(tx.objectStore("records").clear()),
-          request(tx.objectStore("search").clear()),
-        ])
-      }
-    )
+    await transaction(this.db, [...STORES], "readwrite", async (tx) => {
+      await Promise.all([
+        request(tx.objectStore("conversations").clear()),
+        request(tx.objectStore("records").clear()),
+        request(tx.objectStore("search").clear()),
+        request(tx.objectStore("entities").clear()),
+      ])
+    })
     let count = 0
     const pending: PendingRecord[] = []
     for await (const conversation of this.format.conversations(archive)) {
@@ -74,11 +75,14 @@ export class IndexedImportStore {
       const record: ImportRecord = {
         sourceId: conversation.sourceId,
         fingerprint: conversation.fingerprint,
+        sourceAliases: conversation.sourceAliases ?? [],
         title: conversation.title ?? "Untitled conversation",
         updatedAt: conversation.updatedAt,
         nodeCount: conversation.nodeCount,
         assetCount: conversation.assets.length,
         warnings: conversation.warnings,
+        entityId: conversation.entity?.id ?? null,
+        entityLabel: conversation.entity?.label ?? null,
       }
       pending.push({
         conversation,
@@ -89,6 +93,21 @@ export class IndexedImportStore {
         count += await this.write(pending, progress)
     }
     count += await this.write(pending, progress)
+    if (this.format.entities) {
+      const extras: ImportEntity[] = []
+      for await (const entity of this.format.entities(archive))
+        extras.push(entity)
+      for (let offset = 0; offset < extras.length; offset += MAX_COLLECTION) {
+        const batch = extras.slice(offset, offset + MAX_COLLECTION)
+        await transaction(this.db, ["entities"], "readwrite", async (tx) => {
+          await Promise.all(
+            batch.map((entity) =>
+              request(tx.objectStore("entities").put(entity))
+            )
+          )
+        })
+      }
+    }
     return count
   }
 
@@ -98,20 +117,21 @@ export class IndexedImportStore {
   ) {
     if (!pending.length) return 0
     const batch = pending.splice(0)
-    await transaction(
-      this.db,
-      ["conversations", "records", "search"],
-      "readwrite",
-      async (tx) => {
-        await Promise.all(
-          batch.flatMap((row) => [
-            request(tx.objectStore("conversations").put(row.conversation)),
+    await transaction(this.db, [...STORES], "readwrite", async (tx) => {
+      await Promise.all(
+        batch.flatMap((row) => {
+          const { entity, ...conversation } = row.conversation
+          return [
+            request(tx.objectStore("conversations").put(conversation)),
             request(tx.objectStore("records").put(row.record)),
             request(tx.objectStore("search").put(row.search)),
-          ])
-        )
-      }
-    )
+            ...(entity
+              ? [request(tx.objectStore("entities").put(entity))]
+              : []),
+          ]
+        })
+      )
+    })
     for (const row of batch) progress(row.record)
     return batch.length
   }
@@ -134,8 +154,8 @@ export class IndexedImportStore {
     return all
       .filter((row) => {
         const corpus = filter.content
-          ? `${row.title.toLocaleLowerCase()}\n${searchById?.get(row.sourceId) ?? ""}`
-          : row.title.toLocaleLowerCase()
+          ? `${row.title.toLocaleLowerCase()}\n${(row.entityLabel ?? "").toLocaleLowerCase()}\n${searchById?.get(row.sourceId) ?? ""}`
+          : `${row.title.toLocaleLowerCase()}\n${(row.entityLabel ?? "").toLocaleLowerCase()}`
         return (
           (!query || corpus.includes(query)) &&
           (!filter.after ||
@@ -156,12 +176,19 @@ export class IndexedImportStore {
 
   async conversation(id: string) {
     const row = await transaction(this.db, "conversations", "readonly", (tx) =>
-      request<ImportConversation | undefined>(
+      request<StoredConversation | undefined>(
         tx.objectStore("conversations").get(id)
       )
     )
     if (!row) throw new Error("Indexed conversation not found")
     return row
+  }
+
+  async entities(): Promise<ImportEntity[]> {
+    const entities = await transaction(this.db, "entities", "readonly", (tx) =>
+      request<ImportEntity[]>(tx.objectStore("entities").getAll())
+    )
+    return entities.sort((left, right) => left.label.localeCompare(right.label))
   }
 
   source(archive: ImportArchivePort): ImportSourcePort {
@@ -177,6 +204,29 @@ export class IndexedImportStore {
       },
     }
   }
+}
+
+function openDatabase(name: string, version: number) {
+  const request = indexedDB.open(name, version)
+  request.onupgradeneeded = () => {
+    for (const store of STORES) {
+      if (request.result.objectStoreNames.contains(store))
+        request.result.deleteObjectStore(store)
+      request.result.createObjectStore(store, {
+        keyPath: store === "entities" ? "id" : "sourceId",
+      })
+    }
+  }
+  return idb<IDBDatabase>(request)
+}
+
+function deleteDatabase(name: string) {
+  return new Promise<void>((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(name)
+    request.onsuccess = () => resolve()
+    request.onerror = () => reject(request.error)
+    request.onblocked = () => resolve()
+  })
 }
 
 function transaction<T>(

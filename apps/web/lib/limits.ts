@@ -10,6 +10,8 @@
  * - Header values are HTTP/env-sized; they are not prompts.
  */
 export const MAX_NAME = 200
+/** Opaque identifiers and source keys, not display names. */
+export const MAX_ID = 256
 export const MAX_COLLECTION = 100
 /** Nested chat groupings; folders run out faster than stack modules. */
 export const MAX_SPACES = 500

@@ -59,6 +59,7 @@ describe("parseBackup", () => {
     expect(backup.providerProfiles).toHaveLength(1)
     expect(backup.promptStacks).toHaveLength(1)
     expect(backup.spaces).toEqual([])
+    expect(backup.importSpaceMappings).toEqual([])
     expect(backup.chats[0]?.space_id).toBeNull()
   })
 

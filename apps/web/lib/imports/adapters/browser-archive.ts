@@ -11,8 +11,30 @@ type Entry = {
 }
 
 export async function openBrowserArchive(
-  file: File
+  input: File | File[]
 ): Promise<ImportArchivePort> {
+  const files = Array.isArray(input) ? input : [input]
+  if (files.length > 1) {
+    if (files.some((file) => file.name.toLowerCase().endsWith(".zip")))
+      throw new Error(
+        "Choose one ZIP export, or one or more JSONL and character card files"
+      )
+    const entries = new Map<string, File>()
+    for (const [index, file] of files.entries()) {
+      const name = entries.has(file.name) ? `${index}-${file.name}` : file.name
+      entries.set(name, file)
+    }
+    return {
+      names: () => [...entries.keys()],
+      size: (name) => entries.get(name)?.size ?? 0,
+      stream: async (name) => {
+        const file = entries.get(name)
+        if (!file) throw new Error("Archive entry not found")
+        return file.stream()
+      },
+    }
+  }
+  const file = files[0]!
   if (!file.name.toLowerCase().endsWith(".zip")) {
     return {
       names: () => [file.name],

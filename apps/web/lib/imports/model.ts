@@ -1,8 +1,22 @@
 import { z } from "zod"
-import { MAX_IMPORT_NODES, MAX_NAME } from "@/lib/limits"
+import {
+  MAX_COLLECTION,
+  MAX_DESCRIPTION,
+  MAX_ID,
+  MAX_IMPORT_NODES,
+  MAX_NAME,
+  MAX_PROMPT_CHARS,
+} from "@/lib/limits"
 
-const identity = z.string().min(1).max(256)
+const identity = z.string().min(1).max(MAX_ID)
 const hash = z.string().regex(/^[a-f0-9]{64}$/)
+const aliases = z.array(identity).max(MAX_COLLECTION).optional()
+const promptText = z.string().max(MAX_PROMPT_CHARS)
+function collectionRecord<Value extends z.ZodType>(value: Value) {
+  return z
+    .record(z.string(), value)
+    .refine((record) => Object.keys(record).length <= MAX_COLLECTION)
+}
 export const sourceSchema = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/)
 export const manifestSchema = z.object({
   sourceId: identity,
@@ -12,6 +26,12 @@ export const manifestSchema = z.object({
   updatedAt: z.string().datetime(),
   nodeCount: z.number().int().min(1).max(MAX_IMPORT_NODES),
   selectedRootId: identity.nullable(),
+  sourceAliases: aliases,
+  variables: collectionRecord(z.union([promptText, z.boolean()])).optional(),
+})
+const speakerSchema = z.object({
+  name: z.string().min(1).max(MAX_NAME),
+  sourceAvatarId: identity.optional(),
 })
 export const assetSchema = z.object({
   id: identity,
@@ -30,16 +50,33 @@ export const importNodeSchema = z.object({
   role: z.enum(["user", "assistant", "system", "tool"]),
   parts: z.array(importPartSchema).min(1),
   createdAt: z.string().datetime(),
-  sourceModel: z.string().max(256).optional(),
+  sourceModel: z.string().max(MAX_ID).optional(),
+  speaker: speakerSchema.optional(),
   excluded: z.boolean(),
+})
+export const importEntitySchema = z.object({
+  id: identity,
+  aliases,
+  label: z.string().min(1).max(MAX_NAME),
+  kind: z.enum(["character", "group", "unassociated"]),
+  description: z.string().max(MAX_DESCRIPTION).optional(),
+  variables: collectionRecord(promptText).optional(),
+  metadata: collectionRecord(z.unknown()).optional(),
+})
+export const inspectConversationSchema = z.object({
+  sourceId: identity,
+  sourceAliases: aliases,
+  fingerprint: hash,
 })
 export type ImportNode = z.infer<typeof importNodeSchema>
 export type ImportManifest = z.infer<typeof manifestSchema>
 export type ImportAsset = z.infer<typeof assetSchema>
+export type ImportEntity = z.infer<typeof importEntitySchema>
 export type ImportConversation = ImportManifest & {
   nodes: ImportNode[]
   assets: ImportAsset[]
   warnings: string[]
+  entity?: ImportEntity | null
 }
 export type ImportOutcome = {
   status: "imported" | "skipped" | "changed"
@@ -56,6 +93,13 @@ export type ImportRecord = {
   assetCount: number
   warnings: string[]
   fingerprint: string
+  sourceAliases: string[]
+  entityId: string | null
+  entityLabel: string | null
+}
+export type ImportInspection = {
+  sourceId: string
+  status: "new" | "skipped" | "changed"
 }
 export type ImportFilter = {
   query: string
@@ -85,6 +129,8 @@ export interface ImportFormatPort {
   readonly version: number
   readonly label: string
   conversations(archive: ImportArchivePort): AsyncIterable<ImportConversation>
+  /** Characters/groups that exist even when the export has no chats. */
+  entities?(archive: ImportArchivePort): AsyncIterable<ImportEntity>
   assetEntry(archive: ImportArchivePort, id: string): string | undefined
 }
 export interface ImportSourcePort {

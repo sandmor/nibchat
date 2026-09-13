@@ -5,6 +5,7 @@ import {
   beginImport,
   getOrCreateImportSpace,
   publishImport,
+  resolveImportSpace,
 } from "@/lib/imports/adapters/database"
 
 const userId = "import-test-user"
@@ -43,6 +44,7 @@ describe("database import adapter", () => {
       updatedAt: timestamp,
       nodeCount: 2,
       selectedRootId: "user",
+      variables: { imported_location: "library" },
       spaceId: space.id,
     }
     expect(await beginImport(scope, manifest)).toMatchObject({
@@ -66,6 +68,8 @@ describe("database import adapter", () => {
         role: "assistant",
         parts: [{ type: "text", text: "Hi" }],
         createdAt: timestamp,
+        sourceModel: "test-model",
+        speaker: { name: "Ada" },
         excluded: false,
       },
     ])
@@ -78,6 +82,19 @@ describe("database import adapter", () => {
         .where("chat_id", "=", first.chatId!)
         .execute()
     ).toHaveLength(2)
+    const published = await db
+      .selectFrom("chats")
+      .select("variables_json")
+      .where("id", "=", first.chatId!)
+      .executeTakeFirstOrThrow()
+    expect(published.variables_json).toBe('{"imported_location":"library"}')
+    const assistant = await db
+      .selectFrom("message_nodes")
+      .select("metadata_json")
+      .where("chat_id", "=", first.chatId!)
+      .where("role", "=", "assistant")
+      .executeTakeFirstOrThrow()
+    expect(assistant.metadata_json).toContain('"speaker":{"name":"Ada"}')
     expect(await beginImport(scope, manifest)).toEqual({
       status: "skipped",
       chatId: first.chatId,
@@ -123,5 +140,29 @@ describe("database import adapter", () => {
         .where("title", "=", "Invalid")
         .execute()
     ).toHaveLength(0)
+  })
+
+  it("creates a managed character space without conversations", async () => {
+    const root = await getOrCreateImportSpace(
+      userId,
+      "st-character-only",
+      "SillyTavern"
+    )
+    const space = await resolveImportSpace({
+      userId,
+      source: "st-character-only",
+      entityId: "character:ada",
+      mode: "managed",
+      rootSpaceId: root.id,
+      label: "Ada",
+      settings: {
+        variables: {
+          character_name: { enabled: true, value: "Ada" },
+        },
+      },
+    })
+    expect(space.name).toBe("Ada")
+    expect(space.parent_id).toBe(root.id)
+    expect(space.settings_json).toContain("character_name")
   })
 })

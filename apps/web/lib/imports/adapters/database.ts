@@ -20,10 +20,12 @@ import {
 } from "@/lib/limits"
 import type {
   ImportAsset,
+  ImportInspection,
   ImportManifest,
   ImportNode,
   ImportOutcome,
 } from "@/lib/imports/model"
+import type { SpaceSettings } from "@/lib/space"
 
 type Scope = {
   userId: string
@@ -53,14 +55,68 @@ async function sessionAtAnyVersion(scope: Scope) {
     .executeTakeFirst()
 }
 
-async function receipt(scope: Scope) {
+async function receiptForIds(
+  userId: string,
+  source: string,
+  ids: readonly string[]
+) {
+  if (!ids.length) return undefined
   return db
     .selectFrom("import_receipts")
-    .select(["chat_id", "source_fingerprint"])
-    .where("user_id", "=", scope.userId)
-    .where("source", "=", scope.source)
-    .where("source_conversation_id", "=", scope.conversationId)
+    .select(["chat_id", "source_fingerprint", "source_conversation_id"])
+    .where("user_id", "=", userId)
+    .where("source", "=", source)
+    .where("source_conversation_id", "in", ids)
     .executeTakeFirst()
+}
+
+async function receipt(scope: Scope) {
+  return receiptForIds(scope.userId, scope.source, [scope.conversationId])
+}
+
+export async function inspectImports(input: {
+  userId: string
+  source: string
+  conversations: Array<{
+    sourceId: string
+    sourceAliases?: string[]
+    fingerprint: string
+  }>
+}): Promise<ImportInspection[]> {
+  const ids = [
+    ...new Set(
+      input.conversations.flatMap((conversation) => [
+        conversation.sourceId,
+        ...(conversation.sourceAliases ?? []),
+      ])
+    ),
+  ]
+  const rows = ids.length
+    ? await db
+        .selectFrom("import_receipts")
+        .select(["chat_id", "source_fingerprint", "source_conversation_id"])
+        .where("user_id", "=", input.userId)
+        .where("source", "=", input.source)
+        .where("source_conversation_id", "in", ids)
+        .execute()
+    : []
+  const byId = new Map(
+    rows.map((row) => [row.source_conversation_id, row] as const)
+  )
+  return input.conversations.map((conversation) => {
+    const prior = [conversation.sourceId, ...(conversation.sourceAliases ?? [])]
+      .map((id) => byId.get(id))
+      .find((row) => row?.chat_id)
+    if (!prior?.chat_id)
+      return { sourceId: conversation.sourceId, status: "new" as const }
+    return {
+      sourceId: conversation.sourceId,
+      status:
+        prior.source_fingerprint === conversation.fingerprint
+          ? ("skipped" as const)
+          : ("changed" as const),
+    }
+  })
 }
 
 export async function getOrCreateImportSpace(
@@ -93,6 +149,128 @@ export async function getOrCreateImportSpace(
   return { ...created, metadata_json }
 }
 
+/** Existing mappings are exposed only with spaces owned by the requesting user.
+ * This is presentation data; resolution remains the authority for reuse. */
+export async function listImportSpaceMappings(userId: string, source: string) {
+  return db
+    .selectFrom("import_space_mappings")
+    .innerJoin("spaces", "spaces.id", "import_space_mappings.space_id")
+    .select([
+      "import_space_mappings.entity_id as entityId",
+      "spaces.id as spaceId",
+      "spaces.name as spaceName",
+    ])
+    .where("import_space_mappings.user_id", "=", userId)
+    .where("import_space_mappings.source", "=", source)
+    .where("spaces.user_id", "=", userId)
+    .execute()
+}
+
+async function rememberImportSpace(
+  userId: string,
+  source: string,
+  entityId: string,
+  spaceId: string
+) {
+  await db
+    .insertInto("import_space_mappings")
+    .values({
+      user_id: userId,
+      source,
+      entity_id: entityId,
+      space_id: spaceId,
+      created_at: now(),
+    })
+    .onConflict((oc) =>
+      oc.columns(["user_id", "source", "entity_id"]).doUpdateSet({
+        space_id: spaceId,
+      })
+    )
+    .execute()
+}
+
+/** Resolve a durable import entity mapping. Managed spaces are only populated
+ * on first creation, so a later export cannot overwrite user edits. */
+export async function resolveImportSpace(input: {
+  userId: string
+  source: string
+  entityId: string
+  entityAliases?: string[]
+  mode: "managed" | "existing" | "root"
+  rootSpaceId: string
+  label: string
+  description?: string
+  settings?: SpaceSettings
+  metadata?: Record<string, unknown>
+  override?: boolean
+}) {
+  const ids = [input.entityId, ...(input.entityAliases ?? [])]
+  const mapped = !input.override
+    ? await db
+        .selectFrom("import_space_mappings")
+        .select(["space_id", "entity_id"])
+        .where("user_id", "=", input.userId)
+        .where("source", "=", input.source)
+        .where("entity_id", "in", ids)
+        .executeTakeFirst()
+    : undefined
+  if (mapped) {
+    const existing = await db
+      .selectFrom("spaces")
+      .selectAll()
+      .where("id", "=", mapped.space_id)
+      .where("user_id", "=", input.userId)
+      .executeTakeFirst()
+    if (existing) {
+      if (mapped.entity_id !== input.entityId)
+        await rememberImportSpace(
+          input.userId,
+          input.source,
+          input.entityId,
+          existing.id
+        )
+      return existing
+    }
+  }
+  const root = await db
+    .selectFrom("spaces")
+    .select("id")
+    .where("id", "=", input.rootSpaceId)
+    .where("user_id", "=", input.userId)
+    .executeTakeFirst()
+  if (!root) throw new Error("Import root not found")
+  let spaceId = input.rootSpaceId
+  if (input.mode === "managed") {
+    const created = await createSpace({
+      userId: input.userId,
+      parentId: input.rootSpaceId,
+      name: input.label,
+      description: input.description,
+      settings: input.settings,
+    })
+    await db
+      .updateTable("spaces")
+      .set({
+        metadata_json: JSON.stringify({
+          import: {
+            source: input.source,
+            entityId: input.entityId,
+            ...(input.metadata ?? {}),
+          },
+        }),
+      })
+      .where("id", "=", created.id)
+      .execute()
+    spaceId = created.id
+  }
+  await rememberImportSpace(input.userId, input.source, input.entityId, spaceId)
+  return db
+    .selectFrom("spaces")
+    .selectAll()
+    .where("id", "=", spaceId)
+    .executeTakeFirstOrThrow()
+}
+
 export async function beginImport(
   scope: Scope,
   input: ImportManifest & { spaceId: string }
@@ -101,8 +279,35 @@ export async function beginImport(
     throw new Error("Import conversation identity does not match")
   }
   await cleanupImportSessions()
-  const prior = await receipt(scope)
-  if (prior?.chat_id) return outcome(prior, input.fingerprint)
+  const prior = await receiptForIds(scope.userId, scope.source, [
+    input.sourceId,
+    ...(input.sourceAliases ?? []),
+  ])
+  if (prior?.chat_id) {
+    if (prior.source_conversation_id !== input.sourceId)
+      await db
+        .insertInto("import_receipts")
+        .values({
+          user_id: scope.userId,
+          source: scope.source,
+          parser_version: scope.parserVersion,
+          source_conversation_id: input.sourceId,
+          source_fingerprint: prior.source_fingerprint,
+          chat_id: prior.chat_id,
+          created_at: now(),
+        })
+        .onConflict((oc) =>
+          oc
+            .columns(["user_id", "source", "source_conversation_id"])
+            .doUpdateSet({
+              parser_version: scope.parserVersion,
+              source_fingerprint: prior.source_fingerprint,
+              chat_id: prior.chat_id,
+            })
+        )
+        .execute()
+    return outcome(prior, input.fingerprint)
+  }
   if (prior) await deleteReceipt(scope)
   const existing = await sessionAtAnyVersion(scope)
   if (
@@ -144,6 +349,7 @@ export async function beginImport(
         source_updated_at: input.updatedAt,
         node_count: input.nodeCount,
         selected_root_source_id: input.selectedRootId,
+        variables_json: JSON.stringify(input.variables ?? {}),
         created_at: timestamp,
         updated_at: timestamp,
       })
@@ -354,6 +560,7 @@ export async function appendImportNodes(
         role: node.role,
         parts_json: JSON.stringify(node.parts),
         source_model: node.sourceModel ?? null,
+        speaker_json: node.speaker ? JSON.stringify(node.speaker) : null,
         excluded: toDbBool(node.excluded),
         created_at: node.createdAt,
       }))
@@ -438,6 +645,7 @@ export async function publishImport(
       .insertInto("chats")
       .values({
         ...chat,
+        variables_json: active.variables_json,
         created_at: active.source_created_at,
         updated_at: active.source_updated_at,
         selected_root_node_id: active.selected_root_source_id
@@ -470,6 +678,14 @@ export async function publishImport(
               source: scope.source,
               parserVersion: scope.parserVersion,
               sourceModel: node.source_model,
+              ...(node.speaker_json
+                ? {
+                    speaker: parseJson<Record<string, unknown>>(
+                      node.speaker_json,
+                      {}
+                    ),
+                  }
+                : {}),
             },
           }),
           excluded_from_context: toDbBool(Boolean(node.excluded)),

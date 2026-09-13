@@ -57,15 +57,20 @@ import {
   appendImportAsset,
   appendImportNodes,
   beginImport,
+  inspectImports,
   finishImportAsset,
   getOrCreateImportSpace,
+  listImportSpaceMappings,
+  resolveImportSpace,
   importAssetStatus,
   omitImportAsset,
   publishImport,
 } from "@/lib/imports/adapters/database"
 import {
   assetSchema,
+  importEntitySchema,
   importNodeSchema,
+  inspectConversationSchema,
   manifestSchema,
   sourceSchema,
 } from "@/lib/imports/model"
@@ -74,6 +79,7 @@ import { appearanceSchema } from "@/lib/appearance"
 import {
   MAX_COLLECTION,
   MAX_DESCRIPTION,
+  MAX_ID,
   MAX_NAME,
   MAX_UPLOAD_CHUNK_BYTES,
 } from "@/lib/limits"
@@ -183,7 +189,7 @@ const modelConfigSchema = z.object({
 const importScopeSchema = z.object({
   source: sourceSchema,
   parserVersion: z.number().int().positive(),
-  conversationId: z.string().min(1).max(256),
+  conversationId: z.string().min(1).max(MAX_ID),
 })
 const providerModelSchema = z.object({
   reasoning: reasoningSupportSchema.optional(),
@@ -328,6 +334,66 @@ export const appRouter = t.router({
       )
       .mutation(({ ctx, input }) =>
         getOrCreateImportSpace(ctx.user.id, input.source, input.label)
+      ),
+    importSpaceMappings: userProcedure
+      .input(z.object({ source: sourceSchema }))
+      .query(({ ctx, input }) =>
+        listImportSpaceMappings(ctx.user.id, input.source)
+      ),
+    resolveImportSpace: userProcedure
+      .input(
+        z.object({
+          source: sourceSchema,
+          entity: importEntitySchema,
+          mode: z.enum(["managed", "existing", "root"]),
+          rootSpaceId: z.string().min(1),
+          destinationSpaceId: z.string().min(1).optional(),
+          override: z.boolean().optional(),
+        })
+      )
+      .mutation(({ ctx, input }) =>
+        resolveImportSpace({
+          userId: ctx.user.id,
+          source: input.source,
+          entityId: input.entity.id,
+          entityAliases: input.entity.aliases,
+          mode: input.mode,
+          rootSpaceId:
+            input.mode === "existing"
+              ? (input.destinationSpaceId ?? input.rootSpaceId)
+              : input.rootSpaceId,
+          label: input.entity.label,
+          description: input.entity.description,
+          settings:
+            input.entity.variables && Object.keys(input.entity.variables).length
+              ? {
+                  variables: Object.fromEntries(
+                    Object.entries(input.entity.variables).map(
+                      ([name, value]) => [name, { enabled: true, value }]
+                    )
+                  ),
+                }
+              : undefined,
+          metadata: input.entity.metadata,
+          override: input.override,
+        })
+      ),
+    inspectImports: userProcedure
+      .input(
+        z.object({
+          source: sourceSchema,
+          conversations: z
+            .array(inspectConversationSchema)
+            .min(1)
+            .max(MAX_COLLECTION),
+        })
+      )
+      .query(({ ctx, input }) =>
+        inspectImports({
+          userId: ctx.user.id,
+          source: input.source,
+          conversations: input.conversations,
+        })
       ),
     beginImport: userProcedure
       .input(

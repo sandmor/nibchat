@@ -261,7 +261,6 @@ export type AssembledContextPreviewData = {
   missingStackId?: string
   system: string
   pdfInputMode: "native" | "extracted"
-  demotedModuleIds: string[]
   warnings: ContextPreviewWarning[]
   summary: AssembledContextSummary
   excludedMessages: ExcludedMessagePreview[]
@@ -371,7 +370,6 @@ export function assembleContextPreview(
       : undefined,
     system: assembled.system,
     pdfInputMode,
-    demotedModuleIds: assembled.demotedModuleIds,
     warnings: [...assembled.warnings, ...preview.extraWarnings],
     summary: preview.summary,
     excludedMessages: preview.excludedMessages,

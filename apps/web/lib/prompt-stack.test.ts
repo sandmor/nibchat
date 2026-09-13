@@ -414,9 +414,9 @@ describe("assemblePromptContext", () => {
     expect(result.messages.map((m) => m.role)).toEqual([
       "user",
       "assistant",
-      "assistant",
+      "system",
       "user",
-      "assistant",
+      "system",
     ])
     expect(result.turns.map((turn) => turn.source)).toEqual([
       "path",
@@ -426,9 +426,6 @@ describe("assemblePromptContext", () => {
       "stack",
     ])
     expect(result.historyEnabled).toBe(true)
-    expect(result.demotedModuleIds).toEqual(
-      expect.arrayContaining(["r0", "r1"])
-    )
     expect(result.warnings.map((w) => w.moduleId)).toEqual(
       expect.arrayContaining(["r0", "r1"])
     )
@@ -519,7 +516,7 @@ describe("assemblePromptContext", () => {
     expect(contentOf(result.messages[0]!)).toBe("early")
   })
 
-  it("demotes mid-context system and reports warnings", () => {
+  it("keeps mid-context system as system", () => {
     const modules = stack([
       {
         id: "h",
@@ -543,14 +540,10 @@ describe("assemblePromptContext", () => {
     })
     expect(result.system).toBe("")
     expect(result.messages.at(-1)).toEqual({
-      role: "assistant",
+      role: "system",
       content: "late sys",
     })
-    expect(result.demotedModuleIds).toContain("mid")
     expect(result.warnings.map((w) => w.moduleId)).toContain("mid")
-    expect(
-      findSystemAfterNonSystemWarnings(modules, path).map((w) => w.moduleId)
-    ).toContain("mid")
   })
 
   it("warns relative system after history with empty path", () => {

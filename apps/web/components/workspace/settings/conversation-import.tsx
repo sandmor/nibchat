@@ -1,6 +1,12 @@
 "use client"
 
-import { useDeferredValue, useEffect, useRef, useState } from "react"
+import {
+  useDeferredValue,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { toast } from "sonner"
@@ -36,9 +42,18 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Separator } from "@/components/ui/separator"
 import { Switch } from "@/components/ui/switch"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
+import {
+  clearMatchingChats,
+  clearMatchingEntities,
+  countSelected,
+  selectMatchingChats,
+  selectMatchingEntities,
+  type ImportMatchingSelection,
+} from "./conversation-import-selection"
 import { useTRPC } from "@/lib/trpc-react"
 import { MAX_COLLECTION } from "@/lib/limits"
 import { openBrowserArchive } from "@/lib/imports/adapters/browser-archive"
@@ -144,12 +159,31 @@ export function ConversationImportSettings() {
   const virtualizer = useVirtualizer({
     count: grouped ? groupedRows.length : visible.length,
     getScrollElement: () => listRef.current,
-    estimateSize: () => (grouped ? 64 : 56),
+    estimateSize: (index) => {
+      if (!grouped) return 56
+      const item = groupedRows[index]
+      if (item?.type === "entity" && item.visibleChats.length) return 104
+      if (item?.type === "entity") return 72
+      return 48
+    },
     overscan: 10,
   })
   const visibleEntities = groupedRows.flatMap((row) =>
     row.type === "entity" ? [row.entity] : []
   )
+  const visibleEntityIds = visibleEntities.map((entity) => entity.id)
+  const selectedVisibleChats = countSelected(
+    visible.map((record) => record.sourceId),
+    selected
+  )
+  const selectedVisibleEntities = countSelected(
+    visibleEntityIds,
+    selectedEntities
+  )
+  const matchingSelection = (): ImportMatchingSelection => ({
+    chats: selected,
+    entities: selectedEntities,
+  })
   const savedDestination = (entity: ImportEntity) =>
     importSpaceMappings.data?.find((mapping) =>
       [entity.id, ...(entity.aliases ?? [])].includes(mapping.entityId)
@@ -244,57 +278,30 @@ export function ConversationImportSettings() {
     }
   }
 
-  function updateSelection(update: (next: Set<string>) => void) {
-    setSelected((current) => {
-      const next = new Set(current)
-      update(next)
-      setSelectedEntities((currentEntities) => {
-        const merged = new Set(currentEntities)
-        for (const record of records)
-          if (next.has(record.sourceId) && record.entityId)
-            merged.add(record.entityId)
-        persistSelection(next, format.id)
-        persistEntitySelection(merged, format.id)
-        return merged
-      })
-      return next
-    })
+  function commitSelection(next: ImportMatchingSelection) {
+    persistSelection(next.chats, format.id)
+    persistEntitySelection(next.entities, format.id)
+    setSelected(next.chats)
+    setSelectedEntities(next.entities)
   }
 
   function setChatSelected(sourceId: string, checked: boolean) {
     const record = records.find((item) => item.sourceId === sourceId)
-    setSelected((current) => {
-      const next = new Set(current)
-      if (checked) next.add(sourceId)
-      else next.delete(sourceId)
-      persistSelection(next, format.id)
-      return next
-    })
-    if (checked && record?.entityId)
-      setSelectedEntities((current) => {
-        const next = new Set(current)
-        next.add(record.entityId!)
-        persistEntitySelection(next, format.id)
-        return next
-      })
+    const chats = new Set(selected)
+    const entities = new Set(selectedEntities)
+    if (checked) {
+      chats.add(sourceId)
+      if (record?.entityId) entities.add(record.entityId)
+    } else chats.delete(sourceId)
+    commitSelection({ chats, entities })
   }
 
   function setEntitySelected(entityId: string, checked: boolean) {
-    setSelectedEntities((current) => {
-      const next = new Set(current)
-      if (checked) next.add(entityId)
-      else next.delete(entityId)
-      persistEntitySelection(next, format.id)
-      return next
-    })
-    if (!checked)
-      setSelected((current) => {
-        const next = new Set(current)
-        for (const record of records)
-          if (record.entityId === entityId) next.delete(record.sourceId)
-        persistSelection(next, format.id)
-        return next
-      })
+    commitSelection(
+      checked
+        ? selectMatchingEntities(matchingSelection(), [entityId])
+        : clearMatchingEntities(matchingSelection(), [entityId], records)
+    )
   }
 
   function selectFormat(next: ImportFormatPort) {
@@ -489,7 +496,7 @@ export function ConversationImportSettings() {
         </CardTitle>
         <CardDescription>
           {grouped
-            ? "Character cards become spaces. Importing a chat includes its character. You can import a character with no chats."
+            ? "Character cards become spaces. Select matching characters and chats separately. Importing a chat includes its character; you can import a character with no chats."
             : "Exports are indexed in this browser. Selected conversations upload in resumable batches, without sending the export itself to the server."}
         </CardDescription>
       </CardHeader>
@@ -591,32 +598,6 @@ export function ConversationImportSettings() {
                   </SelectContent>
                 </Select>
               </div>
-              {grouped && entities.length ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  <div className="min-w-[12rem] flex-1">
-                    <DestinationSelect
-                      value={bulkEntityDestination}
-                      spaces={spaces}
-                      disabled={busy || !visibleEntities.length}
-                      size="sm"
-                      ariaLabel="Bulk destination"
-                      onChange={setBulkEntityDestination}
-                    />
-                  </div>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={busy || !visibleEntities.length}
-                    onClick={() => {
-                      for (const entity of visibleEntities)
-                        setDestination(entity.id, bulkEntityDestination)
-                    }}
-                  >
-                    Apply to matching characters
-                  </Button>
-                </div>
-              ) : null}
             </div>
             <div className="flex flex-col gap-3 rounded-xl bg-muted/40 p-3 ring-1 ring-foreground/8">
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
@@ -706,42 +687,100 @@ export function ConversationImportSettings() {
                     <SelectItem value="oldest">Oldest first</SelectItem>
                   </SelectContent>
                 </Select>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    updateSelection((next) =>
-                      visible.forEach((item) => next.add(item.sourceId))
-                    )
-                    if (grouped)
-                      setSelectedEntities((current) => {
-                        const next = new Set(current)
-                        for (const entity of visibleEntities)
-                          next.add(entity.id)
-                        persistEntitySelection(next, format.id)
-                        return next
-                      })
-                  }}
-                >
-                  Select matching
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() =>
-                    updateSelection((next) =>
-                      visible.forEach((item) => next.delete(item.sourceId))
+              </div>
+              {grouped ? (
+                <div className="grid gap-3 border-t border-border pt-3">
+                  <MatchingScopeBar
+                    label="Characters"
+                    selected={selectedVisibleEntities}
+                    matching={visibleEntities.length}
+                    selectLabel="Select matching characters"
+                    clearLabel="Clear matching characters"
+                    disabled={busy}
+                    onSelect={() =>
+                      commitSelection(
+                        selectMatchingEntities(
+                          matchingSelection(),
+                          visibleEntityIds
+                        )
+                      )
+                    }
+                    onClear={() =>
+                      commitSelection(
+                        clearMatchingEntities(
+                          matchingSelection(),
+                          visibleEntityIds,
+                          records
+                        )
+                      )
+                    }
+                    extra={
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="min-w-[12rem] flex-1">
+                          <DestinationSelect
+                            value={bulkEntityDestination}
+                            spaces={spaces}
+                            disabled={busy || !visibleEntities.length}
+                            size="sm"
+                            ariaLabel="Bulk destination"
+                            onChange={setBulkEntityDestination}
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={busy || !visibleEntities.length}
+                          onClick={() => {
+                            for (const entity of visibleEntities)
+                              setDestination(entity.id, bulkEntityDestination)
+                          }}
+                        >
+                          Apply to matching characters
+                        </Button>
+                      </div>
+                    }
+                  />
+                  <Separator />
+                  <MatchingScopeBar
+                    label="Chats"
+                    selected={selectedVisibleChats}
+                    matching={visible.length}
+                    selectLabel="Select matching chats"
+                    clearLabel="Clear matching chats"
+                    disabled={busy}
+                    onSelect={() =>
+                      commitSelection(
+                        selectMatchingChats(matchingSelection(), visible)
+                      )
+                    }
+                    onClear={() =>
+                      commitSelection(
+                        clearMatchingChats(matchingSelection(), visible)
+                      )
+                    }
+                  />
+                </div>
+              ) : (
+                <MatchingScopeBar
+                  label="Conversations"
+                  selected={selectedVisibleChats}
+                  matching={visible.length}
+                  selectLabel="Select matching"
+                  clearLabel="Clear matching"
+                  disabled={busy}
+                  onSelect={() =>
+                    commitSelection(
+                      selectMatchingChats(matchingSelection(), visible)
                     )
                   }
-                >
-                  Clear matching
-                </Button>
-                <span className="text-sm text-muted-foreground">
-                  {grouped
-                    ? `${visibleEntities.length.toLocaleString()} characters · ${visible.length.toLocaleString()} chats`
-                    : `${visible.length.toLocaleString()} matching`}
-                </span>
-              </div>
+                  onClear={() =>
+                    commitSelection(
+                      clearMatchingChats(matchingSelection(), visible)
+                    )
+                  }
+                />
+              )}
               <div
                 ref={listRef}
                 className="h-96 overflow-y-auto overscroll-contain rounded-lg bg-background/80 ring-1 ring-foreground/8"
@@ -764,6 +803,10 @@ export function ConversationImportSettings() {
                           ] ?? { mode: "managed" as const }
                           const saved = savedDestination(item.entity)
                           const checked = selectedEntities.has(item.entity.id)
+                          const selectedChatCount = countSelected(
+                            item.visibleChats.map((record) => record.sourceId),
+                            selected
+                          )
                           return (
                             <div
                               key={item.entity.id}
@@ -802,7 +845,7 @@ export function ConversationImportSettings() {
                                   </span>
                                   <span className="mt-0.5 block truncate text-xs text-muted-foreground">
                                     {item.chatCount
-                                      ? `${item.visibleChats.length.toLocaleString()} of ${item.chatCount.toLocaleString()} chats`
+                                      ? `${item.visibleChats.length.toLocaleString()} of ${item.chatCount.toLocaleString()} chats match this filter`
                                       : "No chats in this export"}
                                     {!destination.override && saved
                                       ? ` · Will reuse ${saved.spaceName}`
@@ -820,6 +863,55 @@ export function ConversationImportSettings() {
                                   setDestination(item.entity.id, value)
                                 }
                               />
+                              {item.visibleChats.length ? (
+                                <div className="flex flex-wrap items-center gap-2 sm:col-span-2 sm:pl-7">
+                                  <span className="text-xs text-muted-foreground">
+                                    {selectedChatCount.toLocaleString()} of{" "}
+                                    {item.visibleChats.length.toLocaleString()}{" "}
+                                    matching chats selected
+                                  </span>
+                                  <Button
+                                    type="button"
+                                    size="xs"
+                                    variant="outline"
+                                    disabled={
+                                      running ||
+                                      selectedChatCount ===
+                                        item.visibleChats.length
+                                    }
+                                    aria-label={`Select chats for ${item.entity.label}`}
+                                    onClick={() =>
+                                      commitSelection(
+                                        selectMatchingChats(
+                                          matchingSelection(),
+                                          item.visibleChats
+                                        )
+                                      )
+                                    }
+                                  >
+                                    Select chats
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    size="xs"
+                                    variant="ghost"
+                                    disabled={
+                                      running || selectedChatCount === 0
+                                    }
+                                    aria-label={`Clear chats for ${item.entity.label}`}
+                                    onClick={() =>
+                                      commitSelection(
+                                        clearMatchingChats(
+                                          matchingSelection(),
+                                          item.visibleChats
+                                        )
+                                      )
+                                    }
+                                  >
+                                    Clear chats
+                                  </Button>
+                                </div>
+                              ) : null}
                             </div>
                           )
                         }
@@ -881,11 +973,7 @@ export function ConversationImportSettings() {
                             checked={checked}
                             running={running}
                             onToggle={() =>
-                              updateSelection((next) =>
-                                next.has(record.sourceId)
-                                  ? next.delete(record.sourceId)
-                                  : next.add(record.sourceId)
-                              )
+                              setChatSelected(record.sourceId, !checked)
                             }
                             onWarnings={() => setWarningRecord(record)}
                           />
@@ -1024,6 +1112,63 @@ function DestinationSelect({
         ))}
       </SelectContent>
     </Select>
+  )
+}
+
+function MatchingScopeBar({
+  label,
+  selected,
+  matching,
+  selectLabel,
+  clearLabel,
+  disabled,
+  onSelect,
+  onClear,
+  extra,
+}: {
+  label: string
+  selected: number
+  matching: number
+  selectLabel: string
+  clearLabel: string
+  disabled?: boolean
+  onSelect: () => void
+  onClear: () => void
+  extra?: ReactNode
+}) {
+  return (
+    <div className="grid gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">{label}</p>
+          <p className="text-xs text-muted-foreground">
+            {selected.toLocaleString()} of {matching.toLocaleString()} matching
+            selected
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={disabled || matching === 0 || selected === matching}
+            onClick={onSelect}
+          >
+            {selectLabel}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={disabled || selected === 0}
+            onClick={onClear}
+          >
+            {clearLabel}
+          </Button>
+        </div>
+      </div>
+      {extra}
+    </div>
   )
 }
 

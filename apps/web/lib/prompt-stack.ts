@@ -15,7 +15,7 @@ export const HISTORY_MODULE_NAME = "Chat history" as const
 export const MCP_INSTRUCTIONS_MODULE_NAME = "MCP server instructions" as const
 
 const SYSTEM_AFTER_NON_SYSTEM_MSG =
-  "System after chat or non-system may be remapped to assistant for some providers."
+  "System after chat or non-system stays as a system turn; some providers may hoist or ignore it."
 
 const moduleRoleSchema = z.enum(["system", "user", "assistant"])
 const placementSchema = z.enum(["relative", "in_chat"])
@@ -496,7 +496,7 @@ function injectInChatTagged(
 }
 
 /**
- * Build model messages before peel/demote (includes system mid-list).
+ * Build model messages before peeling leading system (includes system mid-list).
  * Tags prompt modules (relative + in_chat) with moduleId for warnings.
  */
 function assembleTagged(options: {
@@ -570,10 +570,9 @@ function collectWarnings(tagged: TaggedMessage[]): AssemblyWarning[] {
   return warnings
 }
 
-function peelAndDemote(tagged: TaggedMessage[]): {
+function peelLeadingSystem(tagged: TaggedMessage[]): {
   system: string
   turns: AssembledTurn[]
-  demotedModuleIds: string[]
 } {
   // Skip synthetic history boundaries when peeling content.
   const contentTagged = tagged.filter((t) => !t.historyBoundary)
@@ -591,25 +590,14 @@ function peelAndDemote(tagged: TaggedMessage[]): {
     i++
   }
 
-  const rest = contentTagged.slice(i)
-  const demotedModuleIds: string[] = []
-  const turns: AssembledTurn[] = rest.map((t) => {
-    if (t.message.role === "system") {
-      if (t.moduleId) demotedModuleIds.push(t.moduleId)
-      const content =
-        typeof t.message.content === "string" ? t.message.content : ""
-      return {
-        message: { role: "assistant" as const, content },
-        source: t.source,
-      }
-    }
-    return { message: t.message, source: t.source }
-  })
+  const turns: AssembledTurn[] = contentTagged.slice(i).map((t) => ({
+    message: t.message,
+    source: t.source,
+  }))
 
   return {
     system: systemParts.join("\n\n"),
     turns,
-    demotedModuleIds,
   }
 }
 
@@ -625,8 +613,7 @@ export type AssemblePromptContextResult = {
   turns: AssembledTurn[]
   /** False when the history module is disabled; path turns will be empty. */
   historyEnabled: boolean
-  /** Modules whose system role would sit after non-system content (pre-demote). */
-  demotedModuleIds: string[]
+  /** Modules whose system role sits after non-system content. */
   warnings: AssemblyWarning[]
 }
 
@@ -646,19 +633,18 @@ export function assemblePromptContext(options: {
     macroContext: defaultMacroContext(options.macroContext),
   })
   const warnings = collectWarnings(tagged)
-  const { system, turns, demotedModuleIds } = peelAndDemote(tagged)
+  const { system, turns } = peelLeadingSystem(tagged)
   return {
     system,
     messages: turns.map((turn) => turn.message),
     turns,
     historyEnabled: tagged.some((item) => item.historyBoundary),
-    demotedModuleIds,
     warnings,
   }
 }
 
 /**
- * Modules that would appear as system after a non-system block (before demote).
+ * Modules that appear as system after a non-system block.
  * Same pass as assemble; prefer using assemblePromptContext().warnings when assembling.
  */
 export function findSystemAfterNonSystemWarnings(

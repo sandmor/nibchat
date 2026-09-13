@@ -362,11 +362,11 @@ function messageNodes(
   for (let index = 0; index < messages.length; index++) {
     const message = messages[index]!
     const extra = object(message.extra) ?? {}
-    const role = message.is_system
-      ? "system"
-      : message.is_user
-        ? "user"
-        : "assistant"
+    const extraType = text(extra.type)
+    const narrator = extraType === "narrator"
+    const role = narrator ? "system" : message.is_user ? "user" : "assistant"
+    const excluded =
+      extraType === "comment" || (Boolean(message.is_system) && !narrator)
     const swipes =
       role === "assistant" &&
       array(message.swipes).every((value) => typeof value === "string") &&
@@ -435,7 +435,7 @@ function messageNodes(
               },
             }
           : {}),
-        excluded: Boolean(message.is_system),
+        excluded,
       }
       nodes.push(node)
       alternatives.push(node)

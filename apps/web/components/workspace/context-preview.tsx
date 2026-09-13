@@ -234,7 +234,6 @@ function ContextPreviewCompose({
   )
   const totalChars = layers.reduce((sum, layer) => sum + layer.charCount, 0)
   const fileCount = merged.attachmentCount - merged.imageCount
-  const demotedCount = data.demotedModuleIds.length
   const draftAttachments = draft?.attachments ?? []
   const hasDraft =
     Boolean(draft?.text) ||
@@ -290,14 +289,6 @@ function ContextPreviewCompose({
             <li key={`${warning.moduleId}-${index}`}>{warning.message}</li>
           ))}
         </ul>
-      ) : null}
-
-      {demotedCount > 0 ? (
-        <p className="text-xs text-muted-foreground">
-          {demotedCount === 1
-            ? "1 stack module remapped to assistant"
-            : `${demotedCount} stack modules remapped to assistant`}
-        </p>
       ) : null}
 
       <Collapsible className="space-y-1">

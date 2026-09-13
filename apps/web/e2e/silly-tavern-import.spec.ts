@@ -106,5 +106,5 @@ test("imports a SillyTavern character card with no chats", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "Spaces inside" })
   ).toBeVisible({ timeout: 15_000 })
-  await expect(page.getByRole("link", { name })).toBeVisible()
+  await expect(page.getByRole("list").getByRole("link", { name })).toBeVisible()
 })

@@ -74,6 +74,12 @@ describe("SillyTavern import adapter", () => {
               },
             },
             { name: "System", is_system: true, mes: "Hidden notice" },
+            {
+              name: "System",
+              is_system: true,
+              extra: { type: "narrator" },
+              mes: "The door opens.",
+            },
             { name: "User", is_user: true, mes: "Hello" },
             {
               name: "Ada",
@@ -99,16 +105,22 @@ describe("SillyTavern import adapter", () => {
     })
     expect(JSON.stringify(chat.entity)).not.toContain("Do not import")
     expect(chat.variables).toEqual({ location: "library" })
-    expect(chat.nodes[0]).toMatchObject({ role: "system", excluded: true })
+    expect(chat.nodes[0]).toMatchObject({ role: "assistant", excluded: true })
+    expect(chat.nodes[1]).toMatchObject({
+      role: "system",
+      excluded: false,
+      parts: [{ type: "text", text: "The door opens." }],
+    })
     expect(
       chat.nodes.map((node) => [node.id, node.parentId, node.selectedChildId])
     ).toEqual([
       ["m0s0", null, "m1s0"],
-      ["m1s0", "m0s0", "m2s1"],
-      ["m2s0", "m1s0", null],
-      ["m2s1", "m1s0", null],
+      ["m1s0", "m0s0", "m2s0"],
+      ["m2s0", "m1s0", "m3s1"],
+      ["m3s0", "m2s0", null],
+      ["m3s1", "m2s0", null],
     ])
-    expect(chat.nodes[3]).toMatchObject({
+    expect(chat.nodes[4]).toMatchObject({
       sourceModel: "m",
       speaker: { name: "Ada" },
       parts: [

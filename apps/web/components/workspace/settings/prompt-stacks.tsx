@@ -1018,8 +1018,8 @@ function SortablePromptModule({
           </div>
           {warnSystem ? (
             <p className="text-xs text-muted-foreground">
-              System after chat or non-system may be remapped to assistant for
-              some providers.
+              System after chat or non-system stays as a system turn; some
+              providers may hoist or ignore it.
             </p>
           ) : null}
           <PromptModuleBodyEditor

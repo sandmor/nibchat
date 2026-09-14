@@ -73,6 +73,7 @@ import { useTRPC } from "@/lib/trpc-react"
 import { patchContextExcluded, type WorkspaceData } from "@/lib/workspace-cache"
 import { Markdown } from "@/components/markdown"
 import type { ProviderSummary } from "./types"
+import { LongBlockFrame } from "./long-block-nav"
 import { MessageParts } from "./message-parts"
 import { useWorkspaceChrome } from "./shell"
 import {
@@ -252,7 +253,9 @@ export function Message({
     canEditMessage(node.status, editSourceParts) &&
     !isEmptyParts(editSourceParts) &&
     (node.role === "assistant" || Boolean(editor))
-  const pendingIds = pendingToolInvocations(sourceParts).map((p) => p.toolCallId)
+  const pendingIds = pendingToolInvocations(sourceParts).map(
+    (p) => p.toolCallId
+  )
   const siblings = nodes.filter(
     (candidate) =>
       candidate.parent_id === node.parent_id && candidate.role === node.role
@@ -448,7 +451,8 @@ export function Message({
       ? Object.entries(usage as Record<string, unknown>)
       : null
   const tree = presentation === "tree"
-  const draftRole = editSession?.role ?? (node.role === "user" ? "user" : "assistant")
+  const draftRole =
+    editSession?.role ?? (node.role === "user" ? "user" : "assistant")
   const persistableParts = () => {
     const session = useConversationSessionStore.getState().sessions[editSlot]
     if (!session) return null
@@ -576,9 +580,7 @@ export function Message({
             autoFocus
             animate={editor?.animate}
             placeholder="Edit this message…"
-            sendLabel={
-              draftRole === "user" ? "Save & generate" : "Save branch"
-            }
+            sendLabel={draftRole === "user" ? "Save & generate" : "Save branch"}
             mcpAvailable={Boolean(editor?.mcpAvailable) && draftRole === "user"}
             allowAttachments={draftRole === "user"}
             showContextPreview
@@ -621,7 +623,7 @@ export function Message({
     )
   }
 
-  return (
+  const article = (
     <article
       ref={setShellRef}
       tabIndex={-1}
@@ -637,10 +639,10 @@ export function Message({
         node.role === "user" ? "message-user" : "message-assistant"
       }
       className={cn(
-        "group relative min-w-0 rounded-xl border",
+        "group relative min-w-0 rounded-xl border outline-none",
         tree
           ? "flex h-full min-h-0 flex-col overflow-hidden"
-          : "overflow-hidden p-4",
+          : "overflow-visible p-4",
         node.role === "user" && presentation === "linear"
           ? "border-message-user-border bg-message-user text-message-user-foreground"
           : node.role === "user"
@@ -648,7 +650,6 @@ export function Message({
             : "border-message-assistant-border bg-message-assistant text-message-assistant-foreground",
         tree && "hover:border-foreground/30"
       )}
-      style={layoutStyle}
     >
       <div
         className={
@@ -771,7 +772,9 @@ export function Message({
             }
           />
         ) : (
-          <Markdown streaming={node.status === "streaming" || Boolean(streamId)}>
+          <Markdown
+            streaming={node.status === "streaming" || Boolean(streamId)}
+          >
             {text ||
               (node.status === "streaming" || streamId ? "Thinking…" : "")}
           </Markdown>
@@ -803,14 +806,14 @@ export function Message({
             onRegenerate &&
             node.status !== "streaming" &&
             !streamId && (
-            <MessageAction
-              onClick={() => onRegenerate()}
-              icon={RefreshIcon}
-              captions={messageActionCaptions}
-            >
-              Regenerate
-            </MessageAction>
-          )}
+              <MessageAction
+                onClick={() => onRegenerate()}
+                icon={RefreshIcon}
+                captions={messageActionCaptions}
+              >
+                Regenerate
+              </MessageAction>
+            )}
           {canEditAsBranch && (
             <MessageAction
               onClick={beginEdit}
@@ -1096,5 +1099,16 @@ export function Message({
       </AlertDialog>
       {replacementDialog}
     </article>
+  )
+
+  return tree ? (
+    article
+  ) : (
+    <LongBlockFrame
+      style={layoutStyle}
+      tone={node.role === "user" ? "user" : "assistant"}
+    >
+      {article}
+    </LongBlockFrame>
   )
 }

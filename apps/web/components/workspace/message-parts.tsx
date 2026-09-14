@@ -1,8 +1,8 @@
 "use client"
 
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { Pdf02Icon } from "@hugeicons/core-free-icons"
+import { ArrowUp02Icon, Pdf02Icon } from "@hugeicons/core-free-icons"
 import { Markdown } from "@/components/markdown"
 import { QuestionToolView } from "@/components/workspace/tools/question-tool"
 import { ImageViewer } from "@/components/workspace/image-viewer"
@@ -10,6 +10,10 @@ import { pdfAttachmentCaption } from "@/lib/pdf-input"
 import type { QuestionAnswers } from "@/lib/agent/tools/question-shared"
 import { coalesceAdjacentTextParts } from "@/lib/agent/parts"
 import type { Parts, ToolInvocationPart } from "@/lib/types"
+import { cn } from "@/lib/utils"
+import { BookmarkTab, useBlockOverflow } from "./long-block-nav"
+import { alignBlockInScrollport } from "./long-block-scroll"
+import { activitySummary, groupMessageActivity } from "./message-activity"
 
 export function MessageParts({
   parts,
@@ -42,134 +46,130 @@ export function MessageParts({
   return (
     <>
       <div className="flex flex-col gap-3">
-        {coalesced.map((part, index) => {
-          if (part.type === "reasoning") {
-            return (
-              <details
-                key={`reasoning-${index}`}
-                data-find-skip
-                className="rounded-lg bg-muted p-3 text-xs text-muted-foreground"
-              >
-                <summary className="cursor-pointer">Reasoning</summary>
-                <Markdown
-                  className="mt-2 text-xs"
+        {groupMessageActivity(coalesced).map(
+          ({ parts: group, activity, index }) => {
+            if (activity) {
+              return (
+                <ActivitySection
+                  key={`activity-${index}`}
+                  parts={group}
                   streaming={streaming}
-                  variant="reasoning"
-                >
-                  {part.text}
+                />
+              )
+            }
+            const part = group[0]!
+            if (part.type === "text") {
+              return (
+                <Markdown key={`text-${index}`} streaming={streaming}>
+                  {part.text || (streaming ? "Thinking…" : "")}
                 </Markdown>
-              </details>
-            )
-          }
-          if (part.type === "text") {
-            return (
-              <Markdown key={`text-${index}`} streaming={streaming}>
-                {part.text || (streaming ? "Thinking…" : "")}
-              </Markdown>
-            )
-          }
-          if (part.type === "attachment") {
-            if (part.content.kind === "binary") {
-              const src = `/api/attachments/${part.content.attachmentId}`
-              return (
-                <figure key={part.id} className="w-fit max-w-full">
-                  <button
-                    type="button"
-                    className="block max-w-full cursor-zoom-in rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                    onClick={() => setViewer({ src, name: part.name })}
-                  >
-                    <img
-                      src={src}
-                      alt={part.name}
-                      className="max-h-80 max-w-full rounded-md object-contain"
-                    />
-                  </button>
-                  <figcaption className="mt-1 text-[11px] text-muted-foreground">
-                    {part.name}
-                  </figcaption>
-                </figure>
               )
             }
-            if (part.content.kind === "document") {
-              const src = `/api/attachments/${part.content.attachmentId}`
-              return (
-                <figure key={part.id} className="w-fit max-w-full">
-                  <a
-                    href={src}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="flex max-w-full items-center gap-2.5 rounded-md border bg-muted/40 px-2.5 py-2 outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring/50"
-                  >
-                    <span className="grid size-10 shrink-0 place-items-center rounded-md bg-muted">
-                      <HugeiconsIcon
-                        icon={Pdf02Icon}
-                        strokeWidth={2}
-                        className="size-5 text-muted-foreground"
+            if (part.type === "attachment") {
+              if (part.content.kind === "binary") {
+                const src = `/api/attachments/${part.content.attachmentId}`
+                return (
+                  <figure key={part.id} className="w-fit max-w-full">
+                    <button
+                      type="button"
+                      className="block max-w-full cursor-zoom-in rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                      onClick={() => setViewer({ src, name: part.name })}
+                    >
+                      <img
+                        src={src}
+                        alt={part.name}
+                        className="max-h-80 max-w-full rounded-md object-contain"
                       />
-                    </span>
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-medium">
-                        {part.name}
-                        <span className="sr-only"> (opens in a new tab)</span>
+                    </button>
+                    <figcaption className="mt-1 text-[11px] text-muted-foreground">
+                      {part.name}
+                    </figcaption>
+                  </figure>
+                )
+              }
+              if (part.content.kind === "document") {
+                const src = `/api/attachments/${part.content.attachmentId}`
+                return (
+                  <figure key={part.id} className="w-fit max-w-full">
+                    <a
+                      href={src}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex max-w-full items-center gap-2.5 rounded-md border bg-muted/40 px-2.5 py-2 outline-none hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring/50"
+                    >
+                      <span className="grid size-10 shrink-0 place-items-center rounded-md bg-muted">
+                        <HugeiconsIcon
+                          icon={Pdf02Icon}
+                          strokeWidth={2}
+                          className="size-5 text-muted-foreground"
+                        />
                       </span>
-                      <span className="text-[11px] text-muted-foreground">
-                        {pdfAttachmentCaption(part.content.analysis)}
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium">
+                          {part.name}
+                          <span className="sr-only"> (opens in a new tab)</span>
+                        </span>
+                        <span className="text-[11px] text-muted-foreground">
+                          {pdfAttachmentCaption(part.content.analysis)}
+                        </span>
                       </span>
-                    </span>
-                  </a>
-                </figure>
+                    </a>
+                  </figure>
+                )
+              }
+              const sourceLabel =
+                part.source.kind === "mcp-resource"
+                  ? part.source.profileName
+                  : undefined
+              const sourceDetail =
+                part.source.kind === "mcp-resource"
+                  ? part.source.uri
+                  : undefined
+              return (
+                <details
+                  key={part.id}
+                  className="rounded-lg border border-dashed bg-muted/40 p-3 text-sm"
+                >
+                  <summary className="cursor-pointer font-medium">
+                    Attached: {part.name}
+                    {sourceLabel ? (
+                      <span className="ml-2 text-xs font-normal text-muted-foreground">
+                        {sourceLabel}
+                      </span>
+                    ) : null}
+                  </summary>
+                  {sourceDetail ? (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {sourceDetail}
+                    </p>
+                  ) : null}
+                  <pre className="mt-2 text-xs break-words whitespace-pre-wrap">
+                    {part.content.text}
+                  </pre>
+                  {part.content.truncated ? (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Truncated from {part.content.truncated.originalCharacters}{" "}
+                      characters.
+                    </p>
+                  ) : null}
+                </details>
               )
             }
-            const sourceLabel =
-              part.source.kind === "mcp-resource"
-                ? part.source.profileName
-                : undefined
-            const sourceDetail =
-              part.source.kind === "mcp-resource" ? part.source.uri : undefined
-            return (
-              <details
-                key={part.id}
-                className="rounded-lg border border-dashed bg-muted/40 p-3 text-sm"
-              >
-                <summary className="cursor-pointer font-medium">
-                  Attached: {part.name}
-                  {sourceLabel ? (
-                    <span className="ml-2 text-xs font-normal text-muted-foreground">
-                      {sourceLabel}
-                    </span>
-                  ) : null}
-                </summary>
-                {sourceDetail ? (
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {sourceDetail}
-                  </p>
-                ) : null}
-                <pre className="mt-2 max-h-64 overflow-auto text-xs whitespace-pre-wrap">
-                  {part.content.text}
-                </pre>
-                {part.content.truncated ? (
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    Truncated from {part.content.truncated.originalCharacters}{" "}
-                    characters.
-                  </p>
-                ) : null}
-              </details>
-            )
+            if (part.type === "tool-invocation") {
+              return (
+                <ToolPart
+                  key={part.toolCallId}
+                  part={part}
+                  interactive={Boolean(
+                    interactiveTools && part.state === "input-available"
+                  )}
+                  onAnswerTool={onAnswerTool}
+                />
+              )
+            }
+            return null
           }
-          if (part.type === "tool-invocation") {
-            return (
-              <ToolPart
-                key={part.toolCallId}
-                part={part}
-                interactive={Boolean(
-                  interactiveTools && part.state === "input-available"
-                )}
-                onAnswerTool={onAnswerTool}
-              />
-            )
-          }
-          return null
-        })}
+        )}
       </div>
       <ImageViewer image={viewer} onClose={() => setViewer(null)} />
     </>
@@ -211,12 +211,100 @@ function ToolPart({
         Tool · {part.toolName} · {part.state}
       </div>
       {part.state === "output-available" ? (
-        <pre className="mt-2 max-h-40 overflow-auto text-xs whitespace-pre-wrap">
+        <pre className="mt-2 text-xs break-words whitespace-pre-wrap">
           {typeof part.output === "string"
             ? part.output
             : JSON.stringify(part.output, null, 2)}
         </pre>
       ) : null}
+      {part.state === "output-error" ? (
+        <p role="alert" className="mt-2 text-xs break-words text-destructive">
+          {part.errorText || "This tool could not complete."}
+        </p>
+      ) : null}
     </div>
+  )
+}
+
+function ActivitySection({
+  parts,
+  streaming,
+}: {
+  parts: Parts
+  streaming?: boolean
+}) {
+  const blockRef = useRef<HTMLDetailsElement>(null)
+  const [open, setOpen] = useState(() => Boolean(streaming))
+  const { overflowing, startVisible, nestedScroll } = useBlockOverflow(blockRef)
+  const showJump = overflowing && !startVisible && !nestedScroll
+  const label = parts.every((part) => part.type === "reasoning")
+    ? "reasoning"
+    : "activity"
+
+  return (
+    <details
+      ref={blockRef}
+      open={open}
+      className={cn(
+        "relative overflow-visible rounded-lg bg-muted text-xs text-muted-foreground",
+        showJump && "rounded-ss-none rounded-es-none"
+      )}
+    >
+      <summary
+        className="cursor-pointer px-3 py-3 focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
+        onClick={(event) => {
+          event.preventDefault()
+          setOpen((current) => !current)
+        }}
+      >
+        {activitySummary(parts)}
+        {streaming &&
+        parts.some(
+          (part) =>
+            part.type === "tool-invocation" &&
+            (part.state === "input-streaming" ||
+              part.state === "input-available")
+        )
+          ? " · Working…"
+          : null}
+      </summary>
+      <div className="flex flex-col gap-3 px-3 pb-3">
+        {parts.map((part, index) =>
+          part.type === "reasoning" ? (
+            <div key={`reasoning-${index}`} data-find-skip>
+              <Markdown
+                className="text-xs"
+                streaming={streaming}
+                variant="reasoning"
+              >
+                {part.text}
+              </Markdown>
+            </div>
+          ) : part.type === "tool-invocation" ? (
+            <ToolPart key={part.toolCallId} part={part} interactive={false} />
+          ) : null
+        )}
+      </div>
+      {showJump ? (
+        <div
+          data-find-skip
+          className="pointer-events-none absolute inset-y-0 start-0 z-[1] w-0 overflow-visible"
+        >
+          <div className="pointer-events-auto sticky top-0">
+            <BookmarkTab
+              edge="start"
+              radius="lg"
+              label={`Jump to start of ${label}`}
+              icon={ArrowUp02Icon}
+              className="bg-muted"
+              onClick={() => {
+                if (blockRef.current)
+                  alignBlockInScrollport(blockRef.current, "start")
+              }}
+            />
+          </div>
+        </div>
+      ) : null}
+    </details>
   )
 }

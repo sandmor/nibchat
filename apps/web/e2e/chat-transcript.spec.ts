@@ -388,4 +388,60 @@ HANDOFF_END`
 
     llm.release()
   })
+
+  test("long-message jump rail moves between the message edges", async () => {
+    await openNewChat(page)
+
+    const longReply =
+      "JUMP_START\n\n" +
+      Array.from(
+        { length: 80 },
+        (_, i) =>
+          `jump-line-${i} extra filler so the bubble is taller than the pane.`
+      ).join("\n\n") +
+      "\n\nJUMP_END"
+
+    llm.enqueue({ text: longReply })
+    await sendMessage(page, "write a tall reply")
+    await expectAssistantText(page, "JUMP_END", { timeout: 30_000 })
+
+    const article = page.locator("article").filter({ hasText: "JUMP_START" })
+    await expect(article).toBeVisible()
+
+    const scrollToMiddle = () =>
+      article.evaluate((el) => {
+        const port = el.closest("[data-testid=chat-transcript-viewport]")
+        if (!(port instanceof HTMLElement)) return
+        const portRect = port.getBoundingClientRect()
+        const rect = el.getBoundingClientRect()
+        port.scrollTop +=
+          rect.top - portRect.top + rect.height / 2 - port.clientHeight / 2
+      })
+    const edgeOffset = (edge: "top" | "bottom") =>
+      article.evaluate((el, side) => {
+        const port = el.closest("[data-testid=chat-transcript-viewport]")
+        if (!(port instanceof HTMLElement)) return Number.POSITIVE_INFINITY
+        return Math.abs(
+          el.getBoundingClientRect()[side] - port.getBoundingClientRect()[side]
+        )
+      }, edge)
+
+    await scrollToMiddle()
+
+    const start = page.getByTestId("long-block-nav-start")
+    const end = page.getByTestId("long-block-nav-end")
+    await expect(start).toBeVisible()
+    await expect(end).toBeVisible()
+
+    await start.click()
+    await expect.poll(() => edgeOffset("top")).toBeLessThan(8)
+    await expect(start).toBeDisabled()
+
+    await scrollToMiddle()
+    await expect(end).toBeEnabled()
+    await end.click()
+    await expect.poll(() => edgeOffset("bottom")).toBeLessThan(8)
+    await expect(end).toBeDisabled()
+    await expect(start).toBeEnabled()
+  })
 })

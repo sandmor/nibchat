@@ -2,11 +2,12 @@
 
 import { motion } from "motion/react"
 import { MessageParts } from "@/components/workspace/message-parts"
+import { LongBlockFrame } from "./long-block-nav"
 import { useStreamBuffer } from "@/lib/stream-store"
 import { cn } from "@/lib/utils"
 
 const BUBBLE_CLASS =
-  "min-w-0 overflow-hidden rounded-xl border border-message-assistant-border bg-message-assistant text-message-assistant-foreground"
+  "min-w-0 rounded-xl border border-message-assistant-border bg-message-assistant text-message-assistant-foreground"
 
 export function StreamingBubble({
   streamId,
@@ -44,11 +45,11 @@ export function StreamingBubble({
 
   const articleClass = cn(
     BUBBLE_CLASS,
-    tree && "flex h-full min-h-0 flex-col"
+    tree ? "flex h-full min-h-0 flex-col overflow-hidden" : "overflow-visible"
   )
 
-  if (animate && transition) {
-    return (
+  const article =
+    animate && transition ? (
       <motion.article
         data-theme-group="message-assistant"
         data-theme-target="message-assistant"
@@ -60,17 +61,17 @@ export function StreamingBubble({
       >
         {body}
       </motion.article>
+    ) : (
+      <article
+        data-theme-group="message-assistant"
+        data-theme-target="message-assistant"
+        data-tree-streaming={tree ? "" : undefined}
+        className={articleClass}
+      >
+        {body}
+      </article>
     )
-  }
 
-  return (
-    <article
-      data-theme-group="message-assistant"
-      data-theme-target="message-assistant"
-      data-tree-streaming={tree ? "" : undefined}
-      className={articleClass}
-    >
-      {body}
-    </article>
-  )
+  if (tree) return article
+  return <LongBlockFrame tone="assistant">{article}</LongBlockFrame>
 }

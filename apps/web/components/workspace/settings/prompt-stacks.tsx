@@ -103,6 +103,10 @@ export function PromptStackSettings() {
   const defaultId = settingsQuery.data?.defaultPromptStackId ?? null
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [deleteStack, setDeleteStack] = useState<{
+    id: string
+    name: string
+  } | null>(null)
   const effectiveId = selectedId ?? defaultId ?? stacks[0]?.id ?? null
   const selected = stacks.find((s) => s.id === effectiveId) ?? null
 
@@ -208,6 +212,7 @@ export function PromptStackSettings() {
         toast.success("Stack deleted")
         setSelectedId(null)
         setDraft(null)
+        setDeleteStack(null)
         await Promise.all([
           refetch(),
           queryClient.invalidateQueries(trpc.workspace.get.queryFilter()),
@@ -219,7 +224,7 @@ export function PromptStackSettings() {
   const setDefaultMut = useMutation(
     trpc.workspace.setInstanceDefaultPromptStack.mutationOptions({
       onSuccess: async () => {
-        toast.success("Instance default updated")
+        toast.success("New chat default updated")
         await refetch()
       },
       onError: (e) => toast.error(e.message || "Could not set default"),
@@ -292,7 +297,7 @@ export function PromptStackSettings() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-col gap-2">
           {selected ? (
             <Select
               value={selected.id}
@@ -304,7 +309,7 @@ export function PromptStackSettings() {
               }}
               disabled={!loaded || stacks.length === 0}
             >
-              <SelectTrigger className="min-w-[12rem]">
+              <SelectTrigger className="w-full min-w-0 sm:w-auto sm:min-w-[12rem]">
                 <SelectValue placeholder="Select a stack" />
               </SelectTrigger>
               <SelectContent>
@@ -321,72 +326,70 @@ export function PromptStackSettings() {
               type="button"
               variant="outline"
               size="sm"
-              className="min-w-[12rem] justify-start rounded-4xl"
+              className="w-full min-w-0 justify-start rounded-4xl sm:w-auto sm:min-w-[12rem]"
               disabled
             >
               {loaded ? "No stacks" : "Loading…"}
             </Button>
           )}
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={!loaded || createMut.isPending}
-            onClick={() =>
-              createMut.mutate({
-                name: "New stack",
-                stack: defaultPromptStack(),
-              })
-            }
-          >
-            New
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={!selected || duplicateMut.isPending}
-            onClick={() => selected && duplicateMut.mutate({ id: selected.id })}
-          >
-            Duplicate
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={!selected || isDefault || setDefaultMut.isPending}
-            onClick={() =>
-              selected && setDefaultMut.mutate({ stackId: selected.id })
-            }
-          >
-            {isDefault ? "Instance default" : "Set as default"}
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={!selected || isDefault || deleteMut.isPending}
-            onClick={() => {
-              if (!selected) return
-              if (
-                !window.confirm(
-                  `Delete stack “${selected.name}”? Chats using it will fall back to the instance default.`
-                )
-              )
-                return
-              deleteMut.mutate({ id: selected.id })
-            }}
-          >
-            Delete
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!loaded || createMut.isPending}
+              onClick={() =>
+                createMut.mutate({
+                  name: "New stack",
+                  stack: defaultPromptStack(),
+                })
+              }
+            >
+              New
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!selected || duplicateMut.isPending}
+              onClick={() =>
+                selected && duplicateMut.mutate({ id: selected.id })
+              }
+            >
+              Duplicate
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!selected || isDefault || setDefaultMut.isPending}
+              onClick={() =>
+                selected && setDefaultMut.mutate({ stackId: selected.id })
+              }
+            >
+              {isDefault ? "New chat default" : "Set as default"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!selected || isDefault || deleteMut.isPending}
+              onClick={() => {
+                if (!selected) return
+                setDeleteStack({ id: selected.id, name: selected.name })
+              }}
+            >
+              Delete
+            </Button>
+          </div>
         </div>
 
         {selected ? (
           <div className="space-y-4">
             {isDefault ? (
               <p className="text-xs text-muted-foreground">
-                This is the instance default. Changes apply to every chat that
-                inherits it.
+                New chats start with this stack. Editing its contents affects
+                every chat already using it.
               </p>
             ) : (
               <p className="text-xs text-muted-foreground">
@@ -491,6 +494,36 @@ export function PromptStackSettings() {
           </p>
         )}
       </CardContent>
+      <AlertDialog
+        open={deleteStack != null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteStack(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete stack?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteStack
+                ? `Delete “${deleteStack.name}”? Chats using it will fall back to your default.`
+                : null}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={deleteMut.isPending}
+              onClick={() => {
+                if (!deleteStack) return
+                deleteMut.mutate({ id: deleteStack.id })
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   )
 }
@@ -576,7 +609,7 @@ function PromptVariablesEditor({
           <div key={index} className="space-y-2 rounded-lg border bg-card p-3">
             <div className="flex flex-wrap items-center gap-2">
               <Input
-                className="h-8 w-40"
+                className="h-8 w-full min-w-0 sm:w-40"
                 value={variable.name}
                 placeholder="name"
                 aria-label={`Variable name ${index + 1}`}
@@ -613,7 +646,7 @@ function PromptVariablesEditor({
                   )
                 }}
               >
-                <SelectTrigger size="sm" className="min-w-[7rem]">
+                <SelectTrigger size="sm" className="min-w-0 sm:min-w-[7rem]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -947,7 +980,7 @@ function SortablePromptModule({
             <Input
               value={mod.name}
               onChange={(e) => onChange({ name: e.target.value })}
-              className="h-8 max-w-[10rem]"
+              className="h-8 min-w-0 flex-1 basis-[8rem] sm:max-w-[10rem]"
               aria-label="Module name"
             />
             <Badge variant="secondary">{placementLabel(mod.placement)}</Badge>
@@ -965,7 +998,7 @@ function SortablePromptModule({
                   })
               }}
             >
-              <SelectTrigger size="sm" className="min-w-[8rem]">
+              <SelectTrigger size="sm" className="min-w-0 sm:min-w-[8rem]">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -996,7 +1029,7 @@ function SortablePromptModule({
                   onChange({ role: v })
               }}
             >
-              <SelectTrigger size="sm" className="min-w-[6rem]">
+              <SelectTrigger size="sm" className="min-w-0 sm:min-w-[6rem]">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

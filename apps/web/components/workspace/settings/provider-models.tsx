@@ -143,7 +143,7 @@ function ReasoningSupportEditor({
           <SelectTrigger
             id={`reasoning-${model.id}`}
             size="sm"
-            className="w-full min-w-0 max-w-full px-2.5 text-xs sm:max-w-[12.5rem]"
+            className="w-full max-w-full min-w-0 px-2.5 text-xs sm:max-w-[12.5rem]"
             aria-label={`Reasoning format for ${model.id}`}
           >
             <SelectValue />
@@ -578,7 +578,7 @@ export function ProviderModelsEditor({
             placeholder="Filter by model id or alias…"
             aria-label="Filter models and aliases"
             disabled={disabled}
-            className="min-w-[12rem] flex-1"
+            className="min-w-0 flex-1"
           />
           <ToggleGroup
             value={[visibility]}
@@ -761,7 +761,7 @@ export function ProviderModelsEditor({
             }}
             placeholder="provider/model-id"
             disabled={disabled}
-            className="min-w-[12rem] flex-1"
+            className="min-w-0 flex-1"
           />
           <Button
             type="button"

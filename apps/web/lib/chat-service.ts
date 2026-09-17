@@ -83,6 +83,13 @@ import {
   type PromptVariableValues,
 } from "@/lib/prompt-stack"
 import {
+  contextBookToJson,
+  defaultContextBook,
+  readContextBook,
+  type ContextBookDocument,
+  type ContextBookSource,
+} from "@/lib/context-books"
+import {
   claimUploadedAttachments,
   cleanupDetachedAttachments,
   readAttachment,
@@ -354,14 +361,26 @@ async function assertSpaceSettingsStack(
   settings: SpaceSettings
 ) {
   const stackId = settings.promptStack?.value
-  if (!stackId) return
-  const existing = await db
-    .selectFrom("prompt_stacks")
-    .select("id")
-    .where("id", "=", stackId)
-    .where("user_id", "=", userId)
-    .executeTakeFirst()
-  if (!existing) throw new Error("Prompt stack not found")
+  if (stackId) {
+    const existing = await db
+      .selectFrom("prompt_stacks")
+      .select("id")
+      .where("id", "=", stackId)
+      .where("user_id", "=", userId)
+      .executeTakeFirst()
+    if (!existing) throw new Error("Prompt stack not found")
+  }
+  const bookIds = [...new Set(settings.contextBooks ?? [])]
+  if (bookIds.length) {
+    const owned = await db
+      .selectFrom("context_books")
+      .select("id")
+      .where("user_id", "=", userId)
+      .where("id", "in", bookIds)
+      .execute()
+    if (owned.length !== bookIds.length)
+      throw new Error("Context book not found")
+  }
 }
 
 export async function resolveSettingsForChat(
@@ -370,6 +389,7 @@ export async function resolveSettingsForChat(
     prompt_stack_id: string | null
     variables_json?: string
     model_config_json?: string
+    contextBookIds?: string[]
   },
   userId: string,
   spaces?: readonly SpaceRecord[]
@@ -384,6 +404,7 @@ export async function resolveSettingsForChat(
         {}
       ),
       model: parseJson<ModelConfig>(chat.model_config_json ?? "{}", {}),
+      contextBookIds: chat.contextBookIds,
     },
     spaces: records,
   })
@@ -423,7 +444,7 @@ async function assertNodeOwner(
 export async function getWorkspace(
   userId: string,
   input?: { chatId?: string; draft?: boolean }
-) {
+): Promise<import("@/lib/workspace-cache").WorkspaceData> {
   const chats = await db
     .selectFrom("chats")
     .selectAll()
@@ -469,6 +490,9 @@ export async function getWorkspace(
   return {
     chats,
     spaces,
+    chatDefaults: await defaultModelConfig(userId),
+    defaultPromptStackId: (await ensureUserSettings(userId))
+      .default_prompt_stack_id,
     chat: selected ?? null,
     nodes: nodes.map((node) => normalizeNodeRow(node)),
     activeGenerations,
@@ -481,7 +505,8 @@ export async function createChat(
   config?: ModelConfig,
   promptStackId?: string | null,
   variables?: PromptVariableValues,
-  spaceId?: string | null
+  spaceId?: string | null,
+  contextBookIds: string[] = []
 ) {
   const chat = await prepareChatRow(
     userId,
@@ -491,7 +516,31 @@ export async function createChat(
     variables,
     spaceId
   )
-  await db.insertInto("chats").values(chat).execute()
+  const uniqueBookIds = [...new Set(contextBookIds)]
+  if (uniqueBookIds.length) {
+    const owned = await db
+      .selectFrom("context_books")
+      .select("id")
+      .where("user_id", "=", userId)
+      .where("id", "in", uniqueBookIds)
+      .execute()
+    if (owned.length !== uniqueBookIds.length)
+      throw new Error("Context book not found")
+  }
+  await db.transaction().execute(async (trx) => {
+    await trx.insertInto("chats").values(chat).execute()
+    if (uniqueBookIds.length)
+      await trx
+        .insertInto("chat_context_books")
+        .values(
+          uniqueBookIds.map((contextBookId, position) => ({
+            chat_id: chat.id,
+            context_book_id: contextBookId,
+            position,
+          }))
+        )
+        .execute()
+  })
   return chat
 }
 
@@ -505,8 +554,11 @@ export async function prepareChatRow(
   spaceId?: string | null
 ) {
   const baseline = await defaultModelConfig(userId)
-  const incoming =
-    config && (config.providerId || config.model) ? config : baseline
+  const defaultStackId = (await ensureUserSettings(userId))
+    .default_prompt_stack_id
+  // A supplied config is a draft's snapshot, including intentionally unset fields.
+  const incoming = config ?? baseline
+  promptStackId = promptStackId ?? defaultStackId
   if (promptStackId) {
     const existing = await db
       .selectFrom("prompt_stacks")
@@ -563,8 +615,8 @@ export async function prepareChatRow(
     model_config_json: JSON.stringify(storedModel),
     view_state_json: chatViewStateToJson({ mode: "linear", camera: null }),
     prompt_stack_id: lockPreview.locks.promptStack
-      ? null
-      : (promptStackId ?? null),
+      ? defaultStackId
+      : promptStackId,
     variables_json: JSON.stringify(storedVariables),
     space_id: resolvedSpaceId,
     created_at: timestamp,
@@ -2250,6 +2302,239 @@ export async function listPromptStacks(userId: string) {
   return rows.map(stackRowToSummary)
 }
 
+function contextBookSummary(row: {
+  id: string
+  name: string
+  book_json: string
+  created_at: string
+  updated_at: string
+}) {
+  return {
+    id: row.id,
+    name: row.name,
+    book: readContextBook(parseJson(row.book_json, {})),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }
+}
+
+export async function createContextBook(input: {
+  userId: string
+  name: string
+  book?: ContextBookDocument
+  spaceId?: string
+}) {
+  const timestamp = now()
+  const row = {
+    id: id(),
+    user_id: input.userId,
+    name: input.name.trim() || "Untitled book",
+    book_json: contextBookToJson(input.book ?? defaultContextBook()),
+    created_at: timestamp,
+    updated_at: timestamp,
+  }
+  await db.transaction().execute(async (trx) => {
+    await trx.insertInto("context_books").values(row).execute()
+    if (input.spaceId) {
+      const space = await trx
+        .selectFrom("spaces")
+        .selectAll()
+        .where("id", "=", input.spaceId)
+        .where("user_id", "=", input.userId)
+        .executeTakeFirst()
+      if (!space) throw new Error("Space not found")
+      const settings = parseSpaceSettings(space.settings_json)
+      await trx
+        .updateTable("spaces")
+        .set({
+          settings_json: spaceSettingsToJson({
+            ...settings,
+            contextBooks: [
+              ...new Set([...(settings.contextBooks ?? []), row.id]),
+            ],
+          }),
+          updated_at: timestamp,
+        })
+        .where("id", "=", space.id)
+        .execute()
+    }
+  })
+  return contextBookSummary(row)
+}
+
+export async function updateContextBook(
+  userId: string,
+  bookId: string,
+  input: { name?: string; book?: ContextBookDocument }
+) {
+  const existing = await db
+    .selectFrom("context_books")
+    .selectAll()
+    .where("id", "=", bookId)
+    .where("user_id", "=", userId)
+    .executeTakeFirst()
+  if (!existing) throw new Error("Context book not found")
+  await db
+    .updateTable("context_books")
+    .set({
+      ...(input.name !== undefined
+        ? { name: input.name.trim() || existing.name }
+        : {}),
+      ...(input.book ? { book_json: contextBookToJson(input.book) } : {}),
+      updated_at: now(),
+    })
+    .where("id", "=", bookId)
+    .execute()
+  const row = await db
+    .selectFrom("context_books")
+    .selectAll()
+    .where("id", "=", bookId)
+    .executeTakeFirstOrThrow()
+  return contextBookSummary(row)
+}
+
+export async function duplicateContextBook(userId: string, bookId: string) {
+  const existing = await db
+    .selectFrom("context_books")
+    .selectAll()
+    .where("id", "=", bookId)
+    .where("user_id", "=", userId)
+    .executeTakeFirst()
+  if (!existing) throw new Error("Context book not found")
+  return createContextBook({
+    userId,
+    name: `${existing.name} copy`,
+    book: readContextBook(parseJson(existing.book_json, {})),
+  })
+}
+
+export async function deleteContextBook(userId: string, bookId: string) {
+  const existing = await db
+    .selectFrom("context_books")
+    .select("id")
+    .where("id", "=", bookId)
+    .where("user_id", "=", userId)
+    .executeTakeFirst()
+  if (!existing) throw new Error("Context book not found")
+  await db.transaction().execute(async (trx) => {
+    await rewriteSpaceSettings(
+      (settings) => ({
+        ...settings,
+        ...(settings.contextBooks
+          ? {
+              contextBooks: settings.contextBooks.filter((id) => id !== bookId),
+            }
+          : {}),
+      }),
+      trx,
+      userId
+    )
+    await trx.deleteFrom("context_books").where("id", "=", bookId).execute()
+  })
+}
+
+export async function setChatContextBooks(
+  userId: string,
+  chatId: string,
+  bookIds: string[]
+) {
+  await assertChatOwner(chatId, userId)
+  const unique = [...new Set(bookIds)]
+  if (unique.length) {
+    const owned = await db
+      .selectFrom("context_books")
+      .select("id")
+      .where("user_id", "=", userId)
+      .where("id", "in", unique)
+      .execute()
+    if (owned.length !== unique.length)
+      throw new Error("Context book not found")
+  }
+  await db.transaction().execute(async (trx) => {
+    await trx
+      .deleteFrom("chat_context_books")
+      .where("chat_id", "=", chatId)
+      .execute()
+    if (unique.length)
+      await trx
+        .insertInto("chat_context_books")
+        .values(
+          unique.map((contextBookId, position) => ({
+            chat_id: chatId,
+            context_book_id: contextBookId,
+            position,
+          }))
+        )
+        .execute()
+  })
+  return { ok: true as const }
+}
+
+export async function listChatContextBooks(userId: string, chatId: string) {
+  await assertChatOwner(chatId, userId)
+  return (
+    await db
+      .selectFrom("chat_context_books")
+      .select("context_book_id")
+      .where("chat_id", "=", chatId)
+      .orderBy("position")
+      .execute()
+  ).map((row) => row.context_book_id)
+}
+
+export async function effectiveContextBooks(
+  userId: string,
+  chatId: string
+): Promise<ContextBookSource[]> {
+  const chat = await db
+    .selectFrom("chats")
+    .select([
+      "id",
+      "space_id",
+      "prompt_stack_id",
+      "variables_json",
+      "model_config_json",
+    ])
+    .where("id", "=", chatId)
+    .where("user_id", "=", userId)
+    .executeTakeFirst()
+  if (!chat) throw new Error("Chat not found")
+  const attached = await db
+    .selectFrom("chat_context_books")
+    .select("context_book_id")
+    .where("chat_id", "=", chatId)
+    .orderBy("position")
+    .execute()
+  const resolved = await resolveSettingsForChat(
+    { ...chat, contextBookIds: attached.map((row) => row.context_book_id) },
+    userId
+  )
+  if (!resolved.effective.contextBookIds.length) return []
+  const rows = await db
+    .selectFrom("context_books")
+    .selectAll()
+    .where("user_id", "=", userId)
+    .where("id", "in", resolved.effective.contextBookIds)
+    .execute()
+  const byId = new Map(rows.map((row) => [row.id, row]))
+  const spaceIds = new Set(
+    resolved.chain.flatMap((space) => space.settings.contextBooks ?? [])
+  )
+  return resolved.effective.contextBookIds.flatMap((bookId) => {
+    const row = byId.get(bookId)
+    return row
+      ? [
+          {
+            ...contextBookSummary(row),
+            source: spaceIds.has(bookId)
+              ? ("space" as const)
+              : ("chat" as const),
+          },
+        ]
+      : []
+  })
+}
+
 export async function getPromptStack(userId: string, stackId: string) {
   const row = await db
     .selectFrom("prompt_stacks")
@@ -2369,11 +2654,21 @@ export async function setInstanceDefaultPromptStack(
     .where("user_id", "=", userId)
     .executeTakeFirst()
   if (!existing) throw new Error("Prompt stack not found")
-  await db
-    .updateTable("user_preferences")
-    .set({ default_prompt_stack_id: stackId, updated_at: now() })
-    .where("user_id", "=", userId)
-    .execute()
+  const prefs = await ensureUserSettings(userId)
+  await db.transaction().execute(async (trx) => {
+    // Materialize legacy inherited references before changing the new-chat default.
+    await trx
+      .updateTable("chats")
+      .set({ prompt_stack_id: prefs.default_prompt_stack_id })
+      .where("user_id", "=", userId)
+      .where("prompt_stack_id", "is", null)
+      .execute()
+    await trx
+      .updateTable("user_preferences")
+      .set({ default_prompt_stack_id: stackId, updated_at: now() })
+      .where("user_id", "=", userId)
+      .execute()
+  })
   return { ok: true as const, defaultPromptStackId: stackId }
 }
 
@@ -2401,6 +2696,8 @@ export async function setChatPromptStack(
       `Prompt stack is locked by ${resolved.locks.promptStack.spaceName}`
     )
   }
+  stackId =
+    stackId ?? (await ensureUserSettings(userId)).default_prompt_stack_id
   if (stackId) {
     const existing = await db
       .selectFrom("prompt_stacks")
@@ -2647,7 +2944,9 @@ export async function getInstanceSettings(userId: string) {
   const prefs = await getUserSettings(userId)
   return {
     defaultPromptStackId: prefs.default_prompt_stack_id,
+    chatDefaults: await defaultModelConfig(userId),
     promptStacks: prefs.promptStacks,
+    contextBooks: prefs.contextBooks,
     themes: prefs.themes,
     lightThemeId: prefs.light_theme_id,
     darkThemeId: prefs.dark_theme_id,
@@ -2668,6 +2967,7 @@ function preferenceInsertValues(
     default_prompt_stack_id: prefs.default_prompt_stack_id,
     theme_mode: prefs.theme_mode,
     builtin_tools_json: prefs.builtin_tools_json,
+    chat_defaults_json: prefs.chat_defaults_json,
     created_at: prefs.created_at,
     updated_at: prefs.updated_at,
   }
@@ -2713,6 +3013,27 @@ async function restoreOwnerBackup(
         )
         .execute()
     }
+  }
+  for (const book of backup.contextBooks) {
+    await trx
+      .insertInto("context_books")
+      .values({
+        ...book,
+        user_id: userId,
+        book_json: contextBookToJson(
+          readContextBook(parseJson(book.book_json, {}))
+        ),
+      })
+      .onConflict((oc) =>
+        oc.column("id").doUpdateSet({
+          name: book.name,
+          book_json: contextBookToJson(
+            readContextBook(parseJson(book.book_json, {}))
+          ),
+          updated_at: book.updated_at,
+        })
+      )
+      .execute()
   }
 
   for (const space of orderSpacesForInsert(backup.spaces)) {
@@ -2800,6 +3121,8 @@ async function restoreOwnerBackup(
   }
 
   await insertRestoredMessageNodes(trx, backup.nodes)
+  for (const link of backup.chatContextBooks)
+    await trx.insertInto("chat_context_books").values(link).execute()
   for (const link of backup.messageAttachments) {
     if (!nodeIds.has(link.message_node_id))
       throw new Error(
@@ -2936,6 +3259,10 @@ function validateMultiUserBackup(
     "prompt stack"
   )
   unique(
+    backup.contextBooks.map((book) => book.id),
+    "context book"
+  )
+  unique(
     backup.spaces.map((space) => space.id),
     "space"
   )
@@ -2949,6 +3276,23 @@ function validateMultiUserBackup(
       throw new Error(
         `Backup prompt stack ${stack.id} references an unknown user`
       )
+  }
+  for (const book of backup.contextBooks) {
+    if (!users.has(book.user_id))
+      throw new Error(
+        `Backup context book ${book.id} references an unknown user`
+      )
+    readContextBook(parseJson(book.book_json, {}))
+  }
+  const chatsByBackupId = new Map(backup.chats.map((chat) => [chat.id, chat]))
+  const booksByBackupId = new Map(
+    backup.contextBooks.map((book) => [book.id, book])
+  )
+  for (const link of backup.chatContextBooks) {
+    const chat = chatsByBackupId.get(link.chat_id)
+    const book = booksByBackupId.get(link.context_book_id)
+    if (!chat || !book || chat.user_id !== book.user_id)
+      throw new Error("Backup contains an invalid chat context-book attachment")
   }
   const spacesByBackupId = new Map(
     backup.spaces.map((space) => [space.id, space])
@@ -3135,6 +3479,12 @@ async function restoreMultiUserBackup(
     promptStacks: backup.promptStacks
       .filter((stack) => stack.user_id === sourceOwner.id)
       .map((stack) => ({ ...stack, user_id: ownerId })),
+    contextBooks: backup.contextBooks
+      .filter((book) => book.user_id === sourceOwner.id)
+      .map((book) => ({ ...book, user_id: ownerId })),
+    chatContextBooks: backup.chatContextBooks.filter((link) =>
+      ownerChatIds.has(link.chat_id)
+    ),
     spaces: backup.spaces
       .filter((space) => space.user_id === sourceOwner.id)
       .map((space) => ({ ...space, user_id: ownerId })),
@@ -3176,6 +3526,7 @@ async function restoreMultiUserBackup(
           default_prompt_stack_id: ownerPrefs.default_prompt_stack_id,
           theme_mode: ownerPrefs.theme_mode,
           builtin_tools_json: ownerPrefs.builtin_tools_json,
+          chat_defaults_json: ownerPrefs.chat_defaults_json,
           updated_at: ownerPrefs.updated_at,
         })
       )
@@ -3243,6 +3594,18 @@ async function restoreMultiUserBackup(
             updated_at: stack.updated_at,
           })
           .execute()
+      for (const book of backup.contextBooks.filter(
+        (book) => book.user_id === sourceUser.id
+      ))
+        await trx
+          .insertInto("context_books")
+          .values({
+            ...book,
+            book_json: contextBookToJson(
+              readContextBook(parseJson(book.book_json, {}))
+            ),
+          })
+          .execute()
       for (const space of orderSpacesForInsert(
         backup.spaces.filter((space) => space.user_id === sourceUser.id)
       ))
@@ -3290,6 +3653,10 @@ async function restoreMultiUserBackup(
           .execute()
       }
       await insertRestoredMessageNodes(trx, userNodes)
+      for (const link of backup.chatContextBooks.filter((link) =>
+        userChats.some((chat) => chat.id === link.chat_id)
+      ))
+        await trx.insertInto("chat_context_books").values(link).execute()
       for (const attachment of userAttachments) {
         const data = files.get(attachment.file)
         if (!data)
@@ -3353,6 +3720,14 @@ export async function createBackup() {
   }))
   const promptStacks = await db
     .selectFrom("prompt_stacks")
+    .selectAll()
+    .execute()
+  const contextBooks = await db
+    .selectFrom("context_books")
+    .selectAll()
+    .execute()
+  const chatContextBooks = await db
+    .selectFrom("chat_context_books")
     .selectAll()
     .execute()
   const themes = await db.selectFrom("themes").selectAll().execute()
@@ -3426,6 +3801,13 @@ export async function createBackup() {
     createdAt: new Date().toISOString(),
     instance: { titleModelConfig },
     promptStacks: normalizedStacks,
+    contextBooks: contextBooks.map((row) => ({
+      ...row,
+      book_json: contextBookToJson(
+        readContextBook(parseJson(row.book_json, {}))
+      ),
+    })),
+    chatContextBooks,
     spaces: await db.selectFrom("spaces").selectAll().execute(),
     themes: normalizedThemes,
     chats,

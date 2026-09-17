@@ -82,7 +82,7 @@ function cardFields(raw: Raw) {
 
 /** A deliberately small browser PNG tEXt reader. ST cards use base64 in
  * chara/ccv3 chunks; no image pixels are retained by this importer. */
-function cardJson(bytes: Uint8Array): Raw | null {
+export function sillyTavernCardJson(bytes: Uint8Array): Raw | null {
   if (bytes.length < 8 || bytes[0] !== 137 || bytes[1] !== 80) return null
   const decoder = new TextDecoder()
   let cursor = 8
@@ -266,7 +266,7 @@ async function loadCatalog(archive: ImportArchivePort): Promise<Catalog> {
   const unreadableCards = new Set<string>()
   for (const name of archive.names().filter(isCharacterCard)) {
     const bytes = await readArchiveEntry(archive, name)
-    const parsed = cardJson(bytes)
+    const parsed = sillyTavernCardJson(bytes)
     const key = base(name).replace(/\.png$/i, "")
     if (!parsed) {
       unreadableCards.add(key)

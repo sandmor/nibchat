@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { ModelMessage } from "ai"
 import type { NodeRow, Parts } from "@/lib/types"
+import { defaultContextBook, createContextBookEntry } from "@/lib/context-books"
 import {
   assembleContextPreview,
   estimateTokens,
@@ -374,6 +375,35 @@ describe("context preview helpers", () => {
 })
 
 describe("assembleContextPreview", () => {
+  it("counts unsent draft text for context entry activation", () => {
+    const entry = createContextBookEntry()
+    if (entry.activation.kind !== "match") throw new Error("Expected match")
+    entry.activation.keywords = ["castle"]
+    entry.content = "Castle details"
+    const input = {
+      nodes: [],
+      contextParentId: null,
+      chatStackId: null,
+      defaultStackId: "def",
+      stacks: [{ id: "def", stack: defaultPromptStack() }],
+      replayReasoning: false,
+      contextBooks: [
+        {
+          id: "book",
+          name: "Book",
+          source: "chat" as const,
+          book: { ...defaultContextBook(), entries: [entry] },
+        },
+      ],
+    }
+    expect(assembleContextPreview(input).contextEntries[0]?.status).toBe(
+      "unmatched"
+    )
+    expect(
+      assembleContextPreview({ ...input, draftText: "A castle nearby" })
+        .contextEntries[0]?.status
+    ).toBe("included")
+  })
   it("resolves the instance default stack with no chat path", () => {
     const preview = assembleContextPreview({
       nodes: [],

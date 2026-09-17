@@ -5,6 +5,16 @@ import { toast } from "sonner"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { Button } from "@/components/ui/button"
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
   Card,
   CardContent,
   CardDescription,
@@ -65,6 +75,10 @@ export function ProviderSettings({
   const [models, setModels] = useState<ProviderModel[]>([])
   const [catalog, setCatalog] = useState<CatalogModel[]>([])
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<{
+    id: string
+    name: string
+  } | null>(null)
 
   const handleCatalogChange = useCallback(
     (next: CatalogModel[]) => {
@@ -116,6 +130,7 @@ export function ProviderSettings({
     trpc.workspace.deleteProvider.mutationOptions({
       onSuccess: () => {
         toast.success("Provider deleted")
+        setDeleteTarget(null)
         void invalidateTitleModel()
         onSaved()
         void queryClient.invalidateQueries(trpc.workspace.get.queryFilter())
@@ -176,7 +191,7 @@ export function ProviderSettings({
             transition={transition}
           />
         </ProviderProfileFields>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button onClick={() => void save()}>
             {editingId ? "Update provider" : "Save provider"}
           </Button>
@@ -196,11 +211,15 @@ export function ProviderSettings({
                 key={provider.id}
                 className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-muted px-3 py-2 text-sm"
               >
-                <div className="min-w-0">
-                  <span className="font-medium">{provider.name}</span>
-                  <Badge variant="secondary" className="ml-2">
-                    {providerKindLabel(provider.kind)}
-                  </Badge>
+                <div className="min-w-0 flex-1">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <span className="min-w-0 truncate font-medium">
+                      {provider.name}
+                    </span>
+                    <Badge variant="secondary" className="shrink-0">
+                      {providerKindLabel(provider.kind)}
+                    </Badge>
+                  </div>
                   <p className="truncate text-xs text-muted-foreground">
                     {enabled.length
                       ? `${enabled.length} in chats${
@@ -214,7 +233,7 @@ export function ProviderSettings({
                       : "no models enabled"}
                   </p>
                 </div>
-                <div className="flex gap-1">
+                <div className="flex flex-wrap gap-1">
                   <Button
                     size="sm"
                     variant="outline"
@@ -241,8 +260,9 @@ export function ProviderSettings({
                     variant="ghost"
                     className="text-destructive"
                     onClick={() =>
-                      deleteProvider.mutate({
+                      setDeleteTarget({
                         id: provider.id,
+                        name: provider.name,
                       })
                     }
                   >
@@ -257,6 +277,37 @@ export function ProviderSettings({
           )}
         </div>
       </CardContent>
+      <AlertDialog
+        open={deleteTarget != null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteTarget(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete provider?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteTarget
+                ? `Delete “${deleteTarget.name}”? Chats using its models will need another provider.`
+                : null}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={deleteProvider.isPending}
+              onClick={() => {
+                if (!deleteTarget) return
+                if (editingId === deleteTarget.id) resetEditor()
+                deleteProvider.mutate({ id: deleteTarget.id })
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   )
 }

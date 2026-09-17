@@ -17,6 +17,11 @@ import {
 } from "@/lib/agent/parts"
 import { reservedBuiltInToolNames, selectNibchatTools } from "@/lib/agent/tools"
 import { getBuiltInToolsPrefs } from "@/lib/user-settings"
+import { effectiveContextBooks } from "@/lib/chat-service"
+import {
+  resolveContextEntries,
+  type ContextScanMessage,
+} from "@/lib/context-books"
 import {
   beginResumeAssistant,
   finalizeStreamingAssistantWithSnapshot,
@@ -295,11 +300,33 @@ export async function createGenerationResponse(
         variableOverrides ?? parsePromptVariableValues(chat?.variables_json)
       ),
     }
+    const contextBooks = await effectiveContextBooks(userId, assistant.chat_id)
+    const scanMessages: ContextScanMessage[] = contextNodes.flatMap((node) => {
+      if (
+        node.excluded_from_context ||
+        (node.role !== "user" && node.role !== "assistant")
+      )
+        return []
+      const text = parseJson<Parts>(node.parts_json, [])
+        .flatMap((part) => (part.type === "text" ? [part.text] : []))
+        .join("\n")
+      return [{ role: node.role, text }]
+    })
+    const resolvedEntries = resolveContextEntries({
+      books: contextBooks,
+      messages: scanMessages,
+      scanDepth: config.contextScanDepth,
+      macroContext,
+    })
+    const macroContextWithBooks = {
+      ...macroContext,
+      contextEntries: resolvedEntries.namespaces,
+    }
     const [mcp, builtInPrefs] = await Promise.all([
       prepareMcpTools({
         includeInstructionsText: mcpServerInstructionsEnabled,
         reservedToolNames: reservedBuiltInToolNames,
-        macroContext,
+        macroContext: macroContextWithBooks,
       }),
       getBuiltInToolsPrefs(userId),
     ])
@@ -310,7 +337,7 @@ export async function createGenerationResponse(
       stack: promptStack,
       pathMessages,
       mcpServerInstructionsText: mcp.instructionsText,
-      macroContext,
+      macroContext: macroContextWithBooks,
     })
 
     let orderedParts: Parts = [...seedParts]

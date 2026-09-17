@@ -87,7 +87,7 @@ export function KvEntriesEditor({
           ) : (
             <div key={index} className="flex flex-wrap items-center gap-2">
               <Input
-                className="min-w-[8rem] flex-1"
+                className="min-w-0 flex-1 sm:min-w-[8rem]"
                 value={entry.name}
                 onChange={(event) => {
                   const next = [...entries]
@@ -99,7 +99,7 @@ export function KvEntriesEditor({
                 aria-label={`${label} name ${index + 1}`}
               />
               <Input
-                className="min-w-[12rem] flex-[2]"
+                className="min-w-0 flex-[2] sm:min-w-[12rem]"
                 value={entry.value}
                 onChange={(event) => {
                   const next = [...entries]
@@ -204,7 +204,7 @@ function HeaderEntryRow({
     <div className="space-y-1">
       <div className="flex flex-wrap items-center gap-2">
         <Input
-          className="min-w-[8rem] flex-1"
+          className="min-w-0 flex-1 sm:min-w-[8rem]"
           value={entry.name}
           onChange={(event) => {
             setHeaderInvalid(false)
@@ -219,7 +219,7 @@ function HeaderEntryRow({
         />
         <MacroEditor
           editorRef={valueRef}
-          className="min-w-[12rem] flex-[2]"
+          className="min-w-0 flex-[2] sm:min-w-[12rem]"
           value={entry.value}
           onChange={(value) => {
             setHeaderInvalid(false)

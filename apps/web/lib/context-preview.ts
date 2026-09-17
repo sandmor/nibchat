@@ -17,6 +17,12 @@ import {
   idleSinceFromPath,
   normalizeTimeZone,
 } from "@/lib/prompt-macros"
+import {
+  resolveContextEntries,
+  type ContextBookSource,
+  type ContextEntryDecision,
+  type ContextScanMessage,
+} from "@/lib/context-books"
 
 export const TOKEN_ESTIMATE_TOOLTIP =
   "Approximate. Actual usage depends on model tokenizer."
@@ -264,6 +270,7 @@ export type AssembledContextPreviewData = {
   warnings: ContextPreviewWarning[]
   summary: AssembledContextSummary
   excludedMessages: ExcludedMessagePreview[]
+  contextEntries: ContextEntryDecision[]
 }
 
 export type ContextPreviewOverlay = {
@@ -294,6 +301,10 @@ export type AssembleContextPreviewInput = {
   /** Conversation identity for chat-scoped prompt macros. */
   chat?: { id: string; created_at: string } | null
   variableOverrides?: Record<string, unknown>
+  contextBooks?: ContextBookSource[]
+  contextScanDepth?: number | null
+  /** Unsent composer text participates in activation without becoming history. */
+  draftText?: string
 }
 
 function overlayContextNodes(
@@ -340,21 +351,60 @@ export function assembleContextPreview(
     pdfInputMode,
   })
   const chat = chatIdentityFromRow(input.chat)
+  const macroContext = {
+    now: input.now ?? new Date(),
+    timeZone: normalizeTimeZone(input.timeZone),
+    idleSince: idleSinceFromPath(contextNodes),
+    ...(chat ? { chat } : {}),
+    variables: resolvePromptVariableValues(
+      resolved.stack.variables ?? [],
+      input.variableOverrides
+    ),
+  }
+  const scanMessages: ContextScanMessage[] = contextNodes.flatMap((node) => {
+    if (
+      node.excluded_from_context ||
+      (node.role !== "user" && node.role !== "assistant")
+    )
+      return []
+    const text = parseJson<Parts>(node.parts_json, [])
+      .flatMap((part) => (part.type === "text" ? [part.text] : []))
+      .join("\n")
+    return [{ role: node.role, text }]
+  })
+  if (input.draftText?.trim())
+    scanMessages.push({ role: "user", text: input.draftText })
+  const contextEntries = resolveContextEntries({
+    books: input.contextBooks ?? [],
+    messages: scanMessages,
+    scanDepth: input.contextScanDepth,
+    macroContext,
+  })
   const assembled = assemblePromptContext({
     stack: resolved.stack,
     pathMessages,
     mcpServerInstructionsText: input.mcpServerInstructionsText,
     macroContext: {
-      now: input.now ?? new Date(),
-      timeZone: normalizeTimeZone(input.timeZone),
-      idleSince: idleSinceFromPath(contextNodes),
-      ...(chat ? { chat } : {}),
-      variables: resolvePromptVariableValues(
-        resolved.stack.variables ?? [],
-        input.variableOverrides
-      ),
+      ...macroContext,
+      contextEntries: contextEntries.namespaces,
     },
   })
+  const hasContextInsertion = resolved.stack.modules.some(
+    (module) =>
+      module.kind === "prompt" &&
+      module.enabled &&
+      /{{\s*contextEntries\b/i.test(module.body)
+  )
+  if (
+    !hasContextInsertion &&
+    contextEntries.decisions.some((entry) => entry.status === "included")
+  ) {
+    assembled.warnings.push({
+      moduleId: "__context-books",
+      message:
+        "Context entries matched, but this prompt stack has no contextEntries macro",
+    })
+  }
   const preview = summarizeAssembledContext({
     system: assembled.system,
     turns: assembled.turns,
@@ -373,6 +423,7 @@ export function assembleContextPreview(
     warnings: [...assembled.warnings, ...preview.extraWarnings],
     summary: preview.summary,
     excludedMessages: preview.excludedMessages,
+    contextEntries: contextEntries.decisions,
   }
 }
 

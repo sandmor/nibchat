@@ -9,6 +9,7 @@ import {
 import { promptVariableValueSchema } from "@/lib/prompt-stack"
 import type { ModelConfig } from "@/lib/providers"
 import { reasoningPreferencesSchema } from "@/lib/reasoning"
+import { scanDepthSchema } from "@/lib/chat-settings"
 import type { SpaceRow } from "@/lib/types"
 
 const variableNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
@@ -26,6 +27,7 @@ const modelIdentitySchema = z.object({
 })
 
 export const SPACE_SAMPLING_KEYS = [
+  "contextScanDepth",
   "temperature",
   "maxOutputTokens",
   "topP",
@@ -39,6 +41,8 @@ export const SPACE_SAMPLING_KEYS = [
 export type SpaceSamplingKey = (typeof SPACE_SAMPLING_KEYS)[number]
 
 const spaceSettingsShape = z.object({
+  contextScanDepth: slotSchema(scanDepthSchema).optional(),
+  contextBooks: z.array(z.string().min(1)).max(MAX_COLLECTION).optional(),
   promptStack: slotSchema(z.string().min(1)).optional(),
   variables: z
     .record(variableNameSchema, slotSchema(promptVariableValueSchema))
@@ -86,6 +90,7 @@ export type ChatSettingsSource = {
   promptStackId: string | null
   variables: Record<string, unknown>
   model: ModelConfig
+  contextBookIds?: string[]
 }
 
 export type ResolvedChatSettings = {
@@ -93,6 +98,7 @@ export type ResolvedChatSettings = {
     promptStackId: string | null
     variables: Record<string, unknown>
     model: ModelConfig
+    contextBookIds: string[]
   }
   locks: ChatSettingLocks
   chain: SpaceRecord[]
@@ -306,10 +312,18 @@ export function resolveChatSettings(input: {
   }
   let promptStackId = input.chat.promptStackId
   const variables: Record<string, unknown> = { ...input.chat.variables }
+  const contextBookIds: string[] = []
+  const seenContextBooks = new Set<string>()
 
   for (const space of chain) {
     const source: SpaceLockSource = { spaceId: space.id, spaceName: space.name }
     const settings = space.settings
+    for (const bookId of settings.contextBooks ?? []) {
+      if (!seenContextBooks.has(bookId)) {
+        seenContextBooks.add(bookId)
+        contextBookIds.push(bookId)
+      }
+    }
     applyEnabledSlot(
       settings.promptStack,
       source,
@@ -369,7 +383,17 @@ export function resolveChatSettings(input: {
   }
 
   return {
-    effective: { promptStackId, variables, model },
+    effective: {
+      promptStackId,
+      variables,
+      model,
+      contextBookIds: [
+        ...contextBookIds,
+        ...(input.chat.contextBookIds ?? []).filter(
+          (id) => !seenContextBooks.has(id)
+        ),
+      ],
+    },
     locks,
     chain,
   }
@@ -459,6 +483,7 @@ export const spaceNameSchema = z.string().trim().min(1).max(MAX_NAME)
 export const spaceDescriptionSchema = z.string().max(MAX_DESCRIPTION)
 
 export const SETTING_SLOT_LABELS: Record<string, string> = {
+  contextScanDepth: "Context scan depth",
   promptStack: "Prompt stack",
   model: "Model",
   reasoning: "Reasoning",

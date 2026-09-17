@@ -90,6 +90,7 @@ export function useWorkspaceChrome() {
 }
 
 type InstanceSettings = {
+  chatDefaults: import("@/lib/providers").ModelConfig
   themes: ThemeRecord[]
   lightThemeId: string
   darkThemeId: string
@@ -99,6 +100,13 @@ type InstanceSettings = {
     id: string
     name: string
     stack: PromptStackDocument
+    created_at: string
+    updated_at: string
+  }>
+  contextBooks: Array<{
+    id: string
+    name: string
+    book: import("@/lib/context-books").ContextBookDocument
     created_at: string
     updated_at: string
   }>

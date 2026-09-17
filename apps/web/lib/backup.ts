@@ -98,6 +98,21 @@ const promptStackRowSchema = z
     updated_at: z.string(),
   })
   .loose()
+const contextBookRowSchema = z
+  .object({
+    id: z.string(),
+    user_id: z.string(),
+    name: z.string(),
+    book_json: z.string(),
+    created_at: z.string(),
+    updated_at: z.string(),
+  })
+  .loose()
+const chatContextBookRowSchema = z.object({
+  chat_id: z.string(),
+  context_book_id: z.string(),
+  position: z.number().int().nonnegative(),
+})
 
 const mcpServerProfileSchema = z
   .object({
@@ -170,6 +185,7 @@ const userPreferencesSchema = z.object({
   default_prompt_stack_id: z.string(),
   theme_mode: z.enum(["system", "light", "dark"]),
   builtin_tools_json: z.string(),
+  chat_defaults_json: z.string().default("{}"),
   created_at: z.string(),
   updated_at: z.string(),
 })
@@ -199,6 +215,8 @@ export const backupSchema = z.object({
   providerProfiles: z.array(providerProfileSchema).optional().default([]),
   mcpServerProfiles: z.array(mcpServerProfileSchema).optional().default([]),
   promptStacks: z.array(promptStackRowSchema).optional().default([]),
+  contextBooks: z.array(contextBookRowSchema).optional().default([]),
+  chatContextBooks: z.array(chatContextBookRowSchema).optional().default([]),
   spaces: z.array(spaceRowSchema).optional().default([]),
   themes: z.array(themeBackupSchema).optional().default([]),
   attachments: z.array(attachmentBackupSchema).optional().default([]),

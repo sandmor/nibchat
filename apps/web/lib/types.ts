@@ -261,6 +261,19 @@ export interface PromptStacksTable {
   created_at: string
   updated_at: string
 }
+export interface ContextBooksTable {
+  id: string
+  user_id: string
+  name: string
+  book_json: string
+  created_at: string
+  updated_at: string
+}
+export interface ChatContextBooksTable {
+  chat_id: string
+  context_book_id: string
+  position: number
+}
 export interface SpacesTable {
   id: string
   user_id: string
@@ -333,6 +346,8 @@ export interface DB {
   import_assets: ImportAssetsTable
   import_space_mappings: ImportSpaceMappingsTable
   prompt_stacks: PromptStacksTable
+  context_books: ContextBooksTable
+  chat_context_books: ChatContextBooksTable
   themes: ThemesTable
   instance: InstanceTable
   provider_profiles: ProviderProfilesTable
@@ -393,6 +408,7 @@ export interface DB {
     theme_mode: "system" | "light" | "dark"
     /** `{ disabled: string[] }` JSON. Empty disabled list means all tools on. */
     builtin_tools_json: string
+    chat_defaults_json: string
     created_at: string
     updated_at: string
   }

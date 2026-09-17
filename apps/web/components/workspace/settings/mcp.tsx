@@ -5,6 +5,16 @@ import { useMutation, useQuery } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { InformationCircleIcon } from "@hugeicons/core-free-icons"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -220,6 +230,10 @@ export function McpSettings() {
   const [form, setForm] = useState<FormState>(emptyForm)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [pending, setPending] = useState<Record<string, PendingReview>>({})
+  const [deleteProfile, setDeleteProfile] = useState<{
+    id: string
+    name: string
+  } | null>(null)
   const warnedRuntime = useRef(false)
 
   useEffect(() => {
@@ -263,6 +277,7 @@ export function McpSettings() {
     trpc.workspace.deleteMcpProfile.mutationOptions({
       onSuccess: async () => {
         toast.success("MCP server deleted")
+        setDeleteProfile(null)
         await refetch()
       },
       onError: (error) =>
@@ -337,7 +352,7 @@ export function McpSettings() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
-        <div className="grid gap-3 rounded-lg border bg-muted/20 p-4 sm:grid-cols-2">
+        <div className="grid min-w-0 gap-3 rounded-lg border bg-muted/20 p-3 sm:grid-cols-2 sm:p-4 [&>*]:min-w-0">
           <div>
             <Label htmlFor="mcp-name">Name</Label>
             <Input
@@ -555,16 +570,20 @@ export function McpSettings() {
               const approvedNames = new Set(profile.toolAllowlist)
               return (
                 <div key={profile.id} className="rounded-lg border p-4">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium">{profile.name}</span>
-                    <Badge variant="outline">{profile.transport}</Badge>
-                    <Badge variant="outline">{profile.protocolMode}</Badge>
-                    {!profile.runtimeSupported ? (
-                      <Badge variant="destructive">
-                        Unavailable in this runtime
-                      </Badge>
-                    ) : null}
-                    <span className="ml-auto text-xs text-muted-foreground">
+                  <div className="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:flex-wrap sm:items-center sm:gap-2">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <span className="min-w-0 truncate font-medium">
+                        {profile.name}
+                      </span>
+                      <Badge variant="outline">{profile.transport}</Badge>
+                      <Badge variant="outline">{profile.protocolMode}</Badge>
+                      {!profile.runtimeSupported ? (
+                        <Badge variant="destructive">
+                          Unavailable in this runtime
+                        </Badge>
+                      ) : null}
+                    </div>
+                    <span className="text-xs break-all text-muted-foreground sm:ml-auto">
                       {profile.namespace}__tool
                     </span>
                   </div>
@@ -611,9 +630,9 @@ export function McpSettings() {
                         {approved.map((tool) => (
                           <li
                             key={tool.name}
-                            className="flex items-center gap-2"
+                            className="flex min-w-0 items-center gap-2"
                           >
-                            <span>
+                            <span className="min-w-0 truncate">
                               {tool.title || tool.name}
                               {!approvedNames.has(tool.name) ? (
                                 <span className="text-muted-foreground">
@@ -667,13 +686,14 @@ export function McpSettings() {
                       type="button"
                       size="sm"
                       variant="ghost"
+                      className="text-destructive"
                       disabled={deleteMut.isPending}
-                      onClick={() => {
-                        if (
-                          window.confirm(`Delete MCP server “${profile.name}”?`)
-                        )
-                          deleteMut.mutate({ id: profile.id })
-                      }}
+                      onClick={() =>
+                        setDeleteProfile({
+                          id: profile.id,
+                          name: profile.name,
+                        })
+                      }
                     >
                       Delete
                     </Button>
@@ -693,7 +713,7 @@ export function McpSettings() {
                         return (
                           <label
                             key={tool.name}
-                            className="flex items-center gap-2 text-sm"
+                            className="flex min-w-0 items-center gap-2 text-sm"
                           >
                             <Switch
                               checked={review.selected.includes(tool.name)}
@@ -712,7 +732,9 @@ export function McpSettings() {
                               }
                               size="sm"
                             />
-                            <span>{tool.title || tool.name}</span>
+                            <span className="min-w-0 truncate">
+                              {tool.title || tool.name}
+                            </span>
                             {badge && badge !== "removed" ? (
                               <Badge variant="outline" className="text-[10px]">
                                 {badge}
@@ -747,6 +769,40 @@ export function McpSettings() {
           ) : null}
         </div>
       </CardContent>
+      <AlertDialog
+        open={deleteProfile != null}
+        onOpenChange={(open) => {
+          if (!open) setDeleteProfile(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete MCP server?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteProfile
+                ? `Delete “${deleteProfile.name}”? Tools, resources, and prompts from this server will no longer be available.`
+                : null}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={deleteMut.isPending}
+              onClick={() => {
+                if (!deleteProfile) return
+                if (editingId === deleteProfile.id) {
+                  setEditingId(null)
+                  setForm(emptyForm())
+                }
+                deleteMut.mutate({ id: deleteProfile.id })
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   )
 }

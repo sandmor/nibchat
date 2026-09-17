@@ -1,6 +1,8 @@
 import "server-only"
 import { db } from "@/lib/db"
 import { id, now, parseJson } from "@/lib/domain"
+import { chatConfigSchema, DEFAULT_CHAT_CONFIG } from "@/lib/chat-settings"
+import type { ModelConfig } from "@/lib/providers"
 import {
   appearanceToJson,
   parseAppearance,
@@ -13,6 +15,7 @@ import {
   readStackJson,
   type PromptStackDocument,
 } from "@/lib/prompt-stack"
+import { readContextBook } from "@/lib/context-books"
 import {
   builtInToolsToJson,
   defaultBuiltInToolsPrefs,
@@ -73,6 +76,7 @@ export async function ensureUserSettings(userId: string) {
       default_prompt_stack_id: defaultPromptStackId,
       theme_mode: "system" as const,
       builtin_tools_json: builtInToolsToJson(defaultBuiltInToolsPrefs),
+      chat_defaults_json: JSON.stringify(DEFAULT_CHAT_CONFIG),
       created_at: timestamp,
       updated_at: timestamp,
     }
@@ -100,6 +104,12 @@ export async function getUserSettings(userId: string) {
     .where("user_id", "=", userId)
     .orderBy("name")
     .execute()
+  const contextBooks = await db
+    .selectFrom("context_books")
+    .selectAll()
+    .where("user_id", "=", userId)
+    .orderBy("name")
+    .execute()
   return {
     ...prefs,
     themes: themes.map(
@@ -118,7 +128,35 @@ export async function getUserSettings(userId: string) {
       created_at: stack.created_at,
       updated_at: stack.updated_at,
     })),
+    contextBooks: contextBooks.map((row) => ({
+      id: row.id,
+      name: row.name,
+      book: readContextBook(parseJson(row.book_json, {})),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    })),
   }
+}
+
+export async function setChatDefaults(userId: string, config: ModelConfig) {
+  await ensureUserSettings(userId)
+  const parsed = chatConfigSchema.parse(config)
+  if (parsed.providerId) {
+    const provider = await db
+      .selectFrom("provider_profiles")
+      .select("id")
+      .where("id", "=", parsed.providerId)
+      .executeTakeFirst()
+    if (!provider) throw new Error("Provider not found")
+  }
+  await db
+    .updateTable("user_preferences")
+    .set({
+      chat_defaults_json: JSON.stringify({ ...DEFAULT_CHAT_CONFIG, ...parsed }),
+      updated_at: now(),
+    })
+    .where("user_id", "=", userId)
+    .execute()
 }
 
 export async function setUserThemeSlots(

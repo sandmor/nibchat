@@ -1,7 +1,4 @@
-import {
-  reasoningPreferencesSchema,
-  reasoningSupportSchema,
-} from "@/lib/reasoning"
+import { reasoningSupportSchema } from "@/lib/reasoning"
 import "server-only"
 import { initTRPC, TRPCError } from "@trpc/server"
 import { z, ZodError } from "zod"
@@ -16,21 +13,25 @@ import {
   createChat,
   createMessage,
   createPromptStack,
+  createContextBook,
   createProvider,
   createSpace,
   finishSetup,
   deleteChat,
   deleteNode,
   deletePromptStack,
+  deleteContextBook,
   deleteProvider,
   deleteSpace,
   duplicatePromptStack,
+  duplicateContextBook,
   forkMessageParts,
   moveNode,
   replaceMessage,
   getInstanceSettings,
   getWorkspace,
   listPromptStacks,
+  listChatContextBooks,
   searchChats,
   selectChild,
   setNodeContextExcluded,
@@ -48,6 +49,8 @@ import {
   setInstanceDefaultPromptStack,
   setInstanceTitleModel,
   updatePromptStack,
+  updateContextBook,
+  setChatContextBooks,
   updateProvider,
   updateSpace,
   updateChat,
@@ -76,6 +79,7 @@ import {
 } from "@/lib/imports/model"
 import { listAvailableProviders, listProviders } from "@/lib/providers"
 import { appearanceSchema } from "@/lib/appearance"
+import { contextBookDocumentSchema } from "@/lib/context-books"
 import {
   MAX_COLLECTION,
   MAX_DESCRIPTION,
@@ -104,7 +108,12 @@ import {
   messagePartSchema,
   type Parts,
 } from "@/lib/agent/parts"
-import { setUserThemeMode, setBuiltInToolsPrefs } from "@/lib/user-settings"
+import {
+  setUserThemeMode,
+  setBuiltInToolsPrefs,
+  setChatDefaults,
+} from "@/lib/user-settings"
+import { chatConfigSchema } from "@/lib/chat-settings"
 import { chatViewStateSchema } from "@/lib/chat-view-state"
 import { providerConnectionConfigSchema } from "@/lib/provider-config"
 import { db } from "@/lib/db"
@@ -173,19 +182,7 @@ const userProcedure = t.procedure.use(({ ctx, next }) => {
   return next({ ctx: { ...ctx, user: ctx.user } })
 })
 
-const modelConfigSchema = z.object({
-  reasoning: reasoningPreferencesSchema.optional(),
-  providerId: z.string().optional(),
-  model: z.string().optional(),
-  temperature: z.number().optional(),
-  maxOutputTokens: z.number().optional(),
-  topP: z.number().optional(),
-  frequencyPenalty: z.number().optional(),
-  presencePenalty: z.number().optional(),
-  stopSequences: z.array(z.string()).optional(),
-  providerOptions: z.record(z.string(), z.unknown()).optional(),
-  replayReasoning: z.boolean().optional(),
-})
+const modelConfigSchema = chatConfigSchema
 const importScopeSchema = z.object({
   source: sourceSchema,
   parserVersion: z.number().int().positive(),
@@ -312,6 +309,7 @@ export const appRouter = t.router({
               .record(z.string(), promptVariableValueSchema)
               .optional(),
             spaceId: z.string().nullable().optional(),
+            contextBookIds: z.array(z.string()).max(MAX_COLLECTION).optional(),
           })
           .optional()
       )
@@ -322,7 +320,8 @@ export const appRouter = t.router({
           input?.config,
           input?.promptStackId,
           input?.variables,
-          input?.spaceId
+          input?.spaceId,
+          input?.contextBookIds
         )
       ),
     getOrCreateImportSpace: userProcedure
@@ -810,6 +809,12 @@ export const appRouter = t.router({
       const settings = await getInstanceSettings(ctx.user.id)
       return ctx.isOwner ? settings : { ...settings, titleModelConfig: null }
     }),
+    setChatDefaults: userProcedure
+      .input(chatConfigSchema)
+      .mutation(async ({ ctx, input }) => {
+        await setChatDefaults(ctx.user.id, input)
+        return { ok: true }
+      }),
     listThemes: userProcedure.query(({ ctx }) => listThemes(ctx.user.id)),
     createTheme: userProcedure
       .input(
@@ -893,6 +898,71 @@ export const appRouter = t.router({
     listPromptStacks: userProcedure.query(({ ctx }) =>
       listPromptStacks(ctx.user.id)
     ),
+    listChatContextBooks: userProcedure
+      .input(z.object({ chatId: z.string() }))
+      .query(({ ctx, input }) =>
+        listChatContextBooks(ctx.user.id, input.chatId)
+      ),
+    createContextBook: userProcedure
+      .input(
+        z.object({
+          name: z.string().min(1).max(MAX_NAME),
+          book: contextBookDocumentSchema.optional(),
+          spaceId: z.string().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await createContextBook({ ...input, userId: ctx.user.id })
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    updateContextBook: userProcedure
+      .input(
+        z.object({
+          id: z.string(),
+          name: z.string().min(1).max(MAX_NAME).optional(),
+          book: contextBookDocumentSchema.optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          const { id, ...patch } = input
+          return await updateContextBook(ctx.user.id, id, patch)
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    duplicateContextBook: userProcedure
+      .input(z.object({ id: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await duplicateContextBook(ctx.user.id, input.id)
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    deleteContextBook: userProcedure
+      .input(z.object({ id: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          await deleteContextBook(ctx.user.id, input.id)
+          return { ok: true }
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    setChatContextBooks: userProcedure
+      .input(
+        z.object({
+          chatId: z.string(),
+          bookIds: z.array(z.string()).max(MAX_COLLECTION),
+        })
+      )
+      .mutation(async ({ ctx, input }) =>
+        setChatContextBooks(ctx.user.id, input.chatId, input.bookIds)
+      ),
     createPromptStack: userProcedure
       .input(
         z.object({

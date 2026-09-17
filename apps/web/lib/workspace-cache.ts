@@ -7,6 +7,8 @@ import type { ChatRow, NodeRow, SpaceRow, Parts } from "@/lib/types"
 import { chatViewStateToJson, type ChatViewState } from "@/lib/chat-view-state"
 
 export type WorkspaceData = {
+  chatDefaults?: import("@/lib/providers").ModelConfig
+  defaultPromptStackId?: string
   chats: ChatRow[]
   spaces: SpaceRow[]
   chat: ChatRow | null
@@ -185,7 +187,12 @@ export function hydrateStreamingNodeParts(
 /** Apply the server's terminal snapshot without waiting for a workspace fetch. */
 export function patchTerminalGeneration(
   data: WorkspaceData | undefined,
-  input: { generationId: string; node: NodeRow | null; chatId: string; nodeId: string }
+  input: {
+    generationId: string
+    node: NodeRow | null
+    chatId: string
+    nodeId: string
+  }
 ): WorkspaceData | undefined {
   if (!data || data.chat?.id !== input.chatId) return data
   const nodes = input.node

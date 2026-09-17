@@ -54,6 +54,12 @@ import { isOrphanPromptStackRef, resolvePromptStack } from "@/lib/prompt-stack"
 import { displayChatTitle } from "@/lib/chat-title"
 import { cn } from "@/lib/utils"
 import { ModelPicker } from "./model-picker"
+import { ScanDepthField } from "./scan-depth-field"
+import {
+  inheritedContextBooks,
+  SpaceContextBooksCard,
+} from "./context-book-picker"
+import { DEFAULT_CHAT_CONFIG } from "@/lib/chat-settings"
 import { ReasoningPicker } from "./reasoning-picker"
 import { StringVariableField } from "./string-variable-field"
 import { usePrefersReducedMotion } from "./hooks"
@@ -83,6 +89,8 @@ function defaultSlotValue(
   if (key === "reasoning") {
     return { enabled: false, value: {} }
   }
+  if (key === "contextScanDepth")
+    return { enabled: false, value: DEFAULT_CHAT_CONFIG.contextScanDepth }
   if (key === "replayReasoning") {
     return { enabled: false, value: true }
   }
@@ -115,6 +123,7 @@ export function SpaceView({
   const chats = workspaceQuery.data?.chats ?? initial.chats
   const space = spaces.find((row) => row.id === spaceId) ?? null
   const stacks = settingsQuery.data?.promptStacks ?? []
+  const contextBooks = settingsQuery.data?.contextBooks ?? []
   const defaultStackId = settingsQuery.data?.defaultPromptStackId ?? null
 
   const [name, setName] = useState(space?.name ?? "")
@@ -214,6 +223,7 @@ export function SpaceView({
     [spaceId, spaceRecords]
   )
   const effectiveStackId = resolvedForSpace.effective.promptStackId
+  const inheritedBooks = inheritedContextBooks(spaceId, spaces, false)
   const resolvedStack = resolvePromptStack({
     chatStackId: effectiveStackId,
     defaultStackId,
@@ -430,7 +440,8 @@ export function SpaceView({
                 <h2 className="text-sm font-medium">Defaults</h2>
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   Locked values apply to every chat here. Unlock to keep a value
-                  without forcing it.
+                  without forcing it. Context books add to parent spaces instead
+                  of replacing them.
                 </p>
               </div>
               {addDefaults}
@@ -438,6 +449,24 @@ export function SpaceView({
 
             <div className="grid">
               <AnimatePresence initial={false}>
+                <RevealItem
+                  key="contextBooks"
+                  itemKey="contextBooks"
+                  animate={animate}
+                  transition={transition}
+                >
+                  <SpaceContextBooksCard
+                    books={contextBooks}
+                    attachedIds={settings.contextBooks ?? []}
+                    inherited={inheritedBooks}
+                    onChange={(nextBooks) =>
+                      patchSettings((current) => ({
+                        ...current,
+                        contextBooks: nextBooks,
+                      }))
+                    }
+                  />
+                </RevealItem>
                 {settings.promptStack ? (
                   <RevealItem
                     key="promptStack"
@@ -873,7 +902,12 @@ function SamplingDefinition({
         })
       }}
     >
-      {field === "stopSequences" ? (
+      {field === "contextScanDepth" ? (
+        <ScanDepthField
+          value={slot.value as number | null}
+          onChange={(value) => patchSlot({ value })}
+        />
+      ) : field === "stopSequences" ? (
         <StopSequencesField
           value={slot.value as string[]}
           onCommit={(value) => patchSlot({ value })}

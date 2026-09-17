@@ -17,6 +17,8 @@ export const MAX_COLLECTION = 100
 export const MAX_SPACES = 500
 export const MAX_SPACE_DEPTH = 8
 export const MAX_DESCRIPTION = 2_000
+/** Prompt-stack history windows and context-book keyword scan depth. */
+export const MAX_SCAN_DEPTH = 10_000
 export const MAX_PROMPT_CHARS = 50_000
 export const MAX_BLOB_CHARS = 10_000_000
 export const MAX_HEADER_VALUE_CHARS = 10_000

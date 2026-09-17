@@ -4,6 +4,8 @@ import type { ProviderSummary } from "../types"
 import { ProviderSettings } from "./providers"
 import { TitleModelSettings } from "./title-model"
 import { PromptStackSettings } from "./prompt-stacks"
+import { ContextBookSettings } from "./context-books"
+import { ChatDefaultsSettings } from "./chat-defaults"
 import { BuiltInToolsSettings } from "./builtin-tools"
 import { BackupSettings } from "./backup"
 import { AppearanceSettings } from "./appearance"
@@ -22,11 +24,11 @@ export function SettingsPanel({
 }) {
   return (
     <section className="flex h-full min-h-0 flex-col overflow-hidden">
-      <header className="shrink-0 border-b px-5 py-5">
+      <header className="shrink-0 border-b px-4 py-4 sm:px-5 sm:py-5">
         <p className="text-xs font-semibold tracking-[.18em] text-primary uppercase">
           {isOwner ? "Instance controls" : "Personal settings"}
         </p>
-        <h1 className="mt-1 text-xl font-semibold">
+        <h1 className="mt-1 text-lg font-semibold text-pretty sm:text-xl">
           {isOwner
             ? "Providers, MCP, prompts, appearance & users"
             : "Appearance, tools & prompt stacks"}
@@ -35,7 +37,7 @@ export function SettingsPanel({
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         <div
           data-theme-group="settings"
-          className="mx-auto grid max-w-4xl gap-7 p-5 sm:p-8"
+          className="mx-auto grid max-w-4xl gap-6 p-4 sm:gap-7 sm:p-8"
         >
           {isOwner && (
             <>
@@ -47,7 +49,9 @@ export function SettingsPanel({
               <McpSettings />
             </>
           )}
+          <ChatDefaultsSettings providers={providers} />
           <PromptStackSettings />
+          <ContextBookSettings />
           <BuiltInToolsSettings />
           <ConversationImportSettings />
           {isOwner && (

@@ -40,9 +40,11 @@ export type MacroContext = {
   chat?: { id: string; createdAt: Date }
   /** Prompt-stack variables resolved for this conversation. */
   variables?: Readonly<Record<string, PromptVariableValue>>
+  /** Context-book content, resolved once before prompt expansion. */
+  contextEntries?: Readonly<Record<string, string>>
 }
 
-export type MacroPickerGroupId = "chat" | "time" | "transform"
+export type MacroPickerGroupId = "chat" | "context" | "time" | "transform"
 
 export type MacroDefinition = {
   name: string
@@ -75,12 +77,14 @@ export type MacroPickerGroup = {
 
 export const MACRO_PICKER_GROUP_LABELS: Record<MacroPickerGroupId, string> = {
   chat: "Chat",
+  context: "Context books",
   time: "Time",
   transform: "Transforms",
 }
 
 const MACRO_PICKER_GROUP_ORDER: readonly MacroPickerGroupId[] = [
   "chat",
+  "context",
   "time",
   "transform",
 ]
@@ -217,6 +221,7 @@ export function defaultMacroContext(
     ...(src.idleSince ? { idleSince: src.idleSince } : {}),
     ...(src.chat ? { chat: src.chat } : {}),
     ...(src.variables ? { variables: src.variables } : {}),
+    ...(src.contextEntries ? { contextEntries: src.contextEntries } : {}),
   }
 }
 
@@ -277,6 +282,18 @@ function encodeBase62(bytes: Uint8Array): string {
 }
 
 export const builtInMacroDefinitions: readonly MacroDefinition[] = [
+  {
+    name: "contextEntries",
+    summary: "Activated context-book entries",
+    snippet: '{{contextEntries("default")}}',
+    group: "context",
+    preview: "snippet",
+    evaluate(args, context) {
+      if (args.length > 1) return null
+      const namespace = (args[0] ?? "default").trim() || "default"
+      return context.contextEntries?.[namespace] ?? ""
+    },
+  },
   {
     name: "time",
     summary: "Local time",

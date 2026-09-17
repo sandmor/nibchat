@@ -1,7 +1,12 @@
 import type { ModelMessage } from "ai"
 import { z } from "zod"
 import { parseJson } from "@/lib/domain"
-import { MAX_COLLECTION, MAX_NAME, MAX_PROMPT_CHARS } from "@/lib/limits"
+import {
+  MAX_COLLECTION,
+  MAX_NAME,
+  MAX_PROMPT_CHARS,
+  MAX_SCAN_DEPTH,
+} from "@/lib/limits"
 import {
   defaultMacroContext,
   expandPromptMacros,
@@ -58,7 +63,7 @@ export const promptModuleSchema = z.object({
   enabled: z.boolean(),
   body: z.string().max(MAX_PROMPT_CHARS),
   placement: placementSchema,
-  depth: z.number().int().min(0).max(10_000).optional(),
+  depth: z.number().int().min(0).max(MAX_SCAN_DEPTH).optional(),
   role: moduleRoleSchema,
 })
 
@@ -206,7 +211,7 @@ export function defaultPromptStack(): PromptStackDocument {
         kind: "prompt",
         name: "System",
         enabled: true,
-        body: "You are a helpful assistant.",
+        body: "You are a helpful assistant.\n\n{{contextEntries}}",
         placement: "relative",
         role: "system",
       },

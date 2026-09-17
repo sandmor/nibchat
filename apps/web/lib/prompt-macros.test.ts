@@ -25,6 +25,16 @@ const context = defaultMacroContext({
 })
 
 describe("prompt macros", () => {
+  it("renders context-book namespaces", () => {
+    expect(
+      expandPromptMacros(
+        '{{contextEntries}}|{{contextEntries("instructions")}}|{{contextEntries("missing")}}',
+        defaultMacroContext({
+          contextEntries: { default: "background", instructions: "be concise" },
+        })
+      )
+    ).toBe("background|be concise|")
+  })
   it("formats the built-in date and time macros in the supplied time zone", () => {
     expect(
       expandPromptMacros(

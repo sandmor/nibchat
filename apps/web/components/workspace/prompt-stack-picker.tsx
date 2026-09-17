@@ -93,7 +93,7 @@ export function PromptStackPicker({
   async function selectStack(stackId: string | null) {
     if (locked) return
     if (!chatId) {
-      onDraftChange?.(stackId)
+      onDraftChange?.(stackId ?? defaultId)
       setOpen(false)
       return
     }
@@ -107,8 +107,8 @@ export function PromptStackPicker({
       </p>
       {isOrphan ? (
         <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          Previous stack was removed. Generations use the instance default until
-          you pick another.
+          Previous stack was removed. Generations use your default until you
+          pick another.
         </p>
       ) : null}
       <ul className="max-h-60 space-y-1 overflow-y-auto">
@@ -122,7 +122,7 @@ export function PromptStackPicker({
             onClick={() => void selectStack(null)}
           >
             <span className="min-w-0 flex-1 truncate">
-              Instance default
+              Use new-chat default
               {defaultStack ? (
                 <span className="text-muted-foreground">
                   {" "}

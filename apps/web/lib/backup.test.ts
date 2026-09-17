@@ -126,6 +126,7 @@ describe("parseBackup", () => {
     expect(withField.userPreferences[0]?.builtin_tools_json).toBe(
       JSON.stringify({ disabled: ["question"] })
     )
+    expect(withField.userPreferences[0]?.chat_defaults_json).toBe("{}")
   })
 
   it("requires a context-exclusion flag for every message node", () => {

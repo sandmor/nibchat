@@ -49,6 +49,12 @@ describe("applySchema", () => {
       "api_key"
     )
     await db.selectFrom("prompt_stacks").select("id").limit(1).execute()
+    await db.selectFrom("context_books").select("id").limit(1).execute()
+    await db
+      .selectFrom("chat_context_books")
+      .select("chat_id")
+      .limit(1)
+      .execute()
     await db.selectFrom("themes").select("id").limit(1).execute()
     await db.selectFrom("user").select("id").limit(1).execute()
     await db.selectFrom("attachments").select("id").limit(1).execute()
@@ -117,6 +123,13 @@ describe("applySchema", () => {
         name: "builtin_tools_json",
         notnull: 1,
         dflt_value: `'{"disabled":[]}'`,
+      })
+    )
+    expect(prefColumns).toContainEqual(
+      expect.objectContaining({
+        name: "chat_defaults_json",
+        notnull: 1,
+        dflt_value: `'{}'`,
       })
     )
     await db.destroy()

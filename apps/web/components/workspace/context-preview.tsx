@@ -41,12 +41,17 @@ import { parseProviderModelsJson } from "@/lib/provider-models"
 import { replayReasoningEnabled } from "@/lib/reasoning-replay"
 import { useTRPC } from "@/lib/trpc-react"
 import type { NodeRow } from "@/lib/types"
+import type {
+  ContextBookSource,
+  ContextEntryDecision,
+} from "@/lib/context-books"
 import type { ComposerDraft } from "./conversation-session-store"
 import { useBrowserTimeZone, useMediaMdUp } from "./hooks"
 
 export type { AssembledContextPreviewData }
 
 type PreviewModelConfig = {
+  contextScanDepth?: number | null
   providerId?: string
   model?: string
   replayReasoning?: boolean
@@ -67,6 +72,7 @@ type ContextPreviewGraph = {
   variableOverrides?: Record<string, unknown>
   modelConfig: PreviewModelConfig
   providers: ReadonlyArray<PreviewProviderKind>
+  contextBooks?: ContextBookSource[]
 }
 
 const ContextPreviewGraphContext = createContext<ContextPreviewGraph | null>(
@@ -82,11 +88,13 @@ export function ContextPreviewProvider({
   variableOverrides,
   modelConfig,
   providers,
+  contextBooks,
   children,
 }: ContextPreviewGraph & { children: ReactNode }) {
   const providerId = modelConfig.providerId
   const model = modelConfig.model
   const replayReasoning = modelConfig.replayReasoning
+  const contextScanDepth = modelConfig.contextScanDepth
   const chatId = chat?.id
   const chatCreatedAt = chat?.created_at
   const value = useMemo(
@@ -100,8 +108,9 @@ export function ContextPreviewProvider({
           ? { id: chatId, created_at: chatCreatedAt }
           : undefined,
       variableOverrides,
-      modelConfig: { providerId, model, replayReasoning },
+      modelConfig: { providerId, model, replayReasoning, contextScanDepth },
       providers,
+      contextBooks,
     }),
     [
       nodes,
@@ -114,7 +123,9 @@ export function ContextPreviewProvider({
       providerId,
       model,
       replayReasoning,
+      contextScanDepth,
       providers,
+      contextBooks,
     ]
   )
   return (
@@ -137,7 +148,8 @@ const HYDRATION_PREVIEW_NOW = new Date(0)
 function useAssembledContextPreview(
   contextParentId: string | null,
   refreshedAt: Date | null,
-  overlay?: ContextPreviewOverlay
+  overlay?: ContextPreviewOverlay,
+  draftText?: string
 ) {
   const graph = useContextPreviewGraph()
   const trpc = useTRPC()
@@ -180,12 +192,16 @@ function useAssembledContextPreview(
       overlay,
       chat: graph.chat,
       variableOverrides: graph.variableOverrides,
+      contextBooks: graph.contextBooks,
+      contextScanDepth: graph.modelConfig.contextScanDepth,
+      draftText,
     })
   }, [
     graph,
     contextParentId,
     overlay,
     refreshedAt,
+    draftText,
     settingsQuery.data,
     surfacesQuery.data,
     timeZone,
@@ -291,6 +307,10 @@ function ContextPreviewCompose({
         </ul>
       ) : null}
 
+      {data.contextEntries.length > 0 ? (
+        <ContextEntriesPreview entries={data.contextEntries} />
+      ) : null}
+
       <Collapsible className="space-y-1">
         <CollapsibleTrigger className="flex w-full items-center justify-between rounded-md text-left text-xs font-medium text-muted-foreground hover:text-foreground">
           System prompt
@@ -381,6 +401,89 @@ function ContextPreviewCompose({
   )
 }
 
+const ENTRY_STATUS_LABEL: Record<ContextEntryDecision["status"], string> = {
+  included: "Included",
+  unmatched: "Not triggered",
+  disabled: "Off",
+  budget: "Over budget",
+  invalid: "Invalid",
+}
+
+function ContextEntriesPreview({
+  entries,
+}: {
+  entries: ContextEntryDecision[]
+}) {
+  const included = entries.filter((entry) => entry.status === "included")
+  const skipped = entries.filter((entry) => entry.status !== "included")
+  return (
+    <Collapsible className="space-y-1">
+      <CollapsibleTrigger className="flex w-full items-center justify-between rounded-md text-left text-xs font-medium text-muted-foreground hover:text-foreground">
+        Context books
+        <span className="text-[11px] font-normal">
+          {included.length ? `${included.length} included` : "None triggered"}
+        </span>
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <div className="space-y-2 rounded-lg border p-2">
+          {included.length ? (
+            <ul className="space-y-2">
+              {included.map((entry) => (
+                <li
+                  key={`${entry.bookId}:${entry.entryId}`}
+                  className="space-y-0.5 text-xs"
+                >
+                  <p className="font-medium">
+                    {entry.bookName} · {entry.entryTitle}
+                  </p>
+                  <p className="text-[11px] text-muted-foreground">
+                    {entry.reason}
+                    {entry.namespace !== "default"
+                      ? ` · ${entry.namespace}`
+                      : ""}
+                  </p>
+                  {entry.content ? (
+                    <p className="line-clamp-3 text-[11px] whitespace-pre-wrap text-muted-foreground">
+                      {entry.content}
+                    </p>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Attached books did not match the current messages.
+            </p>
+          )}
+          {skipped.length ? (
+            <Collapsible>
+              <CollapsibleTrigger className="flex w-full items-center justify-between text-[11px] text-muted-foreground hover:text-foreground">
+                Not inserted
+                <span>{skipped.length}</span>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <ul className="mt-1 space-y-1">
+                  {skipped.map((entry) => (
+                    <li
+                      key={`${entry.bookId}:${entry.entryId}`}
+                      className="text-[11px] text-muted-foreground"
+                    >
+                      <span className="font-medium text-foreground">
+                        {entry.entryTitle}
+                      </span>
+                      {` · ${ENTRY_STATUS_LABEL[entry.status]} · ${entry.reason}`}
+                    </li>
+                  ))}
+                </ul>
+              </CollapsibleContent>
+            </Collapsible>
+          ) : null}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
 const SHEET_CONTENT_CLASS =
   "top-auto right-0 bottom-0 left-0 flex max-h-[min(90dvh,32rem)] w-full max-w-none translate-x-0 translate-y-0 flex-col gap-3 overflow-hidden rounded-t-4xl rounded-b-none p-4"
 
@@ -431,12 +534,27 @@ export function ContextPreviewStrip({
   const mdUp = useMediaMdUp()
   const [open, setOpen] = useState(false)
   const [refreshedAt, setRefreshedAt] = useState<Date | null>(null)
-  const data = useAssembledContextPreview(contextParentId, refreshedAt, overlay)
+  const data = useAssembledContextPreview(
+    contextParentId,
+    refreshedAt,
+    overlay,
+    overlay ? undefined : draft?.text
+  )
   const merged = draft
     ? mergeDraftSummary(data.summary, draft, data.pdfInputMode)
     : data.summary
   const segments = formatCompactSegments(merged)
-  const label = segments.map((segment) => segment.text).join(" · ")
+  const includedEntries = data.contextEntries.filter(
+    (entry) => entry.status === "included"
+  ).length
+  const label = [
+    ...segments.map((segment) => segment.text),
+    includedEntries
+      ? `${includedEntries} ${includedEntries === 1 ? "entry" : "entries"}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" · ")
   const title = overlay ? "This branch" : "Next send"
 
   const panel = (

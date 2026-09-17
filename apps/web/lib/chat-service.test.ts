@@ -2168,7 +2168,9 @@ describe("prompt stacks", () => {
       .select("prompt_stack_id")
       .where("id", "=", chat.id)
       .executeTakeFirstOrThrow()
-    expect(afterClear.prompt_stack_id).toBeNull()
+    expect(afterClear.prompt_stack_id).toBe(
+      (await getUserSettings(userId)).default_prompt_stack_id
+    )
 
     await setChatPromptStack(userId, chat.id, stack.id)
     await deletePromptStack(userId, stack.id)
@@ -2481,7 +2483,8 @@ function fixturePrefs(
   light: string,
   dark: string,
   stack: string,
-  builtinToolsJson = JSON.stringify({ disabled: [] })
+  builtinToolsJson = JSON.stringify({ disabled: [] }),
+  chatDefaultsJson = "{}"
 ) {
   return {
     user_id: ownerId,
@@ -2490,6 +2493,7 @@ function fixturePrefs(
     default_prompt_stack_id: stack,
     theme_mode: "system" as const,
     builtin_tools_json: builtinToolsJson,
+    chat_defaults_json: chatDefaultsJson,
     created_at: "t",
     updated_at: "t",
   }
@@ -2659,7 +2663,7 @@ describe("spaces", () => {
       undefined,
       space.id
     )
-    expect(chat.prompt_stack_id).toBeNull()
+    expect(chat.prompt_stack_id).toBe(stackId)
     expect(chat.space_id).toBe(space.id)
     const stored = parseJson<ModelConfig>(chat.model_config_json, {})
     expect(stored.temperature).not.toBe(0.15)

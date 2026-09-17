@@ -45,7 +45,9 @@ import {
 import {
   bindVariableLocksToStack,
   resolveChatSettings,
+  spaceChain,
   spaceFromRow,
+  spacesById,
 } from "@/lib/space"
 import { SpacePicker } from "./space-picker"
 import {
@@ -75,11 +77,13 @@ import {
 } from "@/lib/chat-view-state"
 import { motionTransition, shouldAnimate } from "@/lib/appearance"
 import type { ModelConfigLocal } from "./types"
-import { seedDraftModelConfig, usePrefersReducedMotion } from "./hooks"
+import { usePrefersReducedMotion } from "./hooks"
+import { DEFAULT_CHAT_CONFIG } from "@/lib/chat-settings"
 import { ReasoningPicker } from "./reasoning-picker"
 import { ModelPicker } from "./model-picker"
 import { GenerationParameters } from "./generation-parameters"
 import { PromptStackPicker } from "./prompt-stack-picker"
+import { ContextBookPicker } from "./context-book-picker"
 import { ChatVariablesPicker } from "./chat-variables-picker"
 import { ChatHeaderMore } from "./chat-header-more"
 import { ChatTranscript } from "./chat-transcript"
@@ -200,15 +204,17 @@ export function ChatView({
   const [renameTitle, setRenameTitle] = useState("")
   const [parametersOpen, setParametersOpen] = useState(false)
   const [stackOpen, setStackOpen] = useState(false)
+  const [booksOpen, setBooksOpen] = useState(false)
   const [variablesOpen, setVariablesOpen] = useState(false)
   const [spaceOpen, setSpaceOpen] = useState(false)
   const [draftModelConfig, setDraftModelConfig] = useState<ModelConfigLocal>(
-    () => seedDraftModelConfig(initial.chats, chromeProviders)
+    () => initial.chatDefaults ?? { ...DEFAULT_CHAT_CONFIG }
   )
   const [draftPromptStackId, setDraftPromptStackId] = useState<string | null>(
-    null
+    initial.defaultPromptStackId ?? null
   )
   const [draftVariables, setDraftVariables] = useState<PromptVariableValues>({})
+  const [draftContextBookIds, setDraftContextBookIds] = useState<string[]>([])
   const [draftSpaceId, setDraftSpaceId] = useState<string | null>(
     initialDraftSpaceId
   )
@@ -570,6 +576,15 @@ export function ChatView({
     : draftVariables
   const spaceId = data.chat?.space_id ?? draftSpaceId
   const storedPromptStackId = data.chat?.prompt_stack_id ?? draftPromptStackId
+  const chatContextBooksQuery = useQuery({
+    ...trpc.workspace.listChatContextBooks.queryOptions({
+      chatId: data.chat?.id ?? "",
+    }),
+    enabled: Boolean(data.chat),
+  })
+  const chatContextBookIds = data.chat
+    ? (chatContextBooksQuery.data ?? [])
+    : draftContextBookIds
   const resolvedSettings = useMemo(
     () =>
       resolveChatSettings({
@@ -578,6 +593,7 @@ export function ChatView({
           promptStackId: storedPromptStackId,
           variables: storedVariables,
           model: storedModelConfig,
+          contextBookIds: chatContextBookIds,
         },
         spaces: (data.spaces ?? []).map(spaceFromRow),
       }),
@@ -586,6 +602,7 @@ export function ChatView({
       storedPromptStackId,
       storedVariables,
       storedModelConfig,
+      chatContextBookIds,
       data.spaces,
     ]
   )
@@ -607,6 +624,33 @@ export function ChatView({
     resolvedSettings.locks,
     declaredVariableNames
   )
+  const previewContextBooks = useMemo(() => {
+    const books = settingsQuery.data?.contextBooks ?? []
+    const spaceBookIds = new Set(
+      spaceChain(
+        spaceId,
+        spacesById((data.spaces ?? []).map(spaceFromRow))
+      ).flatMap((space) => space.settings.contextBooks ?? [])
+    )
+    return resolvedSettings.effective.contextBookIds.flatMap((id) => {
+      const book = books.find((item) => item.id === id)
+      return book
+        ? [
+            {
+              ...book,
+              source: spaceBookIds.has(id)
+                ? ("space" as const)
+                : ("chat" as const),
+            },
+          ]
+        : []
+    })
+  }, [
+    data.spaces,
+    resolvedSettings.effective.contextBookIds,
+    settingsQuery.data?.contextBooks,
+    spaceId,
+  ])
 
   const invalidateWorkspace = async () => {
     await queryClient.invalidateQueries(trpc.workspace.get.queryFilter())
@@ -1065,6 +1109,7 @@ export function ChatView({
           promptStackId: draftPromptStackId,
           variables: draftVariables,
           spaceId: draftSpaceId,
+          contextBookIds: draftContextBookIds,
         })
         .then((chat) => {
           // Track the new id before replace so stream UI still matches on /chat/new.
@@ -1680,11 +1725,13 @@ export function ChatView({
       providerId: activeModelConfig.providerId,
       model: activeModelConfig.model,
       replayReasoning: activeModelConfig.replayReasoning,
+      contextScanDepth: activeModelConfig.contextScanDepth,
     }),
     [
       activeModelConfig.providerId,
       activeModelConfig.model,
       activeModelConfig.replayReasoning,
+      activeModelConfig.contextScanDepth,
     ]
   )
   const treeSlotSignature = useTreeDraftSlotSignature(data.chat?.id)
@@ -1745,6 +1792,7 @@ export function ChatView({
       variableOverrides={resolvedSettings.effective.variables}
       modelConfig={previewModelConfig}
       providers={providers}
+      contextBooks={previewContextBooks}
     >
       <section
         ref={paneRef}
@@ -1809,6 +1857,13 @@ export function ChatView({
                 onChanged={invalidateWorkspace}
                 lockedBy={settingLocks.promptStack}
               />
+              <ContextBookPicker
+                chatId={data.chat?.id}
+                spaceId={spaceId}
+                spaces={data.spaces}
+                draftIds={draftContextBookIds}
+                onDraftChange={setDraftContextBookIds}
+              />
               <ChatVariablesPicker
                 chatId={data.chat?.id}
                 promptStackId={effectivePromptStackId}
@@ -1871,6 +1926,10 @@ export function ChatView({
                   },
                 },
                 {
+                  label: "Context books",
+                  onSelect: () => setBooksOpen(true),
+                },
+                {
                   label: "Variables",
                   onSelect: () => setVariablesOpen(true),
                 },
@@ -1884,7 +1943,7 @@ export function ChatView({
               ]}
               items={[
                 {
-                  label: "Parameters",
+                  label: "Chat settings",
                   onSelect: () => setParametersOpen(true),
                 },
               ]}
@@ -1901,6 +1960,16 @@ export function ChatView({
           onDraftChange={setDraftPromptStackId}
           onChanged={invalidateWorkspace}
           lockedBy={settingLocks.promptStack}
+        />
+        <ContextBookPicker
+          hideTrigger
+          open={booksOpen}
+          onOpenChange={setBooksOpen}
+          chatId={data.chat?.id}
+          spaceId={spaceId}
+          spaces={data.spaces}
+          draftIds={draftContextBookIds}
+          onDraftChange={setDraftContextBookIds}
         />
         <ChatVariablesPicker
           hideTrigger

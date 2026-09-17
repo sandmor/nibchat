@@ -17,6 +17,7 @@ import { hasCustomReasoning, withReasoning } from "@/lib/reasoning"
 import type { ModelConfigLocal } from "./types"
 import type { ChatSettingLocks } from "@/lib/space"
 import { SpaceLockHint } from "./space-lock-hint"
+import { ScanDepthField } from "./scan-depth-field"
 
 export function GenerationParameters({
   open,
@@ -25,6 +26,7 @@ export function GenerationParameters({
   chatId,
   onChange,
   locks,
+  defaults = false,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -32,6 +34,7 @@ export function GenerationParameters({
   chatId?: string
   onChange: (config: ModelConfigLocal) => void | Promise<void>
   locks?: ChatSettingLocks
+  defaults?: boolean
 }) {
   const replayId = useId()
   const [config, setConfig] = useState(existing)
@@ -81,7 +84,11 @@ export function GenerationParameters({
       )
       onOpenChange(false)
       toast.success(
-        chatId ? "Parameters applied" : "Parameters set for this conversation"
+        defaults
+          ? "New chat defaults saved"
+          : chatId
+            ? "Settings applied"
+            : "Settings set for this conversation"
       )
     } catch (error) {
       toast.error(
@@ -96,9 +103,9 @@ export function GenerationParameters({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[min(36rem,calc(100dvh-2rem))] gap-3 overflow-y-auto sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle>Generation parameters</DialogTitle>
+          <DialogTitle>Chat settings</DialogTitle>
         </DialogHeader>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-1 gap-2 min-[380px]:grid-cols-2">
           {(
             [
               ["temperature", "Temperature"],
@@ -131,6 +138,15 @@ export function GenerationParameters({
             </div>
           ))}
         </div>
+        <ScanDepthField
+          compact
+          value={config.contextScanDepth}
+          disabled={Boolean(locks?.contextScanDepth)}
+          onChange={(contextScanDepth) =>
+            setConfig({ ...config, contextScanDepth })
+          }
+        />
+        <SpaceLockHint lock={locks?.contextScanDepth} />
         <div className="grid gap-1.5">
           <Label className="text-[11px]" htmlFor="gen-stop">
             Stop sequences
@@ -172,7 +188,11 @@ export function GenerationParameters({
           className="w-full"
           disabled={pending}
         >
-          {chatId ? "Apply to this chat" : "Use for next message"}
+          {defaults
+            ? "Save new chat defaults"
+            : chatId
+              ? "Apply to this chat"
+              : "Use for this chat"}
         </Button>
       </DialogContent>
     </Dialog>

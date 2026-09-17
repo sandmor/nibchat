@@ -1,6 +1,12 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { db, migrate, toDbBool } from "@/lib/db"
-import { getBuiltInToolsPrefs, setBuiltInToolsPrefs } from "@/lib/user-settings"
+import {
+  getBuiltInToolsPrefs,
+  setBuiltInToolsPrefs,
+  setChatDefaults,
+} from "@/lib/user-settings"
+import { defaultModelConfig } from "@/lib/providers"
+import { createChat } from "@/lib/chat-service"
 
 const ownerId = "builtin-tools-owner"
 const guestId = "builtin-tools-guest"
@@ -62,5 +68,23 @@ describe("built-in tool preferences", () => {
     expect(await getBuiltInToolsPrefs(guestId)).toEqual({
       disabled: ["question"],
     })
+  })
+})
+
+describe("new chat defaults", () => {
+  it("seeds new chats from saved defaults instead of recent chats", async () => {
+    await setChatDefaults(ownerId, {
+      contextScanDepth: 8,
+      temperature: 0.4,
+    })
+    const baseline = await defaultModelConfig(ownerId)
+    expect(JSON.parse((await createChat(ownerId)).model_config_json)).toEqual(
+      baseline
+    )
+    await createChat(ownerId, "Custom chat", {
+      contextScanDepth: 100,
+      temperature: 1.2,
+    })
+    expect(await defaultModelConfig(ownerId)).toEqual(baseline)
   })
 })

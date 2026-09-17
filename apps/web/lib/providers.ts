@@ -5,7 +5,6 @@ import {
   selectedReasoning,
   hasCustomReasoning,
   reasoningRequest,
-  type ReasoningSelection,
 } from "@/lib/reasoning"
 import { createAnthropic } from "@ai-sdk/anthropic"
 import { createOpenAI } from "@ai-sdk/openai"
@@ -36,20 +35,8 @@ import {
   withReasoningOptions,
 } from "@/lib/openai-responses"
 
-export type ModelConfig = {
-  reasoning?: Record<string, ReasoningSelection>
-  providerId?: string
-  model?: string
-  temperature?: number
-  maxOutputTokens?: number
-  topP?: number
-  frequencyPenalty?: number
-  presencePenalty?: number
-  stopSequences?: string[]
-  providerOptions?: Record<string, unknown>
-  /** Set false to omit reasoning from replay, even on a Responses endpoint. */
-  replayReasoning?: boolean
-}
+/** Existing callers use this name for the shared per-chat configuration. */
+export type ModelConfig = import("@/lib/chat-settings").ChatConfig
 
 /** Identifies the only Responses metadata that may be replayed for a turn. */
 export type ResponsesReplayTarget = {
@@ -150,37 +137,33 @@ export async function listAvailableProviders() {
   }))
 }
 
-/** Seed newly created chats from the latest chat or first provider profile. */
+/** Personal defaults seed new chats; existing conversations are never consulted. */
 export async function defaultModelConfig(userId: string): Promise<ModelConfig> {
-  const recent = await db
-    .selectFrom("chats")
-    .select("model_config_json")
-    .where("user_id", "=", userId)
-    .orderBy("updated_at", "desc")
-    .limit(1)
-    .executeTakeFirst()
-  if (recent) {
-    const cfg = parseJson<ModelConfig>(recent.model_config_json, {})
-    if (cfg.providerId) {
-      return {
-        providerId: cfg.providerId,
-        ...(cfg.reasoning ? { reasoning: cfg.reasoning } : {}),
-        ...(cfg.model ? { model: cfg.model } : {}),
-      }
-    }
+  const { ensureUserSettings } = await import("@/lib/user-settings")
+  const { parseChatDefaults } = await import("@/lib/chat-settings")
+  const prefs = await ensureUserSettings(userId)
+  const config = parseChatDefaults(prefs.chat_defaults_json)
+  if (config.providerId) {
+    const selected = await db
+      .selectFrom("provider_profiles")
+      .select("id")
+      .where("id", "=", config.providerId)
+      .executeTakeFirst()
+    if (selected) return resolveModelConfig(userId, config)
   }
   const provider = await db
     .selectFrom("provider_profiles")
     .select(["id", "models_json"])
     .orderBy("created_at", "asc")
     .executeTakeFirst()
-  if (!provider) return {}
+  if (!provider) return { ...config, providerId: undefined, model: undefined }
   const model = firstEnabledModelId(
     parseProviderModelsJson(provider.models_json)
   )
   return {
+    ...config,
     providerId: provider.id,
-    ...(model ? { model } : {}),
+    model: model ?? undefined,
   }
 }
 

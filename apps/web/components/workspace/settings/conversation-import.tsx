@@ -70,6 +70,10 @@ import {
   type ImportFormatPort,
 } from "@/lib/imports/model"
 import { ImportPaused, runImportConversation } from "@/lib/imports/runner"
+import {
+  extractSillyTavernWorldInfo,
+  type WorldInfoImport,
+} from "@/lib/imports/silly-tavern-world-info"
 
 type Counts = {
   imported: number
@@ -98,6 +102,12 @@ type ImportPlan = {
   entityIds: string[]
   characterOnly: string[]
   omitted: number
+}
+type DiscoveredBook = WorldInfoImport & {
+  id: string
+  source: string
+  selected: boolean
+  destination: "library" | "root" | `entity:${string}`
 }
 
 const FORMATS = [chatgptFormat, sillyTavernFormat]
@@ -131,6 +141,7 @@ export function ConversationImportSettings() {
   const [warningRecord, setWarningRecord] = useState<ImportRecord | null>(null)
   const [format, setFormat] = useState<ImportFormatPort>(chatgptFormat)
   const [entities, setEntities] = useState<ImportEntity[]>([])
+  const [contextBooks, setContextBooks] = useState<DiscoveredBook[]>([])
   const [bulkEntityDestination, setBulkEntityDestination] = useState("managed")
   const [root, setRoot] = useState("managed")
   const [entityDestinations, setEntityDestinations] = useState<
@@ -152,6 +163,9 @@ export function ConversationImportSettings() {
   const omit = useMutation(trpc.workspace.omitImportAsset.mutationOptions())
   const nodes = useMutation(trpc.workspace.appendImportNodes.mutationOptions())
   const publish = useMutation(trpc.workspace.publishImport.mutationOptions())
+  const createContextBook = useMutation(
+    trpc.workspace.createContextBook.mutationOptions()
+  )
   const grouped = format.id === "sillytavern"
   const groupedRows = grouped
     ? groupImportRows(entities, visible, records, filter.query)
@@ -231,6 +245,7 @@ export function ConversationImportSettings() {
     setSelected(new Set())
     setSelectedEntities(new Set())
     setEntities([])
+    setContextBooks([])
     setResult(null)
     setFailures([])
     storeRef.current?.close()
@@ -248,6 +263,30 @@ export function ConversationImportSettings() {
       })
       const ordered = await store.records(emptyImportFilter)
       const detected = await store.entities()
+      const extractedBooks =
+        format.id === "sillytavern"
+          ? await extractSillyTavernWorldInfo(archive)
+          : []
+      const discoveredBooks: DiscoveredBook[] = extractedBooks.map(
+        (book, index) => {
+          const filename =
+            book.source
+              .split("/")
+              .at(-1)
+              ?.replace(/\.png$/i, "") ?? ""
+          const entity = detected.find(
+            (item) =>
+              item.metadata?.characterId === filename ||
+              item.aliases?.includes(`character:${filename}`)
+          )
+          return {
+            ...book,
+            id: `${book.source}:${index}`,
+            selected: true,
+            destination: entity ? `entity:${entity.id}` : "root",
+          }
+        }
+      )
       const chats = restoreSelection(
         ordered,
         format.id,
@@ -262,6 +301,7 @@ export function ConversationImportSettings() {
       setSelected(chats)
       setSelectedEntities(entityIds)
       setEntities(detected)
+      setContextBooks(discoveredBooks)
       setEntityDestinations(
         Object.fromEntries(
           detected.map((entity) => [entity.id, { mode: "managed" as const }])
@@ -312,6 +352,7 @@ export function ConversationImportSettings() {
     setSelected(new Set())
     setSelectedEntities(new Set())
     setEntities([])
+    setContextBooks([])
     setEntityDestinations({})
     storeRef.current = null
     archiveRef.current = null
@@ -326,10 +367,13 @@ export function ConversationImportSettings() {
       selectedEntities,
       entityDestinations
     )
+    const selectedBooks = contextBooks.filter((book) => book.selected)
     if (
       !store ||
       !archive ||
-      (!nextPlan.chats.length && !nextPlan.entityIds.length)
+      (!nextPlan.chats.length &&
+        !nextPlan.entityIds.length &&
+        !selectedBooks.length)
     )
       return
     const controller = new AbortController()
@@ -473,12 +517,43 @@ export function ConversationImportSettings() {
           setResult({ ...counts })
         }
       }
+      let importedBooks = 0
+      for (const book of selectedBooks) {
+        if (controller.signal.aborted) break
+        try {
+          const spaceId = book.destination.startsWith("entity:")
+            ? await resolveEntity(book.destination.slice("entity:".length))
+            : book.destination === "root"
+              ? (await rootSpace()).id
+              : undefined
+          await createContextBook.mutateAsync({
+            name:
+              book.name ??
+              book.source
+                .split("/")
+                .at(-1)
+                ?.replace(/\.(json|png)$/i, "") ??
+              "Imported context book",
+            book: book.book,
+            ...(spaceId ? { spaceId } : {}),
+          })
+          importedBooks++
+        } catch (error) {
+          counts.failed++
+          failed.push({
+            sourceId: book.source,
+            title: book.name ?? book.source,
+            reason: message(error, "Context-book import failed"),
+          })
+          setFailures([...failed])
+        }
+      }
       counts.omitted += nextPlan.omitted
       setResult({ ...counts })
       await queryClient.invalidateQueries(trpc.workspace.get.queryFilter())
       if (!controller.signal.aborted)
         toast.success(
-          importedMessage(counts.imported, nextPlan.characterOnly.length)
+          `${importedMessage(counts.imported, nextPlan.characterOnly.length)}${importedBooks ? ` · ${importedBooks} context ${importedBooks === 1 ? "book" : "books"}` : ""}`
         )
     } finally {
       abortRef.current = null
@@ -496,7 +571,7 @@ export function ConversationImportSettings() {
         </CardTitle>
         <CardDescription>
           {grouped
-            ? "Character cards become spaces. Select matching characters and chats separately. Importing a chat includes its character; you can import a character with no chats."
+            ? "Review characters, chats, and context books together. Character cards become spaces; embedded books follow their character by default, while archive books follow the import root."
             : "Exports are indexed in this browser. Selected conversations upload in resumable batches, without sending the export itself to the server."}
         </CardDescription>
       </CardHeader>
@@ -528,16 +603,23 @@ export function ConversationImportSettings() {
             >
               Choose {format.label} export
             </Button>
-            {(records.length || entities.length) && !indexing ? (
+            {(records.length || entities.length || contextBooks.length) &&
+            !indexing ? (
               <Button
                 onClick={() => void importSelected()}
                 disabled={
-                  busy || (!plan.chats.length && !plan.entityIds.length)
+                  busy ||
+                  (!plan.chats.length &&
+                    !plan.entityIds.length &&
+                    !contextBooks.some((book) => book.selected))
                 }
               >
                 {running
-                  ? `Importing ${processed}/${plan.chats.length || plan.entityIds.length}…`
-                  : importButtonLabel(plan)}
+                  ? `Importing ${processed}/${plan.chats.length || plan.entityIds.length || contextBooks.filter((book) => book.selected).length}…`
+                  : importButtonLabel(
+                      plan,
+                      contextBooks.filter((book) => book.selected).length
+                    )}
               </Button>
             ) : null}
             {running ? (
@@ -572,7 +654,7 @@ export function ConversationImportSettings() {
             {grouped ? " items" : " conversations"}
           </p>
         ) : null}
-        {records.length || entities.length ? (
+        {records.length || entities.length || contextBooks.length ? (
           <>
             <div className="flex flex-col gap-3 rounded-xl bg-muted/40 p-3 ring-1 ring-foreground/8">
               <div className="grid gap-1.5">
@@ -599,6 +681,99 @@ export function ConversationImportSettings() {
                 </Select>
               </div>
             </div>
+            {grouped && contextBooks.length ? (
+              <div className="grid gap-3 rounded-xl bg-muted/40 p-3 ring-1 ring-foreground/8">
+                <div>
+                  <h3 className="text-sm font-medium">Context books</h3>
+                  <p className="text-xs text-muted-foreground">
+                    Books discovered in this export are reviewed and imported
+                    with their related content. Unsupported entries stay
+                    disabled until reviewed.
+                  </p>
+                </div>
+                <div className="grid gap-2">
+                  {contextBooks.map((book) => (
+                    <div
+                      key={book.id}
+                      className="grid gap-2 rounded-lg border bg-background/50 p-3 sm:grid-cols-[1fr_minmax(12rem,auto)] sm:items-center"
+                    >
+                      <label className="flex min-w-0 items-start gap-2">
+                        <Switch
+                          size="sm"
+                          checked={book.selected}
+                          disabled={busy}
+                          onCheckedChange={(selected) =>
+                            setContextBooks((current) =>
+                              current.map((item) =>
+                                item.id === book.id
+                                  ? { ...item, selected }
+                                  : item
+                              )
+                            )
+                          }
+                        />
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-medium">
+                            {book.name ?? book.source.split("/").at(-1)}
+                          </span>
+                          <span className="block truncate text-xs text-muted-foreground">
+                            {book.book.entries.length} entries · {book.source}
+                            {book.issues.length
+                              ? ` · ${book.issues.length} need review`
+                              : ""}
+                          </span>
+                        </span>
+                      </label>
+                      <Select
+                        value={book.destination}
+                        items={{
+                          root: "Import root",
+                          library: "Library only",
+                          ...Object.fromEntries(
+                            entities.map((entity) => [
+                              `entity:${entity.id}`,
+                              entity.label,
+                            ])
+                          ),
+                        }}
+                        disabled={busy || !book.selected}
+                        onValueChange={(destination) =>
+                          destination &&
+                          setContextBooks((current) =>
+                            current.map((item) =>
+                              item.id === book.id
+                                ? {
+                                    ...item,
+                                    destination: String(
+                                      destination
+                                    ) as DiscoveredBook["destination"],
+                                  }
+                                : item
+                            )
+                          )
+                        }
+                      >
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="root">Import root</SelectItem>
+                          <SelectItem value="library">Library only</SelectItem>
+                          {entities.map((entity) => (
+                            <SelectItem
+                              key={entity.id}
+                              value={`entity:${entity.id}`}
+                            >
+                              {entity.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             <div className="flex flex-col gap-3 rounded-xl bg-muted/40 p-3 ring-1 ring-foreground/8">
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                 <Input
@@ -677,7 +852,7 @@ export function ConversationImportSettings() {
                 >
                   <SelectTrigger
                     size="sm"
-                    className="min-w-[9rem]"
+                    className="w-full min-w-0 sm:w-auto sm:min-w-[9rem]"
                     aria-label="Sort order"
                   >
                     <SelectValue />
@@ -716,7 +891,7 @@ export function ConversationImportSettings() {
                     }
                     extra={
                       <div className="flex flex-wrap items-center gap-2">
-                        <div className="min-w-[12rem] flex-1">
+                        <div className="min-w-0 flex-1 sm:min-w-[12rem]">
                           <DestinationSelect
                             value={bulkEntityDestination}
                             spaces={spaces}
@@ -1331,12 +1506,17 @@ function importedMessage(chats: number, characters: number) {
   return parts.length ? `Imported ${parts.join(" and ")}` : "Nothing to import"
 }
 
-function importButtonLabel(plan: ImportPlan) {
+function importButtonLabel(plan: ImportPlan, books = 0) {
+  if (!plan.chats.length && !plan.characterOnly.length && books)
+    return `Import ${books} context ${books === 1 ? "book" : "books"}`
+  const bookSuffix = books
+    ? ` and ${books} context ${books === 1 ? "book" : "books"}`
+    : ""
   if (plan.chats.length && plan.characterOnly.length)
-    return `Import ${plan.chats.length.toLocaleString()} chats and ${plan.characterOnly.length.toLocaleString()} characters`
+    return `Import ${plan.chats.length.toLocaleString()} chats and ${plan.characterOnly.length.toLocaleString()} characters${bookSuffix}`
   if (plan.characterOnly.length && !plan.chats.length)
-    return `Import ${plan.characterOnly.length.toLocaleString()} character${plan.characterOnly.length === 1 ? "" : "s"}`
-  return `Import ${plan.chats.length.toLocaleString()} selected`
+    return `Import ${plan.characterOnly.length.toLocaleString()} character${plan.characterOnly.length === 1 ? "" : "s"}${bookSuffix}`
+  return `Import ${plan.chats.length.toLocaleString()} selected${bookSuffix}`
 }
 
 function persistSelection(selected: Set<string>, source: string) {

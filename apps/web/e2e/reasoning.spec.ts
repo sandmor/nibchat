@@ -6,7 +6,9 @@ import {
   expectAssistantText,
   openChatParameters,
   openChatReasoning,
+  openNewChat,
   sendMessage,
+  streamingMarkers,
 } from "./helpers/workspace"
 
 test("configures compatible reasoning, persists the choice, and sends it through fallback", async ({
@@ -101,6 +103,47 @@ test("configures compatible reasoning, persists the choice, and sends it through
     expect(
       JSON.parse(await page.getByLabel("Provider-specific JSON").inputValue())
     ).toEqual({ "E2E Mock": { other: "kept" } })
+  } finally {
+    await llm.close()
+  }
+})
+
+test("expands live reasoning then collapses it when the answer starts", async ({
+  page,
+}) => {
+  const llm = await startMockLlm()
+  try {
+    await ensureWorkspace(page)
+    await ensureMockProvider(page, llm.baseUrl)
+    await openNewChat(page)
+
+    llm.enqueue({
+      reasoning: "REASONING_BLOCK_TOKEN secret plan",
+      text: "ANSWER_AFTER_REASONING",
+      hold: true,
+      holdAfterReasoning: true,
+    })
+    await sendMessage(page, "stream reasoning then answer")
+    await expect(streamingMarkers(page)).toHaveCount(1, { timeout: 15_000 })
+
+    llm.release()
+    const reasoningToken = page.getByText("REASONING_BLOCK_TOKEN")
+    await expect(reasoningToken).toBeVisible({ timeout: 15_000 })
+    const reasoningBlock = page.locator("details").filter({
+      has: page.locator("summary").filter({ hasText: /^Reasoning/ }),
+    })
+    await expect(reasoningBlock).toHaveJSProperty("open", true)
+
+    llm.release()
+    await expectAssistantText(page, "ANSWER_AFTER_REASONING", {
+      timeout: 30_000,
+    })
+    await expect(reasoningBlock).toHaveJSProperty("open", false)
+    await expect(reasoningToken).toBeHidden()
+
+    await reasoningBlock.locator("summary").click()
+    await expect(reasoningBlock).toHaveJSProperty("open", true)
+    await expect(reasoningToken).toBeVisible()
   } finally {
     await llm.close()
   }

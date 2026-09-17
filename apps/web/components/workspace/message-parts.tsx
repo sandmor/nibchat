@@ -1,6 +1,6 @@
 "use client"
 
-import { useRef, useState } from "react"
+import { useLayoutEffect, useRef, useState } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { ArrowUp02Icon, Pdf02Icon } from "@hugeicons/core-free-icons"
 import { Markdown } from "@/components/markdown"
@@ -12,8 +12,17 @@ import { coalesceAdjacentTextParts } from "@/lib/agent/parts"
 import type { Parts, ToolInvocationPart } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { BookmarkTab, useBlockOverflow } from "./long-block-nav"
-import { alignBlockInScrollport } from "./long-block-scroll"
-import { activitySummary, groupMessageActivity } from "./message-activity"
+import {
+  alignBlockInScrollport,
+  isScrollportAtLiveEdge,
+  nearestScrollport,
+} from "./long-block-scroll"
+import {
+  activitySummary,
+  groupMessageActivity,
+  isActivityGroupBusy,
+  shouldAutoCollapseActivity,
+} from "./message-activity"
 
 export function MessageParts({
   parts,
@@ -47,13 +56,14 @@ export function MessageParts({
     <>
       <div className="flex flex-col gap-3">
         {groupMessageActivity(coalesced).map(
-          ({ parts: group, activity, index }) => {
+          ({ parts: group, activity, index }, groupIndex, groups) => {
             if (activity) {
               return (
                 <ActivitySection
                   key={`activity-${index}`}
                   parts={group}
                   streaming={streaming}
+                  hasSuccessor={groupIndex < groups.length - 1}
                 />
               )
             }
@@ -229,17 +239,48 @@ function ToolPart({
 function ActivitySection({
   parts,
   streaming,
+  hasSuccessor,
 }: {
   parts: Parts
   streaming?: boolean
+  hasSuccessor: boolean
 }) {
   const blockRef = useRef<HTMLDetailsElement>(null)
-  const [open, setOpen] = useState(() => Boolean(streaming))
+  const busy = isActivityGroupBusy(parts)
+  const live = Boolean(streaming)
+  const [userToggled, setUserToggled] = useState(false)
+  const [open, setOpen] = useState(
+    () =>
+      !shouldAutoCollapseActivity({
+        streaming: live,
+        busy,
+        hasSuccessor,
+        userToggled: false,
+        atLiveEdge: true,
+      })
+  )
   const { overflowing, startVisible, nestedScroll } = useBlockOverflow(blockRef)
   const showJump = overflowing && !startVisible && !nestedScroll
   const label = parts.every((part) => part.type === "reasoning")
     ? "reasoning"
     : "activity"
+
+  useLayoutEffect(() => {
+    if (!open) return
+    const atLiveEdge = live
+      ? isScrollportAtLiveEdge(nearestScrollport(blockRef.current))
+      : true
+    if (
+      shouldAutoCollapseActivity({
+        streaming: live,
+        busy,
+        hasSuccessor,
+        userToggled,
+        atLiveEdge,
+      })
+    )
+      setOpen(false)
+  }, [busy, hasSuccessor, live, open, userToggled])
 
   return (
     <details
@@ -254,19 +295,12 @@ function ActivitySection({
         className="cursor-pointer px-3 py-3 focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:outline-none"
         onClick={(event) => {
           event.preventDefault()
+          setUserToggled(true)
           setOpen((current) => !current)
         }}
       >
         {activitySummary(parts)}
-        {streaming &&
-        parts.some(
-          (part) =>
-            part.type === "tool-invocation" &&
-            (part.state === "input-streaming" ||
-              part.state === "input-available")
-        )
-          ? " · Working…"
-          : null}
+        {live && busy ? " · Working…" : null}
       </summary>
       <div className="flex flex-col gap-3 px-3 pb-3">
         {parts.map((part, index) =>
@@ -274,7 +308,7 @@ function ActivitySection({
             <div key={`reasoning-${index}`} data-find-skip>
               <Markdown
                 className="text-xs"
-                streaming={streaming}
+                streaming={live && !hasSuccessor}
                 variant="reasoning"
               >
                 {part.text}

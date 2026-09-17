@@ -1608,6 +1608,9 @@ describe("generation abort + finalize", () => {
     const row = workspace.nodes.find((n) => n.id === assistant.id)
     expect(row?.status).toBe("complete")
     expect(
+      parseJson<Record<string, unknown>>(row!.metadata_json, {}).generationMs
+    ).toBeUndefined()
+    expect(
       nodeParts(row!)
         .filter((p) => p.type === "text" || p.type === "reasoning")
         .map((p) => p.text)
@@ -1682,6 +1685,76 @@ describe("generation abort + finalize", () => {
     expect(row?.status).toBe("stopped")
     const partial = nodeParts(row!)[0]
     expect(partial?.type === "text" ? partial.text : undefined).toBe("partial")
+  })
+
+  it("finalizeStreamingAssistant records generation duration", async () => {
+    const startedAt = new Date(Date.now() - 1_200).toISOString()
+    const chat = await createChat(userId, "Finalize duration")
+    const metadataOf = async (nodeId: string) => {
+      const workspace = await getWorkspace(userId, { chatId: chat.id })
+      return parseJson<Record<string, unknown>>(
+        workspace.nodes.find((n) => n.id === nodeId)!.metadata_json,
+        {}
+      )
+    }
+    const streaming = (metadata: Record<string, unknown>) =>
+      insertNode({
+        chatId: chat.id,
+        parentId: null,
+        role: "assistant",
+        parts: [],
+        status: "streaming",
+        metadata,
+      })
+
+    const complete = await streaming({ startedAt })
+    expect(
+      await finalizeStreamingAssistant({
+        nodeId: complete.id,
+        outcome: "complete",
+        parts: [{ type: "text", text: "done" }],
+      })
+    ).toBe("complete")
+    expect((await metadataOf(complete.id)).generationMs).toBeGreaterThanOrEqual(
+      1_200
+    )
+
+    const paused = await streaming({ startedAt, generationMs: 2_000 })
+    expect(
+      await finalizeStreamingAssistant({
+        nodeId: paused.id,
+        outcome: "awaiting_input",
+        parts: [{ type: "text", text: "hold" }],
+      })
+    ).toBe("awaiting_input")
+    expect((await metadataOf(paused.id)).generationMs).toBeGreaterThanOrEqual(
+      3_200
+    )
+
+    const stopped = await streaming({ startedAt })
+    expect(
+      await finalizeStreamingAssistant({
+        nodeId: stopped.id,
+        outcome: "aborted",
+        parts: [{ type: "text", text: "half" }],
+      })
+    ).toBe("stopped")
+    expect((await metadataOf(stopped.id)).generationMs).toBeGreaterThanOrEqual(
+      1_200
+    )
+
+    const errored = await streaming({ startedAt })
+    expect(
+      await finalizeStreamingAssistant({
+        nodeId: errored.id,
+        outcome: "error",
+        parts: [{ type: "text", text: "nope" }],
+        error: "boom",
+      })
+    ).toBe("error")
+    expect((await metadataOf(errored.id)).generationMs).toBeGreaterThanOrEqual(
+      1_200
+    )
   })
 
   it("second finalize returns superseded", async () => {

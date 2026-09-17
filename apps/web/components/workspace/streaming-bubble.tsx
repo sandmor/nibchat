@@ -3,6 +3,7 @@
 import { motion } from "motion/react"
 import { MessageParts } from "@/components/workspace/message-parts"
 import { LongBlockFrame } from "./long-block-nav"
+import { messageStatusLabel } from "@/lib/message-meta"
 import { useStreamBuffer } from "@/lib/stream-store"
 import { cn } from "@/lib/utils"
 
@@ -35,8 +36,8 @@ export function StreamingBubble({
       data-tree-scroll={tree ? "" : undefined}
     >
       {tree ? null : (
-        <div className="mb-2 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-          assistant · streaming
+        <div className="mb-2 text-[11px] font-medium tracking-wide text-muted-foreground">
+          {messageStatusLabel("streaming")}
         </div>
       )}
       <MessageParts parts={parts} streaming interactiveTools={false} />
@@ -53,6 +54,7 @@ export function StreamingBubble({
       <motion.article
         data-theme-group="message-assistant"
         data-theme-target="message-assistant"
+        data-message-status="streaming"
         data-tree-streaming={tree ? "" : undefined}
         className={articleClass}
         initial={{ opacity: 0 }}
@@ -65,6 +67,7 @@ export function StreamingBubble({
       <article
         data-theme-group="message-assistant"
         data-theme-target="message-assistant"
+        data-message-status="streaming"
         data-tree-streaming={tree ? "" : undefined}
         className={articleClass}
       >

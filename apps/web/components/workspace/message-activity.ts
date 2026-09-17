@@ -38,3 +38,28 @@ export function activitySummary(parts: Parts) {
     ),
   ].join(" · ")
 }
+
+export function isActivityGroupBusy(parts: Parts) {
+  return parts.some(
+    (part) =>
+      part.type === "tool-invocation" &&
+      (part.state === "input-streaming" || part.state === "input-available")
+  )
+}
+
+/**
+ * Fold idle activity once the answer (or the stream) has moved on.
+ * A summary click is sticky. Live-edge only gates mid-stream collapse;
+ * stream-end cleanup always folds unless the reader pinned the block.
+ */
+export function shouldAutoCollapseActivity(input: {
+  streaming: boolean
+  busy: boolean
+  hasSuccessor: boolean
+  userToggled: boolean
+  atLiveEdge: boolean
+}) {
+  if (input.userToggled || input.busy) return false
+  if (!input.streaming) return true
+  return input.hasSuccessor && input.atLiveEdge
+}

@@ -18,6 +18,7 @@ import {
   sortKeyBetween,
 } from "@/lib/sort-key"
 import { abortGenerations } from "@/lib/active-generations"
+import { accumulateGenerationMs } from "@/lib/message-meta"
 import {
   claimGenerationRecovery,
   insertGenerationRun,
@@ -1397,6 +1398,14 @@ function persistAssistantMetadata(
   return JSON.stringify({ ...previous, ...fields })
 }
 
+function generationClock(
+  previous: Record<string, unknown>,
+  endedAt: string
+): { generationMs: number } | Record<string, never> {
+  const generationMs = accumulateGenerationMs(previous, endedAt)
+  return generationMs == null ? {} : { generationMs }
+}
+
 /**
  * Single write path for stream terminal outcomes.
  * Idempotent: only mutates rows still in `fromStatuses` (default streaming).
@@ -1444,7 +1453,23 @@ export async function finalizeStreamingAssistant(
       "stopped",
       fromStatuses
     )
-    return finishRun(updated ? "stopped" : "superseded")
+    if (!updated) return finishRun("superseded")
+    const stoppedAt = now()
+    await db
+      .updateTable("message_nodes")
+      .set({
+        metadata_json: persistAssistantMetadata(previous, {
+          ...(config?.providerId != null
+            ? { provider: config.providerId }
+            : {}),
+          ...(config?.model != null ? { model: config.model } : {}),
+          ...generationClock(previous, stoppedAt),
+        }),
+        updated_at: now(),
+      })
+      .where("id", "=", input.nodeId)
+      .execute()
+    return finishRun("stopped")
   }
 
   if (input.outcome === "error") {
@@ -1455,6 +1480,7 @@ export async function finalizeStreamingAssistant(
       fromStatuses
     )
     if (!updated) return finishRun("superseded")
+    const errorAt = now()
     await db
       .updateTable("message_nodes")
       .set({
@@ -1465,7 +1491,8 @@ export async function finalizeStreamingAssistant(
           ...(config?.model != null ? { model: config.model } : {}),
           ...(config ? { generationConfig: config } : {}),
           ...(input.error != null ? { error: input.error } : {}),
-          errorAt: new Date().toISOString(),
+          errorAt,
+          ...generationClock(previous, errorAt),
         }),
         updated_at: now(),
       })
@@ -1482,6 +1509,7 @@ export async function finalizeStreamingAssistant(
       fromStatuses
     )
     if (!updated) return finishRun("superseded")
+    const pausedAt = now()
     await db
       .updateTable("message_nodes")
       .set({
@@ -1490,7 +1518,8 @@ export async function finalizeStreamingAssistant(
             ? { provider: config.providerId }
             : {}),
           ...(config?.model != null ? { model: config.model } : {}),
-          pausedAt: new Date().toISOString(),
+          pausedAt,
+          ...generationClock(previous, pausedAt),
           ...(input.finishReason != null
             ? { finishReason: input.finishReason }
             : {}),
@@ -1512,13 +1541,15 @@ export async function finalizeStreamingAssistant(
     fromStatuses
   )
   if (!updated) return finishRun("superseded")
+  const finishedAt = now()
   await db
     .updateTable("message_nodes")
     .set({
       metadata_json: persistAssistantMetadata(previous, {
         ...(config?.providerId != null ? { provider: config.providerId } : {}),
         ...(config?.model != null ? { model: config.model } : {}),
-        finishedAt: new Date().toISOString(),
+        finishedAt,
+        ...generationClock(previous, finishedAt),
         ...(input.finishReason != null
           ? { finishReason: input.finishReason }
           : {}),

@@ -188,8 +188,9 @@ export async function expectNoAssistantText(page: Page, text: string | RegExp) {
 export async function expectUserMessage(page: Page, text: string) {
   await expect(
     page
-      .locator('[data-slot-layer="present"]')
-      .filter({ has: page.getByText("user", { exact: true }) })
+      .locator(
+        '[data-slot-layer="present"] article[data-theme-target="message-user"]'
+      )
       .filter({ hasText: text })
   ).toBeVisible()
 }
@@ -214,10 +215,11 @@ export async function openBranchPrev(page: Page) {
 
 export async function editUserAsBranch(page: Page, nextText: string) {
   // User bubble is the right-aligned article; open edit from the active path tip user.
-  const userArticles = page.locator("article").filter({
-    has: page.getByText("user", { exact: true }),
-  })
-  const article = userArticles.last()
+  const article = page
+    .locator(
+      '[data-slot-layer="present"] article[data-theme-target="message-user"]'
+    )
+    .last()
   await article.getByRole("button", { name: "Edit", exact: true }).click()
   const composer = page.getByRole("textbox", { name: "Message text" })
   await expect(composer).toBeVisible()
@@ -226,16 +228,16 @@ export async function editUserAsBranch(page: Page, nextText: string) {
 }
 
 export async function regenerateAssistant(page: Page) {
-  const assistant = page.locator("article").filter({
-    has: page.getByText("assistant", { exact: true }),
-  })
+  const assistant = page.locator(
+    '[data-slot-layer="present"] article[data-theme-target="message-assistant"]'
+  )
   await assistant.last().getByRole("button", { name: "Regenerate" }).click()
 }
 
 export async function deleteActiveUserSubtree(page: Page) {
-  const user = page.locator("article").filter({
-    has: page.getByText("user", { exact: true }),
-  })
+  const user = page.locator(
+    '[data-slot-layer="present"] article[data-theme-target="message-user"]'
+  )
   await user.last().getByRole("button", { name: "Delete" }).click()
   const dialog = page.getByRole("alertdialog")
   await expect(dialog.getByText("Delete message node")).toBeVisible()
@@ -243,9 +245,9 @@ export async function deleteActiveUserSubtree(page: Page) {
 }
 
 export async function deleteActiveAssistantSubtree(page: Page) {
-  const assistant = page.locator("article").filter({
-    has: page.getByText("assistant", { exact: true }),
-  })
+  const assistant = page.locator(
+    '[data-slot-layer="present"] article[data-theme-target="message-assistant"]'
+  )
   await assistant.last().getByRole("button", { name: "Delete" }).click()
   const dialog = page.getByRole("alertdialog")
   await expect(dialog.getByText("Delete message node")).toBeVisible()
@@ -253,9 +255,9 @@ export async function deleteActiveAssistantSubtree(page: Page) {
 }
 
 export function streamingMarkers(page: Page) {
-  return page
-    .locator('[data-slot-layer="present"]')
-    .getByText("assistant · streaming")
+  return page.locator(
+    '[data-slot-layer="present"] [data-message-status="streaming"]'
+  )
 }
 
 export async function expectStreamingCount(page: Page, n: number) {

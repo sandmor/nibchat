@@ -190,9 +190,8 @@ HANDOFF_END`
         const hasContent = Boolean(
           assistant?.textContent?.includes("HANDOFF_START")
         )
-        const streamMarker = Boolean(
-          assistant?.textContent?.includes("assistant · streaming")
-        )
+        const streamMarker =
+          assistant?.getAttribute("data-message-status") === "streaming"
         const frameGap = at - previousAt
         previousAt = at
         const signature = `${renderer}:${thinking}:${hasContent}:${streamMarker}`
@@ -275,9 +274,9 @@ HANDOFF_END`
     const viewport = page.getByTestId("chat-transcript-viewport")
     await expect(viewport).toBeVisible()
 
-    const userMessages = page
-      .locator("article")
-      .filter({ has: page.getByText("user", { exact: true }) })
+    const userMessages = page.locator(
+      'article[data-theme-target="message-user"]'
+    )
     const resizeTarget = userMessages.nth(1)
     const lastUser = userMessages.last()
 
@@ -345,8 +344,9 @@ HANDOFF_END`
     await expectUserMessage(page, "edited third question")
 
     const edited = page
-      .locator('[data-slot-layer="present"]')
-      .filter({ has: page.getByText("user", { exact: true }) })
+      .locator(
+        '[data-slot-layer="present"] article[data-theme-target="message-user"]'
+      )
       .filter({ hasText: "edited third question" })
     await expect(edited).toBeVisible()
 
@@ -374,9 +374,9 @@ HANDOFF_END`
       timeout: 15_000,
     })
 
-    const streaming = page.locator("article").filter({
-      has: page.getByText("assistant · streaming"),
-    })
+    const streaming = page.locator(
+      '[data-slot-layer="present"] article[data-message-status="streaming"]'
+    )
     await streaming.getByRole("button", { name: "Edit", exact: true }).click()
     const editor = page.getByRole("textbox", { name: "Message text" })
     await expect(editor).toBeVisible()

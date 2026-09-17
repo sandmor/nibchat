@@ -43,9 +43,8 @@ import {
   transcriptHeightEdge,
   transcriptHeightIdentity,
 } from "./transcript-height-cache"
+import { SCROLLPORT_LIVE_EDGE_PX } from "./long-block-scroll"
 
-/** Distance from the bottom at which the transcript still follows live growth. */
-const TRANSCRIPT_LIVE_EDGE_PX = 64
 const EMPTY_EDITING_NODE_IDS: ReadonlySet<string> = new Set()
 
 function transcriptRowSpacing(
@@ -221,7 +220,7 @@ function VirtualChatTranscript({
     anchorTo: "end",
     followOnAppend: true,
     scrollPaddingStart: transcriptPeekPx(density),
-    scrollEndThreshold: TRANSCRIPT_LIVE_EDGE_PX,
+    scrollEndThreshold: SCROLLPORT_LIVE_EDGE_PX,
     overscan: TRANSCRIPT_OVERSCAN,
     rangeExtractor,
     directDomUpdates: true,
@@ -229,7 +228,7 @@ function VirtualChatTranscript({
     // disallows the adapter's default flushSync from those commit phases.
     useFlushSync: false,
     onChange: (instance) => {
-      const nextAtEnd = instance.isAtEnd(TRANSCRIPT_LIVE_EDGE_PX)
+      const nextAtEnd = instance.isAtEnd(SCROLLPORT_LIVE_EDGE_PX)
       setAtEnd((current) => (current === nextAtEnd ? current : nextAtEnd))
     },
   })
@@ -251,7 +250,7 @@ function VirtualChatTranscript({
       return
     }
 
-    const wasAtEnd = virtualizer.isAtEnd(TRANSCRIPT_LIVE_EDGE_PX)
+    const wasAtEnd = virtualizer.isAtEnd(SCROLLPORT_LIVE_EDGE_PX)
     const scrollOffset = viewport.scrollTop
     const visibleItem = wasAtEnd
       ? undefined

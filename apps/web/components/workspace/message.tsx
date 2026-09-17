@@ -65,10 +65,6 @@ import { copyText } from "@/lib/clipboard"
 import { partsToMarkdown, pathToMarkdown } from "@/lib/message-markdown"
 import type { NodeRow, Parts } from "@/lib/types"
 import { parseJson, subtreeNodeIds, textFromParts } from "@/lib/domain"
-import {
-  parseProviderModelsJson,
-  resolveModelLabel,
-} from "@/lib/provider-models"
 import { useTRPC } from "@/lib/trpc-react"
 import { patchContextExcluded, type WorkspaceData } from "@/lib/workspace-cache"
 import { Markdown } from "@/components/markdown"
@@ -99,6 +95,16 @@ import { SessionMessageEditor } from "./message-editor"
 import { useStreamBuffer, useStreamStore } from "@/lib/stream-store"
 import { overlayStreamParts } from "./stream-helpers"
 import { siblingSort } from "@/lib/sort-key"
+import {
+  effectiveMessageStatus,
+  formatGenerationDuration,
+  formatMessageTime,
+  generationDurationMs,
+  joinMessageMeta,
+  messageOriginLabel,
+  messageStatusLabel,
+  resolveMessageOrigin,
+} from "@/lib/message-meta"
 
 export function MessageAction({
   icon,
@@ -146,6 +152,64 @@ function messageActionClass(captions: boolean, destructive?: boolean) {
       ? "h-7 gap-1 px-2 text-xs font-normal"
       : "size-7 text-muted-foreground hover:text-foreground",
     destructive && "text-destructive hover:text-destructive"
+  )
+}
+
+function MetaSep() {
+  return (
+    <span aria-hidden className="mx-1.5 h-3 w-px shrink-0 bg-foreground/20" />
+  )
+}
+
+function SiblingStepper({
+  index,
+  count,
+  onPrevious,
+  onNext,
+}: {
+  index: number
+  count: number
+  onPrevious: () => void
+  onNext: () => void
+}) {
+  return (
+    <span className="flex items-center gap-1">
+      <WithTooltip label="Previous branch">
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          disabled={index === 0}
+          aria-label="Previous branch"
+          onClick={onPrevious}
+        >
+          <HugeiconsIcon
+            icon={ArrowLeft01Icon}
+            strokeWidth={2}
+            className="size-3.5"
+            aria-hidden
+          />
+        </Button>
+      </WithTooltip>
+      <span aria-live="polite">
+        {index + 1}/{count}
+      </span>
+      <WithTooltip label="Next branch">
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          disabled={index === count - 1}
+          aria-label="Next branch"
+          onClick={onNext}
+        >
+          <HugeiconsIcon
+            icon={ArrowRight01Icon}
+            strokeWidth={2}
+            className="size-3.5"
+            aria-hidden
+          />
+        </Button>
+      </WithTooltip>
+    </span>
   )
 }
 
@@ -353,17 +417,19 @@ export function Message({
                 : undefined,
         }
   const showIds = appearance.modelPicker.showIds
-  const provider = providers.find((p) => p.id === metadata.provider)
-  const providerName =
-    provider?.name ??
-    (typeof metadata.provider === "string" ? metadata.provider : "—")
-  const modelName =
-    typeof metadata.model === "string"
-      ? (resolveModelLabel(
-          parseProviderModelsJson(provider?.models_json ?? "[]"),
-          metadata.model
-        ) ?? metadata.model)
-      : "—"
+  const origin = resolveMessageOrigin(metadata, providers)
+  const originLabel = messageOriginLabel(origin)
+  const createdTime = formatMessageTime(node.created_at)
+  const identityLabel = joinMessageMeta(createdTime?.compact, originLabel)
+  const generationMs = generationDurationMs(metadata)
+  const generationLabel =
+    generationMs == null ? null : formatGenerationDuration(generationMs)
+  const liveStream = Boolean(streamId)
+  const displayStatus = effectiveMessageStatus(node.status, liveStream)
+  const statusLabel = messageStatusLabel(displayStatus)
+  const hasDetails =
+    node.role === "assistant" &&
+    (Boolean(originLabel) || Object.keys(metadata).length > 0)
 
   const forkMessagePartsMutation = useMutation(
     trpc.workspace.forkMessageParts.mutationOptions({
@@ -632,6 +698,7 @@ export function Message({
         ? { "data-find-skip": "" }
         : {})}
       {...(tree && streamId ? { "data-tree-streaming": "" } : {})}
+      data-message-status={displayStatus}
       data-theme-group={
         node.role === "user" ? "message-user" : "message-assistant"
       }
@@ -643,11 +710,9 @@ export function Message({
         tree
           ? "flex h-full min-h-0 flex-col overflow-hidden"
           : "overflow-visible p-4",
-        node.role === "user" && presentation === "linear"
+        node.role === "user"
           ? "border-message-user-border bg-message-user text-message-user-foreground"
-          : node.role === "user"
-            ? "border-message-user-border bg-message-user text-message-user-foreground"
-            : "border-message-assistant-border bg-message-assistant text-message-assistant-foreground",
+          : "border-message-assistant-border bg-message-assistant text-message-assistant-foreground",
         tree && "hover:border-foreground/30"
       )}
     >
@@ -662,78 +727,12 @@ export function Message({
         }
         data-tree-scroll={tree ? "" : undefined}
       >
-        {presentation === "linear" ? (
-          <div
-            data-find-skip
-            className="mb-2 flex items-center justify-between text-[11px] font-medium tracking-wide text-muted-foreground uppercase"
-          >
-            <span>
-              {node.role}
-              {node.status === "awaiting_input"
-                ? " · waiting for input"
-                : node.status === "streaming" || streamId
-                  ? " · streaming"
-                  : node.status === "stopped"
-                    ? " · stopped"
-                    : node.status === "error"
-                      ? " · error"
-                      : null}
-            </span>
-            {siblings.length > 1 && (
-              <span className="flex items-center gap-1">
-                <WithTooltip label="Previous branch">
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    disabled={index === 0}
-                    aria-label="Previous branch"
-                    onClick={() => {
-                      const previous = siblings[index - 1]
-                      if (previous)
-                        onSelect?.(node.parent_id ?? "", previous.id)
-                    }}
-                  >
-                    <HugeiconsIcon
-                      icon={ArrowLeft01Icon}
-                      strokeWidth={2}
-                      className="size-3.5"
-                      aria-hidden
-                    />
-                  </Button>
-                </WithTooltip>
-                <span aria-live="polite">
-                  {index + 1}/{siblings.length}
-                </span>
-                <WithTooltip label="Next branch">
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    disabled={index === siblings.length - 1}
-                    aria-label="Next branch"
-                    onClick={() => {
-                      const next = siblings[index + 1]
-                      if (next) onSelect?.(node.parent_id ?? "", next.id)
-                    }}
-                  >
-                    <HugeiconsIcon
-                      icon={ArrowRight01Icon}
-                      strokeWidth={2}
-                      className="size-3.5"
-                      aria-hidden
-                    />
-                  </Button>
-                </WithTooltip>
-              </span>
-            )}
-          </div>
-        ) : node.status !== "complete" && node.status !== "streaming" ? (
+        {statusLabel ? (
           <p
             data-find-skip
             className="mb-2 text-[11px] font-medium tracking-wide text-muted-foreground"
           >
-            {node.status === "awaiting_input"
-              ? "waiting for input"
-              : node.status}
+            {statusLabel}
           </p>
         ) : null}
         {displayParts.some((part) => part.type === "reasoning") ||
@@ -790,98 +789,152 @@ export function Message({
       <div
         data-find-skip
         className={cn(
-          "flex flex-wrap items-center gap-0.5",
+          "flex flex-wrap items-center gap-x-2 gap-y-1",
           tree ? "shrink-0 border-t border-foreground/8 px-2 py-1" : "mt-3"
         )}
       >
+        {identityLabel ? (
+          hasDetails ? (
+            <button
+              type="button"
+              title={joinMessageMeta(createdTime?.full, originLabel)}
+              aria-label="Message details"
+              onClick={() => setDetailsOpen(true)}
+              className="flex min-w-0 flex-1 items-center text-left text-[11px] text-muted-foreground outline-none hover:text-foreground"
+            >
+              {createdTime ? (
+                <span className="shrink-0">{createdTime.compact}</span>
+              ) : null}
+              {origin.providerName ? (
+                <>
+                  {createdTime ? <MetaSep /> : null}
+                  <span className="min-w-0 truncate">
+                    {origin.providerName}
+                  </span>
+                </>
+              ) : null}
+              {origin.modelName ? (
+                <>
+                  {createdTime || origin.providerName ? <MetaSep /> : null}
+                  <span className="min-w-0 truncate">{origin.modelName}</span>
+                </>
+              ) : null}
+            </button>
+          ) : (
+            <span
+              title={createdTime?.full ?? identityLabel}
+              className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground"
+            >
+              {identityLabel}
+            </span>
+          )
+        ) : (
+          <span className="min-w-0 flex-1" />
+        )}
         <TooltipProvider delay={400}>
-          <MessageAction
-            onClick={() => void copyMarkdown("message")}
-            icon={Copy01Icon}
-            captions={messageActionCaptions}
-          >
-            Copy
-          </MessageAction>
-          {node.role === "assistant" &&
-            onRegenerate &&
-            node.status !== "streaming" &&
-            !streamId && (
+          <span className="flex flex-wrap items-center gap-0.5">
+            {presentation === "linear" && siblings.length > 1 ? (
+              <SiblingStepper
+                index={index}
+                count={siblings.length}
+                onPrevious={() => {
+                  const previous = siblings[index - 1]
+                  if (previous) onSelect?.(node.parent_id ?? "", previous.id)
+                }}
+                onNext={() => {
+                  const next = siblings[index + 1]
+                  if (next) onSelect?.(node.parent_id ?? "", next.id)
+                }}
+              />
+            ) : null}
+            <MessageAction
+              onClick={() => void copyMarkdown("message")}
+              icon={Copy01Icon}
+              captions={messageActionCaptions}
+            >
+              Copy
+            </MessageAction>
+            {node.role === "assistant" &&
+              onRegenerate &&
+              node.status !== "streaming" &&
+              !streamId && (
+                <MessageAction
+                  onClick={() => onRegenerate()}
+                  icon={RefreshIcon}
+                  captions={messageActionCaptions}
+                >
+                  Regenerate
+                </MessageAction>
+              )}
+            {canEditAsBranch && (
               <MessageAction
-                onClick={() => onRegenerate()}
-                icon={RefreshIcon}
+                onClick={beginEdit}
+                icon={Edit02Icon}
                 captions={messageActionCaptions}
               >
-                Regenerate
+                Edit
               </MessageAction>
             )}
-          {canEditAsBranch && (
             <MessageAction
-              onClick={beginEdit}
-              icon={Edit02Icon}
+              onClick={() =>
+                setContextExcludedMutation.mutate({
+                  nodeId: node.id,
+                  excluded: !node.excluded_from_context,
+                })
+              }
+              icon={node.excluded_from_context ? ViewOffIcon : ViewIcon}
+              captions={messageActionCaptions}
+              disabled={contextExclusionPending}
+            >
+              {node.excluded_from_context
+                ? "Include in context"
+                : "Exclude from context"}
+            </MessageAction>
+            {hasDetails && !identityLabel && (
+              <MessageAction
+                onClick={() => setDetailsOpen(true)}
+                icon={InformationCircleIcon}
+                captions={messageActionCaptions}
+              >
+                Details
+              </MessageAction>
+            )}
+            <MessageAction
+              onClick={() => setDeleteOpen(true)}
+              icon={Delete02Icon}
+              destructive
               captions={messageActionCaptions}
             >
-              Edit
+              Delete
             </MessageAction>
-          )}
-          <MessageAction
-            onClick={() =>
-              setContextExcludedMutation.mutate({
-                nodeId: node.id,
-                excluded: !node.excluded_from_context,
-              })
-            }
-            icon={node.excluded_from_context ? ViewOffIcon : ViewIcon}
-            captions={messageActionCaptions}
-            disabled={contextExclusionPending}
-          >
-            {node.excluded_from_context
-              ? "Include in context"
-              : "Exclude from context"}
-          </MessageAction>
-          {node.role === "assistant" && Object.keys(metadata).length > 0 && (
-            <MessageAction
-              onClick={() => setDetailsOpen(true)}
-              icon={InformationCircleIcon}
-              captions={messageActionCaptions}
-            >
-              Details
-            </MessageAction>
-          )}
-          <MessageAction
-            onClick={() => setDeleteOpen(true)}
-            icon={Delete02Icon}
-            destructive
-            captions={messageActionCaptions}
-          >
-            Delete
-          </MessageAction>
-          <DropdownMenu>
-            <MoreActionsTrigger captions={messageActionCaptions} />
-            <DropdownMenuContent
-              align="end"
-              side="top"
-              className="max-w-[min(20rem,calc(100vw-1.5rem))]"
-            >
-              <DropdownMenuItem onClick={() => void copyMarkdown("path")}>
-                <HugeiconsIcon
-                  icon={GitBranchIcon}
-                  strokeWidth={2}
-                  className="size-3.5 text-muted-foreground"
-                  aria-hidden
-                />
-                Copy path
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setTeleportOpen(true)}>
-                <HugeiconsIcon
-                  icon={ArrowMoveUpRightIcon}
-                  strokeWidth={2}
-                  className="size-3.5 text-muted-foreground"
-                  aria-hidden
-                />
-                Move…
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+            <DropdownMenu>
+              <MoreActionsTrigger captions={messageActionCaptions} />
+              <DropdownMenuContent
+                align="end"
+                side="top"
+                className="max-w-[min(20rem,calc(100vw-1.5rem))]"
+              >
+                <DropdownMenuItem onClick={() => void copyMarkdown("path")}>
+                  <HugeiconsIcon
+                    icon={GitBranchIcon}
+                    strokeWidth={2}
+                    className="size-3.5 text-muted-foreground"
+                    aria-hidden
+                  />
+                  Copy path
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setTeleportOpen(true)}>
+                  <HugeiconsIcon
+                    icon={ArrowMoveUpRightIcon}
+                    strokeWidth={2}
+                    className="size-3.5 text-muted-foreground"
+                    aria-hidden
+                  />
+                  Move…
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </span>
         </TooltipProvider>
       </div>
       {!tree && node.status === "error" && (
@@ -895,31 +948,67 @@ export function Message({
       <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Response details</DialogTitle>
+            <DialogTitle>Message details</DialogTitle>
           </DialogHeader>
           <dl className="grid min-w-0 grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-            <dt className="text-muted-foreground">Provider</dt>
-            <dd className="min-w-0 break-all">{providerName}</dd>
-            <dt className="text-muted-foreground">Model</dt>
-            <dd className="min-w-0 break-all">
-              {modelName}
-              {showIds &&
-              typeof metadata.model === "string" &&
-              modelName !== metadata.model ? (
-                <span className="mt-0.5 block text-xs text-muted-foreground">
-                  {metadata.model}
-                </span>
-              ) : null}
-            </dd>
-            <dt className="text-muted-foreground">Finish</dt>
-            <dd className="min-w-0 break-all">
-              {String(metadata.finishReason ?? "—")}
-            </dd>
+            {createdTime ? (
+              <>
+                <dt className="text-muted-foreground">Created</dt>
+                <dd className="min-w-0 break-all">{createdTime.full}</dd>
+              </>
+            ) : null}
+            {origin.providerName ? (
+              <>
+                <dt className="text-muted-foreground">Provider</dt>
+                <dd className="min-w-0 break-all">
+                  {origin.providerName}
+                  {showIds &&
+                  origin.providerId &&
+                  origin.providerName !== origin.providerId ? (
+                    <span className="mt-0.5 block text-xs text-muted-foreground">
+                      {origin.providerId}
+                    </span>
+                  ) : null}
+                </dd>
+              </>
+            ) : null}
+            {origin.modelName ? (
+              <>
+                <dt className="text-muted-foreground">Model</dt>
+                <dd className="min-w-0 break-all">
+                  {origin.modelName}
+                  {showIds &&
+                  origin.modelId &&
+                  origin.modelName !== origin.modelId ? (
+                    <span className="mt-0.5 block text-xs text-muted-foreground">
+                      {origin.modelId}
+                    </span>
+                  ) : null}
+                </dd>
+              </>
+            ) : null}
+            {generationLabel ? (
+              <>
+                <dt className="text-muted-foreground">Duration</dt>
+                <dd className="min-w-0 break-all">{generationLabel}</dd>
+              </>
+            ) : null}
+            {metadata.finishReason != null && (
+              <>
+                <dt className="text-muted-foreground">Finish</dt>
+                <dd className="min-w-0 break-all">
+                  {String(metadata.finishReason)}
+                </dd>
+              </>
+            )}
             {metadata.finishedAt != null && (
               <>
                 <dt className="text-muted-foreground">Finished</dt>
                 <dd className="min-w-0 break-all">
-                  {String(metadata.finishedAt)}
+                  {typeof metadata.finishedAt === "string"
+                    ? (formatMessageTime(metadata.finishedAt)?.full ??
+                      metadata.finishedAt)
+                    : String(metadata.finishedAt)}
                 </dd>
               </>
             )}
@@ -932,11 +1021,11 @@ export function Message({
               </>
             )}
           </dl>
-          <div className="min-w-0">
-            <p className="mb-1 text-xs font-medium text-muted-foreground">
-              Usage
-            </p>
-            {usageEntries ? (
+          {usageEntries && usageEntries.length > 0 ? (
+            <div className="min-w-0">
+              <p className="mb-1 text-xs font-medium text-muted-foreground">
+                Usage
+              </p>
               <dl className="grid max-h-48 grid-cols-[auto_1fr] gap-x-3 gap-y-1 overflow-y-auto text-xs">
                 {usageEntries.map(([key, value]) => (
                   <Fragment key={key}>
@@ -949,12 +1038,17 @@ export function Message({
                   </Fragment>
                 ))}
               </dl>
-            ) : (
+            </div>
+          ) : usage ? (
+            <div className="min-w-0">
+              <p className="mb-1 text-xs font-medium text-muted-foreground">
+                Usage
+              </p>
               <pre className="max-h-48 overflow-auto rounded-lg bg-muted p-2 font-mono text-xs break-all whitespace-pre-wrap">
-                {usage ? JSON.stringify(usage, null, 2) : "—"}
+                {JSON.stringify(usage, null, 2)}
               </pre>
-            )}
-          </div>
+            </div>
+          ) : null}
           <DialogFooter>
             <Button variant="outline" onClick={() => setDetailsOpen(false)}>
               Close

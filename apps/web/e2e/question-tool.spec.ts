@@ -87,9 +87,9 @@ test.describe("question tool", () => {
       timeout: 15_000,
     })
 
-    const assistant = page.locator("article").filter({
-      has: page.getByText("assistant", { exact: false }),
-    })
+    const assistant = page.locator(
+      'article[data-theme-target="message-assistant"]'
+    )
     // Toolful turns hide free-text edit; user messages may still offer it.
     await expect(
       assistant.getByRole("button", { name: "Edit", exact: true })
@@ -176,16 +176,16 @@ test.describe("question tool", () => {
 
     const prompt = page.getByRole("textbox", { name: "Question prompt" })
     await expect(prompt).toBeVisible()
-    await expect(page.getByRole("textbox", { name: "Choice label" })).toHaveCount(
-      2
-    )
+    await expect(
+      page.getByRole("textbox", { name: "Choice label" })
+    ).toHaveCount(2)
     await expect(page.getByPlaceholder("Type another answer…")).toBeVisible()
 
     await prompt.fill("What should we ship first?")
     await page.getByRole("button", { name: "Add option" }).click()
-    await expect(page.getByRole("textbox", { name: "Choice label" })).toHaveCount(
-      3
-    )
+    await expect(
+      page.getByRole("textbox", { name: "Choice label" })
+    ).toHaveCount(3)
 
     await page.getByRole("button", { name: "Save branch" }).click()
     await expect(prompt).toHaveCount(0)
@@ -199,9 +199,9 @@ test.describe("question tool", () => {
     await expect(
       page.getByRole("textbox", { name: "Question prompt" })
     ).toHaveValue("What should we ship first?")
-    await expect(page.getByRole("textbox", { name: "Choice label" })).toHaveCount(
-      3
-    )
+    await expect(
+      page.getByRole("textbox", { name: "Choice label" })
+    ).toHaveCount(3)
     await page.getByRole("button", { name: "Cancel" }).click()
   })
 

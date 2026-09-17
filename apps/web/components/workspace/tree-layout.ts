@@ -39,8 +39,8 @@ const GAP_X = 56
 const GAP_Y = 64
 const PREVIEW_LINES = 8
 const LINE_HEIGHT = 22
-/** Padding, sticky action row, and status line. Content sits above this. */
-const CARD_CHROME = 96
+/** Padding, sticky action row with identity, and status line. Content sits above this. */
+const CARD_CHROME = 112
 
 /**
  * Cap for a message card. Paint may be shorter; it must not be taller, or

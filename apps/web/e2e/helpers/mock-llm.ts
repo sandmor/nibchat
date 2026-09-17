@@ -12,11 +12,18 @@ export type MockToolCallPlan = {
 export type MockCompletionPlan = {
   /** Visible assistant text written into the stream. */
   text: string
+  /** Optional reasoning tokens emitted before `text`. */
+  reasoning?: string
   /**
    * When true, the stream opens (client shows streaming UI) then waits until
    * `release()` before emitting tokens and finishing.
    */
   hold?: boolean
+  /**
+   * After emitting reasoning, wait for `release()` before visible text so the
+   * client can assert the live reasoning block.
+   */
+  holdAfterReasoning?: boolean
   /**
    * After emitting text, wait for `release()` before the stop chunk so the
    * client can interact with a populated in-flight message.
@@ -158,6 +165,29 @@ export async function startMockLlm(): Promise<MockLlm> {
 
       // Role chunk then content (matches common OpenAI streaming shape).
       writeChunk(res, { role: "assistant", content: "" })
+      if (plan.reasoning) {
+        for (const part of chunkText(plan.reasoning, 12)) {
+          if (res.destroyed) return
+          writeChunk(res, { reasoning_content: part })
+          await sleep(8)
+        }
+      }
+
+      if (plan.holdAfterReasoning) {
+        await new Promise<void>((resolve) => {
+          const release = () => {
+            const index = releaseWaiters.indexOf(release)
+            if (index !== -1) releaseWaiters.splice(index, 1)
+            res.off("close", release)
+            resolve()
+          }
+          releaseWaiters.push(release)
+          res.once("close", release)
+        })
+      }
+
+      if (res.destroyed) return
+
       if (plan.text) {
         for (const part of chunkText(plan.text, 12)) {
           if (res.destroyed) return

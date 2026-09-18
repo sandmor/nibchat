@@ -19,11 +19,11 @@ export type TranscriptHeightLayout = {
   density: TranscriptHeightDensity
   messageActionCaptions: boolean
   edge: TranscriptHeightEdge
+  layoutKey?: string
 }
 
 type TranscriptHeightEntry = TranscriptHeightIdentity &
   Omit<TranscriptHeightLayout, "width"> & {
-    widthBucket: number
     height: number
   }
 
@@ -97,11 +97,12 @@ export class TranscriptHeightCache {
                 sameRevision(entry.revision, identity.revision) &&
                 entry.density === layout.density &&
                 entry.messageActionCaptions === layout.messageActionCaptions &&
+                entry.layoutKey === layout.layoutKey &&
                 entry.edge === layout.edge
             )
         : (() => {
-            const widthBucket = bucketWidth(layout.width)
-            const key = entryKey(identity, { ...layout, width: widthBucket })
+            const width = normalizeWidth(layout.width)
+            const key = entryKey(identity, { ...layout, width })
             const entry = this.entries.get(key)
             return entry ? ([key, entry] as const) : undefined
           })()
@@ -127,17 +128,13 @@ export class TranscriptHeightCache {
     )
       return
 
-    const widthBucket = bucketWidth(layout.width)
-    const key = entryKey(identity, { ...layout, width: widthBucket })
-    const previous = this.entries.get(key)
+    const width = normalizeWidth(layout.width)
+    const key = entryKey(identity, { ...layout, width })
     this.entries.delete(key)
     this.entries.set(key, {
       ...identity,
       ...omitWidth(layout),
-      widthBucket,
-      // A bucket can include a slightly narrower viewport. Retain the largest
-      // measured result so the first estimate never clips short.
-      height: Math.max(previous?.height ?? 0, height),
+      height,
     })
 
     while (this.entries.size > this.maxEntries) {
@@ -148,8 +145,8 @@ export class TranscriptHeightCache {
   }
 }
 
-function bucketWidth(width: number) {
-  return Math.floor(width / 8) * 8
+function normalizeWidth(width: number) {
+  return Math.round(width)
 }
 
 function entryKey(
@@ -166,6 +163,7 @@ function entryKey(
     layout.density,
     layout.messageActionCaptions ? "captions" : "plain",
     layout.edge,
+    layout.layoutKey ?? "",
   ].join("|")
 }
 
@@ -176,6 +174,7 @@ function omitWidth(
     density: layout.density,
     messageActionCaptions: layout.messageActionCaptions,
     edge: layout.edge,
+    layoutKey: layout.layoutKey,
   }
 }
 

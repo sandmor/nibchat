@@ -20,6 +20,7 @@ import { cn } from "@/lib/utils"
 import type { NodeRow } from "@/lib/types"
 import type { ProviderSummary } from "./types"
 import { Message, type MessageEditorBindings } from "./message"
+import { useWorkspaceChrome } from "./shell"
 import { Empty } from "./empty"
 import { PathSlot } from "./path-slot"
 import { StreamingBubble } from "./streaming-bubble"
@@ -121,6 +122,22 @@ function VirtualChatTranscript({
   editor,
 }: ChatTranscriptProps) {
   const viewportRef = useRef<HTMLDivElement>(null)
+  const { appearance } = useWorkspaceChrome()
+  const heightLayoutKey = useMemo(
+    () =>
+      JSON.stringify([
+        appearance.messageLayout,
+        appearance.modelPicker.showIds,
+        appearance.remoteStylesheet,
+      ]),
+    [
+      appearance.messageLayout,
+      appearance.modelPicker.showIds,
+      appearance.remoteStylesheet,
+    ]
+  )
+  const heightLayoutKeyRef = useRef(heightLayoutKey)
+  heightLayoutKeyRef.current = heightLayoutKey
   const transcriptCanvasRef = useRef<HTMLDivElement>(null)
   const transcriptWidthRef = useRef(0)
   const estimatedWithoutWidthRef = useRef(false)
@@ -182,6 +199,7 @@ function VirtualChatTranscript({
           width: width || null,
           density: densityRef.current,
           messageActionCaptions: messageActionCaptionsRef.current,
+          layoutKey: heightLayoutKeyRef.current,
           edge: transcriptHeightEdge(index, rowsRef.current.length),
         }
       )
@@ -198,15 +216,23 @@ function VirtualChatTranscript({
 
       const index = instance.indexFromElement(element)
       const row = rowsRef.current[index]
+      const identity = row ? transcriptHeightIdentity(row) : null
       const box = entry.borderBoxSize?.[0]
       const width = Math.round(box?.inlineSize ?? element.clientWidth)
-      if (row) {
+      // Editors and expanded activity are transient layouts. Only reuse the
+      // ordinary collapsed message height after a virtual row remounts.
+      if (
+        identity &&
+        element.querySelector("article") &&
+        !element.querySelector("details[open]")
+      ) {
         transcriptHeightCache.set(
-          transcriptHeightIdentity(row),
+          identity,
           {
             width,
             density: densityRef.current,
             messageActionCaptions: messageActionCaptionsRef.current,
+            layoutKey: heightLayoutKeyRef.current,
             edge: transcriptHeightEdge(index, rowsRef.current.length),
           },
           size
@@ -224,6 +250,9 @@ function VirtualChatTranscript({
     overscan: TRANSCRIPT_OVERSCAN,
     rangeExtractor,
     directDomUpdates: true,
+    // Native sticky tabs must share the scrollport's layout coordinates.
+    // Translated rows would displace them by the virtual item's offset.
+    directDomUpdatesMode: "position",
     // Measurement happens from ref callbacks and layout effects; React 19
     // disallows the adapter's default flushSync from those commit phases.
     useFlushSync: false,
@@ -242,82 +271,83 @@ function VirtualChatTranscript({
     [virtualizer]
   )
 
-  const measurePreservingVisibleAnchor = useCallback(() => {
-    const viewport = viewportRef.current
-    const canvas = transcriptCanvasRef.current
-    if (!viewport || !canvas) {
+  const measurePreservingVisibleAnchor = useCallback(
+    (resizing = false) => {
+      const viewport = viewportRef.current
+      const canvas = transcriptCanvasRef.current
+      if (!viewport || !canvas) {
+        virtualizer.measure()
+        return
+      }
+
+      const wasAtEnd = virtualizer.isAtEnd(SCROLLPORT_LIVE_EDGE_PX)
+      const scrollOffset = viewport.scrollTop
+      const visibleItem = wasAtEnd
+        ? undefined
+        : virtualizer.getVirtualItemForOffset(scrollOffset)
+      const visibleElement = visibleItem
+        ? canvas.querySelector<HTMLElement>(
+            `:scope > [data-index="${visibleItem.index}"]`
+          )
+        : null
+      const anchor = visibleItem
+        ? {
+            index: visibleItem.index,
+            // Preserve the painted position, including subpixel layout. The
+            // virtualizer's rounded measurement can already differ by 1–2px.
+            offsetWithinRow: visibleElement
+              ? viewport.getBoundingClientRect().top -
+                visibleElement.getBoundingClientRect().top
+              : scrollOffset - visibleItem.start,
+          }
+        : null
+
       virtualizer.measure()
-      return
-    }
 
-    const wasAtEnd = virtualizer.isAtEnd(SCROLLPORT_LIVE_EDGE_PX)
-    const scrollOffset = viewport.scrollTop
-    const visibleItem = wasAtEnd
-      ? undefined
-      : virtualizer.getVirtualItemForOffset(scrollOffset)
-    const visibleElement = visibleItem
-      ? canvas.querySelector<HTMLElement>(
-          `:scope > [data-index="${visibleItem.index}"]`
+      // A full reset discards even mounted sizes. Re-read them through the public
+      // measurement API so the restored anchor never waits for ResizeObserver.
+      for (const element of canvas.querySelectorAll<HTMLDivElement>(
+        ":scope > [data-index]"
+      )) {
+        virtualizer.measureElement(element)
+      }
+
+      if (wasAtEnd) {
+        virtualizer.scrollToEnd({ behavior: "auto" })
+        return
+      }
+
+      if (!anchor) return
+      // getVirtualItems rebuilds the full measurement list. The anchored row
+      // may have left the overscan window after offscreen estimates changed.
+      void virtualizer.getVirtualItems()
+      const nextAnchor = virtualizer.measurementsCache[anchor.index]
+      if (!nextAnchor) return
+      virtualizer.scrollToOffset(nextAnchor.start + anchor.offsetWithinRow, {
+        behavior: "auto",
+      })
+      // Correct against the painted row after ResizeObserver settles. Ordinary
+      // updates need rounding correction; a width reflow can move it farther.
+      requestAnimationFrame(() => {
+        // Outside a width reflow, the small-delta limit rejects stale
+        // navigation callbacks. Legitimate resize adjustments may change
+        // scrollTop before this frame, so don't compare absolute offsets.
+        if (!canvas.isConnected) return
+        const row = canvas.querySelector<HTMLElement>(
+          `:scope > [data-index="${anchor.index}"]`
         )
-      : null
-    const anchor = visibleItem
-      ? {
-          index: visibleItem.index,
-          // Preserve the painted position, including subpixel layout. The
-          // virtualizer's rounded measurement can already differ by 1–2px.
-          offsetWithinRow: visibleElement
-            ? viewport.getBoundingClientRect().top -
-              visibleElement.getBoundingClientRect().top
-            : scrollOffset - visibleItem.start,
-        }
-      : null
-
-    virtualizer.measure()
-
-    // A full reset discards even mounted sizes. Re-read them through the public
-    // measurement API so the restored anchor never waits for ResizeObserver.
-    for (const element of canvas.querySelectorAll<HTMLDivElement>(
-      ":scope > [data-index]"
-    )) {
-      virtualizer.measureElement(element)
-    }
-
-    if (wasAtEnd) {
-      virtualizer.scrollToEnd({ behavior: "auto" })
-      return
-    }
-
-    if (!anchor) return
-    // getVirtualItems rebuilds the full measurement list. The anchored row
-    // may have left the overscan window after offscreen estimates changed.
-    void virtualizer.getVirtualItems()
-    const nextAnchor = virtualizer.measurementsCache[anchor.index]
-    if (!nextAnchor) return
-    virtualizer.scrollToOffset(nextAnchor.start + anchor.offsetWithinRow, {
-      behavior: "auto",
-    })
-    // Measurement cache positions can round differently from the browser's
-    // final layout by a pixel or two. Correct against the mounted row on the
-    // next frame so a reader's actual visual anchor stays fixed.
-    requestAnimationFrame(() => {
-      // A stale callback will put the old row far from its saved position;
-      // the small-delta limit below rejects it. Legitimate virtualizer resize
-      // adjustments may change scrollTop before this frame, so do not reject
-      // those based on the absolute scroll offset.
-      if (!canvas.isConnected) return
-      const row = canvas.querySelector<HTMLElement>(
-        `:scope > [data-index="${anchor.index}"]`
-      )
-      if (!row) return
-      const actual =
-        row.getBoundingClientRect().top - viewport.getBoundingClientRect().top
-      const expected = -anchor.offsetWithinRow
-      const delta = actual - expected
-      // This pass only compensates rounding, never a changed layout/anchor.
-      if (Math.abs(delta) >= 0.5 && Math.abs(delta) <= 2)
-        viewport.scrollTop += delta
-    })
-  }, [virtualizer])
+        if (!row) return
+        const actual =
+          row.getBoundingClientRect().top - viewport.getBoundingClientRect().top
+        const expected = -anchor.offsetWithinRow
+        const delta = actual - expected
+        // Larger corrections belong only to a settled transcript's width reflow.
+        if (Math.abs(delta) >= 0.5 && (resizing || Math.abs(delta) <= 2))
+          viewport.scrollTop += delta
+      })
+    },
+    [virtualizer]
+  )
 
   // Cached heights are width-specific. Rebuild estimated geometry after a
   // resize while keeping the reader on the same visible row.
@@ -332,7 +362,16 @@ function VirtualChatTranscript({
       transcriptWidthRef.current = nextWidth
       if (previousWidth > 0 || estimatedWithoutWidthRef.current) {
         estimatedWithoutWidthRef.current = false
-        measurePreservingVisibleAnchor()
+        // A settled transcript's width reflow can produce a second batch of
+        // row measurements. Keep its anchor through that batch; live streams
+        // retain the virtualizer's own follow/navigation behavior.
+        const settled = rowsRef.current.every(
+          (row) =>
+            row.kind === "path" &&
+            !row.liveStreamId &&
+            row.node.status !== "streaming"
+        )
+        measurePreservingVisibleAnchor(previousWidth > 0 && settled)
       }
     }
 
@@ -359,10 +398,9 @@ function VirtualChatTranscript({
 
   // Density and action captions change every row. Path rewrites do not: the
   // slot shell remeasures on contentKey so a scrolled-away viewport stays put.
-  const measurementLayoutSignature = transcriptMeasurementLayoutKey(
-    density,
-    messageActionCaptions
-  )
+  const measurementLayoutSignature =
+    heightLayoutKey +
+    transcriptMeasurementLayoutKey(density, messageActionCaptions)
   const previousMeasurementLayoutRef = useRef(measurementLayoutSignature)
   useLayoutEffect(() => {
     if (previousMeasurementLayoutRef.current === measurementLayoutSignature)

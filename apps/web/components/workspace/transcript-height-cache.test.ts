@@ -76,6 +76,10 @@ describe("TranscriptHeightCache", () => {
       cache.get(identity, { ...layout, density: "compact" })
     ).toBeUndefined()
     expect(cache.get(identity, { ...layout, edge: "last" })).toBeUndefined()
+    cache.set(identity, { ...layout, width: 768, layoutKey: "wide" }, 432)
+    expect(
+      cache.get(identity, { ...layout, layoutKey: "narrow" })
+    ).toBeUndefined()
   })
 
   it("does not cache volatile transcript rows", () => {
@@ -101,7 +105,7 @@ describe("TranscriptHeightCache", () => {
     expect(transcriptHeightEdge(2, 3)).toBe("last")
   })
 
-  it("retains independent measurements for multiple width buckets", () => {
+  it("keeps exact widths separate and accepts a smaller remeasurement", () => {
     const cache = new TranscriptHeightCache()
     const identity = transcriptHeightIdentity(row("a1"))
     cache.set(identity, { ...layout, width: 768 }, 432)
@@ -109,15 +113,13 @@ describe("TranscriptHeightCache", () => {
 
     expect(cache.get(identity, { ...layout, width: 768 })).toBe(432)
     expect(cache.get(identity, { ...layout, width: 640 })).toBe(560)
-  })
-
-  it("uses the largest measurement in a width bucket", () => {
-    const cache = new TranscriptHeightCache()
-    const identity = transcriptHeightIdentity(row("a1"))
     cache.set(identity, { ...layout, width: 767 }, 432)
     cache.set(identity, { ...layout, width: 760 }, 480)
 
-    expect(cache.get(identity, { ...layout, width: 763 })).toBe(480)
+    expect(cache.get(identity, { ...layout, width: 763 })).toBeUndefined()
+    expect(cache.get(identity, { ...layout, width: 767 })).toBe(432)
+    cache.set(identity, { ...layout, width: 760 }, 300)
+    expect(cache.get(identity, { ...layout, width: 760 })).toBe(300)
   })
 
   it("refreshes entries on reads before LRU eviction", () => {

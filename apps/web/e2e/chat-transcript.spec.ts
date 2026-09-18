@@ -392,6 +392,12 @@ HANDOFF_END`
   test("long-message jump rail moves between the message edges", async () => {
     await openNewChat(page)
 
+    // Put the target row below the canvas origin; translated virtual rows used
+    // to displace sticky descendants by this accumulated offset.
+    llm.enqueue({ text: "RAIL_HISTORY" })
+    await sendMessage(page, "earlier turn")
+    await expectAssistantText(page, "RAIL_HISTORY")
+
     const longReply =
       "JUMP_START\n\n" +
       Array.from(
@@ -417,31 +423,50 @@ HANDOFF_END`
         port.scrollTop +=
           rect.top - portRect.top + rect.height / 2 - port.clientHeight / 2
       })
-    const edgeOffset = (edge: "top" | "bottom") =>
-      article.evaluate((el, side) => {
+    const startOffset = () =>
+      article.evaluate((el) => {
         const port = el.closest("[data-testid=chat-transcript-viewport]")
         if (!(port instanceof HTMLElement)) return Number.POSITIVE_INFINITY
         return Math.abs(
-          el.getBoundingClientRect()[side] - port.getBoundingClientRect()[side]
+          el.getBoundingClientRect().top - port.getBoundingClientRect().top
         )
-      }, edge)
+      })
 
     await scrollToMiddle()
 
-    const start = page.getByTestId("long-block-nav-start")
-    const end = page.getByTestId("long-block-nav-end")
+    const frame = article.locator("..")
+    const start = frame.getByTestId("long-block-nav-start")
+    const end = frame.getByTestId("long-block-nav-end")
     await expect(start).toBeVisible()
     await expect(end).toBeVisible()
 
+    await expect(start).toBeInViewport()
+    await expect(end).toBeInViewport()
+    const scrollWithoutTabShift = (delta: number) =>
+      start.evaluate((el, scrollDelta) => {
+        const port = el.closest(
+          "[data-testid=chat-transcript-viewport]"
+        ) as HTMLElement
+        const before = el.getBoundingClientRect().top
+        port.scrollTop += scrollDelta
+        return Math.abs(el.getBoundingClientRect().top - before)
+      }, delta)
+
+    // The tile must move synchronously with scrolling. A JS follower can reach
+    // the same final position but visibly lag behind compositor scrolling.
+    expect(await scrollWithoutTabShift(100)).toBeLessThan(2)
+
     await start.click()
-    await expect.poll(() => edgeOffset("top")).toBeLessThan(8)
+    await expect.poll(startOffset).toBeLessThan(8)
     await expect(start).toBeDisabled()
 
     await scrollToMiddle()
     await expect(end).toBeEnabled()
     await end.click()
-    await expect.poll(() => edgeOffset("bottom")).toBeLessThan(8)
     await expect(end).toBeDisabled()
     await expect(start).toBeEnabled()
+    // Starting to scroll away from the end must not change the sticky inset
+    // as the viewport fade appears.
+    expect(await scrollWithoutTabShift(-60)).toBeLessThan(2)
   })
 })

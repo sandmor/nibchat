@@ -4,6 +4,7 @@ import {
   Fragment,
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -288,10 +289,16 @@ export function Message({
 }) {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
-  const parts = parseJson<Parts>(node.parts_json, [])
+  const parts = useMemo(
+    () => parseJson<Parts>(node.parts_json, []),
+    [node.parts_json]
+  )
   const streamBuffer = useStreamBuffer(streamId ?? "")
   const sourceParts = overlayStreamParts(parts, streamBuffer.parts, streamId)
-  const metadata = parseJson<Record<string, unknown>>(node.metadata_json, {})
+  const metadata = useMemo(
+    () => parseJson<Record<string, unknown>>(node.metadata_json, {}),
+    [node.metadata_json]
+  )
   const text = textFromParts(sourceParts)
   const editSlot = messageEditSlotId(node.chat_id, node.id)
   const liveEdit = useHasEditorSession(editSlot)
@@ -320,19 +327,26 @@ export function Message({
   const pendingIds = pendingToolInvocations(sourceParts).map(
     (p) => p.toolCallId
   )
-  const siblings = nodes.filter(
-    (candidate) =>
-      candidate.parent_id === node.parent_id && candidate.role === node.role
+  const siblings = useMemo(
+    () =>
+      nodes
+        .filter(
+          (candidate) =>
+            candidate.parent_id === node.parent_id &&
+            candidate.role === node.role
+        )
+        .sort(siblingSort),
+    [nodes, node.parent_id, node.role]
   )
-  siblings.sort(siblingSort)
   const index = siblings.findIndex((candidate) => candidate.id === node.id)
-  const teleportBlocked = subtreeNodeIds(nodes, node.id)
-  const teleportTargets = nodes.filter(
-    (candidate) => !teleportBlocked.has(candidate.id)
-  )
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [teleportOpen, setTeleportOpen] = useState(false)
+  const teleportTargets = useMemo(() => {
+    if (!teleportOpen) return []
+    const blocked = subtreeNodeIds(nodes, node.id)
+    return nodes.filter((candidate) => !blocked.has(candidate.id))
+  }, [teleportOpen, nodes, node.id])
   const [teleportDestination, setTeleportDestination] = useState("root")
   const [teleportSubtree, setTeleportSubtree] = useState(true)
   const [teleportMode, setTeleportMode] = useState<"reply" | "before">("reply")

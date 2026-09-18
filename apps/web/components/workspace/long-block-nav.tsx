@@ -85,13 +85,7 @@ export function LongBlockFrame({
   return (
     <div
       ref={blockRef}
-      className={cn(
-        "relative min-w-0",
-        // Either sticky tab can reach the opposite corner while scrolling.
-        overflow.overflowing &&
-          "[&>article]:rounded-se-none [&>article]:rounded-ee-none",
-        className
-      )}
+      className={cn("relative min-w-0", className)}
       style={style}
     >
       {children}
@@ -132,32 +126,13 @@ function LongBlockNav({
   return (
     <div
       data-find-skip
-      className="pointer-events-none absolute inset-y-0 end-0 z-10 flex w-0 flex-col justify-between overflow-visible"
+      // Bound the rail to the article's padded interior. Its lower boundary is
+      // the footer's bottom edge, including when the actions wrap.
+      className="pointer-events-none absolute inset-y-[calc(1rem+1px)] end-0 z-10 flex w-0 flex-col justify-between overflow-visible"
     >
       <div
         className={cn(
-          "pointer-events-auto sticky top-0",
-          startVisible && "invisible"
-        )}
-      >
-        <BookmarkTab
-          edge="end"
-          radius="xl"
-          testId="long-block-nav-start"
-          label={`Jump to start of ${label}`}
-          icon={ArrowUp02Icon}
-          disabled={startVisible}
-          className={tabClass}
-          onClick={() => {
-            const target = blockRef.current
-            if (target)
-              alignBlockInScrollport(navMeasureTarget(target), "start")
-          }}
-        />
-      </div>
-      <div
-        className={cn(
-          "pointer-events-auto sticky bottom-0",
+          "pointer-events-auto sticky top-3",
           endVisible && "invisible"
         )}
       >
@@ -168,10 +143,31 @@ function LongBlockNav({
           label={`Jump to end of ${label}`}
           icon={ArrowDown02Icon}
           disabled={endVisible}
-          className={tabClass}
+          className={cn(tabClass, "h-7")}
           onClick={() => {
             const target = blockRef.current
             if (target) alignBlockInScrollport(navMeasureTarget(target), "end")
+          }}
+        />
+      </div>
+      <div
+        className={cn(
+          "pointer-events-auto sticky bottom-12",
+          startVisible && "invisible"
+        )}
+      >
+        <BookmarkTab
+          edge="end"
+          radius="xl"
+          testId="long-block-nav-start"
+          label={`Jump to start of ${label}`}
+          icon={ArrowUp02Icon}
+          disabled={startVisible}
+          className={cn(tabClass, "h-7")}
+          onClick={() => {
+            const target = blockRef.current
+            if (target)
+              alignBlockInScrollport(navMeasureTarget(target), "start")
           }}
         />
       </div>

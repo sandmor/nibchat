@@ -2,6 +2,7 @@
 
 import {
   Fragment,
+  memo,
   useEffect,
   useId,
   useMemo,
@@ -271,21 +272,7 @@ export type MessageEditorBindings = {
   onRevealContextMessage?: (nodeId: string) => void
 }
 
-export function Message({
-  node,
-  nodes,
-  siblingNodes,
-  providers,
-  messageActionCaptions,
-  onSelect,
-  onChanged,
-  onRegenerate,
-  onAnswerTools,
-  presentation = "linear",
-  attachSelectionOnEdit = true,
-  editor,
-  streamId = null,
-}: {
+type MessageProps = {
   node: NodeRow
   nodes: NodeRow[]
   /** Precomputed in linear view; tree callers fall back to local grouping. */
@@ -306,7 +293,39 @@ export function Message({
   editor?: MessageEditorBindings
   /** Live generation overlay; token text is read from the stream buffer. */
   streamId?: string | null
-}) {
+}
+
+/** Skip handler identity, parents rebuild those on unrelated ChatView updates. */
+function messagePropsAreEqual(prev: MessageProps, next: MessageProps) {
+  return (
+    prev.node === next.node &&
+    prev.nodes === next.nodes &&
+    prev.siblingNodes === next.siblingNodes &&
+    prev.providers === next.providers &&
+    prev.messageActionCaptions === next.messageActionCaptions &&
+    prev.presentation === next.presentation &&
+    prev.attachSelectionOnEdit === next.attachSelectionOnEdit &&
+    (prev.streamId ?? null) === (next.streamId ?? null) &&
+    prev.editor?.mcpAvailable === next.editor?.mcpAvailable &&
+    prev.editor?.animate === next.editor?.animate
+  )
+}
+
+export const Message = memo(function Message({
+  node,
+  nodes,
+  siblingNodes,
+  providers,
+  messageActionCaptions,
+  onSelect,
+  onChanged,
+  onRegenerate,
+  onAnswerTools,
+  presentation = "linear",
+  attachSelectionOnEdit = true,
+  editor,
+  streamId = null,
+}: MessageProps) {
   const { execute: executeMessageMutation } = useMessageMutationController()
   const parts = useMemo(
     () => parseJson<Parts>(node.parts_json, []),
@@ -1194,4 +1213,4 @@ export function Message({
       {article}
     </LongBlockFrame>
   )
-}
+}, messagePropsAreEqual)

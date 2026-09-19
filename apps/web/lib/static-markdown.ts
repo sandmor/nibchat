@@ -48,6 +48,15 @@ function sanitizeRawHtml(source: string) {
   return String(DOMPurify.sanitize(source, SAFE_RAW_HTML))
 }
 
+function renderKatex(text: string, displayMode: boolean) {
+  return katex.renderToString(text, {
+    displayMode,
+    errorColor: "var(--color-muted-foreground)",
+    throwOnError: false,
+    trust: false,
+  })
+}
+
 function staticLink(href: string, title: string | null, body: string) {
   const safe = safeMarkdownUrl(href)
   if (!safe) return body
@@ -187,12 +196,7 @@ marked.use({
           text: string
           displayMode: boolean
         }
-        return katex.renderToString(math.text, {
-          displayMode: math.displayMode,
-          errorColor: "var(--color-muted-foreground)",
-          throwOnError: false,
-          trust: false,
-        })
+        return renderKatex(math.text, math.displayMode)
       },
     },
     {
@@ -216,12 +220,7 @@ marked.use({
           text: string
           displayMode: boolean
         }
-        return `${katex.renderToString(math.text, {
-          displayMode: math.displayMode,
-          errorColor: "var(--color-muted-foreground)",
-          throwOnError: false,
-          trust: false,
-        })}\n`
+        return `${renderKatex(math.text, math.displayMode)}\n`
       },
     },
   ],

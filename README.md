@@ -27,6 +27,8 @@ pnpm --filter web dev
 
 Open [http://localhost:3000](http://localhost:3000). The first signup becomes the sole owner of the instance, then you can connect a model provider.
 
+For Docker Compose, see [DEPLOYMENT.md](./DEPLOYMENT.md). Compose stores its SQLite database and filesystem attachments in a Docker-managed `nibchat-data` volume by default, separate from the `./data/` directory used by local development.
+
 ### Reasoning controls
 
 Use the reasoning picker beside the model to set effort or a thinking budget. Choices are remembered per provider/model in each chat. **Default** omits the override; **Off** explicitly disables thinking where supported. Reasoning replay remains a separate setting in Parameters.

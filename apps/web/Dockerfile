@@ -33,10 +33,14 @@ ENV NEXT_TELEMETRY_DISABLED=1
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /data \
+  && chown node:node /data
 
 COPY --from=build /app/apps/web/.next/standalone ./
 COPY --from=build /app/apps/web/.next/static ./apps/web/.next/static
+
+USER node
 
 EXPOSE 3000
 CMD ["node", "apps/web/server.js"]

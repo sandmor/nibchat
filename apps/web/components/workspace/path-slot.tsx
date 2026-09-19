@@ -7,6 +7,7 @@
  * rebind content under that stable shell; {@link SlotCrossfade} owns enter/exit
  * motion so Message stays a single present body.
  */
+import { useCallback } from "react"
 import type { NodeRow } from "@/lib/types"
 import type { ProviderSummary } from "./types"
 import { Message, type MessageEditorBindings } from "./message"
@@ -46,6 +47,12 @@ export function PathSlot({
   ) => void | Promise<void>
   editor?: MessageEditorBindings
 }) {
+  const nodeId = row.node.id
+  const handleRegenerate = useCallback(
+    () => onRegenerate(nodeId),
+    [nodeId, onRegenerate]
+  )
+
   return (
     <SlotCrossfade
       contentKey={transcriptRowContentKey(row)}
@@ -61,9 +68,7 @@ export function PathSlot({
         onSelect={onSelect}
         onChanged={onChanged}
         onRegenerate={
-          row.node.role === "assistant"
-            ? () => onRegenerate(row.node.id)
-            : undefined
+          row.node.role === "assistant" ? handleRegenerate : undefined
         }
         onAnswerTools={onAnswerTools}
         editor={editor}

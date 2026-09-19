@@ -6,14 +6,11 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Compose and local app share the **repo-root** `.env`. SQLite is under **repo-root** `./data/` (default `./data/nibchat.db` locally; Docker bind-mounts that directory to `/data` with `SQLITE_PATH=/data/nibchat.db`).
+Compose and local app share the **repo-root** `.env`. Local development stores SQLite and filesystem attachments under **repo-root** `./data/`. Compose uses a Docker-managed `nibchat-data` volume by default, mounted at `/data`, so Docker does not create root-owned files in the checkout and its state is separate from `pnpm dev`.
 
-Image attachments use filesystem storage by default (`./data/attachments`, or
-`/data/attachments` in Compose). Preserve the whole `data/` directory for a
-manual backup. Set `ATTACHMENT_STORAGE=database` for serverless deployments or
-multiple app replicas that do not share a durable attachment volume.
+Image attachments use filesystem storage by default (`./data/attachments` for local development and `/data/attachments` in Compose). Preserve the Docker volume or the whole `data/` directory, depending on which storage mode you use, for a manual backup. Set `ATTACHMENT_STORAGE=database` for serverless deployments or multiple app replicas that do not share a durable attachment volume.
 
-Database engines are selected at process start by environment — never mixed:
+Database engines are selected at process start by environment:
 
 - **SQLite adapter** when `DATABASE_URL` is unset (default compose)
 - **Postgres adapter** when `DATABASE_URL` is set:

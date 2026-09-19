@@ -600,6 +600,10 @@ function AfterTipSlot({
   ) => void | Promise<void>
   editor?: MessageEditorBindings
 }) {
+  const handleRegenerate = useCallback(
+    () => onRegenerate(row.messageId),
+    [onRegenerate, row.messageId]
+  )
   const node = nodes.find((candidate) => candidate.id === row.messageId)
   if (!node) {
     return (
@@ -619,9 +623,7 @@ function AfterTipSlot({
       messageActionCaptions={messageActionCaptions}
       onSelect={onSelect}
       onChanged={onChanged}
-      onRegenerate={
-        node.role === "assistant" ? () => onRegenerate(node.id) : undefined
-      }
+      onRegenerate={node.role === "assistant" ? handleRegenerate : undefined}
       onAnswerTools={onAnswerTools}
       editor={editor}
       streamId={row.streamId}

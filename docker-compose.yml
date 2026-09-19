@@ -21,7 +21,11 @@ services:
       ATTACHMENT_STORAGE: ${ATTACHMENT_STORAGE:-filesystem}
       ATTACHMENT_FILESYSTEM_PATH: ${ATTACHMENT_FILESYSTEM_PATH:-/data/attachments}
     volumes:
-      - ./data:/data
+      - nibchat-data:/data
+      # To share the same database and attachments with local development,
+      # replace the volume above with this bind mount. The image runs as uid
+      # 1000 (`node`), so ./data must be writable by that uid.
+      # - ./data:/data
     # Reach Ollama on the Docker host at http://host.docker.internal:11434
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -63,4 +67,5 @@ services:
       timeout: 5s
       retries: 10
 volumes:
+  nibchat-data:
   nibchat-postgres:

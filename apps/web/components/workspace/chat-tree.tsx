@@ -1328,6 +1328,10 @@ const TreeMessage = memo(function TreeMessage({
   editor?: MessageEditorBindings
   streamId?: string
 }) {
+  const handleRegenerate = useCallback(
+    () => onRegenerate(node.id),
+    [node.id, onRegenerate]
+  )
   return (
     <Message
       node={node}
@@ -1337,9 +1341,7 @@ const TreeMessage = memo(function TreeMessage({
       presentation="tree"
       attachSelectionOnEdit={false}
       onChanged={onChanged}
-      onRegenerate={
-        node.role === "assistant" ? () => onRegenerate(node.id) : undefined
-      }
+      onRegenerate={node.role === "assistant" ? handleRegenerate : undefined}
       onAnswerTools={onAnswerTools}
       editor={editor}
       streamId={streamId}

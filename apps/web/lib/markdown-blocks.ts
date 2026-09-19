@@ -172,7 +172,7 @@ export function renderStaticCodeBlock(
           class="${MARKDOWN_ICON_BUTTON}"
           type="button"
           aria-label="Download file"
-          data-markdown-tooltip="Download file"
+          data-static-tooltip="Download file"
           data-markdown-action="${MARKDOWN_ACTION.downloadCode}"
         >
           ${DOWNLOAD_ICON}
@@ -181,7 +181,7 @@ export function renderStaticCodeBlock(
           class="${MARKDOWN_ICON_BUTTON}"
           type="button"
           aria-label="Copy code"
-          data-markdown-tooltip="Copy code"
+          data-static-tooltip="Copy code"
           data-markdown-action="${MARKDOWN_ACTION.copyCode}"
         >
           ${COPY_ICON}
@@ -210,7 +210,7 @@ function renderStaticTableToolbar() {
         type="button"
         aria-haspopup="menu"
         aria-label="Copy table"
-        data-markdown-tooltip="Copy table"
+        data-static-tooltip="Copy table"
         data-markdown-action="${MARKDOWN_ACTION.openCopyMenu}"
       >
         ${COPY_ICON}
@@ -220,7 +220,7 @@ function renderStaticTableToolbar() {
         type="button"
         aria-haspopup="menu"
         aria-label="Download table"
-        data-markdown-tooltip="Download table"
+        data-static-tooltip="Download table"
         data-markdown-action="${MARKDOWN_ACTION.openDownloadMenu}"
       >
         ${DOWNLOAD_ICON}
@@ -229,7 +229,7 @@ function renderStaticTableToolbar() {
         class="${MARKDOWN_ICON_BUTTON}"
         type="button"
         aria-label="View fullscreen"
-        data-markdown-tooltip="View fullscreen"
+        data-static-tooltip="View fullscreen"
         data-markdown-action="${MARKDOWN_ACTION.fullscreenTable}"
       >
         ${FULLSCREEN_ICON}

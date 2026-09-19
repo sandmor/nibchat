@@ -21,7 +21,7 @@ console.log(answer)
 
     expect(html).toContain('data-markdown-code-block=""')
     expect(html).toContain(`data-markdown-action="${MARKDOWN_ACTION.copyCode}"`)
-    expect(html).toContain('data-markdown-tooltip="Copy code"')
+    expect(html).toContain('data-static-tooltip="Copy code"')
     expect(html).toContain('data-start-line="3"')
     expect(html).not.toMatch(
       /data-markdown-code-line="">[^<]*<\/span>\n<span data-markdown-code-line/

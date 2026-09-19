@@ -35,6 +35,7 @@ import {
   transcriptPeekPx,
   transcriptRangeExtractor,
   transcriptRowMeasurementKey,
+  transcriptSiblingsByNodeId,
   TRANSCRIPT_OVERSCAN,
   type AfterTipTranscriptRow,
   type TranscriptRow,
@@ -160,6 +161,10 @@ function VirtualChatTranscript({
     () => new Map(rows.map((row, index) => [row.messageId, index])),
     [rows]
   )
+  const siblingsByNodeId = useMemo(
+    () => transcriptSiblingsByNodeId(nodes),
+    [nodes]
+  )
   const rowsRef = useRef(rows)
   const previousRowsRef = useRef(rows)
   const densityRef = useRef(density)
@@ -183,7 +188,11 @@ function VirtualChatTranscript({
 
   const rangeExtractor = useCallback(
     (range: Parameters<typeof transcriptRangeExtractor>[0]) =>
-      transcriptRangeExtractor(range, retainedIndexes),
+      transcriptRangeExtractor(
+        range,
+        retainedIndexes,
+        !didInitialScrollRef.current
+      ),
     [retainedIndexes]
   )
 
@@ -508,6 +517,7 @@ function VirtualChatTranscript({
                   <AfterTipSlot
                     row={row}
                     nodes={nodes}
+                    siblingNodes={siblingsByNodeId.get(row.messageId)}
                     providers={providers}
                     animate={animate}
                     transition={transition}
@@ -522,6 +532,7 @@ function VirtualChatTranscript({
                   <PathSlot
                     row={row}
                     nodes={nodes}
+                    siblingNodes={siblingsByNodeId.get(row.node.id)}
                     providers={providers}
                     animate={animate}
                     transition={transition}
@@ -562,6 +573,7 @@ function VirtualChatTranscript({
 function AfterTipSlot({
   row,
   nodes,
+  siblingNodes,
   providers,
   animate,
   transition,
@@ -574,6 +586,7 @@ function AfterTipSlot({
 }: {
   row: AfterTipTranscriptRow
   nodes: NodeRow[]
+  siblingNodes?: readonly NodeRow[]
   providers: ProviderSummary[]
   animate: boolean
   transition: { duration: number; ease: [number, number, number, number] }
@@ -601,6 +614,7 @@ function AfterTipSlot({
     <Message
       node={node}
       nodes={nodes}
+      siblingNodes={siblingNodes}
       providers={providers}
       messageActionCaptions={messageActionCaptions}
       onSelect={onSelect}

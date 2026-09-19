@@ -1,5 +1,6 @@
 import { defaultRangeExtractor, type Range } from "@tanstack/react-virtual"
 import { parseJson } from "@/lib/domain"
+import { siblingSort } from "@/lib/sort-key"
 import type { NodeRow, Parts } from "@/lib/types"
 
 /** Chats at or below this size keep every row mounted for instant scrolling. */
@@ -20,6 +21,26 @@ export const TRANSCRIPT_OVERSCAN = 10
 
 export function pathSlotKey(slotIndex: number): string {
   return `slot:${slotIndex}`
+}
+
+/** Build branch groups once per workspace revision instead of once per row. */
+export function transcriptSiblingsByNodeId(
+  nodes: readonly NodeRow[]
+): ReadonlyMap<string, readonly NodeRow[]> {
+  const groups = new Map<string, NodeRow[]>()
+  for (const node of nodes) {
+    const key = `${node.parent_id ?? ""}\u0000${node.role}`
+    const group = groups.get(key)
+    if (group) group.push(node)
+    else groups.set(key, [node])
+  }
+
+  const byNodeId = new Map<string, readonly NodeRow[]>()
+  for (const group of groups.values()) {
+    group.sort(siblingSort)
+    for (const node of group) byNodeId.set(node.id, group)
+  }
+  return byNodeId
 }
 
 /** Previous-item peek when jumping to a row (`scrollPaddingStart`). */
@@ -45,12 +66,20 @@ export function transcriptMeasurementLayoutKey(
  */
 export function transcriptRangeExtractor(
   range: Range,
-  retainedIndexes: ReadonlySet<number>
+  retainedIndexes: ReadonlySet<number>,
+  initialEnd = false
 ): number[] {
   if (range.count <= TRANSCRIPT_EAGER_ROW_LIMIT)
     return Array.from({ length: range.count }, (_, index) => index)
 
-  const indexes = new Set(defaultRangeExtractor(range))
+  const effectiveRange = initialEnd
+    ? {
+        ...range,
+        startIndex: range.count - 1,
+        endIndex: range.count - 1,
+      }
+    : range
+  const indexes = new Set(defaultRangeExtractor(effectiveRange))
   for (const index of retainedIndexes) {
     if (index >= 0 && index < range.count) indexes.add(index)
   }

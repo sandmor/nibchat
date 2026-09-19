@@ -19,6 +19,7 @@ import {
 export function PathSlot({
   row,
   nodes,
+  siblingNodes,
   providers,
   animate,
   transition,
@@ -31,6 +32,7 @@ export function PathSlot({
 }: {
   row: PathTranscriptRow
   nodes: NodeRow[]
+  siblingNodes?: readonly NodeRow[]
   providers: ProviderSummary[]
   animate: boolean
   transition: { duration: number; ease: [number, number, number, number] }
@@ -53,6 +55,7 @@ export function PathSlot({
       <Message
         node={row.node}
         nodes={nodes}
+        siblingNodes={siblingNodes}
         providers={providers}
         messageActionCaptions={messageActionCaptions}
         onSelect={onSelect}

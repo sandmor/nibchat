@@ -8,23 +8,14 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type MouseEvent,
 } from "react"
-import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
-  ArrowLeft01Icon,
   ArrowMoveUpRightIcon,
-  ArrowRight01Icon,
-  Copy01Icon,
-  Delete02Icon,
-  Edit02Icon,
   GitBranchIcon,
-  InformationCircleIcon,
   MoreHorizontalIcon,
-  RefreshIcon,
-  ViewIcon,
-  ViewOffIcon,
 } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
@@ -54,7 +45,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { TooltipProvider, WithTooltip } from "@/components/ui/tooltip"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -66,8 +56,6 @@ import { copyText } from "@/lib/clipboard"
 import { partsToMarkdown, pathToMarkdown } from "@/lib/message-markdown"
 import type { NodeRow, Parts } from "@/lib/types"
 import { parseJson, subtreeNodeIds, textFromParts } from "@/lib/domain"
-import { useTRPC } from "@/lib/trpc-react"
-import { patchContextExcluded, type WorkspaceData } from "@/lib/workspace-cache"
 import { Markdown } from "@/components/markdown"
 import type { ProviderSummary } from "./types"
 import { LongBlockFrame } from "./long-block-nav"
@@ -106,116 +94,36 @@ import {
   messageStatusLabel,
   resolveMessageOrigin,
 } from "@/lib/message-meta"
+import {
+  MESSAGE_FOOTER_ACTION,
+  prepareMessageFooterHtml,
+} from "@/lib/message-footer-html"
+import {
+  useMessageMutationController,
+  type MessageMutationOperation,
+} from "./message-mutations"
 
-export function MessageAction({
-  icon,
-  children,
-  onClick,
-  destructive,
-  captions,
-  disabled,
-}: {
-  icon: typeof RefreshIcon
-  children: string
-  onClick: () => void
-  destructive?: boolean
-  captions: boolean
-  disabled?: boolean
-}) {
-  const button = (
-    <Button
-      type="button"
-      variant="ghost"
-      size={captions ? "xs" : "icon-xs"}
-      className={messageActionClass(captions, destructive)}
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={children}
-    >
-      <HugeiconsIcon
-        icon={icon}
-        strokeWidth={2}
-        className="size-3.5 shrink-0"
-        aria-hidden
-      />
-      {captions ? <span className="leading-none">{children}</span> : null}
-    </Button>
-  )
+type MessageDialog = "details" | "delete" | "move" | "replace"
+type MountedMessageDialogs = Record<MessageDialog, boolean>
 
-  if (captions) return button
-
-  return <WithTooltip label={children}>{button}</WithTooltip>
+const NO_MOUNTED_MESSAGE_DIALOGS: MountedMessageDialogs = {
+  details: false,
+  delete: false,
+  move: false,
+  replace: false,
 }
+const NO_PENDING_TOOL_IDS: string[] = []
 
-function messageActionClass(captions: boolean, destructive?: boolean) {
+function messageActionClass(captions: boolean) {
   return cn(
     captions
       ? "h-7 gap-1 px-2 text-xs font-normal"
-      : "size-7 text-muted-foreground hover:text-foreground",
-    destructive && "text-destructive hover:text-destructive"
-  )
-}
-
-function MetaSep() {
-  return (
-    <span aria-hidden className="mx-1.5 h-3 w-px shrink-0 bg-foreground/20" />
-  )
-}
-
-function SiblingStepper({
-  index,
-  count,
-  onPrevious,
-  onNext,
-}: {
-  index: number
-  count: number
-  onPrevious: () => void
-  onNext: () => void
-}) {
-  return (
-    <span className="flex items-center gap-1">
-      <WithTooltip label="Previous branch">
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          disabled={index === 0}
-          aria-label="Previous branch"
-          onClick={onPrevious}
-        >
-          <HugeiconsIcon
-            icon={ArrowLeft01Icon}
-            strokeWidth={2}
-            className="size-3.5"
-            aria-hidden
-          />
-        </Button>
-      </WithTooltip>
-      <span aria-live="polite">
-        {index + 1}/{count}
-      </span>
-      <WithTooltip label="Next branch">
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          disabled={index === count - 1}
-          aria-label="Next branch"
-          onClick={onNext}
-        >
-          <HugeiconsIcon
-            icon={ArrowRight01Icon}
-            strokeWidth={2}
-            className="size-3.5"
-            aria-hidden
-          />
-        </Button>
-      </WithTooltip>
-    </span>
+      : "size-7 text-muted-foreground hover:text-foreground"
   )
 }
 
 function MoreActionsTrigger({ captions }: { captions: boolean }) {
-  const trigger = (
+  return (
     <DropdownMenuTrigger
       render={
         <Button
@@ -224,6 +132,12 @@ function MoreActionsTrigger({ captions }: { captions: boolean }) {
           size={captions ? "xs" : "icon-xs"}
           className={messageActionClass(captions)}
           aria-label="More"
+          {...(captions
+            ? {}
+            : {
+                "data-static-tooltip": "More",
+                "data-static-tooltip-gap": "4",
+              })}
         />
       }
     >
@@ -236,8 +150,111 @@ function MoreActionsTrigger({ captions }: { captions: boolean }) {
       {captions ? <span className="leading-none">More</span> : null}
     </DropdownMenuTrigger>
   )
-  if (captions) return trigger
-  return <WithTooltip label="More">{trigger}</WithTooltip>
+}
+
+function applyLocalToolResults(
+  sourceParts: Parts,
+  toolResults: Record<string, unknown>
+): Parts {
+  if (Object.keys(toolResults).length === 0) return sourceParts
+  return sourceParts.map((part) => {
+    if (part.type !== "tool-invocation") return part
+    if (!Object.prototype.hasOwnProperty.call(toolResults, part.toolCallId))
+      return part
+    if (part.state !== "input-available") return part
+    return {
+      ...part,
+      state: "output-available" as const,
+      output: toolResults[part.toolCallId],
+      errorText: undefined,
+    }
+  })
+}
+
+function overlayFor(
+  persistedParts: Parts,
+  streamId: string | null | undefined
+) {
+  return overlayStreamParts(
+    persistedParts,
+    streamId ? (useStreamStore.getState().buffers[streamId]?.parts ?? []) : [],
+    streamId
+  )
+}
+
+/** Token text only. Message chrome must not subscribe to the live buffer. */
+function MessageLiveBody({
+  persistedParts,
+  streamId,
+  streaming,
+  interactiveTools,
+  toolResults,
+  onAnswerTool,
+}: {
+  persistedParts: Parts
+  streamId: string | null | undefined
+  streaming: boolean
+  interactiveTools: boolean
+  toolResults: Record<string, unknown>
+  onAnswerTool?: (
+    toolCallId: string,
+    toolName: string,
+    output: unknown
+  ) => void | Promise<void>
+}) {
+  const streamBuffer = useStreamBuffer(streamId ?? "")
+  const sourceParts = overlayStreamParts(
+    persistedParts,
+    streamBuffer.parts,
+    streamId
+  )
+  const displayParts = applyLocalToolResults(sourceParts, toolResults)
+  const hasStructuredBody = displayParts.some(
+    (part) =>
+      part.type === "reasoning" ||
+      part.type === "text" ||
+      part.type === "attachment" ||
+      part.type === "tool-invocation"
+  )
+  if (hasStructuredBody) {
+    return (
+      <MessageParts
+        parts={displayParts}
+        streaming={streaming}
+        interactiveTools={interactiveTools}
+        onAnswerTool={onAnswerTool}
+      />
+    )
+  }
+  return (
+    <Markdown streaming={streaming}>
+      {textFromParts(displayParts) || (streaming ? "Thinking…" : "")}
+    </Markdown>
+  )
+}
+
+function useCanEditAsBranch(
+  node: NodeRow,
+  persistedParts: Parts,
+  streamId: string | null | undefined,
+  allowUserEdit: boolean
+) {
+  return useStreamStore((state) => {
+    const overlay = overlayStreamParts(
+      persistedParts,
+      streamId ? (state.buffers[streamId]?.parts ?? []) : [],
+      streamId
+    )
+    const editParts =
+      node.status === "streaming" || streamId
+        ? durableAuthoredParts(overlay)
+        : overlay
+    return (
+      canEditMessage(node.status, editParts) &&
+      !isEmptyParts(editParts) &&
+      (node.role === "assistant" || allowUserEdit)
+    )
+  })
 }
 
 export type MessageEditorBindings = {
@@ -257,6 +274,7 @@ export type MessageEditorBindings = {
 export function Message({
   node,
   nodes,
+  siblingNodes,
   providers,
   messageActionCaptions,
   onSelect,
@@ -270,6 +288,8 @@ export function Message({
 }: {
   node: NodeRow
   nodes: NodeRow[]
+  /** Precomputed in linear view; tree callers fall back to local grouping. */
+  siblingNodes?: readonly NodeRow[]
   providers: ProviderSummary[]
   messageActionCaptions: boolean
   onSelect?: (parentId: string, childId: string) => void
@@ -287,19 +307,15 @@ export function Message({
   /** Live generation overlay; token text is read from the stream buffer. */
   streamId?: string | null
 }) {
-  const trpc = useTRPC()
-  const queryClient = useQueryClient()
+  const { execute: executeMessageMutation } = useMessageMutationController()
   const parts = useMemo(
     () => parseJson<Parts>(node.parts_json, []),
     [node.parts_json]
   )
-  const streamBuffer = useStreamBuffer(streamId ?? "")
-  const sourceParts = overlayStreamParts(parts, streamBuffer.parts, streamId)
   const metadata = useMemo(
     () => parseJson<Record<string, unknown>>(node.metadata_json, {}),
     [node.metadata_json]
   )
-  const text = textFromParts(sourceParts)
   const editSlot = messageEditSlotId(node.chat_id, node.id)
   const liveEdit = useHasEditorSession(editSlot)
   const editSession = useEditorSession(editSlot)
@@ -316,19 +332,19 @@ export function Message({
     if (wasEditing && !liveEdit)
       shellRef.current?.focus({ preventScroll: true })
   }, [liveEdit])
-  const editSourceParts =
-    node.status === "streaming" || streamId
-      ? durableAuthoredParts(sourceParts)
-      : sourceParts
-  const canEditAsBranch =
-    canEditMessage(node.status, editSourceParts) &&
-    !isEmptyParts(editSourceParts) &&
-    (node.role === "assistant" || Boolean(editor))
-  const pendingIds = pendingToolInvocations(sourceParts).map(
-    (p) => p.toolCallId
+  const canEditAsBranch = useCanEditAsBranch(
+    node,
+    parts,
+    streamId,
+    Boolean(editor)
   )
+  const pendingIds =
+    node.status === "awaiting_input"
+      ? pendingToolInvocations(parts).map((part) => part.toolCallId)
+      : NO_PENDING_TOOL_IDS
   const siblings = useMemo(
     () =>
+      siblingNodes ??
       nodes
         .filter(
           (candidate) =>
@@ -336,7 +352,7 @@ export function Message({
             candidate.role === node.role
         )
         .sort(siblingSort),
-    [nodes, node.parent_id, node.role]
+    [node.parent_id, node.role, nodes, siblingNodes]
   )
   const index = siblings.findIndex((candidate) => candidate.id === node.id)
   const [detailsOpen, setDetailsOpen] = useState(false)
@@ -351,6 +367,18 @@ export function Message({
   const [teleportSubtree, setTeleportSubtree] = useState(true)
   const [teleportMode, setTeleportMode] = useState<"reply" | "before">("reply")
   const [replaceOpen, setReplaceOpen] = useState(false)
+  const [mountedDialogs, setMountedDialogs] = useState<MountedMessageDialogs>(
+    NO_MOUNTED_MESSAGE_DIALOGS
+  )
+  const openDialog = (
+    dialog: MessageDialog,
+    setOpen: (open: boolean) => void
+  ) => {
+    setMountedDialogs((current) =>
+      current[dialog] ? current : { ...current, [dialog]: true }
+    )
+    setOpen(true)
+  }
   const moveRepliesId = useId()
   const dismissReplacement = () => {
     setReplaceOpen(false)
@@ -370,9 +398,9 @@ export function Message({
     setDeleteOpen(false)
     setTeleportOpen(false)
     setReplaceOpen(false)
+    setMountedDialogs(NO_MOUNTED_MESSAGE_DIALOGS)
     setTeleportMode("reply")
     toolResults = {}
-    resumeInFlightRef.current = false
     setLocalToolResults({})
   } else {
     const nextResults = retainedClientToolResults(
@@ -386,28 +414,15 @@ export function Message({
     }
   }
   const answersHeld = allPendingResultsReady(pendingIds, toolResults)
-  if (node.status !== "awaiting_input" || !answersHeld) {
-    resumeInFlightRef.current = false
-  }
+  useEffect(() => {
+    if (node.status !== "awaiting_input" || !answersHeld)
+      resumeInFlightRef.current = false
+  }, [answersHeld, node.id, node.status])
   const interactiveTools =
     node.role === "assistant" &&
     node.status === "awaiting_input" &&
     Boolean(onAnswerTools) &&
     !answersHeld
-
-  // Preview locally submitted tools until the workspace refresh lands.
-  const displayParts: Parts = sourceParts.map((part) => {
-    if (part.type !== "tool-invocation") return part
-    if (!Object.prototype.hasOwnProperty.call(toolResults, part.toolCallId))
-      return part
-    if (part.state !== "input-available") return part
-    return {
-      ...part,
-      state: "output-available" as const,
-      output: toolResults[part.toolCallId],
-      errorText: undefined,
-    }
-  })
 
   const { appearance } = useWorkspaceChrome()
   const roleLayout =
@@ -445,77 +460,17 @@ export function Message({
     node.role === "assistant" &&
     (Boolean(originLabel) || Object.keys(metadata).length > 0)
 
-  const forkMessagePartsMutation = useMutation(
-    trpc.workspace.forkMessageParts.mutationOptions({
-      onSuccess: async () => {
-        finishEdit("sent")
-        await Promise.resolve(onChanged?.())
-      },
-      onError: (error) =>
-        toast.error(error.message || "Could not save message branch"),
-    })
-  )
-  const replaceMessageMutation = useMutation(
-    trpc.workspace.replaceMessage.mutationOptions({
-      onSuccess: async () => {
-        dismissReplacement()
-        finishEdit("sent")
-        await Promise.resolve(onChanged?.())
-      },
-      onError: (error) =>
-        toast.error(error.message || "Could not replace message"),
-    })
-  )
-  const deleteNodeMutation = useMutation(
-    trpc.workspace.deleteNode.mutationOptions({
-      onSuccess: () => {
-        setDeleteOpen(false)
-        onChanged?.()
-      },
-      onError: (error) => toast.error(error.message || "Delete failed"),
-    })
-  )
-  const moveNodeMutation = useMutation(
-    trpc.workspace.moveNode.mutationOptions({
-      onSuccess: async () => {
-        setTeleportOpen(false)
-        await Promise.resolve(onChanged?.())
-      },
-      onError: (error) =>
-        toast.error(error.message || "Could not move message"),
-    })
-  )
-  const setContextExcludedMutation = useMutation(
-    trpc.workspace.setContextExcluded.mutationOptions({
-      onMutate: async (input) => {
-        const key = trpc.workspace.get.queryKey({ chatId: node.chat_id })
-        await queryClient.cancelQueries({ queryKey: key })
-        const previous = queryClient.getQueryData<WorkspaceData>(key)
-        queryClient.setQueryData(
-          key,
-          patchContextExcluded(previous, input.nodeId, input.excluded)
-        )
-        return { previous, key }
-      },
-      onError: (error, _input, context) => {
-        if (context?.previous)
-          queryClient.setQueryData(context.key, context.previous)
-        toast.error(error.message || "Could not update message context")
-      },
-      onSettled: async (_data, _error, _input, context) => {
-        if (context?.key)
-          await queryClient.invalidateQueries({ queryKey: context.key })
-      },
-    })
-  )
-  const contextExclusionPending =
-    setContextExcludedMutation.isPending &&
-    setContextExcludedMutation.variables?.nodeId === node.id
+  const [pendingMutation, setPendingMutation] = useState<
+    MessageMutationOperation["kind"] | null
+  >(null)
+  const contextExclusionPending = pendingMutation === "context"
 
   const copyMarkdown = async (kind: "message" | "path") => {
     const text =
       kind === "message"
-        ? partsToMarkdown(displayParts)
+        ? partsToMarkdown(
+            applyLocalToolResults(overlayFor(parts, streamId), toolResults)
+          )
         : pathToMarkdown(nodes, node.id)
     try {
       await copyText(text)
@@ -559,13 +514,26 @@ export function Message({
     if (editor?.onFinishEdit) editor.onFinishEdit(node, mode)
     else clearEdit(editSlot)
   }
+  const runMessageMutation = async (
+    operation: MessageMutationOperation,
+    onSuccess?: () => void | Promise<void>
+  ) => {
+    if (pendingMutation) return false
+    setPendingMutation(operation.kind)
+    try {
+      await executeMessageMutation(operation)
+      await onSuccess?.()
+      return true
+    } catch {
+      // The shared controller reports and rolls back the operation.
+      return false
+    } finally {
+      setPendingMutation(null)
+    }
+  }
   const beginEdit = () => {
     if (hasEditorSession(editSlot)) return
-    const latest = overlayStreamParts(
-      parts,
-      useStreamStore.getState().buffers[streamId ?? ""]?.parts ?? [],
-      streamId
-    )
+    const latest = overlayFor(parts, streamId)
     const editParts =
       node.status === "streaming" || streamId
         ? durableAuthoredParts(latest)
@@ -585,31 +553,113 @@ export function Message({
     else finishEdit("discard")
   }
   const saveEdit = () => {
-    if (forkMessagePartsMutation.isPending) return
+    if (pendingMutation) return
     const prepared = persistableParts()
     if (!prepared) return
-    forkMessagePartsMutation.mutate({
-      nodeId: node.id,
-      parts: prepared.parts,
-      attachments: prepared.attachments,
-      role: prepared.session.role,
-      attachSelection: attachSelectionOnEdit,
-    })
+    void runMessageMutation(
+      {
+        kind: "fork",
+        input: {
+          nodeId: node.id,
+          parts: prepared.parts,
+          attachments: prepared.attachments,
+          role: prepared.session.role,
+          attachSelection: attachSelectionOnEdit,
+        },
+      },
+      async () => {
+        finishEdit("sent")
+        await Promise.resolve(onChanged?.())
+      }
+    )
   }
   const confirmReplace = () => {
     const prepared = persistableParts()
     if (!prepared) return
     if (streamId) useStreamStore.getState().stop(streamId)
-    replaceMessageMutation.mutate({
-      nodeId: node.id,
-      parts: prepared.parts,
-      attachments: prepared.attachments,
-      role: prepared.session.role,
-      expectedRevision: node.revision,
-    })
+    void runMessageMutation(
+      {
+        kind: "replace",
+        input: {
+          nodeId: node.id,
+          parts: prepared.parts,
+          attachments: prepared.attachments,
+          role: prepared.session.role,
+          expectedRevision: node.revision,
+        },
+      },
+      async () => {
+        dismissReplacement()
+        finishEdit("sent")
+        await Promise.resolve(onChanged?.())
+      }
+    )
   }
 
-  const replacementDialog = (
+  const footerHtml = prepareMessageFooterHtml({
+    captions: messageActionCaptions,
+    contextExcluded: node.excluded_from_context,
+    contextPending: contextExclusionPending,
+    identity: {
+      label: identityLabel,
+      title: hasDetails
+        ? joinMessageMeta(createdTime?.full, originLabel)
+        : (createdTime?.full ?? identityLabel),
+      hasDetails,
+      createdTime: createdTime?.compact ?? null,
+      providerName: origin.providerName ?? null,
+      modelName: origin.modelName ?? null,
+    },
+    showDetailsAction: hasDetails && !identityLabel,
+    showEdit: canEditAsBranch,
+    showRegenerate:
+      node.role === "assistant" &&
+      Boolean(onRegenerate) &&
+      node.status !== "streaming" &&
+      !streamId,
+    siblingCount: presentation === "linear" ? siblings.length : 0,
+    siblingIndex: index,
+  })
+
+  const onFooterAction = (event: MouseEvent<HTMLDivElement>) => {
+    const target = event.target
+    if (!(target instanceof Element)) return
+    const actionElement = target.closest<HTMLElement>(
+      "[data-message-footer-action]"
+    )
+    const action = actionElement?.dataset.messageFooterAction
+    if (!action || !actionElement) return
+    event.preventDefault()
+
+    if (action === MESSAGE_FOOTER_ACTION.copy) {
+      void copyMarkdown("message")
+    } else if (action === MESSAGE_FOOTER_ACTION.regenerate) {
+      onRegenerate?.()
+    } else if (action === MESSAGE_FOOTER_ACTION.edit) {
+      beginEdit()
+    } else if (action === MESSAGE_FOOTER_ACTION.toggleContext) {
+      void runMessageMutation({
+        kind: "context",
+        chatId: node.chat_id,
+        input: {
+          nodeId: node.id,
+          excluded: !node.excluded_from_context,
+        },
+      })
+    } else if (action === MESSAGE_FOOTER_ACTION.details) {
+      openDialog("details", setDetailsOpen)
+    } else if (action === MESSAGE_FOOTER_ACTION.delete) {
+      openDialog("delete", setDeleteOpen)
+    } else if (action === MESSAGE_FOOTER_ACTION.previousSibling) {
+      const previous = siblings[index - 1]
+      if (previous) onSelect?.(node.parent_id ?? "", previous.id)
+    } else if (action === MESSAGE_FOOTER_ACTION.nextSibling) {
+      const next = siblings[index + 1]
+      if (next) onSelect?.(node.parent_id ?? "", next.id)
+    }
+  }
+
+  const replacementDialog = mountedDialogs.replace ? (
     <AlertDialog
       open={replaceOpen}
       onOpenChange={(open) => {
@@ -629,14 +679,14 @@ export function Message({
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction
             onClick={confirmReplace}
-            disabled={replaceMessageMutation.isPending}
+            disabled={pendingMutation === "replace"}
           >
             Replace message
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
-  )
+  ) : null
 
   if (liveEdit && (draftRole !== "user" || editor)) {
     return (
@@ -667,9 +717,7 @@ export function Message({
             contextParentId={node.parent_id}
             overlayNodeId={node.id}
             submitting={
-              draftRole === "user"
-                ? undefined
-                : forkMessagePartsMutation.isPending
+              draftRole === "user" ? undefined : pendingMutation === "fork"
             }
             onSend={() => {
               if (draftRole === "user") {
@@ -679,7 +727,7 @@ export function Message({
               saveEdit()
             }}
             onCancel={cancelEdit}
-            onReplace={() => setReplaceOpen(true)}
+            onReplace={() => openDialog("replace", setReplaceOpen)}
             onFiles={
               editor ? (files) => editor.onFiles(editSlot, files) : undefined
             }
@@ -749,49 +797,39 @@ export function Message({
             {statusLabel}
           </p>
         ) : null}
-        {displayParts.some((part) => part.type === "reasoning") ||
-        displayParts.some((part) => part.type === "text") ||
-        displayParts.some((part) => part.type === "attachment") ||
-        displayParts.some((part) => part.type === "tool-invocation") ? (
-          <MessageParts
-            parts={displayParts}
-            streaming={node.status === "streaming" || Boolean(streamId)}
-            interactiveTools={interactiveTools}
-            onAnswerTool={
-              onAnswerTools
-                ? async (toolCallId, _toolName, output) => {
-                    if (resumeInFlightRef.current || answersHeld) return
-                    const next = {
-                      ...toolResults,
-                      [toolCallId]: output,
-                    }
-                    setLocalToolResults(next)
-                    if (!allPendingResultsReady(pendingIds, next)) return
-                    resumeInFlightRef.current = true
-                    try {
-                      await onAnswerTools(
-                        node.id,
-                        pendingIds.map((id) => ({
-                          toolCallId: id,
-                          output: next[id],
-                        }))
-                      )
-                    } catch {
-                      resumeInFlightRef.current = false
-                      setLocalToolResults({})
-                    }
+        <MessageLiveBody
+          persistedParts={parts}
+          streamId={streamId}
+          streaming={node.status === "streaming" || Boolean(streamId)}
+          interactiveTools={interactiveTools}
+          toolResults={toolResults}
+          onAnswerTool={
+            onAnswerTools
+              ? async (toolCallId, _toolName, output) => {
+                  if (resumeInFlightRef.current || answersHeld) return
+                  const next = {
+                    ...toolResults,
+                    [toolCallId]: output,
                   }
-                : undefined
-            }
-          />
-        ) : (
-          <Markdown
-            streaming={node.status === "streaming" || Boolean(streamId)}
-          >
-            {text ||
-              (node.status === "streaming" || streamId ? "Thinking…" : "")}
-          </Markdown>
-        )}
+                  setLocalToolResults(next)
+                  if (!allPendingResultsReady(pendingIds, next)) return
+                  resumeInFlightRef.current = true
+                  try {
+                    await onAnswerTools(
+                      node.id,
+                      pendingIds.map((id) => ({
+                        toolCallId: id,
+                        output: next[id],
+                      }))
+                    )
+                  } catch {
+                    resumeInFlightRef.current = false
+                    setLocalToolResults({})
+                  }
+                }
+              : undefined
+          }
+        />
         {tree && node.status === "error" ? (
           <p className="mt-2 text-xs break-words text-destructive">
             {typeof metadata.error === "string" && metadata.error
@@ -802,154 +840,54 @@ export function Message({
       </div>
       <div
         data-find-skip
+        data-message-footer=""
+        onClick={onFooterAction}
         className={cn(
           "flex flex-wrap items-center gap-x-2 gap-y-1",
           tree ? "shrink-0 border-t border-foreground/8 px-2 py-1" : "mt-3"
         )}
       >
-        {identityLabel ? (
-          hasDetails ? (
-            <button
-              type="button"
-              title={joinMessageMeta(createdTime?.full, originLabel)}
-              aria-label="Message details"
-              onClick={() => setDetailsOpen(true)}
-              className="flex min-w-0 flex-1 items-center text-left text-[11px] text-muted-foreground outline-none hover:text-foreground"
+        <span
+          className="contents"
+          data-message-footer-html="identity"
+          dangerouslySetInnerHTML={footerHtml.identity}
+        />
+        <span className="flex flex-wrap items-center gap-0.5">
+          <span
+            className="contents"
+            data-message-footer-html="actions"
+            dangerouslySetInnerHTML={footerHtml.actions}
+          />
+          <DropdownMenu>
+            <MoreActionsTrigger captions={messageActionCaptions} />
+            <DropdownMenuContent
+              align="end"
+              side="top"
+              className="max-w-[min(20rem,calc(100vw-1.5rem))]"
             >
-              {createdTime ? (
-                <span className="shrink-0">{createdTime.compact}</span>
-              ) : null}
-              {origin.providerName ? (
-                <>
-                  {createdTime ? <MetaSep /> : null}
-                  <span className="min-w-0 truncate">
-                    {origin.providerName}
-                  </span>
-                </>
-              ) : null}
-              {origin.modelName ? (
-                <>
-                  {createdTime || origin.providerName ? <MetaSep /> : null}
-                  <span className="min-w-0 truncate">{origin.modelName}</span>
-                </>
-              ) : null}
-            </button>
-          ) : (
-            <span
-              title={createdTime?.full ?? identityLabel}
-              className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground"
-            >
-              {identityLabel}
-            </span>
-          )
-        ) : (
-          <span className="min-w-0 flex-1" />
-        )}
-        <TooltipProvider delay={400}>
-          <span className="flex flex-wrap items-center gap-0.5">
-            {presentation === "linear" && siblings.length > 1 ? (
-              <SiblingStepper
-                index={index}
-                count={siblings.length}
-                onPrevious={() => {
-                  const previous = siblings[index - 1]
-                  if (previous) onSelect?.(node.parent_id ?? "", previous.id)
-                }}
-                onNext={() => {
-                  const next = siblings[index + 1]
-                  if (next) onSelect?.(node.parent_id ?? "", next.id)
-                }}
-              />
-            ) : null}
-            <MessageAction
-              onClick={() => void copyMarkdown("message")}
-              icon={Copy01Icon}
-              captions={messageActionCaptions}
-            >
-              Copy
-            </MessageAction>
-            {node.role === "assistant" &&
-              onRegenerate &&
-              node.status !== "streaming" &&
-              !streamId && (
-                <MessageAction
-                  onClick={() => onRegenerate()}
-                  icon={RefreshIcon}
-                  captions={messageActionCaptions}
-                >
-                  Regenerate
-                </MessageAction>
-              )}
-            {canEditAsBranch && (
-              <MessageAction
-                onClick={beginEdit}
-                icon={Edit02Icon}
-                captions={messageActionCaptions}
+              <DropdownMenuItem onClick={() => void copyMarkdown("path")}>
+                <HugeiconsIcon
+                  icon={GitBranchIcon}
+                  strokeWidth={2}
+                  className="size-3.5 text-muted-foreground"
+                  aria-hidden
+                />
+                Copy path
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => openDialog("move", setTeleportOpen)}
               >
-                Edit
-              </MessageAction>
-            )}
-            <MessageAction
-              onClick={() =>
-                setContextExcludedMutation.mutate({
-                  nodeId: node.id,
-                  excluded: !node.excluded_from_context,
-                })
-              }
-              icon={node.excluded_from_context ? ViewOffIcon : ViewIcon}
-              captions={messageActionCaptions}
-              disabled={contextExclusionPending}
-            >
-              {node.excluded_from_context
-                ? "Include in context"
-                : "Exclude from context"}
-            </MessageAction>
-            {hasDetails && !identityLabel && (
-              <MessageAction
-                onClick={() => setDetailsOpen(true)}
-                icon={InformationCircleIcon}
-                captions={messageActionCaptions}
-              >
-                Details
-              </MessageAction>
-            )}
-            <MessageAction
-              onClick={() => setDeleteOpen(true)}
-              icon={Delete02Icon}
-              destructive
-              captions={messageActionCaptions}
-            >
-              Delete
-            </MessageAction>
-            <DropdownMenu>
-              <MoreActionsTrigger captions={messageActionCaptions} />
-              <DropdownMenuContent
-                align="end"
-                side="top"
-                className="max-w-[min(20rem,calc(100vw-1.5rem))]"
-              >
-                <DropdownMenuItem onClick={() => void copyMarkdown("path")}>
-                  <HugeiconsIcon
-                    icon={GitBranchIcon}
-                    strokeWidth={2}
-                    className="size-3.5 text-muted-foreground"
-                    aria-hidden
-                  />
-                  Copy path
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setTeleportOpen(true)}>
-                  <HugeiconsIcon
-                    icon={ArrowMoveUpRightIcon}
-                    strokeWidth={2}
-                    className="size-3.5 text-muted-foreground"
-                    aria-hidden
-                  />
-                  Move…
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </span>
-        </TooltipProvider>
+                <HugeiconsIcon
+                  icon={ArrowMoveUpRightIcon}
+                  strokeWidth={2}
+                  className="size-3.5 text-muted-foreground"
+                  aria-hidden
+                />
+                Move…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </span>
       </div>
       {!tree && node.status === "error" && (
         <p className="mt-3 text-xs break-words text-destructive">
@@ -959,252 +897,289 @@ export function Message({
         </p>
       )}
 
-      <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Message details</DialogTitle>
-          </DialogHeader>
-          <dl className="grid min-w-0 grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-            {createdTime ? (
-              <>
-                <dt className="text-muted-foreground">Created</dt>
-                <dd className="min-w-0 break-all">{createdTime.full}</dd>
-              </>
+      {mountedDialogs.details ? (
+        <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Message details</DialogTitle>
+            </DialogHeader>
+            <dl className="grid min-w-0 grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+              {createdTime ? (
+                <>
+                  <dt className="text-muted-foreground">Created</dt>
+                  <dd className="min-w-0 break-all">{createdTime.full}</dd>
+                </>
+              ) : null}
+              {origin.providerName ? (
+                <>
+                  <dt className="text-muted-foreground">Provider</dt>
+                  <dd className="min-w-0 break-all">
+                    {origin.providerName}
+                    {showIds &&
+                    origin.providerId &&
+                    origin.providerName !== origin.providerId ? (
+                      <span className="mt-0.5 block text-xs text-muted-foreground">
+                        {origin.providerId}
+                      </span>
+                    ) : null}
+                  </dd>
+                </>
+              ) : null}
+              {origin.modelName ? (
+                <>
+                  <dt className="text-muted-foreground">Model</dt>
+                  <dd className="min-w-0 break-all">
+                    {origin.modelName}
+                    {showIds &&
+                    origin.modelId &&
+                    origin.modelName !== origin.modelId ? (
+                      <span className="mt-0.5 block text-xs text-muted-foreground">
+                        {origin.modelId}
+                      </span>
+                    ) : null}
+                  </dd>
+                </>
+              ) : null}
+              {generationLabel ? (
+                <>
+                  <dt className="text-muted-foreground">Duration</dt>
+                  <dd className="min-w-0 break-all">{generationLabel}</dd>
+                </>
+              ) : null}
+              {metadata.finishReason != null && (
+                <>
+                  <dt className="text-muted-foreground">Finish</dt>
+                  <dd className="min-w-0 break-all">
+                    {String(metadata.finishReason)}
+                  </dd>
+                </>
+              )}
+              {metadata.finishedAt != null && (
+                <>
+                  <dt className="text-muted-foreground">Finished</dt>
+                  <dd className="min-w-0 break-all">
+                    {typeof metadata.finishedAt === "string"
+                      ? (formatMessageTime(metadata.finishedAt)?.full ??
+                        metadata.finishedAt)
+                      : String(metadata.finishedAt)}
+                  </dd>
+                </>
+              )}
+              {typeof metadata.error === "string" && metadata.error && (
+                <>
+                  <dt className="text-muted-foreground">Error</dt>
+                  <dd className="min-w-0 break-words text-destructive">
+                    {metadata.error}
+                  </dd>
+                </>
+              )}
+            </dl>
+            {usageEntries && usageEntries.length > 0 ? (
+              <div className="min-w-0">
+                <p className="mb-1 text-xs font-medium text-muted-foreground">
+                  Usage
+                </p>
+                <dl className="grid max-h-48 grid-cols-[auto_1fr] gap-x-3 gap-y-1 overflow-y-auto text-xs">
+                  {usageEntries.map(([key, value]) => (
+                    <Fragment key={key}>
+                      <dt className="text-muted-foreground">{key}</dt>
+                      <dd className="min-w-0 break-all">
+                        {typeof value === "object"
+                          ? JSON.stringify(value)
+                          : String(value)}
+                      </dd>
+                    </Fragment>
+                  ))}
+                </dl>
+              </div>
+            ) : usage ? (
+              <div className="min-w-0">
+                <p className="mb-1 text-xs font-medium text-muted-foreground">
+                  Usage
+                </p>
+                <pre className="max-h-48 overflow-auto rounded-lg bg-muted p-2 font-mono text-xs break-all whitespace-pre-wrap">
+                  {JSON.stringify(usage, null, 2)}
+                </pre>
+              </div>
             ) : null}
-            {origin.providerName ? (
-              <>
-                <dt className="text-muted-foreground">Provider</dt>
-                <dd className="min-w-0 break-all">
-                  {origin.providerName}
-                  {showIds &&
-                  origin.providerId &&
-                  origin.providerName !== origin.providerId ? (
-                    <span className="mt-0.5 block text-xs text-muted-foreground">
-                      {origin.providerId}
-                    </span>
-                  ) : null}
-                </dd>
-              </>
-            ) : null}
-            {origin.modelName ? (
-              <>
-                <dt className="text-muted-foreground">Model</dt>
-                <dd className="min-w-0 break-all">
-                  {origin.modelName}
-                  {showIds &&
-                  origin.modelId &&
-                  origin.modelName !== origin.modelId ? (
-                    <span className="mt-0.5 block text-xs text-muted-foreground">
-                      {origin.modelId}
-                    </span>
-                  ) : null}
-                </dd>
-              </>
-            ) : null}
-            {generationLabel ? (
-              <>
-                <dt className="text-muted-foreground">Duration</dt>
-                <dd className="min-w-0 break-all">{generationLabel}</dd>
-              </>
-            ) : null}
-            {metadata.finishReason != null && (
-              <>
-                <dt className="text-muted-foreground">Finish</dt>
-                <dd className="min-w-0 break-all">
-                  {String(metadata.finishReason)}
-                </dd>
-              </>
-            )}
-            {metadata.finishedAt != null && (
-              <>
-                <dt className="text-muted-foreground">Finished</dt>
-                <dd className="min-w-0 break-all">
-                  {typeof metadata.finishedAt === "string"
-                    ? (formatMessageTime(metadata.finishedAt)?.full ??
-                      metadata.finishedAt)
-                    : String(metadata.finishedAt)}
-                </dd>
-              </>
-            )}
-            {typeof metadata.error === "string" && metadata.error && (
-              <>
-                <dt className="text-muted-foreground">Error</dt>
-                <dd className="min-w-0 break-words text-destructive">
-                  {metadata.error}
-                </dd>
-              </>
-            )}
-          </dl>
-          {usageEntries && usageEntries.length > 0 ? (
-            <div className="min-w-0">
-              <p className="mb-1 text-xs font-medium text-muted-foreground">
-                Usage
-              </p>
-              <dl className="grid max-h-48 grid-cols-[auto_1fr] gap-x-3 gap-y-1 overflow-y-auto text-xs">
-                {usageEntries.map(([key, value]) => (
-                  <Fragment key={key}>
-                    <dt className="text-muted-foreground">{key}</dt>
-                    <dd className="min-w-0 break-all">
-                      {typeof value === "object"
-                        ? JSON.stringify(value)
-                        : String(value)}
-                    </dd>
-                  </Fragment>
-                ))}
-              </dl>
-            </div>
-          ) : usage ? (
-            <div className="min-w-0">
-              <p className="mb-1 text-xs font-medium text-muted-foreground">
-                Usage
-              </p>
-              <pre className="max-h-48 overflow-auto rounded-lg bg-muted p-2 font-mono text-xs break-all whitespace-pre-wrap">
-                {JSON.stringify(usage, null, 2)}
-              </pre>
-            </div>
-          ) : null}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setDetailsOpen(false)}>
-              Close
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDetailsOpen(false)}>
+                Close
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      ) : null}
 
-      <Dialog open={teleportOpen} onOpenChange={setTeleportOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Move message</DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            Reattach this message in the conversation. Leaving replies behind
-            promotes them to this message&apos;s former parent.
-          </p>
-          <div className="grid gap-1.5">
-            <Label id="move-placement">Placement</Label>
-            <ToggleGroup
-              value={[teleportMode]}
-              onValueChange={(next) => {
-                const mode = next[0]
-                if (mode === "reply" || mode === "before") setTeleportMode(mode)
-              }}
-              variant="outline"
-              spacing={0}
-              size="sm"
-              className="w-full"
-              aria-labelledby="move-placement"
-            >
-              <ToggleGroupItem value="reply" className="flex-1">
-                As a reply
-              </ToggleGroupItem>
-              <ToggleGroupItem
-                value="before"
-                className="flex-1"
-                disabled={teleportDestination === "root"}
+      {mountedDialogs.move ? (
+        <Dialog open={teleportOpen} onOpenChange={setTeleportOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Move message</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              Reattach this message in the conversation. Leaving replies behind
+              promotes them to this message&apos;s former parent.
+            </p>
+            <div className="grid gap-1.5">
+              <Label id="move-placement">Placement</Label>
+              <ToggleGroup
+                value={[teleportMode]}
+                onValueChange={(next) => {
+                  const mode = next[0]
+                  if (mode === "reply" || mode === "before")
+                    setTeleportMode(mode)
+                }}
+                variant="outline"
+                spacing={0}
+                size="sm"
+                className="w-full"
+                aria-labelledby="move-placement"
               >
-                Before this message
-              </ToggleGroupItem>
-            </ToggleGroup>
-          </div>
-          <Label className="grid gap-1.5 text-sm">
-            {teleportMode === "before" ? "Insert before" : "Reply to"}
-            <Select
-              value={teleportDestination}
-              onValueChange={(value) => {
-                if (!value) return
-                setTeleportDestination(value)
-                if (value === "root") setTeleportMode("reply")
-              }}
-            >
-              <SelectTrigger size="sm" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="root">Conversation root</SelectItem>
-                {teleportTargets.map((candidate) => (
-                  <SelectItem key={candidate.id} value={candidate.id}>
-                    {candidate.role}:{" "}
-                    {textFromParts(
-                      parseJson<Parts>(candidate.parts_json, [])
-                    ).slice(0, 72) || "(empty)"}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Label>
-          <div className="flex items-center gap-2">
-            <Switch
-              id={moveRepliesId}
-              checked={teleportSubtree}
-              onCheckedChange={(checked) =>
-                setTeleportSubtree(checked === true)
-              }
-            />
-            <Label htmlFor={moveRepliesId} className="text-sm font-normal">
-              Also move replies
+                <ToggleGroupItem value="reply" className="flex-1">
+                  As a reply
+                </ToggleGroupItem>
+                <ToggleGroupItem
+                  value="before"
+                  className="flex-1"
+                  disabled={teleportDestination === "root"}
+                >
+                  Before this message
+                </ToggleGroupItem>
+              </ToggleGroup>
+            </div>
+            <Label className="grid gap-1.5 text-sm">
+              {teleportMode === "before" ? "Insert before" : "Reply to"}
+              <Select
+                value={teleportDestination}
+                onValueChange={(value) => {
+                  if (!value) return
+                  setTeleportDestination(value)
+                  if (value === "root") setTeleportMode("reply")
+                }}
+              >
+                <SelectTrigger size="sm" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="root">Conversation root</SelectItem>
+                  {teleportTargets.map((candidate) => (
+                    <SelectItem key={candidate.id} value={candidate.id}>
+                      {candidate.role}:{" "}
+                      {textFromParts(
+                        parseJson<Parts>(candidate.parts_json, [])
+                      ).slice(0, 72) || "(empty)"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </Label>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setTeleportOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              disabled={moveNodeMutation.isPending}
-              onClick={() =>
-                moveNodeMutation.mutate({
-                  nodeId: node.id,
-                  destinationParentId:
-                    teleportDestination === "root" ? null : teleportDestination,
-                  ...(teleportMode === "before" &&
-                  teleportDestination !== "root"
-                    ? { beforeNodeId: teleportDestination }
-                    : {}),
-                  subtree: teleportSubtree,
-                })
-              }
-            >
-              Move
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            <div className="flex items-center gap-2">
+              <Switch
+                id={moveRepliesId}
+                checked={teleportSubtree}
+                onCheckedChange={(checked) =>
+                  setTeleportSubtree(checked === true)
+                }
+              />
+              <Label htmlFor={moveRepliesId} className="text-sm font-normal">
+                Also move replies
+              </Label>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setTeleportOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                disabled={pendingMutation === "move"}
+                onClick={() =>
+                  void runMessageMutation(
+                    {
+                      kind: "move",
+                      input: {
+                        nodeId: node.id,
+                        destinationParentId:
+                          teleportDestination === "root"
+                            ? null
+                            : teleportDestination,
+                        ...(teleportMode === "before" &&
+                        teleportDestination !== "root"
+                          ? { beforeNodeId: teleportDestination }
+                          : {}),
+                        subtree: teleportSubtree,
+                      },
+                    },
+                    async () => {
+                      setTeleportOpen(false)
+                      await Promise.resolve(onChanged?.())
+                    }
+                  )
+                }
+              >
+                Move
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      ) : null}
 
-      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete message node</AlertDialogTitle>
-            <AlertDialogDescription>
-              Subtree delete removes this node and all descendants. Keep replies
-              removes only this message and promotes every direct reply.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <Button
-              variant="outline"
-              onClick={() =>
-                deleteNodeMutation.mutate({
-                  nodeId: node.id,
-                  mode: "reparent",
-                })
-              }
-            >
-              Keep replies
-            </Button>
-            <AlertDialogAction
-              variant="destructive"
-              onClick={() =>
-                deleteNodeMutation.mutate({
-                  nodeId: node.id,
-                  mode: "subtree",
-                })
-              }
-            >
-              Delete subtree
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {mountedDialogs.delete ? (
+        <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete message node</AlertDialogTitle>
+              <AlertDialogDescription>
+                Subtree delete removes this node and all descendants. Keep
+                replies removes only this message and promotes every direct
+                reply.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <Button
+                variant="outline"
+                onClick={() =>
+                  void runMessageMutation(
+                    {
+                      kind: "delete",
+                      input: {
+                        nodeId: node.id,
+                        mode: "reparent",
+                      },
+                    },
+                    async () => {
+                      setDeleteOpen(false)
+                      await Promise.resolve(onChanged?.())
+                    }
+                  )
+                }
+              >
+                Keep replies
+              </Button>
+              <AlertDialogAction
+                variant="destructive"
+                onClick={() =>
+                  void runMessageMutation(
+                    {
+                      kind: "delete",
+                      input: {
+                        nodeId: node.id,
+                        mode: "subtree",
+                      },
+                    },
+                    async () => {
+                      setDeleteOpen(false)
+                      await Promise.resolve(onChanged?.())
+                    }
+                  )
+                }
+              >
+                Delete subtree
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      ) : null}
       {replacementDialog}
     </article>
   )

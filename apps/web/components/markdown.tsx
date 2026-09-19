@@ -51,9 +51,10 @@ import {
 } from "@/lib/markdown-blocks"
 import { prepareStaticMarkdown } from "@/lib/static-markdown"
 import {
-  hideMarkdownTooltips,
-  retainMarkdownTooltips,
-} from "@/lib/markdown-tooltips"
+  hideStaticTooltips,
+  retainStaticTooltips,
+  syncStaticTooltips,
+} from "@/lib/static-tooltips"
 import { toast } from "sonner"
 import "katex/dist/katex.min.css"
 import "streamdown/styles.css"
@@ -219,8 +220,17 @@ function MarkdownCode({
       <div className={MARKDOWN_BLOCK_TOPBAR}>
         <span className={MARKDOWN_BLOCK_LABEL}>{fence.language || "code"}</span>
         <div className="flex shrink-0 items-center">
-          <CodeBlockDownloadButton code={source} language={fence.language} />
-          <CodeBlockCopyButton code={source} />
+          <CodeBlockDownloadButton
+            code={source}
+            language={fence.language}
+            data-static-tooltip="Download file"
+            title={undefined}
+          />
+          <CodeBlockCopyButton
+            code={source}
+            data-static-tooltip="Copy code"
+            title={undefined}
+          />
         </div>
       </div>
       <CodeBlock
@@ -253,7 +263,8 @@ const TableToolbar = memo(function TableToolbar({
           <button
             className={TABLE_ICON_BUTTON}
             onClick={onExitFullscreen}
-            title="Exit fullscreen"
+            aria-label="Exit fullscreen"
+            data-static-tooltip="Exit fullscreen"
             type="button"
           >
             <HugeiconsIcon
@@ -267,7 +278,8 @@ const TableToolbar = memo(function TableToolbar({
             className={TABLE_ICON_BUTTON}
             disabled={isAnimating}
             onClick={onOpenFullscreen}
-            title="View fullscreen"
+            aria-label="View fullscreen"
+            data-static-tooltip="View fullscreen"
             type="button"
           >
             <HugeiconsIcon
@@ -461,7 +473,11 @@ const COPY_MENU_ITEMS = [
 
 const DOWNLOAD_MENU_ITEMS = [
   { format: "csv", label: "CSV", title: "Download table as CSV" },
-  { format: "markdown", label: "Markdown", title: "Download table as Markdown" },
+  {
+    format: "markdown",
+    label: "Markdown",
+    title: "Download table as Markdown",
+  },
 ] as const
 
 type TableMenuKind = "copy" | "download"
@@ -578,7 +594,8 @@ function MarkdownTableMenu({
           key={item.format}
           type="button"
           role="menuitem"
-          title={item.title}
+          title={undefined}
+          data-static-tooltip={item.title}
           data-markdown-action={action}
           data-markdown-format={item.format}
         >
@@ -617,118 +634,123 @@ function useMarkdownActions() {
 
   const closeTableMenu = useCallback(() => setTableMenuOpen(false), [])
   const onFullscreenOpenChange = useCallback((open: boolean) => {
-    if (!open) hideMarkdownTooltips()
+    if (!open) hideStaticTooltips()
     setFullscreenOpen(open)
   }, [])
 
-  const onClick = useCallback(async (event: MouseEvent<HTMLDivElement>) => {
-    const target = event.target
-    if (!(target instanceof Element)) return
-    const actionElement = target.closest<HTMLElement>("[data-markdown-action]")
-    const action = actionElement?.dataset.markdownAction
-    if (!action || !actionElement) return
-    event.preventDefault()
+  const onClick = useCallback(
+    async (event: MouseEvent<HTMLDivElement>) => {
+      const target = event.target
+      if (!(target instanceof Element)) return
+      const actionElement = target.closest<HTMLElement>(
+        "[data-markdown-action]"
+      )
+      const action = actionElement?.dataset.markdownAction
+      if (!action || !actionElement) return
+      event.preventDefault()
 
-    const codeBlock = actionElement.closest<HTMLElement>(
-      "[data-markdown-code-block]"
-    )
-    const tableBlock = actionElement.closest<HTMLElement>(
-      "[data-markdown-table]"
-    )
-    const tableFromMenu = tableMenuRef.current?.table
-    const table =
-      tableBlock?.querySelector<HTMLElement>("table") ??
-      (actionElement.closest("[data-markdown-menu-popup]")
-        ? tableFromMenu
-        : null)
+      const codeBlock = actionElement.closest<HTMLElement>(
+        "[data-markdown-code-block]"
+      )
+      const tableBlock = actionElement.closest<HTMLElement>(
+        "[data-markdown-table]"
+      )
+      const tableFromMenu = tableMenuRef.current?.table
+      const table =
+        tableBlock?.querySelector<HTMLElement>("table") ??
+        (actionElement.closest("[data-markdown-menu-popup]")
+          ? tableFromMenu
+          : null)
 
-    try {
-      if (action === MARKDOWN_ACTION.copyCode && codeBlock) {
-        await copyText(codeBlockText(codeBlock))
-        actionElement.dataset.copied = ""
-        window.setTimeout(() => delete actionElement.dataset.copied, 2_000)
-        toast.success("Code copied")
-        return
-      }
-      if (action === MARKDOWN_ACTION.downloadCode && codeBlock) {
-        const language =
-          codeBlock.querySelector<HTMLElement>("[data-markdown-language]")
-            ?.dataset.markdownLanguage ?? ""
-        downloadText(
-          codeFilename(language),
-          codeBlockText(codeBlock),
-          "text/plain"
-        )
-        toast.success("Code downloaded")
-        return
-      }
-      if (!table) return
-
-      const openMenu = (kind: TableMenuKind) => {
-        hideMarkdownTooltips()
-        const current = tableMenuRef.current
-        if (
-          tableMenuOpen &&
-          current?.kind === kind &&
-          current.trigger === actionElement
-        ) {
-          setTableMenuOpen(false)
+      try {
+        if (action === MARKDOWN_ACTION.copyCode && codeBlock) {
+          await copyText(codeBlockText(codeBlock))
+          actionElement.dataset.copied = ""
+          window.setTimeout(() => delete actionElement.dataset.copied, 2_000)
+          toast.success("Code copied")
           return
         }
-        if (
-          current?.kind !== kind ||
-          current.trigger !== actionElement ||
-          current.table !== table
-        ) {
-          setTableMenu({ kind, table, trigger: actionElement })
+        if (action === MARKDOWN_ACTION.downloadCode && codeBlock) {
+          const language =
+            codeBlock.querySelector<HTMLElement>("[data-markdown-language]")
+              ?.dataset.markdownLanguage ?? ""
+          downloadText(
+            codeFilename(language),
+            codeBlockText(codeBlock),
+            "text/plain"
+          )
+          toast.success("Code downloaded")
+          return
         }
-        setTableMenuOpen(true)
-      }
+        if (!table) return
 
-      if (action === MARKDOWN_ACTION.openCopyMenu) {
-        openMenu("copy")
-        return
-      }
-      if (action === MARKDOWN_ACTION.openDownloadMenu) {
-        openMenu("download")
-        return
-      }
-      if (action === MARKDOWN_ACTION.fullscreenTable) {
-        hideMarkdownTooltips()
-        setTableMenuOpen(false)
-        setFullscreenTable(table.outerHTML)
-        setFullscreenOpen(true)
-        return
-      }
+        const openMenu = (kind: TableMenuKind) => {
+          hideStaticTooltips()
+          const current = tableMenuRef.current
+          if (
+            tableMenuOpen &&
+            current?.kind === kind &&
+            current.trigger === actionElement
+          ) {
+            setTableMenuOpen(false)
+            return
+          }
+          if (
+            current?.kind !== kind ||
+            current.trigger !== actionElement ||
+            current.table !== table
+          ) {
+            setTableMenu({ kind, table, trigger: actionElement })
+          }
+          setTableMenuOpen(true)
+        }
 
-      const data = extractTableDataFromElement(table)
-      const format = actionElement.dataset.markdownFormat
-      const text =
-        format === "markdown"
-          ? tableDataToMarkdown(data)
-          : format === "tsv"
-            ? tableDataToTSV(data)
-            : tableDataToCSV(data)
-      if (action === MARKDOWN_ACTION.copyTable) {
-        await copyText(text)
-        setTableMenuOpen(false)
-        toast.success("Table copied")
-        return
+        if (action === MARKDOWN_ACTION.openCopyMenu) {
+          openMenu("copy")
+          return
+        }
+        if (action === MARKDOWN_ACTION.openDownloadMenu) {
+          openMenu("download")
+          return
+        }
+        if (action === MARKDOWN_ACTION.fullscreenTable) {
+          hideStaticTooltips()
+          setTableMenuOpen(false)
+          setFullscreenTable(table.outerHTML)
+          setFullscreenOpen(true)
+          return
+        }
+
+        const data = extractTableDataFromElement(table)
+        const format = actionElement.dataset.markdownFormat
+        const text =
+          format === "markdown"
+            ? tableDataToMarkdown(data)
+            : format === "tsv"
+              ? tableDataToTSV(data)
+              : tableDataToCSV(data)
+        if (action === MARKDOWN_ACTION.copyTable) {
+          await copyText(text)
+          setTableMenuOpen(false)
+          toast.success("Table copied")
+          return
+        }
+        if (action === MARKDOWN_ACTION.downloadTable) {
+          const markdown = format === "markdown"
+          downloadText(
+            `table.${markdown ? "md" : "csv"}`,
+            text,
+            markdown ? "text/markdown" : "text/csv"
+          )
+          setTableMenuOpen(false)
+          toast.success("Table downloaded")
+        }
+      } catch {
+        toast.error("Could not complete Markdown action")
       }
-      if (action === MARKDOWN_ACTION.downloadTable) {
-        const markdown = format === "markdown"
-        downloadText(
-          `table.${markdown ? "md" : "csv"}`,
-          text,
-          markdown ? "text/markdown" : "text/csv"
-        )
-        setTableMenuOpen(false)
-        toast.success("Table downloaded")
-      }
-    } catch {
-      toast.error("Could not complete Markdown action")
-    }
-  }, [tableMenuOpen])
+    },
+    [tableMenuOpen]
+  )
 
   const onErrorCapture = useCallback(
     (event: SyntheticEvent<HTMLDivElement>) => {
@@ -759,15 +781,14 @@ function useMarkdownActions() {
 }
 
 function StaticMarkdownBody({ source }: { source: string }) {
-  useEffect(() => retainMarkdownTooltips(), [])
   const entry = prepareStaticMarkdown(source)
   const html = useSyncExternalStore(
     entry.subscribe,
     entry.getSnapshot,
     entry.getServerSnapshot
   )
-  useEffect(() => {
-    hideMarkdownTooltips()
+  useLayoutEffect(() => {
+    syncStaticTooltips()
   }, [html.__html])
   return (
     <div className="markdown-static min-w-0" dangerouslySetInnerHTML={html} />
@@ -775,7 +796,7 @@ function StaticMarkdownBody({ source }: { source: string }) {
 }
 
 /** Visible message markdown with code, GFM, and KaTeX support. */
-export function Markdown({
+export const Markdown = memo(function Markdown({
   children,
   className,
   streaming = false,
@@ -792,6 +813,7 @@ export function Markdown({
     : children
   useMathOverflow(rootRef, content)
   const markdownActions = useMarkdownActions()
+  useEffect(() => retainStaticTooltips(), [])
 
   return (
     <div
@@ -858,4 +880,4 @@ export function Markdown({
       )}
     </div>
   )
-}
+})

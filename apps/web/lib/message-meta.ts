@@ -1,6 +1,7 @@
 import {
   parseProviderModelsJson,
   resolveModelLabel,
+  type ProviderModel,
 } from "@/lib/provider-models"
 import type { MessageStatus } from "@/lib/types"
 
@@ -25,6 +26,80 @@ type ProviderRef = {
 const IMPORT_SOURCE_LABELS: Record<string, string> = {
   chatgpt: "ChatGPT",
   sillytavern: "SillyTavern",
+}
+
+const dateTimeFormatters = new Map<string, Intl.DateTimeFormat>()
+const providerModelsCache = new Map<string, ProviderModel[]>()
+const FORMATTER_CACHE_LIMIT = 32
+const PROVIDER_MODELS_CACHE_LIMIT = 128
+
+function boundedCacheSet<K, V>(
+  cache: Map<K, V>,
+  key: K,
+  value: V,
+  limit: number
+) {
+  cache.set(key, value)
+  while (cache.size > limit) {
+    const oldest = cache.keys().next().value
+    if (oldest === undefined) break
+    cache.delete(oldest)
+  }
+  return value
+}
+
+function dateTimeFormatter(
+  locale: string | undefined,
+  timeZone: string | undefined,
+  kind: "day" | "year" | "time" | "date" | "date-year" | "full"
+) {
+  const key = `${locale ?? ""}\u0000${timeZone ?? ""}\u0000${kind}`
+  const cached = dateTimeFormatters.get(key)
+  if (cached) return cached
+
+  const options: Intl.DateTimeFormatOptions =
+    kind === "day"
+      ? { timeZone, year: "numeric", month: "numeric", day: "numeric" }
+      : kind === "year"
+        ? { timeZone, year: "numeric" }
+        : kind === "time"
+          ? { timeZone, hour: "numeric", minute: "2-digit" }
+          : kind === "date"
+            ? {
+                timeZone,
+                hour: "numeric",
+                minute: "2-digit",
+                month: "short",
+                day: "numeric",
+              }
+            : kind === "date-year"
+              ? {
+                  timeZone,
+                  hour: "numeric",
+                  minute: "2-digit",
+                  month: "short",
+                  day: "numeric",
+                  year: "numeric",
+                }
+              : { timeZone, dateStyle: "full", timeStyle: "short" }
+
+  return boundedCacheSet(
+    dateTimeFormatters,
+    key,
+    new Intl.DateTimeFormat(locale, options),
+    FORMATTER_CACHE_LIMIT
+  )
+}
+
+function cachedProviderModels(json: string) {
+  const cached = providerModelsCache.get(json)
+  if (cached) return cached
+  return boundedCacheSet(
+    providerModelsCache,
+    json,
+    parseProviderModelsJson(json),
+    PROVIDER_MODELS_CACHE_LIMIT
+  )
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -132,33 +207,16 @@ export function formatMessageTime(
   const now = options?.now ?? new Date()
   const locale = options?.locale
   const timeZone = options?.timeZone
-  const dayStamp = new Intl.DateTimeFormat(locale, {
-    timeZone,
-    year: "numeric",
-    month: "numeric",
-    day: "numeric",
-  })
-  const yearStamp = new Intl.DateTimeFormat(locale, {
-    timeZone,
-    year: "numeric",
-  })
+  const dayStamp = dateTimeFormatter(locale, timeZone, "day")
+  const yearStamp = dateTimeFormatter(locale, timeZone, "year")
   const sameDay = dayStamp.format(created) === dayStamp.format(now)
   const sameYear = yearStamp.format(created) === yearStamp.format(now)
-  const compact = new Intl.DateTimeFormat(locale, {
+  const compact = dateTimeFormatter(
+    locale,
     timeZone,
-    hour: "numeric",
-    minute: "2-digit",
-    ...(sameDay
-      ? {}
-      : sameYear
-        ? { month: "short", day: "numeric" }
-        : { month: "short", day: "numeric", year: "numeric" }),
-  }).format(created)
-  const full = new Intl.DateTimeFormat(locale, {
-    timeZone,
-    dateStyle: "full",
-    timeStyle: "short",
-  }).format(created)
+    sameDay ? "time" : sameYear ? "date" : "date-year"
+  ).format(created)
+  const full = dateTimeFormatter(locale, timeZone, "full").format(created)
   return { compact, full }
 }
 
@@ -183,7 +241,7 @@ export function resolveMessageOrigin(
     : (providerId ?? (importSource ? importSourceLabel(importSource) : null))
   const modelName = modelId
     ? (resolveModelLabel(
-        parseProviderModelsJson(provider?.models_json ?? "[]"),
+        cachedProviderModels(provider?.models_json ?? "[]"),
         modelId
       ) ?? modelId)
     : null

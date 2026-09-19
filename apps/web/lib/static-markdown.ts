@@ -283,7 +283,8 @@ class StaticMarkdownEntry {
       )
       if (!result) waiting += 1
     }
-    if (waiting === 0) refresh()
+    // The constructor already rendered the synchronous result. Re-render only
+    // after at least one asynchronous highlighter fills its cache.
   }
 }
 

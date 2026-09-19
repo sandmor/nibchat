@@ -523,10 +523,10 @@
   font-size: 0.875em;
 }
 
-/* One document-level popup services every cached Markdown action. It uses the
+/* One document-level popup services cached HTML controls. It uses the
    same foreground/background tokens and silhouette as TooltipContent, so theme
    customization applies without mounting a React tooltip per control. */
-[data-markdown-tooltip-popup] {
+[data-static-tooltip-popup] {
   position: fixed;
   z-index: 50;
   display: inline-flex;
@@ -546,23 +546,23 @@
   animation-timing-function: var(--motion-ease);
 }
 
-[data-markdown-tooltip-popup][data-state="open"] {
-  animation-name: markdown-tooltip-in;
+[data-static-tooltip-popup][data-state="open"] {
+  animation-name: static-tooltip-in;
 }
 
-[data-markdown-tooltip-popup][data-state="closed"] {
-  animation-name: markdown-tooltip-out;
+[data-static-tooltip-popup][data-state="closed"] {
+  animation-name: static-tooltip-out;
 }
 
-[data-markdown-tooltip-popup][data-side="top"] {
-  --markdown-tooltip-enter-y: 0.5rem;
+[data-static-tooltip-popup][data-side="top"] {
+  --static-tooltip-enter-y: 0.5rem;
 }
 
-[data-markdown-tooltip-popup][data-side="bottom"] {
-  --markdown-tooltip-enter-y: -0.5rem;
+[data-static-tooltip-popup][data-side="bottom"] {
+  --static-tooltip-enter-y: -0.5rem;
 }
 
-[data-markdown-tooltip-popup]::after {
+[data-static-tooltip-popup]::after {
   position: absolute;
   left: 50%;
   width: 0.625rem;
@@ -573,18 +573,18 @@
   transform: translateX(-50%) rotate(45deg);
 }
 
-[data-markdown-tooltip-popup][data-side="top"]::after {
+[data-static-tooltip-popup][data-side="top"]::after {
   bottom: -0.3125rem;
 }
 
-[data-markdown-tooltip-popup][data-side="bottom"]::after {
+[data-static-tooltip-popup][data-side="bottom"]::after {
   top: -0.3125rem;
 }
 
-@keyframes markdown-tooltip-in {
+@keyframes static-tooltip-in {
   from {
     opacity: 0;
-    transform: translateY(var(--markdown-tooltip-enter-y, 0)) scale(0.95);
+    transform: translateY(var(--static-tooltip-enter-y, 0)) scale(0.95);
   }
   to {
     opacity: 1;
@@ -592,7 +592,7 @@
   }
 }
 
-@keyframes markdown-tooltip-out {
+@keyframes static-tooltip-out {
   from {
     opacity: 1;
     transform: scale(1);

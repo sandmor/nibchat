@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentProps,
   type Dispatch,
   type SetStateAction,
 } from "react"
@@ -96,6 +97,7 @@ import { useConversationFindSession } from "./conversation-find-session"
 import { SessionMessageEditor } from "./message-editor"
 import { type MessageEditorBindings } from "./message"
 import { ContextPreviewProvider } from "./context-preview"
+import { MessageMutationProvider } from "./message-mutations"
 import {
   composerSlotId,
   clearSubmittedComposerDraft,
@@ -168,6 +170,14 @@ function isPdfFile(file: File) {
 
 function readChatViewState(raw: string | undefined): ChatViewState {
   return raw ? parseChatViewState(raw) : DEFAULT_CHAT_VIEW_STATE
+}
+
+function MessageLayer(props: ComponentProps<typeof ConversationFindLayer>) {
+  return (
+    <MessageMutationProvider>
+      <ConversationFindLayer {...props} />
+    </MessageMutationProvider>
+  )
 }
 
 export function ChatView({
@@ -2015,7 +2025,7 @@ export function ChatView({
           }}
         />
 
-        <ConversationFindLayer value={find.layerValue}>
+        <MessageLayer value={find.layerValue}>
           {view === "linear" ? (
             <ChatTranscript
               chatKey={chatKey}
@@ -2174,7 +2184,7 @@ export function ChatView({
               />
             ) : null}
           </AnimatePresence>
-        </ConversationFindLayer>
+        </MessageLayer>
 
         {view === "linear" ? (
           <div className="shrink-0 border-t border-border bg-background p-3 sm:px-6 sm:py-4">

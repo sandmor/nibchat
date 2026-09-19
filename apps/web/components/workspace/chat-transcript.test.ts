@@ -15,6 +15,7 @@ import {
   transcriptRowContentKey,
   transcriptRowIndex,
   transcriptRowMeasurementKey,
+  transcriptSiblingsByNodeId,
 } from "./chat-transcript-helpers"
 
 function node(
@@ -56,6 +57,18 @@ describe("pathSlotKey", () => {
 })
 
 describe("transcript row mapping", () => {
+  it("groups siblings by parent and role, sorted by sort_key", () => {
+    const root = node("root")
+    const late = node("late", "assistant", "root", { sort_key: 20 })
+    const early = node("early", "assistant", "root", { sort_key: 10 })
+    const user = node("user", "user", "root", { sort_key: 5 })
+    const groups = transcriptSiblingsByNodeId([root, late, user, early])
+
+    expect(groups.get("late")?.map(({ id }) => id)).toEqual(["early", "late"])
+    expect(groups.get("early")?.map(({ id }) => id)).toEqual(["early", "late"])
+    expect(groups.get("user")?.map(({ id }) => id)).toEqual(["user"])
+  })
+
   it("uses density-based previous-item peek as scroll padding", () => {
     expect(transcriptPeekPx("compact")).toBe(40)
     expect(transcriptPeekPx("comfortable")).toBe(64)
@@ -128,6 +141,11 @@ describe("transcript row mapping", () => {
     const indexes = transcriptRangeExtractor(long, new Set([0, 40]))
     expect(indexes).toEqual(expect.arrayContaining([0, 40, 20, 24]))
     expect(indexes).not.toHaveLength(41)
+
+    const initialIndexes = transcriptRangeExtractor(long, new Set(), true)
+    expect(initialIndexes).toContain(40)
+    expect(initialIndexes).not.toContain(0)
+    expect(initialIndexes).not.toContain(20)
   })
 })
 

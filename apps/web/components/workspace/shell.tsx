@@ -54,7 +54,12 @@ import { useAppearanceStore } from "@/lib/appearance-store"
 import { activeThemeId } from "@/lib/theme-slot"
 import { useThemeSlot } from "@/components/theme-provider"
 import { useTRPC } from "@/lib/trpc-react"
-import { omitChat, type WorkspaceData } from "@/lib/workspace-cache"
+import {
+  omitChats,
+  omitSpaceSubtree,
+  patchChatsSpace,
+  type WorkspaceData,
+} from "@/lib/workspace-cache"
 import type { ProviderSummary } from "./types"
 import { AccountMenu } from "./account-menu"
 import { BrandMark } from "@/components/logo"
@@ -70,7 +75,12 @@ import {
   parseSpaceSettings,
   SETTING_SLOT_LABELS,
   spacePolicyImpact,
+  spaceSubtreeIds,
 } from "@/lib/space"
+import { WorkspaceSelectionProvider } from "./chat-selection"
+import { ChatSelectionBar } from "./chat-selection-bar"
+import { ChatSelectToggle } from "./chat-list"
+import { WorkspaceDnd } from "./space-dnd"
 
 type ChromeContextValue = {
   appearance: Appearance
@@ -148,7 +158,7 @@ export function WorkspaceShell({
   const [search, setSearch] = useState("")
   const [chatsOpen, setChatsOpen] = useState(false)
   const mdUp = useMediaMdUp()
-  const [chatIdToDelete, setChatIdToDelete] = useState<string | null>(null)
+  const [chatIdsToDelete, setChatIdsToDelete] = useState<string[] | null>(null)
   const [spaceIdToDelete, setSpaceIdToDelete] = useState<string | null>(null)
   const [listStored, setListStored] = useUserStorageValue(
     user.id,
@@ -278,11 +288,13 @@ export function WorkspaceShell({
     if (!spaceIdToDelete) return null
     const target = spaceById.get(spaceIdToDelete)
     if (!target) return null
+    const subtree = spaceSubtreeIds(target.id, spaces)
     const settings = parseSpaceSettings(target.settings_json)
     const policies = spacePolicyImpact(settings)
     return {
-      chats: chats.filter((chat) => chat.space_id === target.id).length,
-      children: spaces.filter((space) => space.parent_id === target.id).length,
+      chats: chats.filter((chat) => chat.space_id && subtree.has(chat.space_id))
+        .length,
+      children: [...subtree].filter((id) => id !== target.id).length,
       settings: policies.settings.map((key) => SETTING_SLOT_LABELS[key] ?? key),
       variables: policies.variables,
       books: policies.books,
@@ -356,15 +368,15 @@ export function WorkspaceShell({
     ]
   )
 
-  const deleteChatMutation = useMutation(
-    trpc.workspace.deleteChat.mutationOptions({
+  const deleteChatsMutation = useMutation(
+    trpc.workspace.deleteChats.mutationOptions({
       onMutate: async (input) => {
         await queryClient.cancelQueries(trpc.workspace.get.queryFilter())
         const snapshots = queryClient.getQueriesData<WorkspaceData>({
           queryKey: trpc.workspace.get.queryKey(),
         })
         for (const [key, data] of snapshots) {
-          queryClient.setQueryData(key, omitChat(data, input.chatId))
+          queryClient.setQueryData(key, omitChats(data, input.chatIds))
         }
         return { snapshots }
       },
@@ -377,27 +389,51 @@ export function WorkspaceShell({
         toast.error("Could not delete conversation")
       },
       onSuccess: (_result, input) => {
-        if (activeChatId === input.chatId) {
+        if (activeChatId && input.chatIds.includes(activeChatId)) {
           router.replace("/chat/new")
         }
       },
       onSettled: async () => {
         await queryClient.invalidateQueries(trpc.workspace.get.queryFilter())
-        setChatIdToDelete(null)
+        setChatIdsToDelete(null)
       },
     })
   )
 
   const deleteSpaceMutation = useMutation(
     trpc.workspace.deleteSpace.mutationOptions({
-      onSuccess: async (_result, input) => {
-        if (activeSpaceId === input.spaceId) router.replace("/chat/new")
-        await queryClient.invalidateQueries(trpc.workspace.get.queryFilter())
+      onMutate: async (input) => {
+        await queryClient.cancelQueries(trpc.workspace.get.queryFilter())
+        const snapshots = queryClient.getQueriesData<WorkspaceData>({
+          queryKey: trpc.workspace.get.queryKey(),
+        })
+        const subtree = spaceSubtreeIds(input.spaceId, spaces)
+        for (const [key, data] of snapshots) {
+          queryClient.setQueryData(key, omitSpaceSubtree(data, subtree))
+        }
+        return { snapshots, subtree }
+      },
+      onError: (error, _input, context) => {
+        if (context?.snapshots) {
+          for (const [key, data] of context.snapshots) {
+            queryClient.setQueryData(key, data)
+          }
+        }
+        toast.error(error.message || "Could not delete space")
+      },
+      onSuccess: (result) => {
+        const leaveSpace =
+          activeSpaceId !== null &&
+          result.deletedSpaceIds.includes(activeSpaceId)
+        const leaveChat =
+          activeChatId !== null && result.deletedChatIds.includes(activeChatId)
+        if (leaveSpace || leaveChat) router.replace("/chat/new")
         toast.success("Space deleted")
       },
-      onError: (error) =>
-        toast.error(error.message || "Could not delete space"),
-      onSettled: () => setSpaceIdToDelete(null),
+      onSettled: async () => {
+        await queryClient.invalidateQueries(trpc.workspace.get.queryFilter())
+        setSpaceIdToDelete(null)
+      },
     })
   )
   const createSpaceMutation = useMutation(
@@ -417,15 +453,54 @@ export function WorkspaceShell({
         toast.error(error.message || "Could not create space"),
     })
   )
-  const setChatSpaceMutation = useMutation(
-    trpc.workspace.setChatSpace.mutationOptions({
-      onSuccess: async () => {
-        await queryClient.invalidateQueries(trpc.workspace.get.queryFilter())
-        toast.success("Moved")
+  const setChatsSpaceMutation = useMutation(
+    trpc.workspace.setChatsSpace.mutationOptions({
+      onMutate: async (input) => {
+        await queryClient.cancelQueries(trpc.workspace.get.queryFilter())
+        const snapshots = queryClient.getQueriesData<WorkspaceData>({
+          queryKey: trpc.workspace.get.queryKey(),
+        })
+        for (const [key, data] of snapshots) {
+          queryClient.setQueryData(
+            key,
+            patchChatsSpace(data, input.chatIds, input.spaceId)
+          )
+        }
+        if (input.spaceId) {
+          setListModePersist("spaces")
+          setExpandedSpacesPersist((current) => {
+            const next = new Set(current)
+            next.add(input.spaceId!)
+            return next
+          })
+        }
+        return { snapshots }
       },
-      onError: (error) => toast.error(error.message || "Could not move chat"),
+      onError: (error, _input, context) => {
+        if (context?.snapshots) {
+          for (const [key, data] of context.snapshots) {
+            queryClient.setQueryData(key, data)
+          }
+        }
+        toast.error(error.message || "Could not move chat")
+      },
+      onSuccess: (_result, input) => {
+        toast.success(
+          input.chatIds.length === 1
+            ? "Moved"
+            : `Moved ${input.chatIds.length} chats`
+        )
+      },
+      onSettled: async () => {
+        await queryClient.invalidateQueries(trpc.workspace.get.queryFilter())
+      },
     })
   )
+
+  function moveChats(chatIds: string[], spaceId: string | null) {
+    if (chatIds.length === 0) return
+    setChatsSpaceMutation.mutate({ chatIds, spaceId })
+  }
 
   function setListModePersist(next: "recents" | "spaces") {
     setListStored(next)
@@ -466,330 +541,362 @@ export function WorkspaceShell({
         userId={user.id}
         ready={themeReady}
       />
-      <div className="flex h-svh flex-col bg-background text-foreground">
-        <div className="flex h-12 shrink-0 items-center justify-between border-b px-3 md:hidden">
-          <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setChatsOpen(true)}
-              aria-label="Conversations"
-            >
-              <HugeiconsIcon
-                icon={MessageMultiple01Icon}
-                strokeWidth={2}
-                className="size-4"
-              />
-              <span className="ml-1.5">Chats</span>
-            </Button>
-            <BrandMark logoClassName="size-6" />
-          </div>
-          <TooltipProvider delay={400}>
-            <div className="flex items-center gap-1">
-              <AccountMenu
-                user={user}
-                isOwner={isOwner}
-                compact
-                menuSide="bottom"
-                menuAlign="end"
-                tooltipSide="bottom"
-              />
-              <WithTooltip label={onSettings ? "Back to chat" : "Settings"}>
-                <Link
-                  href={settingsHref}
-                  className={buttonVariants({ variant: "ghost", size: "sm" })}
-                  aria-label={onSettings ? "Back to chat" : "Settings"}
-                >
-                  <HugeiconsIcon
-                    icon={onSettings ? MessageMultiple01Icon : Settings01Icon}
-                    strokeWidth={2}
-                    className="size-4"
-                    aria-hidden
-                  />
-                </Link>
-              </WithTooltip>
-            </div>
-          </TooltipProvider>
-        </div>
-
-        <div className="flex min-h-0 flex-1">
-          <motion.aside
-            data-theme-group="sidebar"
-            data-theme-target="sidebar"
-            className={cn(
-              "hidden min-h-0 shrink-0 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground md:flex",
-              pad
-            )}
-            initial={false}
-            animate={{ width: sidebarWidth }}
-            transition={transition}
-          >
-            <TooltipProvider delay={400}>
-              <div
-                className={cn(
-                  "mb-3 flex min-w-0 items-center",
-                  collapsed ? "flex-col gap-2" : "justify-between px-1"
-                )}
+      <WorkspaceSelectionProvider
+        chats={chats}
+        animate={animate}
+        transition={transition}
+        onMoveChats={moveChats}
+        onRequestDeleteChats={setChatIdsToDelete}
+      >
+        <div className="flex h-svh flex-col bg-background text-foreground">
+          <div className="flex h-12 shrink-0 items-center justify-between border-b px-3 md:hidden">
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setChatsOpen(true)}
+                aria-label="Conversations"
               >
-                {collapsed ? (
-                  <WithTooltip label="nibchat" side="right">
-                    <span className="inline-flex">
-                      <BrandMark wordmark={false} logoClassName="size-7" />
-                    </span>
-                  </WithTooltip>
-                ) : (
-                  <BrandMark logoClassName="size-6" />
-                )}
+                <HugeiconsIcon
+                  icon={MessageMultiple01Icon}
+                  strokeWidth={2}
+                  className="size-4"
+                />
+                <span className="ml-1.5">Chats</span>
+              </Button>
+              <BrandMark logoClassName="size-6" />
+            </div>
+            <TooltipProvider delay={400}>
+              <div className="flex items-center gap-1">
+                <AccountMenu
+                  user={user}
+                  isOwner={isOwner}
+                  compact
+                  menuSide="bottom"
+                  menuAlign="end"
+                  tooltipSide="bottom"
+                />
+                <WithTooltip label={onSettings ? "Back to chat" : "Settings"}>
+                  <Link
+                    href={settingsHref}
+                    className={buttonVariants({
+                      variant: "ghost",
+                      size: "sm",
+                    })}
+                    aria-label={onSettings ? "Back to chat" : "Settings"}
+                  >
+                    <HugeiconsIcon
+                      icon={onSettings ? MessageMultiple01Icon : Settings01Icon}
+                      strokeWidth={2}
+                      className="size-4"
+                      aria-hidden
+                    />
+                  </Link>
+                </WithTooltip>
+              </div>
+            </TooltipProvider>
+          </div>
+
+          <div className="flex min-h-0 flex-1">
+            <motion.aside
+              data-theme-group="sidebar"
+              data-theme-target="sidebar"
+              className={cn(
+                "hidden min-h-0 shrink-0 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground md:flex",
+                pad
+              )}
+              initial={false}
+              animate={{ width: sidebarWidth }}
+              transition={transition}
+            >
+              <TooltipProvider delay={400}>
                 <div
                   className={cn(
-                    "flex",
-                    collapsed ? "flex-col gap-1" : "gap-0.5"
+                    "mb-3 flex min-w-0 items-center",
+                    collapsed ? "flex-col gap-2" : "justify-between px-1"
                   )}
                 >
-                  <WithTooltip
-                    label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-                  >
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label={
-                        collapsed ? "Expand sidebar" : "Collapse sidebar"
-                      }
-                      aria-expanded={!collapsed}
-                      onClick={() => setSidebarCollapsedPersist(!collapsed)}
-                    >
-                      <HugeiconsIcon
-                        icon={
-                          collapsed ? SidebarRight01Icon : SidebarLeft01Icon
-                        }
-                        strokeWidth={2}
-                        className="size-4"
-                        aria-hidden
-                      />
-                    </Button>
-                  </WithTooltip>
-                  {!collapsed && (
-                    <Link
-                      href={settingsHref}
-                      className={buttonVariants({
-                        variant: "ghost",
-                        size: "sm",
-                      })}
-                    >
-                      {onSettings ? "Chats" : "Settings"}
-                    </Link>
+                  {collapsed ? (
+                    <WithTooltip label="nibchat" side="right">
+                      <span className="inline-flex">
+                        <BrandMark wordmark={false} logoClassName="size-7" />
+                      </span>
+                    </WithTooltip>
+                  ) : (
+                    <BrandMark logoClassName="size-6" />
                   )}
-                  {collapsed && (
-                    <WithTooltip label={onSettings ? "Chats" : "Settings"}>
-                      <Link
-                        href={settingsHref}
-                        className={buttonVariants({
-                          variant: "ghost",
-                          size: "icon-sm",
-                        })}
-                        aria-label={onSettings ? "Chats" : "Settings"}
+                  <div
+                    className={cn(
+                      "flex",
+                      collapsed ? "flex-col gap-1" : "gap-0.5"
+                    )}
+                  >
+                    <WithTooltip
+                      label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+                    >
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={
+                          collapsed ? "Expand sidebar" : "Collapse sidebar"
+                        }
+                        aria-expanded={!collapsed}
+                        onClick={() => setSidebarCollapsedPersist(!collapsed)}
                       >
                         <HugeiconsIcon
                           icon={
-                            onSettings ? MessageMultiple01Icon : Settings01Icon
+                            collapsed ? SidebarRight01Icon : SidebarLeft01Icon
                           }
                           strokeWidth={2}
                           className="size-4"
                           aria-hidden
                         />
-                      </Link>
+                      </Button>
                     </WithTooltip>
-                  )}
+                    {!collapsed && (
+                      <Link
+                        href={settingsHref}
+                        className={buttonVariants({
+                          variant: "ghost",
+                          size: "sm",
+                        })}
+                      >
+                        {onSettings ? "Chats" : "Settings"}
+                      </Link>
+                    )}
+                    {collapsed && (
+                      <WithTooltip label={onSettings ? "Chats" : "Settings"}>
+                        <Link
+                          href={settingsHref}
+                          className={buttonVariants({
+                            variant: "ghost",
+                            size: "icon-sm",
+                          })}
+                          aria-label={onSettings ? "Chats" : "Settings"}
+                        >
+                          <HugeiconsIcon
+                            icon={
+                              onSettings
+                                ? MessageMultiple01Icon
+                                : Settings01Icon
+                            }
+                            strokeWidth={2}
+                            className="size-4"
+                            aria-hidden
+                          />
+                        </Link>
+                      </WithTooltip>
+                    )}
+                  </div>
+                </div>
+              </TooltipProvider>
+              <WorkspaceDnd id="sidebar-spaces" onMoveChats={moveChats}>
+                <SidebarNav
+                  chats={chats}
+                  spaces={spaces}
+                  spaceById={spaceById}
+                  search={search}
+                  onSearchChange={setSearch}
+                  results={results}
+                  listMode={listMode}
+                  onListMode={setListModePersist}
+                  collapsed={collapsed}
+                  activeChatId={activeChatId}
+                  activeSpaceId={activeSpaceId}
+                  isDraft={isDraft}
+                  expandedSpaces={expandedSpaces}
+                  animate={animate}
+                  transition={transition}
+                  onToggleSpace={toggleSpace}
+                  onDeleteChat={(chatId) => setChatIdsToDelete([chatId])}
+                  onDeleteSpace={setSpaceIdToDelete}
+                  onCreateSpace={(parentId) =>
+                    createSpaceMutation.mutate(parentId ? { parentId } : {})
+                  }
+                  onCreateChat={(spaceId) =>
+                    router.push(`/chat/new?space=${spaceId}`)
+                  }
+                  onMoveChat={(chatId, spaceId) => moveChats([chatId], spaceId)}
+                />
+              </WorkspaceDnd>
+              <div
+                className={cn(
+                  "mt-2 shrink-0",
+                  collapsed && "flex justify-center"
+                )}
+              >
+                {!collapsed ? (
+                  <ChatSelectionBar chats={chats} spaces={spaces} />
+                ) : null}
+                <div className="border-t pt-2">
+                  <TooltipProvider delay={400}>
+                    <AccountMenu
+                      user={user}
+                      isOwner={isOwner}
+                      compact={collapsed}
+                      tooltipSide="right"
+                    />
+                  </TooltipProvider>
                 </div>
               </div>
-            </TooltipProvider>
-            <SidebarNav
-              chats={chats}
-              spaces={spaces}
-              spaceById={spaceById}
-              search={search}
-              onSearchChange={setSearch}
-              results={results}
-              listMode={listMode}
-              onListMode={setListModePersist}
-              collapsed={collapsed}
-              activeChatId={activeChatId}
-              activeSpaceId={activeSpaceId}
-              isDraft={isDraft}
-              expandedSpaces={expandedSpaces}
-              animate={animate}
-              transition={transition}
-              onToggleSpace={toggleSpace}
-              onDeleteChat={setChatIdToDelete}
-              onDeleteSpace={setSpaceIdToDelete}
-              onCreateSpace={(parentId) =>
-                createSpaceMutation.mutate(parentId ? { parentId } : {})
-              }
-              onCreateChat={(spaceId) =>
-                router.push(`/chat/new?space=${spaceId}`)
-              }
-              onMoveChat={(chatId, spaceId) =>
-                setChatSpaceMutation.mutate({ chatId, spaceId })
-              }
-            />
+            </motion.aside>
+
             <div
+              data-theme-group="app"
+              data-theme-target="app-background"
+              className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-app-background"
+            >
+              {children}
+            </div>
+          </div>
+
+          <Dialog open={chatsOpen && !mdUp} onOpenChange={setChatsOpen}>
+            <DialogContent
+              showCloseButton={false}
+              showOverlay={false}
               className={cn(
-                "mt-2 shrink-0 border-t pt-2",
-                collapsed && "flex justify-center"
+                "fixed inset-0 top-0 left-0 z-50 flex h-dvh max-h-dvh w-full max-w-none flex-col",
+                "translate-x-0 translate-y-0 gap-0 rounded-none border-0 ring-0",
+                "bg-sidebar text-sidebar-foreground sm:max-w-none",
+                "overflow-hidden duration-0!",
+                "data-open:animate-none data-open:fade-in-0 data-open:zoom-in-100",
+                "data-closed:animate-none data-closed:fade-out-0 data-closed:zoom-out-100",
+                density === "compact" ? "p-2" : "p-3"
               )}
             >
-              <TooltipProvider delay={400}>
-                <AccountMenu
-                  user={user}
-                  isOwner={isOwner}
-                  compact={collapsed}
-                  tooltipSide="right"
-                />
-              </TooltipProvider>
-            </div>
-          </motion.aside>
-
-          <div
-            data-theme-group="app"
-            data-theme-target="app-background"
-            className="relative min-h-0 min-w-0 flex-1 overflow-hidden bg-app-background"
-          >
-            {children}
-          </div>
-        </div>
-
-        <Dialog open={chatsOpen && !mdUp} onOpenChange={setChatsOpen}>
-          <DialogContent
-            showCloseButton={false}
-            showOverlay={false}
-            className={cn(
-              "fixed inset-0 top-0 left-0 z-50 flex h-dvh max-h-dvh w-full max-w-none flex-col",
-              "translate-x-0 translate-y-0 gap-0 rounded-none border-0 ring-0",
-              "bg-sidebar text-sidebar-foreground sm:max-w-none",
-              "overflow-hidden duration-0!",
-              "data-open:animate-none data-open:fade-in-0 data-open:zoom-in-100",
-              "data-closed:animate-none data-closed:fade-out-0 data-closed:zoom-out-100",
-              density === "compact" ? "p-2" : "p-3"
-            )}
-          >
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-              <div className="mb-3 flex shrink-0 items-center justify-between gap-2">
-                <DialogTitle>Chats</DialogTitle>
-                <DialogClose
-                  render={
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label="Close"
-                    />
-                  }
-                >
-                  <HugeiconsIcon
-                    icon={Cancel01Icon}
-                    strokeWidth={2}
-                    className="size-4"
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <div className="mb-3 flex shrink-0 items-center justify-between gap-2">
+                  <DialogTitle>Chats</DialogTitle>
+                  <div className="flex items-center gap-1">
+                    {chats.length > 0 ? <ChatSelectToggle icon /> : null}
+                    <DialogClose
+                      render={
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label="Close"
+                        />
+                      }
+                    >
+                      <HugeiconsIcon
+                        icon={Cancel01Icon}
+                        strokeWidth={2}
+                        className="size-4"
+                      />
+                    </DialogClose>
+                  </div>
+                </div>
+                <WorkspaceDnd id="mobile-spaces" onMoveChats={moveChats}>
+                  <SidebarNav
+                    chats={chats}
+                    spaces={spaces}
+                    spaceById={spaceById}
+                    search={search}
+                    onSearchChange={setSearch}
+                    results={results}
+                    listMode={listMode}
+                    onListMode={setListModePersist}
+                    activeChatId={activeChatId}
+                    activeSpaceId={activeSpaceId}
+                    isDraft={isDraft}
+                    expandedSpaces={expandedSpaces}
+                    animate={animate}
+                    transition={transition}
+                    onToggleSpace={toggleSpace}
+                    onDeleteChat={(chatId) => setChatIdsToDelete([chatId])}
+                    onDeleteSpace={setSpaceIdToDelete}
+                    onCreateSpace={(parentId) =>
+                      createSpaceMutation.mutate(parentId ? { parentId } : {})
+                    }
+                    onCreateChat={(spaceId) =>
+                      router.push(`/chat/new?space=${spaceId}`)
+                    }
+                    onMoveChat={(chatId, spaceId) =>
+                      moveChats([chatId], spaceId)
+                    }
+                    onNavigate={() => setChatsOpen(false)}
+                    showSelect={false}
                   />
-                </DialogClose>
+                </WorkspaceDnd>
+                <div className="shrink-0">
+                  <ChatSelectionBar chats={chats} spaces={spaces} />
+                </div>
               </div>
-              <SidebarNav
-                chats={chats}
-                spaces={spaces}
-                spaceById={spaceById}
-                search={search}
-                onSearchChange={setSearch}
-                results={results}
-                listMode={listMode}
-                onListMode={setListModePersist}
-                activeChatId={activeChatId}
-                activeSpaceId={activeSpaceId}
-                isDraft={isDraft}
-                expandedSpaces={expandedSpaces}
-                animate={animate}
-                transition={transition}
-                onToggleSpace={toggleSpace}
-                onDeleteChat={setChatIdToDelete}
-                onDeleteSpace={setSpaceIdToDelete}
-                onCreateSpace={(parentId) =>
-                  createSpaceMutation.mutate(parentId ? { parentId } : {})
-                }
-                onCreateChat={(spaceId) =>
-                  router.push(`/chat/new?space=${spaceId}`)
-                }
-                onMoveChat={(chatId, spaceId) =>
-                  setChatSpaceMutation.mutate({ chatId, spaceId })
-                }
-                onNavigate={() => setChatsOpen(false)}
-              />
-            </div>
-          </DialogContent>
-        </Dialog>
+            </DialogContent>
+          </Dialog>
 
-        <AlertDialog
-          open={chatIdToDelete !== null}
-          onOpenChange={(open) => {
-            if (!open) setChatIdToDelete(null)
-          }}
-        >
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Delete conversation?</AlertDialogTitle>
-              <AlertDialogDescription>
-                Permanently delete this conversation and every branch. This
-                cannot be undone.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction
-                variant="destructive"
-                onClick={async () => {
-                  if (!chatIdToDelete) return
-                  await deleteChatMutation.mutateAsync({
-                    chatId: chatIdToDelete,
-                  })
-                }}
-              >
-                Delete
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+          <AlertDialog
+            open={chatIdsToDelete !== null}
+            onOpenChange={(open) => {
+              if (!open) setChatIdsToDelete(null)
+            }}
+          >
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>
+                  {chatIdsToDelete && chatIdsToDelete.length > 1
+                    ? `Delete ${chatIdsToDelete.length} conversations?`
+                    : "Delete conversation?"}
+                </AlertDialogTitle>
+                <AlertDialogDescription>
+                  {chatIdsToDelete && chatIdsToDelete.length > 1
+                    ? "Permanently delete these conversations and every branch. This cannot be undone."
+                    : "Permanently delete this conversation and every branch. This cannot be undone."}
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  variant="destructive"
+                  onClick={async () => {
+                    if (!chatIdsToDelete?.length) return
+                    await deleteChatsMutation.mutateAsync({
+                      chatIds: chatIdsToDelete,
+                    })
+                  }}
+                >
+                  Delete
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
 
-        <AlertDialog
-          open={spaceIdToDelete !== null}
-          onOpenChange={(open) => {
-            if (!open) setSpaceIdToDelete(null)
-          }}
-        >
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Delete space?</AlertDialogTitle>
-              <AlertDialogDescription>
-                Chats and nested spaces move to the parent (or ungrouped). Chats
-                are not deleted.
-                {deleteSpaceImpact ? (
-                  <DeleteSpaceImpactText impact={deleteSpaceImpact} />
-                ) : null}
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction
-                variant="destructive"
-                onClick={async () => {
-                  if (!spaceIdToDelete) return
-                  await deleteSpaceMutation.mutateAsync({
-                    spaceId: spaceIdToDelete,
-                  })
-                }}
-              >
-                Delete
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      </div>
+          <AlertDialog
+            open={spaceIdToDelete !== null}
+            onOpenChange={(open) => {
+              if (!open) setSpaceIdToDelete(null)
+            }}
+          >
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete space?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This deletes the space and everything inside. Move chats out
+                  first if you want to keep them.
+                  {deleteSpaceImpact ? (
+                    <DeleteSpaceImpactText impact={deleteSpaceImpact} />
+                  ) : null}
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  variant="destructive"
+                  onClick={async () => {
+                    if (!spaceIdToDelete) return
+                    await deleteSpaceMutation.mutateAsync({
+                      spaceId: spaceIdToDelete,
+                    })
+                  }}
+                >
+                  Delete
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </div>
+      </WorkspaceSelectionProvider>
       <AppearanceMagicChrome />
     </ChromeContext.Provider>
   )
@@ -817,7 +924,7 @@ function DeleteSpaceImpactText({
     rules: number
   }
 }) {
-  const moving = [
+  const removing = [
     impact.chats ? countLabel(impact.chats, "chat") : null,
     impact.children ? countLabel(impact.children, "nested space") : null,
   ].filter((item): item is string => Boolean(item))
@@ -827,12 +934,14 @@ function DeleteSpaceImpactText({
     impact.books ? countLabel(impact.books, "book policy") : null,
     impact.rules ? countLabel(impact.rules, "rule") : null,
   ].filter((item): item is string => Boolean(item))
-  if (!moving.length && !stopping.length) return null
+  if (!removing.length && !stopping.length) return null
   return (
     <span className="mt-2 block">
-      {moving.length ? `${listAnd(moving)} will move. ` : null}
+      {removing.length
+        ? `${listAnd(removing)} will be permanently deleted. `
+        : null}
       {stopping.length
-        ? `${listAnd(stopping)} will stop applying below this space.`
+        ? `${listAnd(stopping)} will be removed with this space.`
         : null}
     </span>
   )

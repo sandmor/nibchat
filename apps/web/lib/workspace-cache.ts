@@ -63,17 +63,58 @@ export function patchChatViewState(
   }
 }
 
-/** Optimistic remove of a chat from the list. */
-export function omitChat(
+/** Optimistic remove of many chats from the list. */
+export function omitChats(
   data: WorkspaceData | undefined,
-  chatId: string
+  chatIds: readonly string[]
 ): WorkspaceData | undefined {
-  if (!data) return data
-  const chats = data.chats.filter((chat) => chat.id !== chatId)
-  const wasActive = data.chat?.id === chatId
+  if (!data || chatIds.length === 0) return data
+  const removed = new Set(chatIds)
+  const chats = data.chats.filter((chat) => !removed.has(chat.id))
+  const wasActive = data.chat ? removed.has(data.chat.id) : false
   return {
+    ...data,
     chats,
-    spaces: data.spaces,
+    chat: wasActive ? null : data.chat,
+    nodes: wasActive ? [] : data.nodes,
+    activeGenerations: wasActive ? [] : data.activeGenerations,
+  }
+}
+
+/** Optimistic space membership for one or more chats. Must not bump recency. */
+export function patchChatsSpace(
+  data: WorkspaceData | undefined,
+  chatIds: readonly string[],
+  spaceId: string | null
+): WorkspaceData | undefined {
+  if (!data || chatIds.length === 0) return data
+  const moved = new Set(chatIds)
+  const patch = (chat: ChatRow) =>
+    moved.has(chat.id) ? { ...chat, space_id: spaceId } : chat
+  return {
+    ...data,
+    chats: data.chats.map(patch),
+    chat: data.chat ? patch(data.chat) : null,
+  }
+}
+
+/** Optimistic remove of a space and every chat in its subtree. */
+export function omitSpaceSubtree(
+  data: WorkspaceData | undefined,
+  spaceIds: ReadonlySet<string>
+): WorkspaceData | undefined {
+  if (!data || spaceIds.size === 0) return data
+  const chats = data.chats.filter(
+    (chat) => !chat.space_id || !spaceIds.has(chat.space_id)
+  )
+  const spaces = data.spaces.filter((space) => !spaceIds.has(space.id))
+  const wasActive = data.chat
+    ? Boolean(data.chat.space_id && spaceIds.has(data.chat.space_id))
+    : false
+  return {
+    ...data,
+    chats,
+    spaces,
     chat: wasActive ? null : data.chat,
     nodes: wasActive ? [] : data.nodes,
     activeGenerations: wasActive ? [] : data.activeGenerations,

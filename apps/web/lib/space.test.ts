@@ -13,6 +13,7 @@ import {
   spaceDepth,
   spaceSettingsToJson,
   spaceSubtreeHeight,
+  spaceSubtreeIds,
   type ChatSettingsSource,
   type SpaceRecord,
 } from "@/lib/space"
@@ -380,6 +381,12 @@ describe("space tree helpers", () => {
     expect(spaceDepth("leaf", byId)).toBe(3)
     expect(spaceSubtreeHeight("root", spaces)).toBe(3)
     expect(spaceSubtreeHeight("leaf", spaces)).toBe(1)
+    expect([...spaceSubtreeIds("root", spaces)].sort()).toEqual([
+      "leaf",
+      "mid",
+      "root",
+    ])
+    expect([...spaceSubtreeIds("mid", spaces)].sort()).toEqual(["leaf", "mid"])
   })
 
   it("rejects a move that would nest a space inside itself", () => {

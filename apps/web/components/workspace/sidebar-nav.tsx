@@ -11,7 +11,8 @@ import { TooltipProvider, WithTooltip } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import { displayChatTitle } from "@/lib/chat-title"
 import type { ChatRow, SpaceRow } from "@/lib/types"
-import { ChatListItem } from "./chat-list"
+import { ChatListItem, ChatSelectToggle } from "./chat-list"
+import { useOptionalWorkspaceSelection } from "./chat-selection"
 import { SpaceTree } from "./space-tree"
 import type { SlotMotion } from "./slot-crossfade"
 
@@ -45,6 +46,7 @@ export function SidebarNav({
   onCreateChat,
   onMoveChat,
   onNavigate,
+  showSelect = true,
 }: {
   chats: ChatRow[]
   spaces: SpaceRow[]
@@ -68,13 +70,20 @@ export function SidebarNav({
   onCreateChat: (spaceId: string) => void
   onMoveChat: (chatId: string, spaceId: string | null) => void
   onNavigate?: () => void
+  showSelect?: boolean
 }) {
   const showSpaces = listMode === "spaces" && !collapsed
+  const recentIds = chats.map((chat) => chat.id)
+  const selection = useOptionalWorkspaceSelection()
 
   return (
     <div
       className="flex min-h-0 flex-1 flex-col"
       onClick={(event) => {
+        if (selection?.selecting) {
+          const target = event.target as HTMLElement | null
+          if (target?.closest("a[href^='/chat/']")) return
+        }
         const target = event.target as HTMLElement | null
         if (target?.closest("a")) onNavigate?.()
       }}
@@ -151,7 +160,7 @@ export function SidebarNav({
           </div>
         ) : null}
         {!collapsed ? (
-          <div className="mb-2 flex items-center gap-1">
+          <div className="mb-2 flex flex-wrap items-center gap-1">
             <ToggleGroup
               value={[listMode]}
               onValueChange={(value) => {
@@ -186,6 +195,9 @@ export function SidebarNav({
                 />
               </Button>
             </WithTooltip>
+            {showSelect && chats.length > 0 ? (
+              <ChatSelectToggle icon className="shrink-0" />
+            ) : null}
           </div>
         ) : null}
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
@@ -230,6 +242,7 @@ export function SidebarNav({
                     }
                     active={!isDraft && activeChatId === chat.id}
                     spaces={spaces}
+                    orderedIds={recentIds}
                     onMove={(spaceId) => onMoveChat(chat.id, spaceId)}
                     onDelete={onDeleteChat}
                   />

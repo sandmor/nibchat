@@ -128,6 +128,7 @@ import {
   spaceSettingsSchema,
   spaceSettingsToJson,
   spaceDepth,
+  spaceSubtreeIds,
   spacesById,
   orderSpacesForInsert,
   type ChatSpaceOverrides,
@@ -651,38 +652,80 @@ export async function prepareChatRow(
   return chat
 }
 
-export async function deleteChat(userId: string, chatId: string) {
-  const deletion = await db.transaction().execute(async (trx) => {
-    await lockChatMutation(trx, chatId, userId)
-    const nodeIds = await trx
+function uniqueChatIds(chatIds: readonly string[]) {
+  return [...new Set(chatIds.filter(Boolean))]
+}
+
+async function lockOwnedChats(
+  trx: Transaction<DB>,
+  userId: string,
+  chatIds: string[]
+) {
+  if (chatIds.length === 0) return
+  const owned = await trx
+    .selectFrom("chats")
+    .select("id")
+    .where("user_id", "=", userId)
+    .where("id", "in", chatIds)
+    .execute()
+  if (owned.length !== chatIds.length) throw new Error("Chat not found")
+  for (const chatId of chatIds) await lockChatMutation(trx, chatId, userId)
+}
+
+async function deleteOwnedChats(
+  trx: Transaction<DB>,
+  userId: string,
+  chatIds: string[]
+) {
+  if (chatIds.length === 0) {
+    return { nodeIds: [] as string[], generationRunIds: [] as string[] }
+  }
+  const nodeIds = (
+    await trx
       .selectFrom("message_nodes")
       .select("id")
-      .where("chat_id", "=", chatId)
+      .where("chat_id", "in", chatIds)
       .execute()
-    const generationRunIds = nodeIds.length
-      ? await trx
+  ).map((node) => node.id)
+  const generationRunIds = nodeIds.length
+    ? (
+        await trx
           .selectFrom("generation_runs")
           .select("id")
-          .where(
-            "node_id",
-            "in",
-            nodeIds.map((node) => node.id)
-          )
+          .where("node_id", "in", nodeIds)
           .execute()
-      : []
-    await trx
-      .deleteFrom("chats")
-      .where("id", "=", chatId)
-      .where("user_id", "=", userId)
-      .execute()
-    return {
-      nodeIds: nodeIds.map((node) => node.id),
-      generationRunIds: generationRunIds.map((run) => run.id),
-    }
-  })
+      ).map((run) => run.id)
+    : []
+  await trx
+    .deleteFrom("chats")
+    .where("id", "in", chatIds)
+    .where("user_id", "=", userId)
+    .execute()
+  return { nodeIds, generationRunIds }
+}
+
+async function finishChatDeletion(deletion: {
+  nodeIds: string[]
+  generationRunIds: string[]
+}) {
   abortGenerations(deletion.nodeIds)
   await requestCancelGenerationRuns(deletion.generationRunIds)
   await cleanupDetachedAttachments()
+}
+
+export async function deleteChat(userId: string, chatId: string) {
+  await deleteChats(userId, [chatId])
+}
+
+export async function deleteChats(userId: string, chatIds: readonly string[]) {
+  const unique = uniqueChatIds(chatIds)
+  if (unique.length === 0) return { ok: true as const, count: 0 }
+  const deletion = await db.transaction().execute(async (trx) => {
+    await lockOwnedChats(trx, userId, unique)
+    return await deleteOwnedChats(trx, userId, unique)
+  })
+  await finishChatDeletion(deletion)
+  return { ok: true as const, count: unique.length }
 }
 
 export async function insertNode(input: {
@@ -2998,44 +3041,40 @@ export async function updateSpace(input: {
 
 export async function deleteSpace(userId: string, spaceId: string) {
   const row = await assertSpaceOwner(spaceId, userId)
-  const destination = row.parent_id
-  await db.transaction().execute(async (trx) => {
+  const deletion = await db.transaction().execute(async (trx) => {
     const rows = await listSpaceRows(userId, trx)
-    const children = rows
-      .filter((space) => space.parent_id === spaceId)
-      .sort(siblingSort)
-    let maxKey = rows
-      .filter(
-        (space) => space.parent_id === destination && space.id !== spaceId
-      )
-      .reduce((max, space) => Math.max(max, space.sort_key), 0)
-    const timestamp = now()
-    for (const child of children) {
-      maxKey = sortKeyAfter(maxKey || null)
-      await trx
-        .updateTable("spaces")
-        .set({
-          parent_id: destination,
-          sort_key: maxKey,
-          updated_at: timestamp,
-        })
-        .where("id", "=", child.id)
-        .where("user_id", "=", userId)
-        .execute()
-    }
+    const subtreeIds = [...spaceSubtreeIds(spaceId, rows)]
+    const chats = await trx
+      .selectFrom("chats")
+      .select("id")
+      .where("user_id", "=", userId)
+      .where("space_id", "in", subtreeIds)
+      .execute()
+    const chatIds = chats.map((chat) => chat.id)
+    if (chatIds.length) await lockOwnedChats(trx, userId, chatIds)
+    const purged = await deleteOwnedChats(trx, userId, chatIds)
+    // Break the self-FK before deleting the subtree so nested rows
+    // are not SET NULL to the root instead of removed.
     await trx
-      .updateTable("chats")
-      .set({ space_id: destination, updated_at: timestamp })
-      .where("space_id", "=", spaceId)
+      .updateTable("spaces")
+      .set({ parent_id: null })
+      .where("id", "in", subtreeIds)
       .where("user_id", "=", userId)
       .execute()
     await trx
       .deleteFrom("spaces")
-      .where("id", "=", spaceId)
+      .where("id", "in", subtreeIds)
       .where("user_id", "=", userId)
       .execute()
+    return { ...purged, chatIds, subtreeIds }
   })
-  return { ok: true as const, parentId: destination }
+  await finishChatDeletion(deletion)
+  return {
+    ok: true as const,
+    parentId: row.parent_id,
+    deletedChatIds: deletion.chatIds,
+    deletedSpaceIds: deletion.subtreeIds,
+  }
 }
 
 export async function setChatSpace(
@@ -3043,15 +3082,32 @@ export async function setChatSpace(
   chatId: string,
   spaceId: string | null
 ) {
-  await assertChatOwner(chatId, userId)
+  await setChatsSpace(userId, [chatId], spaceId)
+  return { ok: true as const }
+}
+
+export async function setChatsSpace(
+  userId: string,
+  chatIds: readonly string[],
+  spaceId: string | null
+) {
+  const unique = uniqueChatIds(chatIds)
+  if (unique.length === 0) return { ok: true as const, count: 0 }
   if (spaceId) await assertSpaceOwner(spaceId, userId)
+  const owned = await db
+    .selectFrom("chats")
+    .select("id")
+    .where("user_id", "=", userId)
+    .where("id", "in", unique)
+    .execute()
+  if (owned.length !== unique.length) throw new Error("Chat not found")
   await db
     .updateTable("chats")
-    .set({ space_id: spaceId, updated_at: now() })
-    .where("id", "=", chatId)
+    .set({ space_id: spaceId })
+    .where("id", "in", unique)
     .where("user_id", "=", userId)
     .execute()
-  return { ok: true as const }
+  return { ok: true as const, count: unique.length }
 }
 
 export async function getInstanceSettings(userId: string) {

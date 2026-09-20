@@ -293,9 +293,9 @@ export function spaceChain(
   return chain
 }
 
-function spaceSubtreeIds(
+export function spaceSubtreeIds(
   spaceId: string,
-  spaces: readonly SpaceRecord[]
+  spaces: readonly { id: string; parent_id: string | null }[]
 ): Set<string> {
   const children = new Map<string | null, string[]>()
   for (const space of spaces) {

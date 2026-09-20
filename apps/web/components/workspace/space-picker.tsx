@@ -33,7 +33,7 @@ export function SpacePicker({
   className,
 }: {
   spaces: SpaceRow[]
-  value: string | null
+  value?: string | null
   onSelect: (spaceId: string | null) => void
   triggerLabel?: string
   /** Show the current space instead of a "Move to…" verb. */
@@ -87,7 +87,7 @@ export function SpacePicker({
   const list = (
     <ul className="max-h-60 space-y-0.5 overflow-y-auto">
       {options.map((option) => {
-        const active = value === option.id
+        const active = value !== undefined && value === option.id
         return (
           <li key={option.id ?? "ungrouped"}>
             <button

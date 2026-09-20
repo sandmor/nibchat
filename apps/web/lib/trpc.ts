@@ -17,7 +17,7 @@ import {
   createProvider,
   createSpace,
   finishSetup,
-  deleteChat,
+  deleteChats,
   deleteNode,
   deletePromptStack,
   deleteContextBook,
@@ -46,6 +46,7 @@ import {
   setChatPromptStack,
   setChatVariables,
   setChatSpace,
+  setChatsSpace,
   setInstanceDefaultPromptStack,
   setInstanceTitleModel,
   updatePromptStack,
@@ -511,12 +512,11 @@ export const appRouter = t.router({
           mapError(error)
         }
       }),
-    deleteChat: userProcedure
-      .input(z.object({ chatId: z.string() }))
+    deleteChats: userProcedure
+      .input(z.object({ chatIds: z.array(z.string()).min(1) }))
       .mutation(async ({ ctx, input }) => {
         try {
-          await deleteChat(ctx.user.id, input.chatId)
-          return { ok: true }
+          return await deleteChats(ctx.user.id, input.chatIds)
         } catch (error) {
           mapError(error)
         }
@@ -1132,6 +1132,20 @@ export const appRouter = t.router({
       .mutation(async ({ ctx, input }) => {
         try {
           return await setChatSpace(ctx.user.id, input.chatId, input.spaceId)
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    setChatsSpace: userProcedure
+      .input(
+        z.object({
+          chatIds: z.array(z.string()).min(1),
+          spaceId: z.string().nullable(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await setChatsSpace(ctx.user.id, input.chatIds, input.spaceId)
         } catch (error) {
           mapError(error)
         }

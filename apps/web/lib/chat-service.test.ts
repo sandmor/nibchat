@@ -8,6 +8,7 @@ import {
   createProvider,
   createSpace,
   deleteSpace,
+  deleteChats,
   finishSetup,
   getTitleModelConfig,
   createMessage,
@@ -29,6 +30,7 @@ import {
   setChatViewState,
   setChatPromptStack,
   setChatSpace,
+  setChatsSpace,
   updateChat,
 } from "@/lib/chat-service"
 import { getGenerationRun } from "@/lib/generation-runs"
@@ -2659,14 +2661,14 @@ function multiUserBackup(guestEmail: string) {
 }
 
 describe("spaces", () => {
-  it("reparents chats and child spaces on delete", async () => {
+  it("deletes nested spaces and chats with the space", async () => {
     const parent = await createSpace({ userId, name: "Parent" })
     const child = await createSpace({
       userId,
       parentId: parent.id,
       name: "Child",
     })
-    const chat = await createChat(
+    const inChild = await createChat(
       userId,
       "In child",
       undefined,
@@ -2674,18 +2676,83 @@ describe("spaces", () => {
       undefined,
       child.id
     )
+    const inParent = await createChat(
+      userId,
+      "In parent",
+      undefined,
+      null,
+      undefined,
+      parent.id
+    )
+    const ungrouped = await createChat(userId, "Ungrouped")
     await deleteSpace(userId, child.id)
-    const workspace = await getWorkspace(userId, { chatId: chat.id })
-    expect(workspace.chat?.space_id).toBe(parent.id)
+    const afterChild = await getWorkspace(userId, { draft: true })
     expect(
-      workspace.spaces.find((space) => space.id === child.id)
+      afterChild.spaces.find((space) => space.id === child.id)
     ).toBeUndefined()
     expect(
-      workspace.spaces.find((space) => space.id === parent.id)?.parent_id
-    ).toBeNull()
+      afterChild.spaces.find((space) => space.id === parent.id)
+    ).toBeDefined()
+    expect(
+      afterChild.chats.find((chat) => chat.id === inChild.id)
+    ).toBeUndefined()
+    expect(
+      afterChild.chats.find((chat) => chat.id === inParent.id)?.space_id
+    ).toBe(parent.id)
+    expect(
+      afterChild.chats.find((chat) => chat.id === ungrouped.id)
+    ).toBeDefined()
     await deleteSpace(userId, parent.id)
-    const after = await getWorkspace(userId, { chatId: chat.id })
-    expect(after.chat?.space_id).toBeNull()
+    const afterParent = await getWorkspace(userId, { draft: true })
+    expect(
+      afterParent.spaces.find((space) => space.id === parent.id)
+    ).toBeUndefined()
+    expect(
+      afterParent.chats.find((chat) => chat.id === inParent.id)
+    ).toBeUndefined()
+    expect(
+      afterParent.chats.find((chat) => chat.id === ungrouped.id)
+    ).toBeDefined()
+  })
+
+  it("moves many chats into a space and out again", async () => {
+    const space = await createSpace({ userId, name: "Inbox" })
+    const first = await createChat(userId, "First")
+    const second = await createChat(userId, "Second")
+    const before = await getWorkspace(userId, { draft: true })
+    const firstUpdatedAt = before.chats.find(
+      (chat) => chat.id === first.id
+    )?.updated_at
+    await setChatsSpace(userId, [first.id, second.id], space.id)
+    const moved = await getWorkspace(userId, { draft: true })
+    expect(moved.chats.find((chat) => chat.id === first.id)?.space_id).toBe(
+      space.id
+    )
+    expect(moved.chats.find((chat) => chat.id === second.id)?.space_id).toBe(
+      space.id
+    )
+    expect(moved.chats.find((chat) => chat.id === first.id)?.updated_at).toBe(
+      firstUpdatedAt
+    )
+    await setChatsSpace(userId, [first.id, second.id], null)
+    const ungrouped = await getWorkspace(userId, { draft: true })
+    expect(
+      ungrouped.chats.find((chat) => chat.id === first.id)?.space_id
+    ).toBeNull()
+    expect(
+      ungrouped.chats.find((chat) => chat.id === second.id)?.space_id
+    ).toBeNull()
+    await expect(
+      setChatsSpace(userId, [first.id, "missing"], space.id)
+    ).rejects.toThrow(/not found/i)
+    await deleteChats(userId, [first.id, second.id])
+    const afterDelete = await getWorkspace(userId, { draft: true })
+    expect(
+      afterDelete.chats.find((chat) => chat.id === first.id)
+    ).toBeUndefined()
+    expect(
+      afterDelete.chats.find((chat) => chat.id === second.id)
+    ).toBeUndefined()
   })
 
   it("rejects prompt stack changes while a space locks the stack", async () => {

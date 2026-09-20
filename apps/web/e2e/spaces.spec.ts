@@ -29,7 +29,7 @@ test.describe("spaces", () => {
     await llm.close()
   })
 
-  test("toggles Recents/Spaces, locks settings, and reparents on delete", async () => {
+  test("toggles Recents/Spaces, locks settings, and deletes nested chats", async () => {
     await page.goto("/chat/new")
     await expect(page.getByRole("button", { name: "Recents" })).toBeVisible()
     await page.getByRole("button", { name: "Spaces", exact: true }).click()
@@ -116,18 +116,62 @@ test.describe("spaces", () => {
     await page.getByRole("button", { name: "Spaces", exact: true }).click()
     await page.getByRole("button", { name: "New space actions" }).click()
     await page.getByRole("menuitem", { name: "Delete" }).click()
-    await expect(page.getByText("Chats and nested spaces move")).toBeVisible()
+    await expect(
+      page.getByText("This deletes the space and everything inside")
+    ).toBeVisible()
+    await expect(page.getByText("will be permanently deleted")).toBeVisible()
     await page.getByRole("button", { name: "Delete", exact: true }).click()
     await expect(page.getByText("Space deleted")).toBeVisible({
       timeout: 10_000,
     })
-    await expect(page).toHaveURL(/\/chat\/(?!new)/)
+    await expect(page).toHaveURL(/\/chat\/new/)
 
     await page.getByRole("button", { name: "Recents", exact: true }).click()
     await expect(
-      page
-        .getByRole("link", { name: /New conversation|child space chat/i })
-        .first()
+      page.getByRole("link", { name: /child space chat/i })
+    ).toHaveCount(0)
+  })
+
+  test("selects chats in a space and moves them out", async () => {
+    const bulkName = `E2E Bulk ${Date.now()}`
+    await page.goto("/chat/new")
+    await page.getByRole("button", { name: "Spaces", exact: true }).click()
+    await page.getByRole("button", { name: "New space" }).click()
+    await expect(page).toHaveURL(/\/space\//, { timeout: 15_000 })
+    await page.getByLabel("Space name").fill(bulkName)
+    await page.getByLabel("Space name").blur()
+    await expect(page.getByLabel("Space name")).toHaveValue(bulkName)
+
+    await page.getByRole("button", { name: "New chat", exact: true }).click()
+    llm.enqueue({ text: "BULK_ONE" })
+    await sendMessage(page, "bulk one")
+    await expectAssistantText(page, "BULK_ONE")
+
+    await page.getByRole("link", { name: bulkName, exact: true }).click()
+    await page.getByRole("button", { name: "New chat", exact: true }).click()
+    llm.enqueue({ text: "BULK_TWO" })
+    await sendMessage(page, "bulk two")
+    await expectAssistantText(page, "BULK_TWO")
+
+    await page.getByRole("link", { name: bulkName, exact: true }).click()
+    await expect(page.getByRole("heading", { name: "Chats" })).toBeVisible()
+    await expect(page.getByText("2 here")).toBeVisible()
+    const chatsSection = page
+      .locator("section")
+      .filter({ has: page.getByRole("heading", { name: "Chats" }) })
+    await chatsSection
+      .getByRole("button", { name: "Select", exact: true })
+      .click()
+    const bar = page.getByTestId("chat-selection-bar")
+    await expect(bar.getByText("Tap chats to select them")).toBeVisible()
+    await chatsSection.getByRole("link", { name: /bulk one/i }).click()
+    await chatsSection.getByRole("link", { name: /bulk two/i }).click()
+    await expect(bar.getByText("2 chats")).toBeVisible()
+    await bar.getByRole("button", { name: "Move to…" }).click()
+    await page.getByRole("button", { name: "Ungrouped" }).click()
+    await expect(page.getByText("Moved 2 chats")).toBeVisible()
+    await expect(
+      page.getByText("New chats from this space land here.")
     ).toBeVisible()
   })
 })

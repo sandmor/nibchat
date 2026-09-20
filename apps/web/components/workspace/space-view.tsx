@@ -75,8 +75,16 @@ import { ReasoningPicker } from "./reasoning-picker"
 import { StringVariableField } from "./string-variable-field"
 import { usePrefersReducedMotion } from "./hooks"
 import { useWorkspaceChrome } from "./shell"
+import {
+  isChatSelectGesture,
+  useChatPressSelect,
+  useWorkspaceSelection,
+} from "./chat-selection"
+import { ChatSelectMark, ChatSelectToggle } from "./chat-list"
+import { ChatSelectionBar } from "./chat-selection-bar"
 import type { SlotMotion } from "./slot-crossfade"
 import type { WorkspaceData } from "@/lib/workspace-cache"
+import type { ChatRow } from "@/lib/types"
 
 const ADDABLE_KEYS = [
   "promptStack",
@@ -114,6 +122,57 @@ function defaultSlotValue(
   return { mode: "default", value: 0 }
 }
 
+function SpaceChatRow({
+  chat,
+  orderedIds,
+}: {
+  chat: ChatRow
+  orderedIds: readonly string[]
+}) {
+  const selection = useWorkspaceSelection()
+  const selected = selection.isSelected(chat.id)
+  const selecting = selection.selecting
+  const press = useChatPressSelect(chat.id, true)
+  return (
+    <li>
+      <Link
+        href={`/chat/${chat.id}`}
+        aria-selected={selected || undefined}
+        onPointerDown={press.onPointerDown}
+        onPointerMove={press.onPointerMove}
+        onPointerUp={press.onPointerUp}
+        onPointerCancel={press.onPointerCancel}
+        onContextMenu={press.onContextMenu}
+        onClick={(event) => {
+          if (press.consumeClick()) {
+            event.preventDefault()
+            event.stopPropagation()
+            return
+          }
+          if (!selecting && !isChatSelectGesture(event)) return
+          event.preventDefault()
+          event.stopPropagation()
+          selection.selectChat(chat.id, event, orderedIds)
+        }}
+        className={cn(
+          "flex items-center justify-between gap-3 rounded-xl px-3 py-2 text-sm hover:bg-muted/60",
+          selected && "bg-muted ring-1 ring-ring/40"
+        )}
+      >
+        <span className="flex min-w-0 items-center">
+          <ChatSelectMark selected={selected} visible={selecting} />
+          <span className="min-w-0 truncate font-medium">
+            {displayChatTitle(chat.title)}
+          </span>
+        </span>
+        <span className="shrink-0 text-xs text-muted-foreground">
+          {new Date(chat.updated_at).toLocaleDateString()}
+        </span>
+      </Link>
+    </li>
+  )
+}
+
 export function SpaceView({
   spaceId,
   initial,
@@ -125,6 +184,7 @@ export function SpaceView({
   const router = useRouter()
   const queryClient = useQueryClient()
   const { providers, appearance } = useWorkspaceChrome()
+  const selection = useWorkspaceSelection()
   const workspaceQuery = useQuery({
     ...trpc.workspace.get.queryOptions({ draft: true }),
     initialData: initial,
@@ -272,6 +332,10 @@ export function SpaceView({
   const chatsHere = chats
     .filter((chat) => chat.space_id === spaceId)
     .sort((left, right) => right.updated_at.localeCompare(left.updated_at))
+  const chatIdsHere = chatsHere.map((chat) => chat.id)
+  const allHereSelected =
+    chatIdsHere.length > 0 &&
+    chatIdsHere.every((id) => selection.isSelected(id))
   const nestedSpaces = spaces
     .filter((row) => row.parent_id === spaceId)
     .sort(siblingSort)
@@ -437,11 +501,30 @@ export function SpaceView({
           <section className="grid gap-2">
             <div className="flex items-baseline justify-between gap-2">
               <h2 className="text-sm font-medium">Chats</h2>
-              <p className="text-xs text-muted-foreground">
-                {chatsHere.length === 0
-                  ? "None yet"
-                  : `${chatsHere.length} here`}
-              </p>
+              <div className="flex items-center gap-2">
+                {chatsHere.length > 0 ? (
+                  <>
+                    <ChatSelectToggle size="xs" />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      onClick={() =>
+                        allHereSelected
+                          ? selection.clearSelection()
+                          : selection.setSelectedIds(chatIdsHere)
+                      }
+                    >
+                      {allHereSelected ? "Clear" : "Select all"}
+                    </Button>
+                  </>
+                ) : null}
+                <p className="text-xs text-muted-foreground">
+                  {chatsHere.length === 0
+                    ? "None yet"
+                    : `${chatsHere.length} here`}
+                </p>
+              </div>
             </div>
             {chatsHere.length === 0 ? (
               <p className="text-sm text-muted-foreground">
@@ -450,19 +533,11 @@ export function SpaceView({
             ) : (
               <ul className="grid gap-0.5">
                 {chatsHere.map((chat) => (
-                  <li key={chat.id}>
-                    <Link
-                      href={`/chat/${chat.id}`}
-                      className="flex items-center justify-between gap-3 rounded-xl px-3 py-2 text-sm hover:bg-muted/60"
-                    >
-                      <span className="min-w-0 truncate font-medium">
-                        {displayChatTitle(chat.title)}
-                      </span>
-                      <span className="shrink-0 text-xs text-muted-foreground">
-                        {new Date(chat.updated_at).toLocaleDateString()}
-                      </span>
-                    </Link>
-                  </li>
+                  <SpaceChatRow
+                    key={chat.id}
+                    chat={chat}
+                    orderedIds={chatIdsHere}
+                  />
                 ))}
               </ul>
             )}
@@ -888,9 +963,7 @@ export function SpaceView({
                       rules={[
                         ...inheritedRules,
                         ...(settings.rules ?? []).flatMap((rule) =>
-                          rule.title
-                            ? [{ id: rule.id, title: rule.title }]
-                            : []
+                          rule.title ? [{ id: rule.id, title: rule.title }] : []
                         ),
                       ]}
                       decisions={resolvedForSpace.decisions}
@@ -902,6 +975,9 @@ export function SpaceView({
             </div>
           </section>
         </div>
+      </div>
+      <div className="md:hidden">
+        <ChatSelectionBar chats={chats} spaces={spaces} />
       </div>
     </section>
   )

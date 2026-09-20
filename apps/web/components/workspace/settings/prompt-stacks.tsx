@@ -432,28 +432,25 @@ export function PromptStackSettings() {
                 >
                   <ul className="space-y-2">
                     {modules.map((mod) =>
-                      mod.kind === "history" ? (
-                        <SortableHistoryModule
+                      mod.kind === "history" ||
+                      mod.kind === "mcp-instructions" ||
+                      mod.kind === "space-rules" ? (
+                        <SortableFixedModule
                           key={mod.id}
                           module={mod}
-                          onEnabledChange={(enabled) =>
-                            updateHistoryEnabled(mod.id, enabled)
-                          }
-                        />
-                      ) : mod.kind === "mcp-instructions" ? (
-                        <SortableMcpInstructionsModule
-                          key={mod.id}
-                          module={mod}
-                          onEnabledChange={(enabled) =>
+                          onEnabledChange={(enabled) => {
+                            if (mod.kind === "history") {
+                              updateHistoryEnabled(mod.id, enabled)
+                              return
+                            }
                             setModules(
                               modules.map((item) =>
-                                item.id === mod.id &&
-                                item.kind === "mcp-instructions"
+                                item.id === mod.id && item.kind === mod.kind
                                   ? { ...item, enabled }
                                   : item
                               )
                             )
-                          }
+                          }}
                         />
                       ) : (
                         <SortablePromptModule
@@ -822,13 +819,31 @@ function PromptModuleBodyEditor({
   )
 }
 
-function SortableHistoryModule({
+function SortableFixedModule({
   module: mod,
   onEnabledChange,
 }: {
-  module: Extract<StackModule, { kind: "history" }>
+  module: Extract<
+    StackModule,
+    { kind: "history" | "mcp-instructions" | "space-rules" }
+  >
   onEnabledChange: (enabled: boolean) => void
 }) {
+  const meta =
+    mod.kind === "history"
+      ? {
+          badge: "Path",
+          description: "Active branch path as conversation history",
+        }
+      : mod.kind === "space-rules"
+        ? {
+            badge: "Rules",
+            description: "Places rules from the chat's space",
+          }
+        : {
+            badge: "Server instructions",
+            description: "Places MCP initialize instructions",
+          }
   const {
     attributes,
     listeners,
@@ -864,62 +879,10 @@ function SortableHistoryModule({
         />
         <span className="text-sm font-medium">{mod.name}</span>
         <Badge variant="outline" className="ml-1">
-          Path
+          {meta.badge}
         </Badge>
         <span className="ml-auto text-xs text-muted-foreground">
-          Active branch path as conversation history
-        </span>
-      </div>
-    </li>
-  )
-}
-
-function SortableMcpInstructionsModule({
-  module: mod,
-  onEnabledChange,
-}: {
-  module: Extract<StackModule, { kind: "mcp-instructions" }>
-  onEnabledChange: (enabled: boolean) => void
-}) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: mod.id })
-
-  return (
-    <li
-      ref={setNodeRef}
-      style={sortableStyle(transform, transition)}
-      className={cn(
-        "relative rounded-lg border border-dashed bg-muted/30 p-3",
-        isDragging && "z-10 opacity-40 shadow-none"
-      )}
-    >
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          className="cursor-grab touch-none text-muted-foreground active:cursor-grabbing"
-          aria-label="Drag to reorder"
-          {...attributes}
-          {...listeners}
-        >
-          <HugeiconsIcon icon={DragDropVerticalIcon} className="size-4" />
-        </button>
-        <Switch
-          checked={mod.enabled}
-          onCheckedChange={onEnabledChange}
-          size="sm"
-        />
-        <span className="text-sm font-medium">{mod.name}</span>
-        <Badge variant="outline" className="ml-1">
-          Server instructions
-        </Badge>
-        <span className="ml-auto text-xs text-muted-foreground">
-          Places MCP initialize instructions
+          {meta.description}
         </span>
       </div>
     </li>
@@ -983,10 +946,6 @@ function SortablePromptModule({
               className="h-8 min-w-0 flex-1 basis-[8rem] sm:max-w-[10rem]"
               aria-label="Module name"
             />
-            <Badge variant="secondary">{placementLabel(mod.placement)}</Badge>
-            {mod.placement === "in_chat" ? (
-              <Badge variant="outline">depth {mod.depth ?? 0}</Badge>
-            ) : null}
             <Select
               value={mod.placement}
               items={PLACEMENT_ITEMS}
@@ -998,7 +957,11 @@ function SortablePromptModule({
                   })
               }}
             >
-              <SelectTrigger size="sm" className="min-w-0 sm:min-w-[8rem]">
+              <SelectTrigger
+                size="sm"
+                className="min-w-0 sm:min-w-[8rem]"
+                aria-label="Module placement"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

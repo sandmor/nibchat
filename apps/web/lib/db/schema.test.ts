@@ -101,6 +101,13 @@ describe("applySchema", () => {
     expect(chatColumns).toContainEqual(
       expect.objectContaining({ name: "space_id", notnull: 0 })
     )
+    expect(chatColumns).toContainEqual(
+      expect.objectContaining({
+        name: "space_overrides_json",
+        notnull: 1,
+        dflt_value: "'{}'",
+      })
+    )
     await db.selectFrom("spaces").select("id").limit(1).execute()
     const instanceColumns = sqlite
       .prepare("pragma table_info(instance)")

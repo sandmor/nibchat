@@ -6,9 +6,18 @@ import { useRouter } from "next/navigation"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { Add01Icon, Cancel01Icon } from "@hugeicons/core-free-icons"
+import {
+  Add01Icon,
+  ArrowDown01Icon,
+  Cancel01Icon,
+} from "@hugeicons/core-free-icons"
 import { Badge } from "@/components/ui/badge"
 import { Button, buttonVariants } from "@/components/ui/button"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
 import {
   Dialog,
   DialogContent,
@@ -26,6 +35,13 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { cn } from "@/lib/utils"
 import { spaceChain, spaceFromRow, spacesById } from "@/lib/space"
@@ -47,9 +63,16 @@ export function inheritedContextBooks(
   const chain = spaceChain(spaceId, spacesById(spaces.map(spaceFromRow)))
   for (const space of chain) {
     if (!includeCurrent && space.id === spaceId) continue
-    for (const bookId of space.settings.contextBooks ?? []) {
-      if (inherited.has(bookId)) continue
-      inherited.set(bookId, { spaceId: space.id, spaceName: space.name })
+    if (space.settings.books?.reset) inherited.clear()
+    for (const [bookId, decision] of Object.entries(
+      space.settings.books?.decisions ?? {}
+    )) {
+      if (decision === "exclude") inherited.delete(bookId)
+      else
+        inherited.set(bookId, {
+          spaceId: space.id,
+          spaceName: space.name,
+        })
     }
   }
   return inherited
@@ -225,7 +248,8 @@ export function ContextBookAttachList({
   return (
     <div className="flex flex-col gap-3">
       <p className="text-xs text-muted-foreground">
-        Attach books to this chat. Space books stay on and add to the same pool.
+        Attach books to this chat. Space books stay in the same pool unless the
+        space excludes them.
       </p>
       {books.length ? (
         <ul className="max-h-60 space-y-1 overflow-y-auto">
@@ -299,39 +323,82 @@ export function SpaceContextBooksCard({
   books,
   attachedIds,
   inherited,
+  excludedIds = [],
+  reset = false,
+  entryDecisions = {},
   onChange,
+  onExclude,
+  onReset,
+  onEntryChange,
 }: {
-  books: Array<{ id: string; name: string }>
+  books: Array<{
+    id: string
+    name: string
+    book?: { entries: Array<{ id: string; title: string }> }
+  }>
   attachedIds: string[]
   inherited: Map<string, InheritedContextBook>
+  excludedIds?: string[]
+  reset?: boolean
+  entryDecisions?: Record<string, Record<string, "disable" | "restore">>
   onChange: (ids: string[]) => void
+  onExclude?: (id: string, excluded: boolean) => void
+  onReset?: (reset: boolean) => void
+  onEntryChange?: (
+    decisions: Record<string, Record<string, "disable" | "restore">>
+  ) => void
 }) {
   const bookById = useMemo(
     () => new Map(books.map((book) => [book.id, book])),
     [books]
   )
   const available = books.filter(
-    (book) => !attachedIds.includes(book.id) && !inherited.has(book.id)
+    (book) =>
+      !attachedIds.includes(book.id) &&
+      !inherited.has(book.id) &&
+      !excludedIds.includes(book.id)
   )
   const localBooks = attachedIds.map((id) => ({
     id,
     name: bookById.get(id)?.name,
   }))
-  const inheritedBooks = [...inherited.entries()].map(([id, from]) => ({
+  const inheritedBooks = [...inherited.entries()]
+    .filter(([id]) => !excludedIds.includes(id))
+    .map(([id, from]) => ({
+      id,
+      name: bookById.get(id)?.name,
+      from,
+    }))
+  const excludedBooks = excludedIds.map((id) => ({
     id,
     name: bookById.get(id)?.name,
-    from,
   }))
+  const collectionIds = new Set([
+    ...attachedIds,
+    ...inheritedBooks.map((book) => book.id),
+  ])
 
   return (
     <div className="grid gap-3 rounded-2xl border bg-background/40 p-3">
       <div className="min-w-0">
         <p className="text-sm font-medium">Context books</p>
         <p className="text-[11px] text-muted-foreground">
-          Attached books add to parent spaces. Chats here can attach more.
+          Attach books for chats here. Inherited books stay unless you exclude
+          them.
         </p>
       </div>
-      {inheritedBooks.length || localBooks.length ? (
+      {onReset ? (
+        <label className="flex items-center gap-3 rounded-xl px-3 py-2 text-sm">
+          <span className="min-w-0 flex-1">
+            <span className="block truncate">Start a fresh collection</span>
+            <span className="block truncate text-[11px] text-muted-foreground">
+              Books from parent spaces will not apply here.
+            </span>
+          </span>
+          <Switch size="sm" checked={reset} onCheckedChange={onReset} />
+        </label>
+      ) : null}
+      {inheritedBooks.length || localBooks.length || excludedBooks.length ? (
         <ul className="flex flex-wrap gap-1.5">
           {inheritedBooks.map((book) => (
             <li key={`inherited-${book.id}`}>
@@ -344,6 +411,40 @@ export function SpaceContextBooksCard({
                 >
                   {book.from.spaceName}
                 </Link>
+                {onExclude ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={`Exclude ${book.name ?? "book"} in this space`}
+                    onClick={() => onExclude(book.id, true)}
+                  >
+                    <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
+                  </Button>
+                ) : null}
+              </Badge>
+            </li>
+          ))}
+          {excludedBooks.map((book) => (
+            <li key={`excluded-${book.id}`}>
+              <Badge
+                variant="outline"
+                className="max-w-full gap-1 border-dashed opacity-70"
+              >
+                <span className="truncate">
+                  {book.name ?? "Missing book"} · excluded
+                </span>
+                {onExclude ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={`Include ${book.name ?? "book"} again`}
+                    onClick={() => onExclude(book.id, false)}
+                  >
+                    <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
+                  </Button>
+                ) : null}
               </Badge>
             </li>
           ))}
@@ -408,6 +509,155 @@ export function SpaceContextBooksCard({
           {books.length ? "Edit in Settings" : "Create in Settings"}
         </Link>
       </div>
+      {onEntryChange ? (
+        <SpaceEntryExceptions
+          books={books.filter((book) => collectionIds.has(book.id))}
+          decisions={entryDecisions}
+          onChange={onEntryChange}
+        />
+      ) : null}
     </div>
+  )
+}
+
+function SpaceEntryExceptions({
+  books,
+  decisions,
+  onChange,
+}: {
+  books: Array<{
+    id: string
+    name: string
+    book?: { entries: Array<{ id: string; title: string }> }
+  }>
+  decisions: Record<string, Record<string, "disable" | "restore">>
+  onChange: (
+    decisions: Record<string, Record<string, "disable" | "restore">>
+  ) => void
+}) {
+  const configured = Object.values(decisions).reduce(
+    (count, entries) => count + Object.keys(entries).length,
+    0
+  )
+  const excepted = books.flatMap((book) =>
+    Object.entries(decisions[book.id] ?? {}).flatMap(([entryId, action]) => {
+      const entry = book.book?.entries.find((item) => item.id === entryId)
+      if (!entry) return []
+      return [{ book, entry, action }]
+    })
+  )
+  const addable = books.flatMap((book) =>
+    (book.book?.entries ?? [])
+      .filter((entry) => !decisions[book.id]?.[entry.id])
+      .map((entry) => ({ book, entry }))
+  )
+
+  if (!configured && !addable.length) return null
+
+  function patch(
+    bookId: string,
+    entryId: string,
+    action: "disable" | "restore" | "inherit"
+  ) {
+    const next = Object.fromEntries(
+      Object.entries(decisions).map(([id, entries]) => [id, { ...entries }])
+    )
+    const entries = (next[bookId] ??= {})
+    if (action === "inherit") delete entries[entryId]
+    else entries[entryId] = action
+    if (Object.keys(entries).length === 0) delete next[bookId]
+    onChange(next)
+  }
+
+  return (
+    <Collapsible className="group/exceptions space-y-1">
+      <CollapsibleTrigger className="flex w-full items-center justify-between rounded-md text-left text-xs font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50">
+        Entry exceptions{configured ? ` (${configured})` : ""}
+        <HugeiconsIcon
+          icon={ArrowDown01Icon}
+          className="size-3.5 shrink-0 transition-transform group-data-open/exceptions:rotate-180"
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <p className="mb-2 text-[11px] text-muted-foreground">
+          Disable an inherited entry here, or restore one a parent space turned
+          off.
+        </p>
+        {excepted.length ? (
+          <ul className="grid gap-1">
+            {excepted.map(({ book, entry, action }) => (
+              <li
+                key={`${book.id}:${entry.id}`}
+                className="flex items-center justify-between gap-3 rounded-xl px-3 py-2"
+              >
+                <span className="min-w-0">
+                  <span className="block truncate text-sm">{entry.title}</span>
+                  <span className="block truncate text-[11px] text-muted-foreground">
+                    {book.name}
+                  </span>
+                </span>
+                <Select
+                  value={action}
+                  onValueChange={(raw) => {
+                    if (
+                      raw !== "disable" &&
+                      raw !== "restore" &&
+                      raw !== "inherit"
+                    )
+                      return
+                    patch(book.id, entry.id, raw)
+                  }}
+                >
+                  <SelectTrigger
+                    size="sm"
+                    className="w-28"
+                    aria-label={`${entry.title} policy`}
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="inherit">Inherit</SelectItem>
+                    <SelectItem value="disable">Disable</SelectItem>
+                    <SelectItem value="restore">Restore</SelectItem>
+                  </SelectContent>
+                </Select>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-muted-foreground">None yet.</p>
+        )}
+        {addable.length ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="mt-2 text-xs"
+                />
+              }
+            >
+              <HugeiconsIcon icon={Add01Icon} className="size-3.5" />
+              Add exception
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="min-w-52">
+              {addable.map(({ book, entry }) => (
+                <DropdownMenuItem
+                  key={`${book.id}:${entry.id}`}
+                  onClick={() => patch(book.id, entry.id, "disable")}
+                >
+                  {entry.title}
+                  <span className="ms-auto text-[11px] text-muted-foreground">
+                    {book.name}
+                  </span>
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
+      </CollapsibleContent>
+    </Collapsible>
   )
 }

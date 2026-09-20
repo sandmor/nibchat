@@ -54,6 +54,7 @@ describe("requirePromptStack", () => {
     const parsed = requirePromptStack({ modules: [] })
     expect(parsed.modules.map((module) => module.kind)).toEqual([
       "mcp-instructions",
+      "space-rules",
       "history",
     ])
   })
@@ -203,6 +204,36 @@ describe("invariants", () => {
 })
 
 describe("assemblePromptContext", () => {
+  it("places effective space rules at the stack module position", () => {
+    const result = assemblePromptContext({
+      stack: stack([
+        {
+          id: "before",
+          kind: "prompt",
+          name: "Before",
+          enabled: true,
+          body: "before",
+          placement: "relative",
+          role: "system",
+        },
+        {
+          id: "space-rules",
+          kind: "space-rules",
+          name: "Space rules",
+          enabled: true,
+        },
+        {
+          id: "chat-history",
+          kind: "history",
+          name: "Chat history",
+          enabled: true,
+        },
+      ]),
+      pathMessages: path,
+      spaceRulesText: "branch rule",
+    })
+    expect(result.system).toBe("before\n\nbranch rule")
+  })
   it("expands prompt bodies without rewriting MCP instructions", () => {
     const result = assemblePromptContext({
       pathMessages: [],

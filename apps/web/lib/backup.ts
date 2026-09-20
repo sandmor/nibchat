@@ -20,6 +20,7 @@ const chatRowSchema = z
     }, "Invalid chat view state"),
     prompt_stack_id: z.string().nullable(),
     variables_json: z.string().default("{}"),
+    space_overrides_json: z.string().default("{}"),
     space_id: z.string().nullable().optional().default(null),
     created_at: z.string(),
     updated_at: z.string(),

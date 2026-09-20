@@ -42,15 +42,15 @@ describe("parseSpaceSettings", () => {
     expect(parseSpaceSettings("not-json")).toEqual({})
     expect(
       parseSpaceSettings(
-        '{"unknown":true,"temperature":{"enabled":true,"value":0.2}}'
+        '{"unknown":true,"temperature":{"mode":"require","value":0.2}}'
       )
-    ).toEqual({ temperature: { enabled: true, value: 0.2 } })
+    ).toEqual({ temperature: { mode: "require", value: 0.2 } })
   })
 
   it("round-trips a defined-but-disabled slot", () => {
-    const settings = {
-      promptStack: { enabled: false, value: "stack-1" },
-      temperature: { enabled: true, value: 0.2 },
+    const settings: SpaceRecord["settings"] = {
+      promptStack: { mode: "release", value: "stack-1" },
+      temperature: { mode: "require", value: 0.2 },
     }
     expect(parseSpaceSettings(spaceSettingsToJson(settings))).toEqual(settings)
   })
@@ -58,12 +58,12 @@ describe("parseSpaceSettings", () => {
   it("refuses to serialize an enabled model without identity", () => {
     expect(() =>
       spaceSettingsToJson({
-        model: { enabled: true, value: {} },
+        model: { mode: "require", value: {} },
       })
     ).toThrow(/provider and model/i)
     expect(() =>
       assertSpaceSettingsLocks({
-        maxOutputTokens: { enabled: true, value: 0 },
+        maxOutputTokens: { mode: "require", value: 0 },
       })
     ).toThrow(/greater than 0/i)
   })
@@ -86,8 +86,8 @@ describe("resolveChatSettings", () => {
   it("locks enabled slots and ignores disabled ones", () => {
     const spaces = [
       space("work", null, {
-        promptStack: { enabled: true, value: "stack-a" },
-        temperature: { enabled: false, value: 0.1 },
+        promptStack: { mode: "require", value: "stack-a" },
+        temperature: { mode: "release", value: 0.1 },
       }),
     ]
     const resolved = resolveChatSettings({
@@ -107,12 +107,12 @@ describe("resolveChatSettings", () => {
   it("cascades field-by-field with innermost enabled winning", () => {
     const spaces = [
       space("root", null, {
-        promptStack: { enabled: true, value: "parent-stack" },
-        temperature: { enabled: true, value: 0.2 },
-        model: { enabled: true, value: { providerId: "p1", model: "m1" } },
+        promptStack: { mode: "require", value: "parent-stack" },
+        temperature: { mode: "require", value: 0.2 },
+        model: { mode: "require", value: { providerId: "p1", model: "m1" } },
       }),
       space("leaf", "root", {
-        temperature: { enabled: true, value: 0.9 },
+        temperature: { mode: "require", value: 0.9 },
       }),
     ]
     const resolved = resolveChatSettings({
@@ -132,8 +132,8 @@ describe("resolveChatSettings", () => {
     const spaces = [
       space("work", null, {
         variables: {
-          tone: { enabled: true, value: "formal" },
-          skipped: { enabled: false, value: "nope" },
+          tone: { mode: "require", value: "formal" },
+          skipped: { mode: "release", value: "nope" },
         },
       }),
     ]
@@ -153,6 +153,131 @@ describe("resolveChatSettings", () => {
     expect(resolved.locks.variables.skipped).toBeUndefined()
     expect(resolved.locks.variables.extra).toBeUndefined()
   })
+
+  it("lets defaults yield to chat writes and releases restore chat values", () => {
+    const spaces = [
+      space("root", null, {
+        temperature: { mode: "require", value: 0.2 },
+      }),
+      space("default", "root", {
+        temperature: { mode: "default", value: 0.5 },
+      }),
+      space("released", "default", {
+        temperature: { mode: "release", value: 0 },
+      }),
+    ]
+    const defaulted = resolveChatSettings({
+      chat: chat({
+        spaceId: "default",
+        model: { providerId: "p", model: "m" },
+      }),
+      spaces,
+    })
+    expect(defaulted.effective.model.temperature).toBe(0.5)
+    expect(defaulted.locks.temperature).toBeUndefined()
+
+    const explicitlySet = resolveChatSettings({
+      chat: chat({ spaceId: "default" }),
+      spaces,
+    })
+    expect(explicitlySet.effective.model.temperature).toBe(0.7)
+
+    const released = resolveChatSettings({
+      chat: chat({ spaceId: "released" }),
+      spaces,
+    })
+    expect(released.effective.model.temperature).toBe(0.7)
+    expect(released.locks.temperature).toBeUndefined()
+  })
+
+  it("uses explicit markers instead of mistaking stored baselines for choices", () => {
+    const spaces = [
+      space("root", null, {
+        promptStack: { mode: "default", value: "space-stack" },
+        temperature: { mode: "default", value: 0.2 },
+        variables: { tone: { mode: "default", value: "formal" } },
+      }),
+    ]
+    const baseline = chat({
+      spaceId: "root",
+      promptStackId: "instance-stack",
+      variables: { tone: "casual" },
+    })
+
+    const inherited = resolveChatSettings({
+      chat: { ...baseline, explicit: { model: [], variables: [] } },
+      spaces,
+    })
+    expect(inherited.effective.promptStackId).toBe("space-stack")
+    expect(inherited.effective.model.temperature).toBe(0.2)
+    expect(inherited.effective.variables.tone).toBe("formal")
+
+    const chosen = resolveChatSettings({
+      chat: {
+        ...baseline,
+        explicit: {
+          promptStack: true,
+          model: ["temperature"],
+          variables: ["tone"],
+        },
+      },
+      spaces,
+    })
+    expect(chosen.effective.promptStackId).toBe("instance-stack")
+    expect(chosen.effective.model.temperature).toBe(0.7)
+    expect(chosen.effective.variables.tone).toBe("casual")
+  })
+
+  it("resolves book exclusions and stable rule exceptions by branch", () => {
+    const spaces = [
+      space("root", null, {
+        books: { reset: false, decisions: { a: "include", b: "include" } },
+        rules: [
+          {
+            id: "tone",
+            operation: "define",
+            title: "Tone",
+            content: "Formal",
+          },
+        ],
+      }),
+      space("child", "root", {
+        books: {
+          reset: false,
+          decisions: { a: "exclude" },
+          entries: { b: { entry: "disable" } },
+        },
+        rules: [
+          {
+            id: "tone",
+            operation: "replace",
+            title: "Tone",
+            content: "Conversational",
+          },
+        ],
+      }),
+      space("leaf", "child", {
+        books: { reset: false, decisions: { a: "include" } },
+        rules: [{ id: "tone", operation: "disable" }],
+      }),
+    ]
+    const child = resolveChatSettings({
+      chat: chat({ spaceId: "child", contextBookIds: ["a", "chat"] }),
+      spaces,
+    })
+    expect(child.effective.contextBookIds).toEqual(["b", "chat"])
+    expect(child.effective.contextEntryDecisions).toEqual({
+      b: { entry: "disable" },
+    })
+    expect(child.effective.rules[0]?.content).toBe("Conversational")
+
+    const leaf = resolveChatSettings({
+      chat: chat({ spaceId: "leaf" }),
+      spaces,
+    })
+    expect(leaf.effective.contextBookIds).toEqual(["a", "b"])
+    expect(leaf.effective.rules).toEqual([])
+  })
 })
 
 describe("bindVariableLocksToStack", () => {
@@ -160,8 +285,8 @@ describe("bindVariableLocksToStack", () => {
     const spaces = [
       space("work", null, {
         variables: {
-          tone: { enabled: true, value: "formal" },
-          gone: { enabled: true, value: "x" },
+          tone: { mode: "require", value: "formal" },
+          gone: { mode: "require", value: "x" },
         },
       }),
     ]
@@ -177,23 +302,23 @@ describe("bindVariableLocksToStack", () => {
 
 describe("omit*Ref", () => {
   it("drops only the matching prompt-stack slot", () => {
-    const settings = {
-      promptStack: { enabled: true, value: "stack-1" },
-      temperature: { enabled: true, value: 0.2 },
+    const settings: SpaceRecord["settings"] = {
+      promptStack: { mode: "require", value: "stack-1" },
+      temperature: { mode: "require", value: 0.2 },
     }
     expect(omitPromptStackRef(settings, "stack-1")).toEqual({
-      temperature: { enabled: true, value: 0.2 },
+      temperature: { mode: "require", value: 0.2 },
     })
     expect(omitPromptStackRef(settings, "other")).toEqual(settings)
   })
 
   it("drops only the matching model provider slot", () => {
-    const settings = {
-      model: { enabled: true, value: { providerId: "p1", model: "m1" } },
-      temperature: { enabled: true, value: 0.2 },
+    const settings: SpaceRecord["settings"] = {
+      model: { mode: "require", value: { providerId: "p1", model: "m1" } },
+      temperature: { mode: "require", value: 0.2 },
     }
     expect(omitModelProviderRef(settings, "p1")).toEqual({
-      temperature: { enabled: true, value: 0.2 },
+      temperature: { mode: "require", value: 0.2 },
     })
     expect(omitModelProviderRef(settings, "other")).toEqual(settings)
   })

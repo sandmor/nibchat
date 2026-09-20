@@ -84,6 +84,7 @@ import {
   type PromptVariableValues,
 } from "@/lib/prompt-stack"
 import {
+  applyContextEntryOverrides,
   contextBookToJson,
   defaultContextBook,
   readContextBook,
@@ -118,6 +119,8 @@ import {
   omitModelProviderRef,
   omitPromptStackRef,
   parseSpaceSettings,
+  parseChatSpaceOverrides,
+  chatSpaceOverridesToJson,
   resolveChatSettings,
   spaceDescriptionSchema,
   spaceFromRow,
@@ -127,6 +130,7 @@ import {
   spaceDepth,
   spacesById,
   orderSpacesForInsert,
+  type ChatSpaceOverrides,
   type ResolvedChatSettings,
   type SpaceRecord,
   type SpaceSettings,
@@ -371,7 +375,12 @@ async function assertSpaceSettingsStack(
       .executeTakeFirst()
     if (!existing) throw new Error("Prompt stack not found")
   }
-  const bookIds = [...new Set(settings.contextBooks ?? [])]
+  const bookIds = [
+    ...new Set([
+      ...Object.keys(settings.books?.decisions ?? {}),
+      ...Object.keys(settings.books?.entries ?? {}),
+    ]),
+  ]
   if (bookIds.length) {
     const owned = await db
       .selectFrom("context_books")
@@ -391,6 +400,7 @@ export async function resolveSettingsForChat(
     variables_json?: string
     model_config_json?: string
     contextBookIds?: string[]
+    space_overrides_json?: string
   },
   userId: string,
   spaces?: readonly SpaceRecord[]
@@ -406,6 +416,7 @@ export async function resolveSettingsForChat(
       ),
       model: parseJson<ModelConfig>(chat.model_config_json ?? "{}", {}),
       contextBookIds: chat.contextBookIds,
+      explicit: parseChatSpaceOverrides(chat.space_overrides_json),
     },
     spaces: records,
   })
@@ -507,7 +518,8 @@ export async function createChat(
   promptStackId?: string | null,
   variables?: PromptVariableValues,
   spaceId?: string | null,
-  contextBookIds: string[] = []
+  contextBookIds: string[] = [],
+  explicit?: ChatSpaceOverrides
 ) {
   const chat = await prepareChatRow(
     userId,
@@ -515,7 +527,8 @@ export async function createChat(
     config,
     promptStackId,
     variables,
-    spaceId
+    spaceId,
+    explicit
   )
   const uniqueBookIds = [...new Set(contextBookIds)]
   if (uniqueBookIds.length) {
@@ -552,8 +565,14 @@ export async function prepareChatRow(
   config?: ModelConfig,
   promptStackId?: string | null,
   variables?: PromptVariableValues,
-  spaceId?: string | null
+  spaceId?: string | null,
+  explicit?: ChatSpaceOverrides
 ) {
+  const explicitConfigKeys =
+    explicit?.model ?? (config ? Object.keys(config) : [])
+  const explicitPromptStack = explicit
+    ? explicit.promptStack === true
+    : promptStackId !== undefined
   const baseline = await defaultModelConfig(userId)
   const defaultStackId = (await ensureUserSettings(userId))
     .default_prompt_stack_id
@@ -619,6 +638,12 @@ export async function prepareChatRow(
       ? defaultStackId
       : promptStackId,
     variables_json: JSON.stringify(storedVariables),
+    space_overrides_json: chatSpaceOverridesToJson({
+      promptStack: explicitPromptStack || undefined,
+      model: explicitConfigKeys,
+      variables:
+        explicit?.variables ?? (variables ? Object.keys(variables) : []),
+    }),
     space_id: resolvedSpaceId,
     created_at: timestamp,
     updated_at: timestamp,
@@ -938,6 +963,7 @@ export async function updateChat(
 ) {
   if (userId) await assertChatOwner(chatId, userId)
   let modelJson: string | undefined
+  let overridesJson: string | undefined
   if (patch.model) {
     if (!userId) throw new Error("Chat not found")
     const chat = await db
@@ -947,6 +973,7 @@ export async function updateChat(
         "prompt_stack_id",
         "model_config_json",
         "variables_json",
+        "space_overrides_json",
       ])
       .where("id", "=", chatId)
       .where("user_id", "=", userId)
@@ -957,12 +984,20 @@ export async function updateChat(
     modelJson = JSON.stringify(
       mergeUnlockedModelConfig(stored, patch.model, resolved.locks)
     )
+    const explicit = parseChatSpaceOverrides(chat.space_overrides_json)
+    overridesJson = chatSpaceOverridesToJson({
+      ...explicit,
+      model: [
+        ...new Set([...(explicit.model ?? []), ...Object.keys(patch.model)]),
+      ],
+    })
   }
   await db
     .updateTable("chats")
     .set({
       ...(patch.title !== undefined ? { title: patch.title } : {}),
       ...(modelJson ? { model_config_json: modelJson } : {}),
+      ...(overridesJson ? { space_overrides_json: overridesJson } : {}),
       updated_at: now(),
     })
     .where("id", "=", chatId)
@@ -2380,9 +2415,13 @@ export async function createContextBook(input: {
         .set({
           settings_json: spaceSettingsToJson({
             ...settings,
-            contextBooks: [
-              ...new Set([...(settings.contextBooks ?? []), row.id]),
-            ],
+            books: {
+              reset: settings.books?.reset ?? false,
+              decisions: {
+                ...settings.books?.decisions,
+                [row.id]: "include",
+              },
+            },
           }),
           updated_at: timestamp,
         })
@@ -2451,9 +2490,21 @@ export async function deleteContextBook(userId: string, bookId: string) {
     await rewriteSpaceSettings(
       (settings) => ({
         ...settings,
-        ...(settings.contextBooks
+        ...(settings.books
           ? {
-              contextBooks: settings.contextBooks.filter((id) => id !== bookId),
+              books: {
+                ...settings.books,
+                decisions: Object.fromEntries(
+                  Object.entries(settings.books.decisions).filter(
+                    ([id]) => id !== bookId
+                  )
+                ),
+                entries: Object.fromEntries(
+                  Object.entries(settings.books.entries ?? {}).filter(
+                    ([id]) => id !== bookId
+                  )
+                ),
+              },
             }
           : {}),
       }),
@@ -2524,6 +2575,7 @@ export async function effectiveContextBooks(
       "space_id",
       "prompt_stack_id",
       "variables_json",
+      "space_overrides_json",
       "model_config_json",
     ])
     .where("id", "=", chatId)
@@ -2549,18 +2601,26 @@ export async function effectiveContextBooks(
     .execute()
   const byId = new Map(rows.map((row) => [row.id, row]))
   const spaceIds = new Set(
-    resolved.chain.flatMap((space) => space.settings.contextBooks ?? [])
+    resolved.chain.flatMap((space) =>
+      Object.entries(space.settings.books?.decisions ?? {}).flatMap(
+        ([id, decision]) => (decision === "include" ? [id] : [])
+      )
+    )
   )
   return resolved.effective.contextBookIds.flatMap((bookId) => {
     const row = byId.get(bookId)
+    const entryDecisions = resolved.effective.contextEntryDecisions[bookId]
     return row
       ? [
-          {
-            ...contextBookSummary(row),
-            source: spaceIds.has(bookId)
-              ? ("space" as const)
-              : ("chat" as const),
-          },
+          applyContextEntryOverrides(
+            {
+              ...contextBookSummary(row),
+              source: spaceIds.has(bookId)
+                ? ("space" as const)
+                : ("chat" as const),
+            },
+            entryDecisions
+          ),
         ]
       : []
   })
@@ -2708,6 +2768,7 @@ export async function setChatPromptStack(
   chatId: string,
   stackId: string | null
 ) {
+  const explicitChoice = stackId !== null
   const chat = await db
     .selectFrom("chats")
     .select([
@@ -2716,6 +2777,7 @@ export async function setChatPromptStack(
       "prompt_stack_id",
       "model_config_json",
       "variables_json",
+      "space_overrides_json",
     ])
     .where("id", "=", chatId)
     .where("user_id", "=", userId)
@@ -2727,8 +2789,6 @@ export async function setChatPromptStack(
       `Prompt stack is locked by ${resolved.locks.promptStack.spaceName}`
     )
   }
-  stackId =
-    stackId ?? (await ensureUserSettings(userId)).default_prompt_stack_id
   if (stackId) {
     const existing = await db
       .selectFrom("prompt_stacks")
@@ -2740,7 +2800,14 @@ export async function setChatPromptStack(
   }
   await db
     .updateTable("chats")
-    .set({ prompt_stack_id: stackId, updated_at: now() })
+    .set({
+      prompt_stack_id: stackId,
+      space_overrides_json: chatSpaceOverridesToJson({
+        ...parseChatSpaceOverrides(chat.space_overrides_json),
+        promptStack: explicitChoice || undefined,
+      }),
+      updated_at: now(),
+    })
     .where("id", "=", chatId)
     .where("user_id", "=", userId)
     .execute()
@@ -2760,6 +2827,7 @@ export async function setChatVariables(input: {
       "space_id",
       "model_config_json",
       "variables_json",
+      "space_overrides_json",
     ])
     .where("id", "=", input.chatId)
     .where("user_id", "=", input.userId)
@@ -2779,7 +2847,14 @@ export async function setChatVariables(input: {
   )
   await db
     .updateTable("chats")
-    .set({ variables_json: JSON.stringify(values), updated_at: now() })
+    .set({
+      variables_json: JSON.stringify(values),
+      space_overrides_json: chatSpaceOverridesToJson({
+        ...parseChatSpaceOverrides(chat.space_overrides_json),
+        variables: Object.keys(input.values),
+      }),
+      updated_at: now(),
+    })
     .where("id", "=", input.chatId)
     .where("user_id", "=", input.userId)
     .execute()
@@ -2871,6 +2946,7 @@ export async function updateSpace(input: {
   description?: string
   settings?: SpaceSettings
   parentId?: string | null
+  expectedUpdatedAt?: string
 }) {
   const row = await assertSpaceOwner(input.spaceId, input.userId)
   const rows = await listSpaceRows(input.userId)
@@ -2891,7 +2967,7 @@ export async function updateSpace(input: {
     settingsJson = spaceSettingsToJson(settings)
   }
   const moving = parentId !== row.parent_id
-  await db
+  let update = db
     .updateTable("spaces")
     .set({
       ...(input.name !== undefined
@@ -2909,7 +2985,14 @@ export async function updateSpace(input: {
     })
     .where("id", "=", input.spaceId)
     .where("user_id", "=", input.userId)
-    .execute()
+  if (input.expectedUpdatedAt)
+    update = update.where("updated_at", "=", input.expectedUpdatedAt)
+  const result = await update.executeTakeFirst()
+  if (input.expectedUpdatedAt && Number(result.numUpdatedRows) === 0) {
+    throw new Error(
+      "This space changed elsewhere. Reload it before saving again."
+    )
+  }
   return await assertSpaceOwner(input.spaceId, input.userId)
 }
 
@@ -3099,6 +3182,7 @@ async function restoreOwnerBackup(
         view_state_json: chat.view_state_json,
         prompt_stack_id: chat.prompt_stack_id ?? null,
         variables_json: chat.variables_json ?? "{}",
+        space_overrides_json: chat.space_overrides_json ?? "{}",
         space_id: chat.space_id ?? null,
         created_at: chat.created_at,
         updated_at: chat.updated_at,
@@ -3677,6 +3761,7 @@ async function restoreMultiUserBackup(
             view_state_json: chat.view_state_json,
             prompt_stack_id: chat.prompt_stack_id ?? null,
             variables_json: chat.variables_json ?? "{}",
+            space_overrides_json: chat.space_overrides_json ?? "{}",
             space_id: chat.space_id ?? null,
             created_at: chat.created_at,
             updated_at: chat.updated_at,

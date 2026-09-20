@@ -20,7 +20,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
 import { siblingSort } from "@/lib/sort-key"
-import { parseSpaceSettings, SPACE_SAMPLING_KEYS } from "@/lib/space"
+import { parseSpaceSettings, spacePolicyImpact } from "@/lib/space"
 import type { ChatRow, SpaceRow } from "@/lib/types"
 import { ChatListItem } from "./chat-list"
 import type { SlotMotion } from "./slot-crossfade"
@@ -51,14 +51,10 @@ function buildForest(spaces: SpaceRow[]): SpaceNode[] {
 }
 
 function spaceAppliesLocks(settingsJson: string | null) {
-  const settings = parseSpaceSettings(settingsJson)
-  if (settings.promptStack?.enabled) return true
-  if (settings.model?.enabled) return true
-  if (settings.reasoning?.enabled) return true
-  for (const key of SPACE_SAMPLING_KEYS) {
-    if (settings[key]?.enabled) return true
-  }
-  return Object.values(settings.variables ?? {}).some((slot) => slot.enabled)
+  const impact = spacePolicyImpact(parseSpaceSettings(settingsJson))
+  return (
+    impact.settings.length + impact.variables + impact.books + impact.rules > 0
+  )
 }
 
 function SpaceRowView({
@@ -155,7 +151,7 @@ function SpaceRowView({
             {locked ? (
               <span
                 className="absolute -right-0.5 -bottom-0.5 size-1.5 rounded-full bg-primary"
-                title="Locks chat settings"
+                title="Applies chat settings"
                 aria-hidden
               />
             ) : null}
@@ -295,7 +291,8 @@ export function SpaceTree({
     <div className="space-y-1">
       {forest.length === 0 && !compact ? (
         <p className="px-2 py-8 text-center text-sm text-muted-foreground">
-          Group chats here. A space can also lock a model, stack, or variables.
+          Group chats here. A space can also set a model, stack, rules, or
+          variables.
         </p>
       ) : null}
       {forest.map((space) => (

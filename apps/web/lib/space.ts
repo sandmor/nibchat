@@ -4,6 +4,7 @@ import {
   MAX_COLLECTION,
   MAX_DESCRIPTION,
   MAX_NAME,
+  MAX_PROMPT_CHARS,
   MAX_SPACE_DEPTH,
 } from "@/lib/limits"
 import { promptVariableValueSchema } from "@/lib/prompt-stack"
@@ -14,11 +15,19 @@ import type { SpaceRow } from "@/lib/types"
 
 const variableNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
 
-function slotSchema<T extends z.ZodType>(value: T) {
+const policyModeSchema = z.enum(["default", "require", "release"])
+
+function policySchema<T extends z.ZodType>(value: T) {
   return z.object({
-    enabled: z.boolean(),
+    mode: policyModeSchema,
     value,
   })
+}
+
+function boundedRecord<T extends z.ZodType>(value: T) {
+  return z
+    .record(z.string().min(1), value)
+    .refine((entries) => Object.keys(entries).length <= MAX_COLLECTION)
 }
 
 const modelIdentitySchema = z.object({
@@ -41,33 +50,54 @@ export const SPACE_SAMPLING_KEYS = [
 export type SpaceSamplingKey = (typeof SPACE_SAMPLING_KEYS)[number]
 
 const spaceSettingsShape = z.object({
-  contextScanDepth: slotSchema(scanDepthSchema).optional(),
-  contextBooks: z.array(z.string().min(1)).max(MAX_COLLECTION).optional(),
-  promptStack: slotSchema(z.string().min(1)).optional(),
+  contextScanDepth: policySchema(scanDepthSchema).optional(),
+  books: z
+    .object({
+      reset: z.boolean().default(false),
+      decisions: boundedRecord(z.enum(["include", "exclude"])),
+      entries: boundedRecord(
+        boundedRecord(z.enum(["disable", "restore"]))
+      ).optional(),
+    })
+    .optional(),
+  promptStack: policySchema(z.string().min(1)).optional(),
   variables: z
-    .record(variableNameSchema, slotSchema(promptVariableValueSchema))
+    .record(variableNameSchema, policySchema(promptVariableValueSchema))
     .refine(
       (value) => Object.keys(value).length <= MAX_COLLECTION,
       "Too many variables"
     )
     .optional(),
-  model: slotSchema(modelIdentitySchema).optional(),
-  reasoning: slotSchema(reasoningPreferencesSchema).optional(),
-  temperature: slotSchema(z.number()).optional(),
-  maxOutputTokens: slotSchema(z.number()).optional(),
-  topP: slotSchema(z.number()).optional(),
-  frequencyPenalty: slotSchema(z.number()).optional(),
-  presencePenalty: slotSchema(z.number()).optional(),
-  stopSequences: slotSchema(z.array(z.string())).optional(),
-  providerOptions: slotSchema(z.record(z.string(), z.unknown())).optional(),
-  replayReasoning: slotSchema(z.boolean()).optional(),
+  model: policySchema(modelIdentitySchema).optional(),
+  reasoning: policySchema(reasoningPreferencesSchema).optional(),
+  temperature: policySchema(z.number()).optional(),
+  maxOutputTokens: policySchema(z.number()).optional(),
+  topP: policySchema(z.number()).optional(),
+  frequencyPenalty: policySchema(z.number()).optional(),
+  presencePenalty: policySchema(z.number()).optional(),
+  stopSequences: policySchema(z.array(z.string())).optional(),
+  providerOptions: policySchema(z.record(z.string(), z.unknown())).optional(),
+  replayReasoning: policySchema(z.boolean()).optional(),
+  rules: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        operation: z.enum(["define", "replace", "disable", "restore"]),
+        title: z.string().trim().min(1).max(MAX_NAME).optional(),
+        content: z.string().max(MAX_PROMPT_CHARS).optional(),
+      })
+    )
+    .max(MAX_COLLECTION)
+    .optional(),
 })
 
 /** Reject unknown keys on write. Reads strip unknown keys and keep known slots. */
 export const spaceSettingsSchema = spaceSettingsShape.strict()
 
 export type SpaceSettings = z.infer<typeof spaceSettingsSchema>
-export type SpaceSettingSlot<T> = { enabled: boolean; value: T }
+export type SpacePolicyMode = z.infer<typeof policyModeSchema>
+export type SpaceSettingPolicy<T> = { mode: SpacePolicyMode; value: T }
+export type SpaceRule = NonNullable<SpaceSettings["rules"]>[number]
 
 export type SpaceLockSource = { spaceId: string; spaceName: string }
 
@@ -91,6 +121,27 @@ export type ChatSettingsSource = {
   variables: Record<string, unknown>
   model: ModelConfig
   contextBookIds?: string[]
+  explicit?: ChatSpaceOverrides
+}
+
+export const chatSpaceOverridesSchema = z.object({
+  promptStack: z.boolean().optional(),
+  model: z.array(z.string()).max(MAX_COLLECTION).optional(),
+  variables: z.array(z.string()).max(MAX_COLLECTION).optional(),
+})
+
+export type ChatSpaceOverrides = z.infer<typeof chatSpaceOverridesSchema>
+
+export function parseChatSpaceOverrides(
+  json: string | null | undefined
+): ChatSpaceOverrides {
+  const parsed = parseJson<unknown>(json ?? "{}", {})
+  const result = chatSpaceOverridesSchema.safeParse(parsed)
+  return result.success ? result.data : {}
+}
+
+export function chatSpaceOverridesToJson(value: ChatSpaceOverrides): string {
+  return JSON.stringify(chatSpaceOverridesSchema.parse(value))
 }
 
 export type ResolvedChatSettings = {
@@ -99,9 +150,43 @@ export type ResolvedChatSettings = {
     variables: Record<string, unknown>
     model: ModelConfig
     contextBookIds: string[]
+    rules: ResolvedSpaceRule[]
+    contextEntryDecisions: Record<string, Record<string, "disable" | "restore">>
   }
   locks: ChatSettingLocks
   chain: SpaceRecord[]
+  decisions: SpaceResolutionDecision[]
+  unresolved: SpaceUnresolvedReference[]
+}
+
+export type SpaceResolutionDecision = {
+  kind: "setting" | "book" | "entry" | "rule"
+  key: string
+  action: string
+  source: SpaceLockSource
+}
+
+export type SpaceUnresolvedReference = {
+  kind: "rule"
+  id: string
+  operation: "replace" | "disable" | "restore"
+  source: SpaceLockSource
+}
+
+export type ResolvedSpaceRule = {
+  id: string
+  title: string
+  content: string
+  source: SpaceLockSource
+}
+
+export function formatSpaceRules(rules: readonly ResolvedSpaceRule[]): string {
+  if (!rules.length) return ""
+  return [
+    "<space_rules>",
+    ...rules.map((rule) => `## ${rule.title}\n${rule.content.trim()}`),
+    "</space_rules>",
+  ].join("\n\n")
 }
 
 function emptyLocks(): ChatSettingLocks {
@@ -152,13 +237,15 @@ export function spaceMaxOutputTokensLockable(value: number): boolean {
 /** Enabled slots that would break generation cannot be saved. */
 export function assertSpaceSettingsLocks(settings: SpaceSettings) {
   if (
-    settings.model?.enabled &&
+    settings.model &&
+    settings.model.mode !== "release" &&
     !spaceModelIdentityComplete(settings.model.value)
   ) {
     throw new Error("Lock a model only after choosing a provider and model")
   }
   if (
-    settings.maxOutputTokens?.enabled &&
+    settings.maxOutputTokens &&
+    settings.maxOutputTokens.mode !== "release" &&
     !spaceMaxOutputTokensLockable(settings.maxOutputTokens.value)
   ) {
     throw new Error("Max output must be greater than 0 when locked")
@@ -282,15 +369,24 @@ export function assertSpaceMoveAllowed(
   }
 }
 
-function applyEnabledSlot<T>(
-  slot: SpaceSettingSlot<T> | undefined,
+function applyPolicy<T>(
+  policy: SpaceSettingPolicy<T> | undefined,
   source: SpaceLockSource,
   apply: (value: T) => void,
-  lock: (source: SpaceLockSource) => void
+  lock: (source: SpaceLockSource | undefined) => void,
+  release: () => void,
+  hasChatValue: boolean
 ) {
-  if (!slot?.enabled) return
-  apply(slot.value)
-  lock(source)
+  if (!policy) return
+  if (policy.mode === "release") {
+    release()
+    lock(undefined)
+    return
+  }
+  if (policy.mode === "require" || !hasChatValue) apply(policy.value)
+  else release()
+  if (policy.mode === "require") lock(source)
+  else lock(undefined)
 }
 
 export function resolveChatSettings(input: {
@@ -313,18 +409,108 @@ export function resolveChatSettings(input: {
   let promptStackId = input.chat.promptStackId
   const variables: Record<string, unknown> = { ...input.chat.variables }
   const contextBookIds: string[] = []
-  const seenContextBooks = new Set<string>()
+  const contextBookState = new Map<string, boolean>()
+  const rules = new Map<string, ResolvedSpaceRule>()
+  const disabledRules = new Set<string>()
+  const explicitModel = input.chat.explicit
+    ? new Set(input.chat.explicit.model ?? [])
+    : null
+  const explicitVariables = input.chat.explicit
+    ? new Set(input.chat.explicit.variables ?? [])
+    : null
+  const contextEntryDecisions: Record<
+    string,
+    Record<string, "disable" | "restore">
+  > = {}
+  const decisions: SpaceResolutionDecision[] = []
+  const unresolved: SpaceUnresolvedReference[] = []
 
   for (const space of chain) {
     const source: SpaceLockSource = { spaceId: space.id, spaceName: space.name }
     const settings = space.settings
-    for (const bookId of settings.contextBooks ?? []) {
-      if (!seenContextBooks.has(bookId)) {
-        seenContextBooks.add(bookId)
-        contextBookIds.push(bookId)
+    if (settings.books?.reset) {
+      contextBookState.clear()
+      decisions.push({ kind: "book", key: "*", action: "reset", source })
+    }
+    for (const [bookId, decision] of Object.entries(
+      settings.books?.decisions ?? {}
+    )) {
+      contextBookState.set(bookId, decision === "include")
+      decisions.push({ kind: "book", key: bookId, action: decision, source })
+    }
+    for (const [bookId, entries] of Object.entries(
+      settings.books?.entries ?? {}
+    )) {
+      contextEntryDecisions[bookId] = {
+        ...contextEntryDecisions[bookId],
+        ...entries,
+      }
+      for (const [entryId, operation] of Object.entries(entries)) {
+        decisions.push({
+          kind: "entry",
+          key: `${bookId}:${entryId}`,
+          action: operation,
+          source,
+        })
       }
     }
-    applyEnabledSlot(
+    for (const rule of settings.rules ?? []) {
+      if (
+        rule.operation !== "define" &&
+        !rules.has(rule.id) &&
+        !disabledRules.has(rule.id)
+      ) {
+        unresolved.push({
+          kind: "rule",
+          id: rule.id,
+          operation: rule.operation,
+          source,
+        })
+      }
+      decisions.push({
+        kind: "rule",
+        key: rule.id,
+        action: rule.operation,
+        source,
+      })
+      if (rule.operation === "disable") {
+        disabledRules.add(rule.id)
+        continue
+      }
+      if (rule.operation === "restore") {
+        disabledRules.delete(rule.id)
+        continue
+      }
+      if (!rule.title || !rule.content) continue
+      rules.set(rule.id, {
+        id: rule.id,
+        title: rule.title,
+        content: rule.content,
+        source,
+      })
+      disabledRules.delete(rule.id)
+    }
+    for (const key of definedSettingKeys(settings)) {
+      const policy = settings[key as keyof SpaceSettings] as
+        | { mode?: string }
+        | undefined
+      if (policy?.mode)
+        decisions.push({
+          kind: "setting",
+          key,
+          action: policy.mode,
+          source,
+        })
+    }
+    for (const [name, policy] of Object.entries(settings.variables ?? {})) {
+      decisions.push({
+        kind: "setting",
+        key: `variable:${name}`,
+        action: policy.mode,
+        source,
+      })
+    }
+    applyPolicy(
       settings.promptStack,
       source,
       (value) => {
@@ -332,21 +518,35 @@ export function resolveChatSettings(input: {
       },
       (lockSource) => {
         locks.promptStack = lockSource
-      }
+      },
+      () => {
+        promptStackId = input.chat.promptStackId
+      },
+      input.chat.explicit
+        ? Boolean(input.chat.explicit.promptStack)
+        : input.chat.promptStackId !== null
     )
     for (const [name, slot] of Object.entries(settings.variables ?? {})) {
-      applyEnabledSlot(
+      applyPolicy(
         slot,
         source,
         (value) => {
           variables[name] = value
         },
         (lockSource) => {
-          locks.variables[name] = lockSource
-        }
+          if (lockSource) locks.variables[name] = lockSource
+          else delete locks.variables[name]
+        },
+        () => {
+          if (input.chat.variables[name] === undefined) delete variables[name]
+          else variables[name] = input.chat.variables[name]
+        },
+        explicitVariables
+          ? explicitVariables.has(name)
+          : input.chat.variables[name] !== undefined
       )
     }
-    applyEnabledSlot(
+    applyPolicy(
       settings.model,
       source,
       (value) => {
@@ -355,9 +555,16 @@ export function resolveChatSettings(input: {
       },
       (lockSource) => {
         locks.model = lockSource
-      }
+      },
+      () => {
+        model.providerId = input.chat.model.providerId
+        model.model = input.chat.model.model
+      },
+      explicitModel
+        ? explicitModel.has("providerId") || explicitModel.has("model")
+        : Boolean(input.chat.model.providerId && input.chat.model.model)
     )
-    applyEnabledSlot(
+    applyPolicy(
       settings.reasoning,
       source,
       (value) => {
@@ -365,11 +572,20 @@ export function resolveChatSettings(input: {
       },
       (lockSource) => {
         locks.reasoning = lockSource
-      }
+      },
+      () => {
+        if (input.chat.model.reasoning === undefined) delete model.reasoning
+        else model.reasoning = input.chat.model.reasoning
+      },
+      explicitModel
+        ? explicitModel.has("reasoning")
+        : input.chat.model.reasoning !== undefined
     )
     for (const key of SPACE_SAMPLING_KEYS) {
-      applyEnabledSlot(
-        settings[key] as SpaceSettingSlot<ModelConfig[typeof key]> | undefined,
+      applyPolicy(
+        settings[key] as
+          | SpaceSettingPolicy<ModelConfig[typeof key]>
+          | undefined,
         source,
         (value) => {
           if (value === undefined) delete model[key]
@@ -377,10 +593,25 @@ export function resolveChatSettings(input: {
         },
         (lockSource) => {
           locks[key] = lockSource
-        }
+        },
+        () => {
+          const value = input.chat.model[key]
+          if (value === undefined) delete model[key]
+          else (model as Record<string, unknown>)[key] = value
+        },
+        explicitModel
+          ? explicitModel.has(key)
+          : input.chat.model[key] !== undefined
       )
     }
   }
+
+  for (const [bookId, included] of contextBookState) {
+    if (included) contextBookIds.push(bookId)
+  }
+  const effectiveRules = [...rules.values()].filter(
+    (rule) => !disabledRules.has(rule.id)
+  )
 
   return {
     effective: {
@@ -390,12 +621,16 @@ export function resolveChatSettings(input: {
       contextBookIds: [
         ...contextBookIds,
         ...(input.chat.contextBookIds ?? []).filter(
-          (id) => !seenContextBooks.has(id)
+          (id) => !contextBookState.has(id)
         ),
       ],
+      rules: effectiveRules,
+      contextEntryDecisions,
     },
     locks,
     chain,
+    decisions,
+    unresolved,
   }
 }
 
@@ -506,4 +741,20 @@ export function definedSettingKeys(settings: SpaceSettings): string[] {
     if (settings[key]) keys.push(key)
   }
   return keys
+}
+
+export function spacePolicyImpact(settings: SpaceSettings) {
+  const entryPolicies = Object.values(settings.books?.entries ?? {}).reduce(
+    (count, entries) => count + Object.keys(entries).length,
+    0
+  )
+  return {
+    settings: definedSettingKeys(settings),
+    variables: Object.keys(settings.variables ?? {}).length,
+    books:
+      Object.keys(settings.books?.decisions ?? {}).length +
+      entryPolicies +
+      (settings.books?.reset ? 1 : 0),
+    rules: settings.rules?.length ?? 0,
+  }
 }

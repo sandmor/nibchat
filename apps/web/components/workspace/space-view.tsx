@@ -9,6 +9,7 @@ import { toast } from "sonner"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
   Add01Icon,
+  ArrowDown01Icon,
   ArrowRight01Icon,
   Delete02Icon,
   Folder01Icon,
@@ -18,9 +19,15 @@ import {
 import { motionTransition, shouldAnimate } from "@/lib/appearance"
 import { siblingSort } from "@/lib/sort-key"
 import { Button } from "@/components/ui/button"
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import {
   Select,
   SelectContent,
@@ -48,7 +55,11 @@ import {
   spaceMaxOutputTokensLockable,
   spaceModelIdentityComplete,
   type SpaceSamplingKey,
+  type SpacePolicyMode,
+  type SpaceResolutionDecision,
+  type SpaceRule,
   type SpaceSettings,
+  type SpaceUnresolvedReference,
 } from "@/lib/space"
 import { isOrphanPromptStackRef, resolvePromptStack } from "@/lib/prompt-stack"
 import { displayChatTitle } from "@/lib/chat-title"
@@ -81,26 +92,26 @@ function defaultSlotValue(
   stacks: Array<{ id: string }>
 ): SpaceSettings[AddableKey] {
   if (key === "promptStack") {
-    return { enabled: false, value: stacks[0]?.id ?? "" }
+    return { mode: "default", value: stacks[0]?.id ?? "" }
   }
   if (key === "model") {
-    return { enabled: false, value: {} }
+    return { mode: "default", value: {} }
   }
   if (key === "reasoning") {
-    return { enabled: false, value: {} }
+    return { mode: "default", value: {} }
   }
   if (key === "contextScanDepth")
-    return { enabled: false, value: DEFAULT_CHAT_CONFIG.contextScanDepth }
+    return { mode: "default", value: DEFAULT_CHAT_CONFIG.contextScanDepth }
   if (key === "replayReasoning") {
-    return { enabled: false, value: true }
+    return { mode: "default", value: true }
   }
   if (key === "stopSequences") {
-    return { enabled: false, value: [] }
+    return { mode: "default", value: [] }
   }
   if (key === "providerOptions") {
-    return { enabled: false, value: {} }
+    return { mode: "default", value: {} }
   }
-  return { enabled: false, value: 0 }
+  return { mode: "default", value: 0 }
 }
 
 export function SpaceView({
@@ -132,6 +143,7 @@ export function SpaceView({
     parseSpaceSettings(space?.settings_json)
   )
   const settingsRef = useRef(settings)
+  const updatedAtRef = useRef(space?.updated_at)
   settingsRef.current = settings
 
   useEffect(() => {
@@ -140,6 +152,7 @@ export function SpaceView({
     setName(space.name)
     setDescription(space.description)
     settingsRef.current = nextSettings
+    updatedAtRef.current = space.updated_at
     setSettings(nextSettings)
     // Name and settings drafts must survive a settings save (updated_at).
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reset only when switching spaces
@@ -164,7 +177,15 @@ export function SpaceView({
     const spaceId = space.id
     saveChain.current = saveChain.current
       .catch(() => undefined)
-      .then(() => updateMut.mutateAsync({ spaceId, ...patch }))
+      .then(async () => {
+        const updated = await updateMut.mutateAsync({
+          spaceId,
+          expectedUpdatedAt: updatedAtRef.current,
+          ...patch,
+        })
+        updatedAtRef.current = updated.updated_at
+        return updated
+      })
   }
   const createSpaceMut = useMutation(
     trpc.workspace.createSpace.mutationOptions({
@@ -223,6 +244,19 @@ export function SpaceView({
     [spaceId, spaceRecords]
   )
   const effectiveStackId = resolvedForSpace.effective.promptStackId
+  const inheritedRules = useMemo(
+    () =>
+      resolveChatSettings({
+        chat: {
+          spaceId: space?.parent_id ?? null,
+          promptStackId: null,
+          variables: {},
+          model: {},
+        },
+        spaces: spaceRecords,
+      }).effective.rules,
+    [space?.parent_id, spaceRecords]
+  )
   const inheritedBooks = inheritedContextBooks(spaceId, spaces, false)
   const resolvedStack = resolvePromptStack({
     chatStackId: effectiveStackId,
@@ -293,7 +327,7 @@ export function SpaceView({
                     variables: {
                       ...current.variables,
                       [variable.name]: {
-                        enabled: true,
+                        mode: "require",
                         value: variable.default,
                       },
                     },
@@ -439,9 +473,9 @@ export function SpaceView({
               <div className="min-w-0">
                 <h2 className="text-sm font-medium">Defaults</h2>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  Locked values apply to every chat here. Unlock to keep a value
-                  without forcing it. Context books add to parent spaces instead
-                  of replacing them.
+                  Values here apply to chats in this space. Require one to lock
+                  it, or release a parent value. Books and rules add to parent
+                  spaces unless you exclude them.
                 </p>
               </div>
               {addDefaults}
@@ -457,13 +491,93 @@ export function SpaceView({
                 >
                   <SpaceContextBooksCard
                     books={contextBooks}
-                    attachedIds={settings.contextBooks ?? []}
-                    inherited={inheritedBooks}
+                    attachedIds={Object.entries(
+                      settings.books?.decisions ?? {}
+                    ).flatMap(([id, decision]) =>
+                      decision === "include" ? [id] : []
+                    )}
+                    inherited={
+                      settings.books?.reset ? new Map() : inheritedBooks
+                    }
+                    reset={settings.books?.reset ?? false}
+                    excludedIds={Object.entries(
+                      settings.books?.decisions ?? {}
+                    ).flatMap(([id, decision]) =>
+                      decision === "exclude" ? [id] : []
+                    )}
+                    entryDecisions={settings.books?.entries ?? {}}
                     onChange={(nextBooks) =>
                       patchSettings((current) => ({
                         ...current,
-                        contextBooks: nextBooks,
+                        books: {
+                          reset: current.books?.reset ?? false,
+                          decisions: {
+                            ...Object.fromEntries(
+                              Object.entries(
+                                current.books?.decisions ?? {}
+                              ).filter(([, decision]) => decision === "exclude")
+                            ),
+                            ...Object.fromEntries(
+                              nextBooks.map((id) => [id, "include" as const])
+                            ),
+                          },
+                          entries: current.books?.entries,
+                        },
                       }))
+                    }
+                    onExclude={(id, excluded) =>
+                      patchSettings((current) => {
+                        const decisions = {
+                          ...current.books?.decisions,
+                        }
+                        if (excluded) decisions[id] = "exclude"
+                        else delete decisions[id]
+                        return {
+                          ...current,
+                          books: {
+                            reset: current.books?.reset ?? false,
+                            decisions,
+                            entries: current.books?.entries,
+                          },
+                        }
+                      })
+                    }
+                    onReset={(reset) =>
+                      patchSettings((current) => ({
+                        ...current,
+                        books: {
+                          reset,
+                          decisions: current.books?.decisions ?? {},
+                          entries: current.books?.entries,
+                        },
+                      }))
+                    }
+                    onEntryChange={(entries) =>
+                      patchSettings((current) => ({
+                        ...current,
+                        books: {
+                          reset: current.books?.reset ?? false,
+                          decisions: current.books?.decisions ?? {},
+                          entries,
+                        },
+                      }))
+                    }
+                  />
+                </RevealItem>
+                <RevealItem
+                  key="rules"
+                  itemKey="rules"
+                  animate={animate}
+                  transition={transition}
+                >
+                  <SpaceRulesCard
+                    inherited={inheritedRules}
+                    local={settings.rules ?? []}
+                    unresolved={resolvedForSpace.unresolved.filter(
+                      (item) => item.source.spaceId === spaceId
+                    )}
+                    onChange={(rules) =>
+                      patchSettings((current) => ({ ...current, rules }))
                     }
                   />
                 </RevealItem>
@@ -476,15 +590,15 @@ export function SpaceView({
                   >
                     <DefinitionRow
                       title="Prompt stack"
-                      enabled={settings.promptStack.enabled}
+                      mode={settings.promptStack.mode}
                       canEnable={Boolean(settings.promptStack.value)}
-                      enableBlockedReason="Choose a prompt stack before locking"
-                      onEnabled={(enabled) =>
+                      enableBlockedReason="Choose a prompt stack before requiring"
+                      onMode={(mode) =>
                         patchSettings((current) => {
                           if (!current.promptStack) return current
                           return {
                             ...current,
-                            promptStack: { ...current.promptStack, enabled },
+                            promptStack: { ...current.promptStack, mode },
                           }
                         })
                       }
@@ -545,17 +659,17 @@ export function SpaceView({
                   >
                     <DefinitionRow
                       title="Model"
-                      enabled={settings.model.enabled}
+                      mode={settings.model.mode}
                       canEnable={spaceModelIdentityComplete(
                         settings.model.value
                       )}
-                      enableBlockedReason="Choose a provider and model before locking"
-                      onEnabled={(enabled) =>
+                      enableBlockedReason="Choose a provider and model before requiring"
+                      onMode={(mode) =>
                         patchSettings((current) => {
                           if (!current.model) return current
                           return {
                             ...current,
-                            model: { ...current.model, enabled },
+                            model: { ...current.model, mode },
                           }
                         })
                       }
@@ -600,13 +714,13 @@ export function SpaceView({
                   >
                     <DefinitionRow
                       title="Reasoning"
-                      enabled={settings.reasoning.enabled}
-                      onEnabled={(enabled) =>
+                      mode={settings.reasoning.mode}
+                      onMode={(mode) =>
                         patchSettings((current) => {
                           if (!current.reasoning) return current
                           return {
                             ...current,
-                            reasoning: { ...current.reasoning, enabled },
+                            reasoning: { ...current.reasoning, mode },
                           }
                         })
                       }
@@ -674,8 +788,8 @@ export function SpaceView({
                     >
                       <DefinitionRow
                         title={variableName}
-                        enabled={slot.enabled}
-                        onEnabled={(enabled) =>
+                        mode={slot.mode}
+                        onMode={(mode) =>
                           patchSettings((current) => {
                             const currentSlot =
                               current.variables?.[variableName]
@@ -684,7 +798,7 @@ export function SpaceView({
                               ...current,
                               variables: {
                                 ...current.variables,
-                                [variableName]: { ...currentSlot, enabled },
+                                [variableName]: { ...currentSlot, mode },
                               },
                             }
                           })
@@ -761,6 +875,29 @@ export function SpaceView({
                     </p>
                   </RevealItem>
                 ) : null}
+                {resolvedForSpace.decisions.length ||
+                resolvedForSpace.unresolved.length ? (
+                  <RevealItem
+                    key="policyTrace"
+                    itemKey="policyTrace"
+                    animate={animate}
+                    transition={transition}
+                  >
+                    <PolicyResolutionTrace
+                      books={contextBooks}
+                      rules={[
+                        ...inheritedRules,
+                        ...(settings.rules ?? []).flatMap((rule) =>
+                          rule.title
+                            ? [{ id: rule.id, title: rule.title }]
+                            : []
+                        ),
+                      ]}
+                      decisions={resolvedForSpace.decisions}
+                      unresolved={resolvedForSpace.unresolved}
+                    />
+                  </RevealItem>
+                ) : null}
               </AnimatePresence>
             </div>
           </section>
@@ -795,57 +932,412 @@ function RevealItem({
   )
 }
 
+const POLICY_ACTION_LABELS: Record<string, string> = {
+  default: "default",
+  require: "required",
+  release: "released",
+  include: "included",
+  exclude: "excluded",
+  reset: "cleared parent books",
+  disable: "disabled",
+  restore: "restored",
+  define: "added",
+  replace: "replaced",
+}
+
+function decisionLabel(
+  decision: SpaceResolutionDecision,
+  books: Array<{
+    id: string
+    name: string
+    book?: { entries: Array<{ id: string; title: string }> }
+  }>,
+  ruleTitles: Map<string, string>
+) {
+  if (decision.kind === "setting") {
+    const name = decision.key.startsWith("variable:")
+      ? decision.key.slice("variable:".length)
+      : (SETTING_SLOT_LABELS[decision.key] ?? decision.key)
+    return `${name} · ${POLICY_ACTION_LABELS[decision.action] ?? decision.action}`
+  }
+  if (decision.kind === "book") {
+    if (decision.key === "*") return "Ignore parent books"
+    const name =
+      books.find((book) => book.id === decision.key)?.name ?? "Missing book"
+    return `${name} · ${POLICY_ACTION_LABELS[decision.action] ?? decision.action}`
+  }
+  if (decision.kind === "entry") {
+    const [bookId, entryId] = decision.key.split(":")
+    const book = books.find((item) => item.id === bookId)
+    const title =
+      book?.book?.entries.find((entry) => entry.id === entryId)?.title ??
+      "Entry"
+    return `${title} · ${POLICY_ACTION_LABELS[decision.action] ?? decision.action}`
+  }
+  const title = ruleTitles.get(decision.key) ?? "Rule"
+  return `${title} · ${POLICY_ACTION_LABELS[decision.action] ?? decision.action}`
+}
+
+function PolicyResolutionTrace({
+  books,
+  rules,
+  decisions,
+  unresolved,
+}: {
+  books: Array<{
+    id: string
+    name: string
+    book?: { entries: Array<{ id: string; title: string }> }
+  }>
+  rules: Array<{ id: string; title: string }>
+  decisions: SpaceResolutionDecision[]
+  unresolved: SpaceUnresolvedReference[]
+}) {
+  const ruleTitles = useMemo(
+    () => new Map(rules.map((rule) => [rule.id, rule.title])),
+    [rules]
+  )
+  if (!decisions.length && !unresolved.length) return null
+  return (
+    <Collapsible className="group/applied space-y-1 px-1">
+      <CollapsibleTrigger className="flex w-full items-center justify-between rounded-md text-left text-xs font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50">
+        Applied here
+        <HugeiconsIcon
+          icon={ArrowDown01Icon}
+          className="size-3.5 shrink-0 transition-transform group-data-open/applied:rotate-180"
+        />
+      </CollapsibleTrigger>
+      <CollapsibleContent>
+        <p className="mb-2 text-[11px] text-muted-foreground">
+          From the root space toward this one. Later values win.
+        </p>
+        <ol className="grid gap-1">
+          {decisions.map((decision, index) => (
+            <li
+              key={`${decision.source.spaceId}:${decision.kind}:${decision.key}:${index}`}
+              className="flex flex-wrap items-baseline justify-between gap-x-3 rounded-lg px-2.5 py-1.5 text-xs hover:bg-muted/60"
+            >
+              <span className="font-medium">
+                {decisionLabel(decision, books, ruleTitles)}
+              </span>
+              <span className="text-muted-foreground">
+                {decision.source.spaceName}
+              </span>
+            </li>
+          ))}
+        </ol>
+        {unresolved.length ? (
+          <p className="mt-2 text-xs text-destructive">
+            {unresolved.length === 1
+              ? "1 rule points at a parent that is no longer there."
+              : `${unresolved.length} rules point at parents that are no longer there.`}
+          </p>
+        ) : null}
+      </CollapsibleContent>
+    </Collapsible>
+  )
+}
+
+function RuleDraftFields({
+  title,
+  content,
+  titleLabel,
+  contentLabel,
+  onCommit,
+}: {
+  title: string
+  content: string
+  titleLabel: string
+  contentLabel: string
+  onCommit: (next: { title: string; content: string }) => void
+}) {
+  const [titleText, setTitleText] = useState(title)
+  const [contentText, setContentText] = useState(content)
+  useEffect(() => {
+    setTitleText(title)
+  }, [title])
+  useEffect(() => {
+    setContentText(content)
+  }, [content])
+
+  function commit() {
+    if (titleText === title && contentText === content) return
+    onCommit({ title: titleText, content: contentText })
+  }
+
+  return (
+    <div className="grid gap-2">
+      <Input
+        value={titleText}
+        aria-label={titleLabel}
+        onChange={(event) => setTitleText(event.target.value)}
+        onBlur={commit}
+      />
+      <Textarea
+        rows={4}
+        value={contentText}
+        aria-label={contentLabel}
+        onChange={(event) => setContentText(event.target.value)}
+        onBlur={commit}
+      />
+    </div>
+  )
+}
+
+function SpaceRulesCard({
+  inherited,
+  local,
+  unresolved,
+  onChange,
+}: {
+  inherited: Array<{
+    id: string
+    title: string
+    content: string
+    source: { spaceName: string }
+  }>
+  local: SpaceRule[]
+  unresolved: Array<{ id: string; operation: string }>
+  onChange: (rules: SpaceRule[]) => void
+}) {
+  const inheritedIds = new Set(inherited.map((rule) => rule.id))
+
+  function update(index: number, patch: Partial<SpaceRule>) {
+    onChange(
+      local.map((rule, i) => (i === index ? { ...rule, ...patch } : rule))
+    )
+  }
+
+  function exceptionFor(id: string) {
+    return local.findIndex((rule) => rule.id === id)
+  }
+
+  function setException(rule: SpaceRule, index: number) {
+    if (index >= 0) update(index, rule)
+    else onChange([...local, rule])
+  }
+
+  return (
+    <div className="grid gap-3 rounded-2xl border bg-background/40 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">Rules</p>
+          <p className="text-[11px] text-muted-foreground">
+            Instructions for chats here. Child spaces inherit them unless you
+            replace or disable one.
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() =>
+            onChange([
+              ...local,
+              {
+                id: crypto.randomUUID(),
+                operation: "define",
+                title: "New rule",
+                content: "",
+              },
+            ])
+          }
+        >
+          <HugeiconsIcon icon={Add01Icon} className="size-4" />
+          Add rule
+        </Button>
+      </div>
+      {unresolved.length ? (
+        <div className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {unresolved.map((item) => (
+            <p key={`${item.id}:${item.operation}`}>
+              {item.operation} targets a rule that is no longer inherited
+            </p>
+          ))}
+        </div>
+      ) : null}
+
+      {inherited.map((rule) => {
+        const index = exceptionFor(rule.id)
+        const exception = index >= 0 ? local[index] : undefined
+        const replacing = exception?.operation === "replace"
+        return (
+          <div
+            key={rule.id}
+            className={cn(
+              "grid gap-2 rounded-xl border p-3",
+              exception?.operation === "disable" && "border-dashed opacity-80"
+            )}
+          >
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">
+                  {replacing ? (exception.title ?? rule.title) : rule.title}
+                </p>
+                <p className="text-[11px] text-muted-foreground">
+                  From {rule.source.spaceName}
+                  {exception
+                    ? ` · ${POLICY_ACTION_LABELS[exception.operation] ?? exception.operation} here`
+                    : ""}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-pressed={replacing}
+                  onClick={() =>
+                    setException(
+                      {
+                        id: rule.id,
+                        operation: "replace",
+                        title: exception?.title ?? rule.title,
+                        content: exception?.content ?? rule.content,
+                      },
+                      index
+                    )
+                  }
+                >
+                  Replace
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-pressed={
+                    exception?.operation === "disable" ||
+                    exception?.operation === "restore"
+                  }
+                  onClick={() =>
+                    setException(
+                      {
+                        id: rule.id,
+                        operation:
+                          exception?.operation === "disable"
+                            ? "restore"
+                            : "disable",
+                      },
+                      index
+                    )
+                  }
+                >
+                  {exception?.operation === "disable" ? "Restore" : "Disable"}
+                </Button>
+                {exception ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    className="text-muted-foreground hover:text-destructive"
+                    aria-label={`Remove local exception for ${rule.title}`}
+                    onClick={() =>
+                      onChange(local.filter((_, i) => i !== index))
+                    }
+                  >
+                    <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+            {replacing ? (
+              <RuleDraftFields
+                title={exception.title ?? rule.title}
+                content={exception.content ?? rule.content}
+                titleLabel="Rule title"
+                contentLabel={`${exception.title ?? rule.title} content`}
+                onCommit={(next) => update(index, next)}
+              />
+            ) : (
+              <p className="line-clamp-3 text-xs text-muted-foreground">
+                {rule.content.trim() || "Empty rule"}
+              </p>
+            )}
+          </div>
+        )
+      })}
+
+      {local.map((rule, index) => {
+        if (rule.operation === "disable" || rule.operation === "restore")
+          return null
+        if (rule.operation === "replace" && inheritedIds.has(rule.id))
+          return null
+        return (
+          <div
+            key={`${rule.id}-${index}`}
+            className="grid gap-2 rounded-xl border p-3"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <p className="pt-1 text-[11px] text-muted-foreground">
+                Added here
+              </p>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                className="text-muted-foreground hover:text-destructive"
+                aria-label="Remove rule"
+                onClick={() => onChange(local.filter((_, i) => i !== index))}
+              >
+                <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+              </Button>
+            </div>
+            <RuleDraftFields
+              title={rule.title ?? ""}
+              content={rule.content ?? ""}
+              titleLabel="Rule title"
+              contentLabel={`${rule.title ?? "Rule"} content`}
+              onCommit={(next) => update(index, next)}
+            />
+          </div>
+        )
+      })}
+
+      {!inherited.length && !local.length ? (
+        <p className="text-sm text-muted-foreground">None yet.</p>
+      ) : null}
+    </div>
+  )
+}
+
 function DefinitionRow({
   title,
-  enabled,
+  mode,
   canEnable = true,
   enableBlockedReason,
-  onEnabled,
+  onMode,
   onRemove,
   children,
 }: {
   title: string
-  enabled: boolean
+  mode: SpacePolicyMode
   canEnable?: boolean
   enableBlockedReason?: string
-  onEnabled: (enabled: boolean) => void
+  onMode: (mode: SpacePolicyMode) => void
   onRemove: () => void
   children: ReactNode
 }) {
   return (
     <div
       className={cn(
-        "grid gap-3 rounded-2xl border p-3",
-        enabled ? "bg-background/40" : "border-dashed opacity-80"
+        "grid gap-3 rounded-2xl border bg-background/40 p-3",
+        mode === "release" && "border-dashed opacity-80"
       )}
     >
       <div className="flex min-w-0 items-center gap-2">
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          aria-pressed={enabled}
-          aria-label={
-            enabled ? `Stop applying ${title}` : `Apply ${title} to chats`
-          }
-          onClick={() => {
-            if (!enabled && !canEnable) {
-              toast.error(enableBlockedReason ?? "Set a value before locking")
-              return
-            }
-            onEnabled(!enabled)
-          }}
-        >
-          <HugeiconsIcon
-            icon={enabled ? SquareLock01Icon : SquareUnlock01Icon}
-            strokeWidth={2}
-            className="size-4"
-          />
-        </Button>
+        <HugeiconsIcon
+          icon={mode === "require" ? SquareLock01Icon : SquareUnlock01Icon}
+          strokeWidth={2}
+          className="ms-2 size-4 shrink-0 text-muted-foreground"
+        />
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium">{title}</p>
           <p className="text-[11px] text-muted-foreground">
-            {enabled ? "Locked for chats here" : "Saved, not applying"}
+            {mode === "require"
+              ? "Required for chats here"
+              : mode === "default"
+                ? "Default; chats may override it"
+                : "Stops applying the parent value here"}
           </p>
         </div>
         <Button
@@ -858,6 +1350,28 @@ function DefinitionRow({
         >
           <HugeiconsIcon icon={Delete02Icon} className="size-4" />
         </Button>
+      </div>
+      <div role="group" aria-label={`${title} policy`} className="ms-10">
+        <ToggleGroup
+          value={[mode]}
+          onValueChange={(value) => {
+            const next = value[0]
+            if (next !== "default" && next !== "require" && next !== "release")
+              return
+            if (next !== "release" && !canEnable) {
+              toast.error(enableBlockedReason ?? "Set a value before applying")
+              return
+            }
+            onMode(next)
+          }}
+          variant="outline"
+          size="sm"
+          spacing={0}
+        >
+          <ToggleGroupItem value="default">Default</ToggleGroupItem>
+          <ToggleGroupItem value="require">Require</ToggleGroupItem>
+          <ToggleGroupItem value="release">Release</ToggleGroupItem>
+        </ToggleGroup>
       </div>
       <div className="min-w-0 ps-10">{children}</div>
     </div>
@@ -890,10 +1404,10 @@ function SamplingDefinition({
   return (
     <DefinitionRow
       title={SETTING_SLOT_LABELS[field] ?? field}
-      enabled={slot.enabled}
+      mode={slot.mode}
       canEnable={canEnable}
-      enableBlockedReason="Max output must be greater than 0 before locking"
-      onEnabled={(enabled) => patchSlot({ enabled })}
+      enableBlockedReason="Max output must be greater than 0 before requiring"
+      onMode={(mode) => patchSlot({ mode })}
       onRemove={() => {
         onChange((current) => {
           const next = { ...current }

@@ -66,6 +66,11 @@ import {
   useUserStorageValue,
 } from "./hooks"
 import { SidebarNav } from "./sidebar-nav"
+import {
+  parseSpaceSettings,
+  SETTING_SLOT_LABELS,
+  spacePolicyImpact,
+} from "@/lib/space"
 
 type ChromeContextValue = {
   appearance: Appearance
@@ -269,6 +274,21 @@ export function WorkspaceShell({
     () => new Map(spaces.map((space) => [space.id, space])),
     [spaces]
   )
+  const deleteSpaceImpact = useMemo(() => {
+    if (!spaceIdToDelete) return null
+    const target = spaceById.get(spaceIdToDelete)
+    if (!target) return null
+    const settings = parseSpaceSettings(target.settings_json)
+    const policies = spacePolicyImpact(settings)
+    return {
+      chats: chats.filter((chat) => chat.space_id === target.id).length,
+      children: spaces.filter((space) => space.parent_id === target.id).length,
+      settings: policies.settings.map((key) => SETTING_SLOT_LABELS[key] ?? key),
+      variables: policies.variables,
+      books: policies.books,
+      rules: policies.rules,
+    }
+  }, [chats, spaceById, spaceIdToDelete, spaces])
   const results = searchQuery.data ?? []
   const providers = providersQuery.data ?? initialProviders
   const onSettings = pathname.startsWith("/settings")
@@ -748,6 +768,9 @@ export function WorkspaceShell({
               <AlertDialogDescription>
                 Chats and nested spaces move to the parent (or ungrouped). Chats
                 are not deleted.
+                {deleteSpaceImpact ? (
+                  <DeleteSpaceImpactText impact={deleteSpaceImpact} />
+                ) : null}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
@@ -769,5 +792,48 @@ export function WorkspaceShell({
       </div>
       <AppearanceMagicChrome />
     </ChromeContext.Provider>
+  )
+}
+
+function countLabel(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`
+}
+
+function listAnd(items: string[]) {
+  if (items.length <= 1) return items[0] ?? ""
+  if (items.length === 2) return `${items[0]} and ${items[1]}`
+  return `${items.slice(0, -1).join(", ")}, and ${items.at(-1)}`
+}
+
+function DeleteSpaceImpactText({
+  impact,
+}: {
+  impact: {
+    chats: number
+    children: number
+    settings: string[]
+    variables: number
+    books: number
+    rules: number
+  }
+}) {
+  const moving = [
+    impact.chats ? countLabel(impact.chats, "chat") : null,
+    impact.children ? countLabel(impact.children, "nested space") : null,
+  ].filter((item): item is string => Boolean(item))
+  const stopping = [
+    ...impact.settings,
+    impact.variables ? countLabel(impact.variables, "variable policy") : null,
+    impact.books ? countLabel(impact.books, "book policy") : null,
+    impact.rules ? countLabel(impact.rules, "rule") : null,
+  ].filter((item): item is string => Boolean(item))
+  if (!moving.length && !stopping.length) return null
+  return (
+    <span className="mt-2 block">
+      {moving.length ? `${listAnd(moving)} will move. ` : null}
+      {stopping.length
+        ? `${listAnd(stopping)} will stop applying below this space.`
+        : null}
+    </span>
   )
 }

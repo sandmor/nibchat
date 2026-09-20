@@ -48,7 +48,15 @@ test.describe("spaces", () => {
     await expect(temperature).toBeVisible()
     await temperature.fill("0.15")
     await temperature.blur()
-    await page.getByRole("button", { name: "Apply Temperature to chats" }).click()
+    await page
+      .getByRole("group", { name: "Temperature policy" })
+      .getByRole("button", { name: "Require" })
+      .click()
+
+    await page.getByRole("button", { name: "Add rule" }).click()
+    await page.getByLabel("New rule content").fill("PARENT_BRANCH_RULE")
+    await page.getByLabel("Rule title").fill("Tone")
+    await page.getByLabel("Rule title").blur()
 
     await page.getByRole("button", { name: "New chat", exact: true }).click()
     await expect(page).toHaveURL(/\/chat\/new\?space=/, { timeout: 15_000 })
@@ -70,11 +78,13 @@ test.describe("spaces", () => {
       .filter((body) => body.stream === true)
       .at(-1)
     expect(streamed?.temperature).toBe(0.15)
+    expect(JSON.stringify(streamed)).toContain("PARENT_BRANCH_RULE")
 
     await page.getByRole("link", { name: spaceName, exact: true }).click()
     await expect(page).toHaveURL(/\/space\//)
     await page
-      .getByRole("button", { name: "Stop applying Temperature" })
+      .getByRole("group", { name: "Temperature policy" })
+      .getByRole("button", { name: "Release" })
       .click()
 
     await page.getByRole("button", { name: "New chat", exact: true }).click()
@@ -88,10 +98,19 @@ test.describe("spaces", () => {
     await page.getByRole("link", { name: spaceName, exact: true }).click()
     await page.getByRole("button", { name: "New subspace" }).click()
     await expect(page.getByLabel("Space name")).toHaveValue("New space")
+    await page.getByRole("button", { name: "Replace", exact: true }).click()
+    await page.getByLabel("Tone content").fill("CHILD_BRANCH_RULE")
+    await page.getByLabel("Tone content").blur()
     await page.getByRole("button", { name: "New chat", exact: true }).click()
     llm.enqueue({ text: "CHILD_CHAT_REPLY" })
     await sendMessage(page, "child space chat")
     await expectAssistantText(page, "CHILD_CHAT_REPLY")
+    const childRequest = llm
+      .requestBodies()
+      .filter((body) => body.stream === true)
+      .at(-1)
+    expect(JSON.stringify(childRequest)).toContain("CHILD_BRANCH_RULE")
+    expect(JSON.stringify(childRequest)).not.toContain("PARENT_BRANCH_RULE")
     await expect(page).toHaveURL(/\/chat\/(?!new)/)
 
     await page.getByRole("button", { name: "Spaces", exact: true }).click()

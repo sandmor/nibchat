@@ -137,6 +137,8 @@ export interface ChatsTable {
   prompt_stack_id: string | null
   /** Explicit prompt-stack variable overrides for this conversation. */
   variables_json: string
+  /** Explicit chat choices used to distinguish space defaults from baselines. */
+  space_overrides_json: string
   /** Innermost space; null = ungrouped. */
   space_id: string | null
   created_at: string

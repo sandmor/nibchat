@@ -157,7 +157,7 @@ describe("database import adapter", () => {
       label: "Ada",
       settings: {
         variables: {
-          character_name: { enabled: true, value: "Ada" },
+          character_name: { mode: "require", value: "Ada" },
         },
       },
     })

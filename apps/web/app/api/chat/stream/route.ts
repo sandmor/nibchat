@@ -43,6 +43,7 @@ import { resolveConversationAttachments } from "@/lib/conversation-attachments"
 import { assertPdfFallbackAvailable } from "@/lib/pdf-input"
 import { streamBodySchema } from "@/lib/stream-body"
 import { firstTurnTitleAction } from "@/lib/chat-title"
+import { formatSpaceRules } from "@/lib/space"
 import type { NodeRow, Parts } from "@/lib/types"
 
 export const runtime = "nodejs"
@@ -369,6 +370,7 @@ export async function POST(request: Request) {
                 : undefined,
             promptStack: resolved.stack,
             variableOverrides: settings.effective.variables,
+            spaceRulesText: formatSpaceRules(settings.effective.rules),
             timeZone: body.timeZone,
             requestSignal: request.signal,
             allNodes,
@@ -417,6 +419,7 @@ export async function POST(request: Request) {
             : undefined,
         promptStack: resolved.stack,
         variableOverrides: settings.effective.variables,
+        spaceRulesText: formatSpaceRules(settings.effective.rules),
         timeZone: body.timeZone,
         requestSignal: request.signal,
         allNodes,

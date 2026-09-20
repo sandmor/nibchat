@@ -73,6 +73,7 @@ type ContextPreviewGraph = {
   modelConfig: PreviewModelConfig
   providers: ReadonlyArray<PreviewProviderKind>
   contextBooks?: ContextBookSource[]
+  spaceRulesText?: string
 }
 
 const ContextPreviewGraphContext = createContext<ContextPreviewGraph | null>(
@@ -89,6 +90,7 @@ export function ContextPreviewProvider({
   modelConfig,
   providers,
   contextBooks,
+  spaceRulesText,
   children,
 }: ContextPreviewGraph & { children: ReactNode }) {
   const providerId = modelConfig.providerId
@@ -111,6 +113,7 @@ export function ContextPreviewProvider({
       modelConfig: { providerId, model, replayReasoning, contextScanDepth },
       providers,
       contextBooks,
+      spaceRulesText,
     }),
     [
       nodes,
@@ -126,6 +129,7 @@ export function ContextPreviewProvider({
       contextScanDepth,
       providers,
       contextBooks,
+      spaceRulesText,
     ]
   )
   return (
@@ -193,6 +197,7 @@ function useAssembledContextPreview(
       chat: graph.chat,
       variableOverrides: graph.variableOverrides,
       contextBooks: graph.contextBooks,
+      spaceRulesText: graph.spaceRulesText,
       contextScanDepth: graph.modelConfig.contextScanDepth,
       draftText,
     })

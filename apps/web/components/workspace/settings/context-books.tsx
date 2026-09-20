@@ -1,6 +1,6 @@
 "use client"
 
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { HugeiconsIcon } from "@hugeicons/react"
@@ -44,6 +44,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
 import {
   createContextBookEntry,
+  contextBookToJson,
   defaultContextBook,
   readContextBook,
   resolveContextEntries,
@@ -122,6 +123,58 @@ function lines(value: string) {
     .filter(Boolean)
 }
 
+function sameBook(left: ContextBookDocument, right: ContextBookDocument) {
+  try {
+    return contextBookToJson(left) === contextBookToJson(right)
+  } catch {
+    return false
+  }
+}
+
+function TriggerListField({
+  label,
+  value,
+  placeholder,
+  onCommit,
+}: {
+  label: string
+  value: string[]
+  placeholder: string
+  onCommit: (value: string[]) => void
+}) {
+  const committed = value.join("\n")
+  const [text, setText] = useState(committed)
+  useEffect(() => {
+    setText(committed)
+  }, [committed])
+
+  function emit(nextText: string, normalize: boolean) {
+    const next = lines(nextText)
+    const normalized = next.join("\n")
+    if (normalize) setText(normalized)
+    if (normalized === committed) return
+    onCommit(next)
+  }
+
+  return (
+    <div className="space-y-1">
+      <Label>{label}</Label>
+      <Textarea
+        rows={4}
+        value={text}
+        placeholder={placeholder}
+        onChange={(event) => {
+          const nextText = event.target.value
+          setText(nextText)
+          emit(nextText, false)
+        }}
+        onBlur={() => emit(text, true)}
+        className="field-sizing-fixed min-h-24"
+      />
+    </div>
+  )
+}
+
 export function ContextBookSettings() {
   const trpc = useTRPC()
   const queryClient = useQueryClient()
@@ -145,8 +198,7 @@ export function ContextBookSettings() {
   const dirty = Boolean(
     selected &&
     active &&
-    (active.name !== selected.name ||
-      JSON.stringify(active.book) !== JSON.stringify(selected.book))
+    (active.name !== selected.name || !sameBook(active.book, selected.book))
   )
 
   const refresh = async () => {
@@ -156,32 +208,43 @@ export function ContextBookSettings() {
     ])
   }
 
-  function ensureDraft(base = selected): Draft | null {
-    if (!base) return null
-    if (draft?.id === base.id) return draft
-    const next = {
-      id: base.id,
-      name: base.name,
-      book: structuredClone(base.book),
-    }
-    setDraft(next)
-    return next
+  function withDraft(recipe: (current: Draft) => Draft) {
+    const selectedBook = selected
+    setDraft((current) => {
+      const base =
+        current?.id === selectedBook?.id
+          ? current
+          : selectedBook
+            ? {
+                id: selectedBook.id,
+                name: selectedBook.name,
+                book: structuredClone(selectedBook.book),
+              }
+            : null
+      if (!base) return current
+      return recipe(base)
+    })
   }
 
   function patchBook(patch: Partial<ContextBookDocument>) {
-    const current = ensureDraft()
-    if (!current) return
-    setDraft({ ...current, book: { ...current.book, ...patch } })
+    withDraft((current) => ({
+      ...current,
+      book: { ...current.book, ...patch },
+    }))
   }
 
-  function patchEntry(index: number, patch: Partial<ContextBookEntry>) {
-    const current = ensureDraft()
-    if (!current) return
-    patchBook({
-      entries: current.book.entries.map((entry, i) =>
-        i === index ? ({ ...entry, ...patch } as ContextBookEntry) : entry
-      ),
-    })
+  function patchEntry(entryId: string, patch: Partial<ContextBookEntry>) {
+    withDraft((current) => ({
+      ...current,
+      book: {
+        ...current.book,
+        entries: current.book.entries.map((entry) =>
+          entry.id === entryId
+            ? ({ ...entry, ...patch } as ContextBookEntry)
+            : entry
+        ),
+      },
+    }))
   }
 
   const create = useMutation(
@@ -198,8 +261,8 @@ export function ContextBookSettings() {
   const update = useMutation(
     trpc.workspace.updateContextBook.mutationOptions({
       onSuccess: async () => {
-        setDraft(null)
         await refresh()
+        setDraft(null)
         toast.success("Context book saved")
       },
       onError: (error) => toast.error(error.message),
@@ -409,9 +472,8 @@ export function ContextBookSettings() {
                   id="context-book-name"
                   value={name}
                   onChange={(event) => {
-                    const current = ensureDraft()
-                    if (current)
-                      setDraft({ ...current, name: event.target.value })
+                    const nextName = event.target.value
+                    withDraft((current) => ({ ...current, name: nextName }))
                   }}
                 />
               </div>
@@ -426,7 +488,7 @@ export function ContextBookSettings() {
                   onChange={(event) =>
                     patchBook({
                       tokenBudget: event.target.value
-                        ? Number(event.target.value)
+                        ? Number(event.target.value) || null
                         : null,
                     })
                   }
@@ -504,7 +566,13 @@ export function ContextBookSettings() {
                   variant="secondary"
                   onClick={() => {
                     const entry = createContextBookEntry()
-                    patchBook({ entries: [...book.entries, entry] })
+                    withDraft((current) => ({
+                      ...current,
+                      book: {
+                        ...current.book,
+                        entries: [...current.book.entries, entry],
+                      },
+                    }))
                     setOpenEntryId(entry.id)
                   }}
                 >
@@ -513,7 +581,7 @@ export function ContextBookSettings() {
               </div>
               {book.entries.length ? (
                 <ul className="space-y-2">
-                  {book.entries.map((entry, index) => (
+                  {book.entries.map((entry) => (
                     <li key={entry.id}>
                       <EntryEditor
                         entry={entry}
@@ -522,13 +590,17 @@ export function ContextBookSettings() {
                           setOpenEntryId(open ? entry.id : null)
                         }
                         decision={testByEntry.get(entry.id)}
-                        onChange={(patch) => patchEntry(index, patch)}
+                        onChange={(patch) => patchEntry(entry.id, patch)}
                         onRemove={() => {
-                          patchBook({
-                            entries: book.entries.filter(
-                              (_, item) => item !== index
-                            ),
-                          })
+                          withDraft((current) => ({
+                            ...current,
+                            book: {
+                              ...current.book,
+                              entries: current.book.entries.filter(
+                                (item) => item.id !== entry.id
+                              ),
+                            },
+                          }))
                           if (openEntryId === entry.id) setOpenEntryId(null)
                         }}
                       />
@@ -546,16 +618,25 @@ export function ContextBookSettings() {
             <Button
               type="button"
               disabled={!dirty || update.isPending}
-              onClick={() =>
-                selected &&
-                update.mutate({
-                  id: selected.id,
-                  name,
-                  book,
-                })
-              }
+              onClick={() => {
+                if (!selected) return
+                const nextName = name.trim() || selected.name
+                try {
+                  update.mutate({
+                    id: selected.id,
+                    name: nextName,
+                    book: readContextBook(book),
+                  })
+                } catch (error) {
+                  toast.error(
+                    error instanceof Error
+                      ? error.message
+                      : "Context book is invalid"
+                  )
+                }
+              }}
             >
-              Save book
+              {update.isPending ? "Saving…" : "Save book"}
             </Button>
           </div>
         ) : (
@@ -737,21 +818,15 @@ function EntryEditor({
             </div>
             {rule ? (
               <div className="space-y-3">
-                <div className="space-y-1">
-                  <Label>Primary triggers</Label>
-                  <Textarea
-                    value={rule.keywords.join("\n")}
-                    placeholder="One keyword or phrase per line"
-                    onChange={(event) =>
-                      onChange({
-                        activation: {
-                          ...rule,
-                          keywords: lines(event.target.value),
-                        },
-                      })
-                    }
-                  />
-                </div>
+                <TriggerListField
+                  key={`${entry.id}-primary`}
+                  label="Primary triggers"
+                  value={rule.keywords}
+                  placeholder="One keyword or phrase per line"
+                  onCommit={(keywords) =>
+                    onChange({ activation: { ...rule, keywords } })
+                  }
+                />
                 <div className="flex flex-wrap gap-4">
                   <label className="flex items-center gap-2 text-sm">
                     <Switch
@@ -796,21 +871,15 @@ function EntryEditor({
                   </CollapsibleTrigger>
                   <CollapsibleContent className="mt-3 space-y-3">
                     <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="space-y-1">
-                        <Label>Secondary triggers</Label>
-                        <Textarea
-                          value={rule.secondary.join("\n")}
-                          placeholder="Optional extra conditions"
-                          onChange={(event) =>
-                            onChange({
-                              activation: {
-                                ...rule,
-                                secondary: lines(event.target.value),
-                              },
-                            })
-                          }
-                        />
-                      </div>
+                      <TriggerListField
+                        key={`${entry.id}-secondary`}
+                        label="Secondary triggers"
+                        value={rule.secondary}
+                        placeholder="Optional extra conditions"
+                        onCommit={(secondary) =>
+                          onChange({ activation: { ...rule, secondary } })
+                        }
+                      />
                       <div className="space-y-1">
                         <Label>Secondary condition</Label>
                         <Select
@@ -932,13 +1001,12 @@ function EntryEditor({
                   catalogContext={catalogContext}
                   onInsert={(snippet) => {
                     const field = contentRef.current
-                    const start = field?.selectionStart ?? entry.content.length
+                    const current = field?.value ?? entry.content
+                    const start = field?.selectionStart ?? current.length
                     const end = field?.selectionEnd ?? start
                     onChange({
                       content:
-                        entry.content.slice(0, start) +
-                        snippet +
-                        entry.content.slice(end),
+                        current.slice(0, start) + snippet + current.slice(end),
                     })
                   }}
                 />

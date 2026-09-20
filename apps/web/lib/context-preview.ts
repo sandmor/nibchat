@@ -289,6 +289,7 @@ export type AssembleContextPreviewInput = {
   /** The selected model receives PDFs either as bytes or extracted text. */
   pdfInputMode?: "native" | "extracted"
   mcpServerInstructionsText?: string
+  spaceRulesText?: string
   /** Browser IANA time zone used for prompt macro expansion. */
   timeZone?: string
   /** Time represented by the preview. Defaults to the assembly time. */
@@ -384,6 +385,7 @@ export function assembleContextPreview(
     stack: resolved.stack,
     pathMessages,
     mcpServerInstructionsText: input.mcpServerInstructionsText,
+    spaceRulesText: input.spaceRulesText,
     macroContext: {
       ...macroContext,
       contextEntries: contextEntries.namespaces,

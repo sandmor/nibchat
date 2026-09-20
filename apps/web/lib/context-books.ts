@@ -59,6 +59,7 @@ export type ContextBookSource = ContextBook & {
   source: "space" | "chat"
   sourceName?: string
 }
+export type ContextEntryOverrides = Record<string, "disable" | "restore">
 export type ContextScanMessage = { role: "user" | "assistant"; text: string }
 export type ContextEntryDecision = {
   bookId: string
@@ -74,6 +75,28 @@ export type ContextEntryDecision = {
 export type ResolvedContextEntries = {
   namespaces: Record<string, string>
   decisions: ContextEntryDecision[]
+}
+
+/** Apply resolved space entry policies without mutating the stored book. */
+export function applyContextEntryOverrides<T extends ContextBook>(
+  contextBook: T,
+  overrides: ContextEntryOverrides | undefined
+): T {
+  if (!overrides) return contextBook
+  return {
+    ...contextBook,
+    book: {
+      ...contextBook.book,
+      entries: contextBook.book.entries.map((entry) => {
+        const override = overrides[entry.id]
+        if (!override) return entry
+        return {
+          ...entry,
+          enabled: override === "restore" ? entry.enabled : false,
+        }
+      }),
+    },
+  }
 }
 
 export function defaultContextBook(): ContextBookDocument {

@@ -37,7 +37,7 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create table if not exists spaces (id text primary key, user_id text not null references "user"(id) on delete cascade, parent_id text references spaces(id) on delete set null, sort_key ${sortKeyType} not null, name text not null, description text not null default '', metadata_json text not null default '{}', settings_json text not null default '{}', created_at text not null, updated_at text not null)`.execute(
     db
   )
-  await sql`create table if not exists chats (id text primary key, user_id text not null references "user"(id) on delete cascade, title text, selected_root_node_id text, model_config_json text not null, view_state_json text not null, prompt_stack_id text, variables_json text not null default '{}', space_id text references spaces(id) on delete set null, created_at text not null, updated_at text not null)`.execute(
+  await sql`create table if not exists chats (id text primary key, user_id text not null references "user"(id) on delete cascade, title text, selected_root_node_id text, model_config_json text not null, view_state_json text not null, prompt_stack_id text, variables_json text not null default '{}', space_overrides_json text not null default '{}', space_id text references spaces(id) on delete set null, created_at text not null, updated_at text not null)`.execute(
     db
   )
   await sql`create table if not exists chat_context_books (chat_id text not null references chats(id) on delete cascade, context_book_id text not null references context_books(id) on delete cascade, position integer not null, primary key(chat_id, context_book_id))`.execute(

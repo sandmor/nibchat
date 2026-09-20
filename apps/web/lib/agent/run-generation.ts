@@ -91,6 +91,8 @@ export type GenerationSetup = {
   promptStack: PromptStackDocument
   /** Space-resolved overrides; when omitted, the chat row is read. */
   variableOverrides?: Record<string, unknown>
+  /** Effective rules for the chat's space branch. */
+  spaceRulesText?: string
   /** Browser IANA time zone supplied for prompt macro expansion. */
   timeZone: string
   requestSignal: AbortSignal
@@ -135,6 +137,7 @@ export async function createGenerationResponse(
     rememberProtocol,
     promptStack,
     variableOverrides,
+    spaceRulesText,
     timeZone,
     requestSignal,
     allNodes,
@@ -338,6 +341,7 @@ export async function createGenerationResponse(
       pathMessages,
       mcpServerInstructionsText: mcp.instructionsText,
       macroContext: macroContextWithBooks,
+      spaceRulesText,
     })
 
     let orderedParts: Parts = [...seedParts]

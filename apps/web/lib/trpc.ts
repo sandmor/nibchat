@@ -87,7 +87,7 @@ import {
   MAX_NAME,
   MAX_UPLOAD_CHUNK_BYTES,
 } from "@/lib/limits"
-import { spaceSettingsSchema } from "@/lib/space"
+import { chatSpaceOverridesSchema, spaceSettingsSchema } from "@/lib/space"
 import {
   promptStackDocumentSchema,
   promptVariableValueSchema,
@@ -310,6 +310,7 @@ export const appRouter = t.router({
               .optional(),
             spaceId: z.string().nullable().optional(),
             contextBookIds: z.array(z.string()).max(MAX_COLLECTION).optional(),
+            explicit: chatSpaceOverridesSchema.optional(),
           })
           .optional()
       )
@@ -321,7 +322,8 @@ export const appRouter = t.router({
           input?.promptStackId,
           input?.variables,
           input?.spaceId,
-          input?.contextBookIds
+          input?.contextBookIds,
+          input?.explicit
         )
       ),
     getOrCreateImportSpace: userProcedure
@@ -368,7 +370,10 @@ export const appRouter = t.router({
               ? {
                   variables: Object.fromEntries(
                     Object.entries(input.entity.variables).map(
-                      ([name, value]) => [name, { enabled: true, value }]
+                      ([name, value]) => [
+                        name,
+                        { mode: "require" as const, value },
+                      ]
                     )
                   ),
                 }
@@ -1098,6 +1103,7 @@ export const appRouter = t.router({
           name: z.string().trim().min(1).max(MAX_NAME).optional(),
           description: z.string().max(MAX_DESCRIPTION).optional(),
           settings: spaceSettingsSchema.optional(),
+          expectedUpdatedAt: z.string().optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {

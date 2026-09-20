@@ -45,10 +45,13 @@ import {
 } from "@/lib/prompt-stack"
 import {
   bindVariableLocksToStack,
+  formatSpaceRules,
+  parseChatSpaceOverrides,
   resolveChatSettings,
   spaceChain,
   spaceFromRow,
   spacesById,
+  type ChatSpaceOverrides,
 } from "@/lib/space"
 import { SpacePicker } from "./space-picker"
 import {
@@ -152,6 +155,7 @@ import {
   isEmptyParts,
   messagePartsSchema,
 } from "@/lib/agent/parts"
+import { applyContextEntryOverrides } from "@/lib/context-books"
 
 type Props = {
   mode: "draft" | "chat"
@@ -224,6 +228,10 @@ export function ChatView({
     initial.defaultPromptStackId ?? null
   )
   const [draftVariables, setDraftVariables] = useState<PromptVariableValues>({})
+  const [draftExplicit, setDraftExplicit] = useState<ChatSpaceOverrides>({
+    model: [],
+    variables: [],
+  })
   const [draftContextBookIds, setDraftContextBookIds] = useState<string[]>([])
   const [draftSpaceId, setDraftSpaceId] = useState<string | null>(
     initialDraftSpaceId
@@ -604,6 +612,9 @@ export function ChatView({
           variables: storedVariables,
           model: storedModelConfig,
           contextBookIds: chatContextBookIds,
+          explicit: data.chat
+            ? parseChatSpaceOverrides(data.chat.space_overrides_json)
+            : draftExplicit,
         },
         spaces: (data.spaces ?? []).map(spaceFromRow),
       }),
@@ -614,6 +625,8 @@ export function ChatView({
       storedModelConfig,
       chatContextBookIds,
       data.spaces,
+      data.chat,
+      draftExplicit,
     ]
   )
   const activeModelConfig = resolvedSettings.effective.model
@@ -640,23 +653,31 @@ export function ChatView({
       spaceChain(
         spaceId,
         spacesById((data.spaces ?? []).map(spaceFromRow))
-      ).flatMap((space) => space.settings.contextBooks ?? [])
+      ).flatMap((space) =>
+        Object.entries(space.settings.books?.decisions ?? {}).flatMap(
+          ([id, decision]) => (decision === "include" ? [id] : [])
+        )
+      )
     )
     return resolvedSettings.effective.contextBookIds.flatMap((id) => {
       const book = books.find((item) => item.id === id)
       return book
         ? [
-            {
-              ...book,
-              source: spaceBookIds.has(id)
-                ? ("space" as const)
-                : ("chat" as const),
-            },
+            applyContextEntryOverrides(
+              {
+                ...book,
+                source: spaceBookIds.has(id)
+                  ? ("space" as const)
+                  : ("chat" as const),
+              },
+              resolvedSettings.effective.contextEntryDecisions[id]
+            ),
           ]
         : []
     })
   }, [
     data.spaces,
+    resolvedSettings.effective.contextEntryDecisions,
     resolvedSettings.effective.contextBookIds,
     settingsQuery.data?.contextBooks,
     spaceId,
@@ -1115,11 +1136,12 @@ export function ChatView({
       ownsCreate = true
       createChatLock.current = createChatMutation
         .mutateAsync({
-          config: modelConfig,
+          config: draftModelConfig,
           promptStackId: draftPromptStackId,
           variables: draftVariables,
           spaceId: draftSpaceId,
           contextBookIds: draftContextBookIds,
+          explicit: draftExplicit,
         })
         .then((chat) => {
           // Track the new id before replace so stream UI still matches on /chat/new.
@@ -1688,6 +1710,10 @@ export function ChatView({
       return
     }
     setDraftModelConfig(next)
+    setDraftExplicit((current) => ({
+      ...current,
+      model: Object.keys(next),
+    }))
   }
 
   function assignDraftSpace(next: string | null) {
@@ -1803,6 +1829,7 @@ export function ChatView({
       modelConfig={previewModelConfig}
       providers={providers}
       contextBooks={previewContextBooks}
+      spaceRulesText={formatSpaceRules(resolvedSettings.effective.rules)}
     >
       <section
         ref={paneRef}
@@ -1863,7 +1890,13 @@ export function ChatView({
                 chatId={data.chat?.id}
                 promptStackId={effectivePromptStackId}
                 draftStackId={effectivePromptStackId}
-                onDraftChange={setDraftPromptStackId}
+                onDraftChange={(value) => {
+                  setDraftPromptStackId(value)
+                  setDraftExplicit((current) => ({
+                    ...current,
+                    promptStack: true,
+                  }))
+                }}
                 onChanged={invalidateWorkspace}
                 lockedBy={settingLocks.promptStack}
               />
@@ -1884,7 +1917,13 @@ export function ChatView({
                 draftValues={
                   resolvedSettings.effective.variables as PromptVariableValues
                 }
-                onDraftChange={setDraftVariables}
+                onDraftChange={(values) => {
+                  setDraftVariables(values)
+                  setDraftExplicit((current) => ({
+                    ...current,
+                    variables: Object.keys(values),
+                  }))
+                }}
                 onChanged={invalidateWorkspace}
                 lockedVariables={settingLocks.variables}
               />
@@ -1967,7 +2006,13 @@ export function ChatView({
           chatId={data.chat?.id}
           promptStackId={effectivePromptStackId}
           draftStackId={effectivePromptStackId}
-          onDraftChange={setDraftPromptStackId}
+          onDraftChange={(value) => {
+            setDraftPromptStackId(value)
+            setDraftExplicit((current) => ({
+              ...current,
+              promptStack: true,
+            }))
+          }}
           onChanged={invalidateWorkspace}
           lockedBy={settingLocks.promptStack}
         />
@@ -1992,7 +2037,13 @@ export function ChatView({
           draftValues={
             resolvedSettings.effective.variables as PromptVariableValues
           }
-          onDraftChange={setDraftVariables}
+          onDraftChange={(values) => {
+            setDraftVariables(values)
+            setDraftExplicit((current) => ({
+              ...current,
+              variables: Object.keys(values),
+            }))
+          }}
           onChanged={invalidateWorkspace}
           lockedVariables={settingLocks.variables}
         />

@@ -2241,9 +2241,7 @@ describe("prompt stacks", () => {
       .select("prompt_stack_id")
       .where("id", "=", chat.id)
       .executeTakeFirstOrThrow()
-    expect(afterClear.prompt_stack_id).toBe(
-      (await getUserSettings(userId)).default_prompt_stack_id
-    )
+    expect(afterClear.prompt_stack_id).toBeNull()
 
     await setChatPromptStack(userId, chat.id, stack.id)
     await deletePromptStack(userId, stack.id)
@@ -2697,7 +2695,7 @@ describe("spaces", () => {
       userId,
       name: "Locked stack",
       settings: {
-        promptStack: { enabled: true, value: stackId },
+        promptStack: { mode: "require", value: stackId },
       },
     })
     const chat = await createChat(
@@ -2724,8 +2722,8 @@ describe("spaces", () => {
       userId,
       name: "Locked",
       settings: {
-        promptStack: { enabled: true, value: stackId },
-        temperature: { enabled: true, value: 0.15 },
+        promptStack: { mode: "require", value: stackId },
+        temperature: { mode: "require", value: 0.15 },
       },
     })
     const chat = await createChat(

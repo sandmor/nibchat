@@ -16,8 +16,10 @@ import {
 export const DEFAULT_PROMPT_STACK_ID = "default"
 export const DEFAULT_HISTORY_MODULE_ID = "chat-history"
 export const DEFAULT_MCP_INSTRUCTIONS_MODULE_ID = "mcp-instructions"
+export const DEFAULT_SPACE_RULES_MODULE_ID = "space-rules"
 export const HISTORY_MODULE_NAME = "Chat history" as const
 export const MCP_INSTRUCTIONS_MODULE_NAME = "MCP server instructions" as const
+export const SPACE_RULES_MODULE_NAME = "Space rules" as const
 
 const SYSTEM_AFTER_NON_SYSTEM_MSG =
   "System after chat or non-system stays as a system turn; some providers may hoist or ignore it."
@@ -56,6 +58,13 @@ export const mcpInstructionsModuleSchema = z.object({
   enabled: z.boolean(),
 })
 
+export const spaceRulesModuleSchema = z.object({
+  id: z.string().min(1),
+  kind: z.literal("space-rules"),
+  name: z.string().min(1),
+  enabled: z.boolean(),
+})
+
 export const promptModuleSchema = z.object({
   id: z.string().min(1),
   kind: z.literal("prompt"),
@@ -70,6 +79,7 @@ export const promptModuleSchema = z.object({
 export const stackModuleSchema = z.discriminatedUnion("kind", [
   historyModuleSchema,
   mcpInstructionsModuleSchema,
+  spaceRulesModuleSchema,
   promptModuleSchema,
 ])
 
@@ -90,8 +100,18 @@ export type McpInstructionsModule = {
   name: string
   enabled: boolean
 }
+export type SpaceRulesModule = {
+  id: string
+  kind: "space-rules"
+  name: string
+  enabled: boolean
+}
 export type PromptModule = z.infer<typeof promptModuleSchema>
-export type StackModule = HistoryModule | McpInstructionsModule | PromptModule
+export type StackModule =
+  | HistoryModule
+  | McpInstructionsModule
+  | SpaceRulesModule
+  | PromptModule
 export type PromptVariable = z.infer<typeof promptVariableSchema>
 export type PromptStackDocument = {
   modules: StackModule[]
@@ -202,6 +222,17 @@ export function defaultMcpInstructionsModule(
   }
 }
 
+export function defaultSpaceRulesModule(
+  id = DEFAULT_SPACE_RULES_MODULE_ID
+): SpaceRulesModule {
+  return {
+    id,
+    kind: "space-rules",
+    name: SPACE_RULES_MODULE_NAME,
+    enabled: true,
+  }
+}
+
 export function defaultPromptStack(): PromptStackDocument {
   return {
     variables: [],
@@ -225,6 +256,7 @@ export function defaultPromptStack(): PromptStackDocument {
         role: "system",
       },
       defaultMcpInstructionsModule(),
+      defaultSpaceRulesModule(),
       defaultHistoryModule(),
     ],
   }
@@ -248,9 +280,15 @@ export function normalizePromptStack(
     throw new Error(
       "Prompt stack must contain exactly one MCP instructions module"
     )
+  const spaceRulesCount = doc.modules.filter(
+    (m) => m.kind === "space-rules"
+  ).length
+  if (spaceRulesCount > 1)
+    throw new Error("Prompt stack must contain exactly one space rules module")
 
   let historySeen = false
   let mcpInstructionsSeen = false
+  let spaceRulesSeen = false
   const modules: StackModule[] = []
 
   for (const raw of doc.modules) {
@@ -270,6 +308,16 @@ export function normalizePromptStack(
         id: raw.id,
         kind: "mcp-instructions",
         name: MCP_INSTRUCTIONS_MODULE_NAME,
+        enabled: raw.enabled,
+      })
+      continue
+    }
+    if (raw.kind === "space-rules") {
+      spaceRulesSeen = true
+      modules.push({
+        id: raw.id,
+        kind: "space-rules",
+        name: SPACE_RULES_MODULE_NAME,
         enabled: raw.enabled,
       })
       continue
@@ -310,6 +358,16 @@ export function normalizePromptStack(
       historyIndex < 0 ? modules.length : historyIndex,
       0,
       defaultMcpInstructionsModule()
+    )
+  }
+  if (!spaceRulesSeen) {
+    const historyIndex = modules.findIndex(
+      (module) => module.kind === "history"
+    )
+    modules.splice(
+      historyIndex < 0 ? modules.length : historyIndex,
+      0,
+      defaultSpaceRulesModule()
     )
   }
 
@@ -508,6 +566,7 @@ function assembleTagged(options: {
   stack: PromptStackDocument
   pathMessages: ModelMessage[]
   mcpServerInstructionsText?: string
+  spaceRulesText?: string
   macroContext: MacroContext
 }): TaggedMessage[] {
   const stack = normalizePromptStack(options.stack)
@@ -534,6 +593,16 @@ function assembleTagged(options: {
     }
     if (mod.kind === "mcp-instructions") {
       const text = options.mcpServerInstructionsText?.trim()
+      if (text)
+        out.push({
+          message: { role: "system", content: text },
+          source: "stack",
+          moduleId: mod.id,
+        })
+      continue
+    }
+    if (mod.kind === "space-rules") {
+      const text = options.spaceRulesText?.trim()
       if (text)
         out.push({
           message: { role: "system", content: text },
@@ -630,6 +699,8 @@ export function assemblePromptContext(options: {
   pathMessages: ModelMessage[]
   /** MCP server initialize instructions when this module is enabled. */
   mcpServerInstructionsText?: string
+  /** Effective branch rules, resolved by the space policy engine. */
+  spaceRulesText?: string
   /** Dynamic values used to expand prompt-module macros. */
   macroContext?: MacroContext
 }): AssemblePromptContextResult {

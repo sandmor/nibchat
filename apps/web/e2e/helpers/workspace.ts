@@ -151,7 +151,9 @@ export async function openChatHeaderMore(page: Page) {
 
 export async function openChatParameters(page: Page) {
   await openChatHeaderMore(page)
-  await page.getByRole("menuitem", { name: "Parameters", exact: true }).click()
+  await page
+    .getByRole("menuitem", { name: "Chat settings", exact: true })
+    .click()
 }
 
 export async function openChatReasoning(page: Page, name: string) {

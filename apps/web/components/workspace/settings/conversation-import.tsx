@@ -72,8 +72,10 @@ import {
 import { ImportPaused, runImportConversation } from "@/lib/imports/runner"
 import {
   extractSillyTavernWorldInfo,
-  type WorldInfoImport,
+  sillyTavernBookEntityId,
+  type ExtractedWorldInfo,
 } from "@/lib/imports/silly-tavern-world-info"
+import { contextBookFingerprint } from "@/lib/context-books"
 
 type Counts = {
   imported: number
@@ -103,11 +105,12 @@ type ImportPlan = {
   characterOnly: string[]
   omitted: number
 }
-type DiscoveredBook = WorldInfoImport & {
+type DiscoveredBook = ExtractedWorldInfo & {
   id: string
-  source: string
   selected: boolean
   destination: "library" | "root" | `entity:${string}`
+  linkedEntityId?: string
+  replace?: boolean
 }
 
 const FORMATS = [chatgptFormat, sillyTavernFormat]
@@ -151,6 +154,9 @@ export function ConversationImportSettings() {
   const importSpaceMappings = useQuery(
     trpc.workspace.importSpaceMappings.queryOptions({ source: format.id })
   )
+  const importBookMappings = useQuery(
+    trpc.workspace.importBookMappings.queryOptions({ source: format.id })
+  )
   const createSpace = useMutation(
     trpc.workspace.getOrCreateImportSpace.mutationOptions()
   )
@@ -163,8 +169,8 @@ export function ConversationImportSettings() {
   const omit = useMutation(trpc.workspace.omitImportAsset.mutationOptions())
   const nodes = useMutation(trpc.workspace.appendImportNodes.mutationOptions())
   const publish = useMutation(trpc.workspace.publishImport.mutationOptions())
-  const createContextBook = useMutation(
-    trpc.workspace.createContextBook.mutationOptions()
+  const resolveImportBook = useMutation(
+    trpc.workspace.resolveImportBook.mutationOptions()
   )
   const grouped = format.id === "sillytavern"
   const groupedRows = grouped
@@ -201,6 +207,10 @@ export function ConversationImportSettings() {
   const savedDestination = (entity: ImportEntity) =>
     importSpaceMappings.data?.find((mapping) =>
       [entity.id, ...(entity.aliases ?? [])].includes(mapping.entityId)
+    )
+  const savedBook = (book: DiscoveredBook) =>
+    importBookMappings.data?.find(
+      (mapping) => mapping.entityId === bookEntityId(book)
     )
   const plan = importPlan(
     records,
@@ -273,7 +283,7 @@ export function ConversationImportSettings() {
             book.source
               .split("/")
               .at(-1)
-              ?.replace(/\.png$/i, "") ?? ""
+              ?.replace(/\.(json|png)$/i, "") ?? ""
           const entity = detected.find(
             (item) =>
               item.metadata?.characterId === filename ||
@@ -284,9 +294,18 @@ export function ConversationImportSettings() {
             id: `${book.source}:${index}`,
             selected: true,
             destination: entity ? `entity:${entity.id}` : "root",
+            ...(book.fromCharacter && entity
+              ? { linkedEntityId: entity.id }
+              : {}),
           }
         }
       )
+      if (!ordered.length && !detected.length && !discoveredBooks.length)
+        throw new Error(
+          format.id === "sillytavern"
+            ? "No SillyTavern chats, character cards, or world info were found"
+            : "No conversations were found"
+        )
       const chats = restoreSelection(
         ordered,
         format.id,
@@ -307,9 +326,16 @@ export function ConversationImportSettings() {
           detected.map((entity) => [entity.id, { mode: "managed" as const }])
         )
       )
-      setIndexedCount(ordered.length || detected.length)
+      setIndexedCount(
+        ordered.length || detected.length || discoveredBooks.length
+      )
       toast.success(
-        indexedMessage(ordered.length, detected.length, format.label)
+        indexedMessage(
+          ordered.length,
+          detected.length,
+          discoveredBooks.length,
+          format.label
+        )
       )
     } catch (error) {
       toast.error(message(error, "Could not read the import files"))
@@ -526,7 +552,9 @@ export function ConversationImportSettings() {
             : book.destination === "root"
               ? (await rootSpace()).id
               : undefined
-          await createContextBook.mutateAsync({
+          const resolved = await resolveImportBook.mutateAsync({
+            source: format.id,
+            entityId: bookEntityId(book),
             name:
               book.name ??
               book.source
@@ -536,8 +564,11 @@ export function ConversationImportSettings() {
               "Imported context book",
             book: book.book,
             ...(spaceId ? { spaceId } : {}),
+            ...(book.replace ? { replace: true } : {}),
           })
-          importedBooks++
+          if (resolved.created || resolved.replaced) importedBooks++
+          else if (resolved.changed) counts.changed++
+          else counts.skipped++
         } catch (error) {
           counts.failed++
           failed.push({
@@ -546,14 +577,33 @@ export function ConversationImportSettings() {
             reason: message(error, "Context-book import failed"),
           })
           setFailures([...failed])
+        } finally {
+          setProcessed((value) => value + 1)
+          setResult({ ...counts })
         }
       }
       counts.omitted += nextPlan.omitted
       setResult({ ...counts })
       await queryClient.invalidateQueries(trpc.workspace.get.queryFilter())
+      await queryClient.invalidateQueries(
+        trpc.workspace.getSettings.queryFilter()
+      )
+      await queryClient.invalidateQueries(
+        trpc.workspace.importBookMappings.queryFilter()
+      )
+      await queryClient.invalidateQueries(
+        trpc.workspace.importSpaceMappings.queryFilter()
+      )
+      await queryClient.invalidateQueries(
+        trpc.workspace.listChatTemplates.queryFilter()
+      )
       if (!controller.signal.aborted)
         toast.success(
-          `${importedMessage(counts.imported, nextPlan.characterOnly.length)}${importedBooks ? ` · ${importedBooks} context ${importedBooks === 1 ? "book" : "books"}` : ""}`
+          importedMessage(
+            counts.imported,
+            nextPlan.characterOnly.length,
+            importedBooks
+          )
         )
     } finally {
       abortRef.current = null
@@ -563,6 +613,9 @@ export function ConversationImportSettings() {
 
   const busy = indexing || running
   const spaces = workspace.data?.spaces ?? []
+  const selectedBooks = contextBooks.filter((book) => book.selected)
+  const importTotal =
+    (plan.chats.length || plan.entityIds.length) + selectedBooks.length
   return (
     <Card>
       <CardHeader>
@@ -571,7 +624,7 @@ export function ConversationImportSettings() {
         </CardTitle>
         <CardDescription>
           {grouped
-            ? "Review characters, chats, and context books together. Character cards become spaces; embedded books follow their character by default, while archive books follow the import root."
+            ? "Review characters, chats, and context books together. Character cards become spaces with a starting chat template; embedded books follow their character by default, while archive books follow the import root."
             : "Exports are indexed in this browser. Selected conversations upload in resumable batches, without sending the export itself to the server."}
         </CardDescription>
       </CardHeader>
@@ -611,15 +664,12 @@ export function ConversationImportSettings() {
                   busy ||
                   (!plan.chats.length &&
                     !plan.entityIds.length &&
-                    !contextBooks.some((book) => book.selected))
+                    !selectedBooks.length)
                 }
               >
                 {running
-                  ? `Importing ${processed}/${plan.chats.length || plan.entityIds.length || contextBooks.filter((book) => book.selected).length}…`
-                  : importButtonLabel(
-                      plan,
-                      contextBooks.filter((book) => book.selected).length
-                    )}
+                  ? `Importing ${processed}/${importTotal}…`
+                  : importButtonLabel(plan, selectedBooks.length)}
               </Button>
             ) : null}
             {running ? (
@@ -635,7 +685,7 @@ export function ConversationImportSettings() {
               type="file"
               accept={
                 format.id === "sillytavern"
-                  ? "application/zip,.zip,application/jsonl,.jsonl,image/png,.png"
+                  ? "application/zip,.zip,application/jsonl,.jsonl,application/json,.json,image/png,.png"
                   : "application/zip,.zip,application/json,.json"
               }
               multiple={format.id === "sillytavern"}
@@ -683,246 +733,337 @@ export function ConversationImportSettings() {
             </div>
             {grouped && contextBooks.length ? (
               <div className="grid gap-3 rounded-xl bg-muted/40 p-3 ring-1 ring-foreground/8">
-                <div>
-                  <h3 className="text-sm font-medium">Context books</h3>
-                  <p className="text-xs text-muted-foreground">
-                    Books discovered in this export are reviewed and imported
-                    with their related content. Unsupported entries stay
-                    disabled until reviewed.
-                  </p>
-                </div>
-                <div className="grid gap-2">
-                  {contextBooks.map((book) => (
-                    <div
-                      key={book.id}
-                      className="grid gap-2 rounded-lg border bg-background/50 p-3 sm:grid-cols-[1fr_minmax(12rem,auto)] sm:items-center"
-                    >
-                      <label className="flex min-w-0 items-start gap-2">
-                        <Switch
-                          size="sm"
-                          checked={book.selected}
-                          disabled={busy}
-                          onCheckedChange={(selected) =>
+                <MatchingScopeBar
+                  label="Context books"
+                  selected={selectedBooks.length}
+                  matching={contextBooks.length}
+                  selectLabel="Select matching books"
+                  clearLabel="Clear matching books"
+                  disabled={busy}
+                  onSelect={() =>
+                    setContextBooks((current) =>
+                      current.map((item) => ({ ...item, selected: true }))
+                    )
+                  }
+                  onClear={() =>
+                    setContextBooks((current) =>
+                      current.map((item) => ({ ...item, selected: false }))
+                    )
+                  }
+                />
+                <p className="text-xs text-muted-foreground">
+                  Embedded books follow their character by default. Archive
+                  books follow the import root. Unsupported entries stay
+                  disabled until reviewed. Reimporting reuses the existing book;
+                  turn on Replace to overwrite it, or delete the book first.
+                </p>
+                <div className="overflow-hidden rounded-lg bg-background/80 ring-1 ring-foreground/8">
+                  {contextBooks.map((book) => {
+                    const title =
+                      book.name ?? book.source.split("/").at(-1) ?? book.id
+                    const saved = savedBook(book)
+                    return (
+                      <div
+                        key={book.id}
+                        className={cn(
+                          "grid gap-2 px-3 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(12rem,16rem)] sm:items-center",
+                          book.selected && "bg-muted/40"
+                        )}
+                      >
+                        <label className="relative flex min-w-0 cursor-pointer items-center gap-3">
+                          <input
+                            type="checkbox"
+                            className="peer sr-only"
+                            checked={book.selected}
+                            disabled={busy}
+                            onChange={() =>
+                              setContextBooks((current) =>
+                                current.map((item) =>
+                                  item.id === book.id
+                                    ? { ...item, selected: !item.selected }
+                                    : item
+                                )
+                              )
+                            }
+                          />
+                          <SelectionMark checked={book.selected} />
+                          <span className="min-w-0">
+                            <span className="flex min-w-0 items-center gap-2">
+                              <span className="truncate font-medium">
+                                {title}
+                              </span>
+                              <Badge variant="outline">book</Badge>
+                            </span>
+                            <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                              {book.book.entries.length.toLocaleString()}{" "}
+                              {book.book.entries.length === 1
+                                ? "entry"
+                                : "entries"}{" "}
+                              · {book.source}
+                              {book.issues.length
+                                ? ` · ${book.issues.length} need review`
+                                : ""}
+                              {bookImportHint(book, saved)}
+                            </span>
+                            {book.issues
+                              .filter((issue) => issue.entryId === "*")
+                              .map((issue) => (
+                                <span
+                                  key={issue.reason}
+                                  className="mt-0.5 block text-xs text-amber-700 dark:text-amber-400"
+                                >
+                                  {issue.reason}
+                                </span>
+                              ))}
+                          </span>
+                        </label>
+                        <Select
+                          value={book.destination}
+                          items={{
+                            root: "Import root",
+                            library: "Library only",
+                            ...Object.fromEntries(
+                              entities.map((entity) => [
+                                `entity:${entity.id}`,
+                                entity.label,
+                              ])
+                            ),
+                          }}
+                          disabled={busy || !book.selected}
+                          onValueChange={(destination) =>
+                            destination &&
                             setContextBooks((current) =>
                               current.map((item) =>
                                 item.id === book.id
-                                  ? { ...item, selected }
+                                  ? {
+                                      ...item,
+                                      destination: String(
+                                        destination
+                                      ) as DiscoveredBook["destination"],
+                                    }
                                   : item
                               )
                             )
                           }
-                        />
-                        <span className="min-w-0">
-                          <span className="block truncate text-sm font-medium">
-                            {book.name ?? book.source.split("/").at(-1)}
-                          </span>
-                          <span className="block truncate text-xs text-muted-foreground">
-                            {book.book.entries.length} entries · {book.source}
-                            {book.issues.length
-                              ? ` · ${book.issues.length} need review`
-                              : ""}
-                          </span>
-                        </span>
-                      </label>
-                      <Select
-                        value={book.destination}
-                        items={{
-                          root: "Import root",
-                          library: "Library only",
-                          ...Object.fromEntries(
-                            entities.map((entity) => [
-                              `entity:${entity.id}`,
-                              entity.label,
-                            ])
-                          ),
-                        }}
-                        disabled={busy || !book.selected}
-                        onValueChange={(destination) =>
-                          destination &&
-                          setContextBooks((current) =>
-                            current.map((item) =>
-                              item.id === book.id
-                                ? {
-                                    ...item,
-                                    destination: String(
-                                      destination
-                                    ) as DiscoveredBook["destination"],
-                                  }
-                                : item
-                            )
-                          )
-                        }
-                      >
-                        <SelectTrigger className="w-full">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="root">Import root</SelectItem>
-                          <SelectItem value="library">Library only</SelectItem>
-                          {entities.map((entity) => (
-                            <SelectItem
-                              key={entity.id}
-                              value={`entity:${entity.id}`}
-                            >
-                              {entity.label}
+                        >
+                          <SelectTrigger
+                            size="sm"
+                            className="w-full min-w-0"
+                            aria-label={`Destination for ${title}`}
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="root">Import root</SelectItem>
+                            <SelectItem value="library">
+                              Library only
                             </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  ))}
+                            {entities.map((entity) => (
+                              <SelectItem
+                                key={entity.id}
+                                value={`entity:${entity.id}`}
+                              >
+                                {entity.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        {saved ? (
+                          <Label className="flex items-center gap-2 font-normal sm:col-start-2">
+                            <Switch
+                              size="sm"
+                              checked={Boolean(book.replace)}
+                              disabled={busy || !book.selected}
+                              aria-label={`Replace existing ${saved.bookName}`}
+                              onCheckedChange={(replace) =>
+                                setContextBooks((current) =>
+                                  current.map((item) =>
+                                    item.id === book.id
+                                      ? { ...item, replace }
+                                      : item
+                                  )
+                                )
+                              }
+                            />
+                            Replace existing
+                          </Label>
+                        ) : null}
+                      </div>
+                    )
+                  })}
                 </div>
               </div>
             ) : null}
-            <div className="flex flex-col gap-3 rounded-xl bg-muted/40 p-3 ring-1 ring-foreground/8">
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                <Input
-                  value={filter.query}
-                  onChange={(event) =>
-                    setFilter({ ...filter, query: event.target.value })
-                  }
-                  placeholder={
-                    grouped
-                      ? filter.content
-                        ? "Search characters, titles, and messages"
-                        : "Search characters and titles"
-                      : filter.content
-                        ? "Search titles and messages"
-                        : "Search titles"
-                  }
-                  className="lg:col-span-2"
-                />
-                <Input
-                  type="date"
-                  value={filter.after}
-                  onChange={(event) =>
-                    setFilter({ ...filter, after: event.target.value })
-                  }
-                  aria-label="Updated after"
-                />
-                <Input
-                  type="date"
-                  value={filter.before}
-                  onChange={(event) =>
-                    setFilter({ ...filter, before: event.target.value })
-                  }
-                  aria-label="Updated before"
-                />
-              </div>
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                <div className="flex items-center gap-2">
-                  <Switch
-                    id="import-search-content"
-                    size="sm"
-                    checked={filter.content}
-                    onCheckedChange={(content) =>
-                      setFilter({ ...filter, content })
+            {records.length || entities.length ? (
+              <div className="flex flex-col gap-3 rounded-xl bg-muted/40 p-3 ring-1 ring-foreground/8">
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                  <Input
+                    value={filter.query}
+                    onChange={(event) =>
+                      setFilter({ ...filter, query: event.target.value })
                     }
+                    placeholder={
+                      grouped
+                        ? filter.content
+                          ? "Search characters, titles, and messages"
+                          : "Search characters and titles"
+                        : filter.content
+                          ? "Search titles and messages"
+                          : "Search titles"
+                    }
+                    className="lg:col-span-2"
                   />
-                  <Label
-                    htmlFor="import-search-content"
-                    className="font-normal"
-                  >
-                    Search message content
-                  </Label>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Switch
-                    id="import-has-attachments"
-                    size="sm"
-                    checked={filter.attachments}
-                    onCheckedChange={(attachments) =>
-                      setFilter({ ...filter, attachments })
+                  <Input
+                    type="date"
+                    value={filter.after}
+                    onChange={(event) =>
+                      setFilter({ ...filter, after: event.target.value })
                     }
+                    aria-label="Updated after"
                   />
-                  <Label
-                    htmlFor="import-has-attachments"
-                    className="font-normal"
-                  >
-                    Has attachments
-                  </Label>
+                  <Input
+                    type="date"
+                    value={filter.before}
+                    onChange={(event) =>
+                      setFilter({ ...filter, before: event.target.value })
+                    }
+                    aria-label="Updated before"
+                  />
                 </div>
-                <Select
-                  value={filter.order}
-                  items={ORDER_ITEMS}
-                  onValueChange={(value) => {
-                    if (value === "newest" || value === "oldest")
-                      setFilter({ ...filter, order: value })
-                  }}
-                >
-                  <SelectTrigger
-                    size="sm"
-                    className="w-full min-w-0 sm:w-auto sm:min-w-[9rem]"
-                    aria-label="Sort order"
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      id="import-search-content"
+                      size="sm"
+                      checked={filter.content}
+                      onCheckedChange={(content) =>
+                        setFilter({ ...filter, content })
+                      }
+                    />
+                    <Label
+                      htmlFor="import-search-content"
+                      className="font-normal"
+                    >
+                      Search message content
+                    </Label>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      id="import-has-attachments"
+                      size="sm"
+                      checked={filter.attachments}
+                      onCheckedChange={(attachments) =>
+                        setFilter({ ...filter, attachments })
+                      }
+                    />
+                    <Label
+                      htmlFor="import-has-attachments"
+                      className="font-normal"
+                    >
+                      Has attachments
+                    </Label>
+                  </div>
+                  <Select
+                    value={filter.order}
+                    items={ORDER_ITEMS}
+                    onValueChange={(value) => {
+                      if (value === "newest" || value === "oldest")
+                        setFilter({ ...filter, order: value })
+                    }}
                   >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="newest">Newest first</SelectItem>
-                    <SelectItem value="oldest">Oldest first</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              {grouped ? (
-                <div className="grid gap-3 border-t border-border pt-3">
-                  <MatchingScopeBar
-                    label="Characters"
-                    selected={selectedVisibleEntities}
-                    matching={visibleEntities.length}
-                    selectLabel="Select matching characters"
-                    clearLabel="Clear matching characters"
-                    disabled={busy}
-                    onSelect={() =>
-                      commitSelection(
-                        selectMatchingEntities(
-                          matchingSelection(),
-                          visibleEntityIds
+                    <SelectTrigger
+                      size="sm"
+                      className="w-full min-w-0 sm:w-auto sm:min-w-[9rem]"
+                      aria-label="Sort order"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="newest">Newest first</SelectItem>
+                      <SelectItem value="oldest">Oldest first</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {grouped ? (
+                  <div className="grid gap-3 border-t border-border pt-3">
+                    <MatchingScopeBar
+                      label="Characters"
+                      selected={selectedVisibleEntities}
+                      matching={visibleEntities.length}
+                      selectLabel="Select matching characters"
+                      clearLabel="Clear matching characters"
+                      disabled={busy}
+                      onSelect={() =>
+                        commitSelection(
+                          selectMatchingEntities(
+                            matchingSelection(),
+                            visibleEntityIds
+                          )
                         )
-                      )
-                    }
-                    onClear={() =>
-                      commitSelection(
-                        clearMatchingEntities(
-                          matchingSelection(),
-                          visibleEntityIds,
-                          records
+                      }
+                      onClear={() =>
+                        commitSelection(
+                          clearMatchingEntities(
+                            matchingSelection(),
+                            visibleEntityIds,
+                            records
+                          )
                         )
-                      )
-                    }
-                    extra={
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div className="min-w-0 flex-1 sm:min-w-[12rem]">
-                          <DestinationSelect
-                            value={bulkEntityDestination}
-                            spaces={spaces}
-                            disabled={busy || !visibleEntities.length}
+                      }
+                      extra={
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="min-w-0 flex-1 sm:min-w-[12rem]">
+                            <DestinationSelect
+                              value={bulkEntityDestination}
+                              spaces={spaces}
+                              disabled={busy || !visibleEntities.length}
+                              size="sm"
+                              ariaLabel="Bulk destination"
+                              onChange={setBulkEntityDestination}
+                            />
+                          </div>
+                          <Button
+                            type="button"
                             size="sm"
-                            ariaLabel="Bulk destination"
-                            onChange={setBulkEntityDestination}
-                          />
+                            variant="outline"
+                            disabled={busy || !visibleEntities.length}
+                            onClick={() => {
+                              for (const entity of visibleEntities)
+                                setDestination(entity.id, bulkEntityDestination)
+                            }}
+                          >
+                            Apply to matching characters
+                          </Button>
                         </div>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          disabled={busy || !visibleEntities.length}
-                          onClick={() => {
-                            for (const entity of visibleEntities)
-                              setDestination(entity.id, bulkEntityDestination)
-                          }}
-                        >
-                          Apply to matching characters
-                        </Button>
-                      </div>
-                    }
-                  />
-                  <Separator />
+                      }
+                    />
+                    <Separator />
+                    <MatchingScopeBar
+                      label="Chats"
+                      selected={selectedVisibleChats}
+                      matching={visible.length}
+                      selectLabel="Select matching chats"
+                      clearLabel="Clear matching chats"
+                      disabled={busy}
+                      onSelect={() =>
+                        commitSelection(
+                          selectMatchingChats(matchingSelection(), visible)
+                        )
+                      }
+                      onClear={() =>
+                        commitSelection(
+                          clearMatchingChats(matchingSelection(), visible)
+                        )
+                      }
+                    />
+                  </div>
+                ) : (
                   <MatchingScopeBar
-                    label="Chats"
+                    label="Conversations"
                     selected={selectedVisibleChats}
                     matching={visible.length}
-                    selectLabel="Select matching chats"
-                    clearLabel="Clear matching chats"
+                    selectLabel="Select matching"
+                    clearLabel="Clear matching"
                     disabled={busy}
                     onSelect={() =>
                       commitSelection(
@@ -935,35 +1076,190 @@ export function ConversationImportSettings() {
                       )
                     }
                   />
-                </div>
-              ) : (
-                <MatchingScopeBar
-                  label="Conversations"
-                  selected={selectedVisibleChats}
-                  matching={visible.length}
-                  selectLabel="Select matching"
-                  clearLabel="Clear matching"
-                  disabled={busy}
-                  onSelect={() =>
-                    commitSelection(
-                      selectMatchingChats(matchingSelection(), visible)
+                )}
+                <div
+                  ref={listRef}
+                  className="h-96 overflow-y-auto overscroll-contain rounded-lg bg-background/80 ring-1 ring-foreground/8"
+                >
+                  {grouped ? (
+                    groupedRows.length === 0 ? (
+                      <p className="px-3 py-8 text-center text-sm text-muted-foreground">
+                        No characters or chats match this filter.
+                      </p>
+                    ) : (
+                      <div
+                        className="relative"
+                        style={{ height: virtualizer.getTotalSize() }}
+                      >
+                        {virtualizer.getVirtualItems().map((row) => {
+                          const item = groupedRows[row.index]!
+                          if (item.type === "entity") {
+                            const destination = entityDestinations[
+                              item.entity.id
+                            ] ?? { mode: "managed" as const }
+                            const saved = savedDestination(item.entity)
+                            const checked = selectedEntities.has(item.entity.id)
+                            const selectedChatCount = countSelected(
+                              item.visibleChats.map(
+                                (record) => record.sourceId
+                              ),
+                              selected
+                            )
+                            return (
+                              <div
+                                key={item.entity.id}
+                                data-index={row.index}
+                                ref={virtualizer.measureElement}
+                                className={cn(
+                                  "absolute top-0 left-0 grid w-full gap-2 px-3 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(12rem,16rem)] sm:items-center",
+                                  checked && "bg-muted/40"
+                                )}
+                                style={{
+                                  transform: `translateY(${row.start}px)`,
+                                }}
+                              >
+                                <label className="relative flex min-w-0 cursor-pointer items-center gap-3">
+                                  <input
+                                    type="checkbox"
+                                    className="peer sr-only"
+                                    checked={checked}
+                                    onChange={() =>
+                                      setEntitySelected(
+                                        item.entity.id,
+                                        !checked
+                                      )
+                                    }
+                                    disabled={running}
+                                  />
+                                  <SelectionMark checked={checked} />
+                                  <span className="min-w-0">
+                                    <span className="flex min-w-0 items-center gap-2">
+                                      <span className="truncate font-medium">
+                                        {item.entity.label}
+                                      </span>
+                                      <Badge
+                                        variant="outline"
+                                        className="capitalize"
+                                      >
+                                        {item.entity.kind}
+                                      </Badge>
+                                    </span>
+                                    <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                                      {item.chatCount
+                                        ? `${item.visibleChats.length.toLocaleString()} of ${item.chatCount.toLocaleString()} chats match this filter`
+                                        : "No chats in this export"}
+                                      {destination.override
+                                        ? ""
+                                        : saved
+                                          ? ` · Will update ${saved.spaceName}`
+                                          : ""}
+                                    </span>
+                                    {item.entity.chatTemplate?.warnings.map(
+                                      (warning) => (
+                                        <span
+                                          key={warning}
+                                          className="mt-0.5 block text-xs text-amber-700 dark:text-amber-400"
+                                        >
+                                          {warning}
+                                        </span>
+                                      )
+                                    )}
+                                  </span>
+                                </label>
+                                <DestinationSelect
+                                  value={destinationValue(destination)}
+                                  spaces={spaces}
+                                  disabled={busy}
+                                  size="sm"
+                                  ariaLabel={`Destination for ${item.entity.label}`}
+                                  onChange={(value) =>
+                                    setDestination(item.entity.id, value)
+                                  }
+                                />
+                                {item.visibleChats.length ? (
+                                  <div className="flex flex-wrap items-center gap-2 sm:col-span-2 sm:pl-7">
+                                    <span className="text-xs text-muted-foreground">
+                                      {selectedChatCount.toLocaleString()} of{" "}
+                                      {item.visibleChats.length.toLocaleString()}{" "}
+                                      matching chats selected
+                                    </span>
+                                    <Button
+                                      type="button"
+                                      size="xs"
+                                      variant="outline"
+                                      disabled={
+                                        running ||
+                                        selectedChatCount ===
+                                          item.visibleChats.length
+                                      }
+                                      aria-label={`Select chats for ${item.entity.label}`}
+                                      onClick={() =>
+                                        commitSelection(
+                                          selectMatchingChats(
+                                            matchingSelection(),
+                                            item.visibleChats
+                                          )
+                                        )
+                                      }
+                                    >
+                                      Select chats
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      size="xs"
+                                      variant="ghost"
+                                      disabled={
+                                        running || selectedChatCount === 0
+                                      }
+                                      aria-label={`Clear chats for ${item.entity.label}`}
+                                      onClick={() =>
+                                        commitSelection(
+                                          clearMatchingChats(
+                                            matchingSelection(),
+                                            item.visibleChats
+                                          )
+                                        )
+                                      }
+                                    >
+                                      Clear chats
+                                    </Button>
+                                  </div>
+                                ) : null}
+                              </div>
+                            )
+                          }
+                          const record = item.record
+                          const checked = selected.has(record.sourceId)
+                          return (
+                            <div
+                              key={record.sourceId}
+                              data-index={row.index}
+                              ref={virtualizer.measureElement}
+                              className={cn(
+                                "absolute top-0 left-0 flex w-full items-center gap-3 py-2 pr-3 pl-10 text-sm transition-colors hover:bg-muted/60",
+                                checked && "bg-muted/50"
+                              )}
+                              style={{
+                                transform: `translateY(${row.start}px)`,
+                              }}
+                            >
+                              <ChatImportRow
+                                record={record}
+                                checked={checked}
+                                running={running}
+                                onToggle={() =>
+                                  setChatSelected(record.sourceId, !checked)
+                                }
+                                onWarnings={() => setWarningRecord(record)}
+                              />
+                            </div>
+                          )
+                        })}
+                      </div>
                     )
-                  }
-                  onClear={() =>
-                    commitSelection(
-                      clearMatchingChats(matchingSelection(), visible)
-                    )
-                  }
-                />
-              )}
-              <div
-                ref={listRef}
-                className="h-96 overflow-y-auto overscroll-contain rounded-lg bg-background/80 ring-1 ring-foreground/8"
-              >
-                {grouped ? (
-                  groupedRows.length === 0 ? (
+                  ) : visible.length === 0 ? (
                     <p className="px-3 py-8 text-center text-sm text-muted-foreground">
-                      No characters or chats match this filter.
+                      No conversations match this filter.
                     </p>
                   ) : (
                     <div
@@ -971,137 +1267,17 @@ export function ConversationImportSettings() {
                       style={{ height: virtualizer.getTotalSize() }}
                     >
                       {virtualizer.getVirtualItems().map((row) => {
-                        const item = groupedRows[row.index]!
-                        if (item.type === "entity") {
-                          const destination = entityDestinations[
-                            item.entity.id
-                          ] ?? { mode: "managed" as const }
-                          const saved = savedDestination(item.entity)
-                          const checked = selectedEntities.has(item.entity.id)
-                          const selectedChatCount = countSelected(
-                            item.visibleChats.map((record) => record.sourceId),
-                            selected
-                          )
-                          return (
-                            <div
-                              key={item.entity.id}
-                              data-index={row.index}
-                              ref={virtualizer.measureElement}
-                              className={cn(
-                                "absolute top-0 left-0 grid w-full gap-2 px-3 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(12rem,16rem)] sm:items-center",
-                                checked && "bg-muted/40"
-                              )}
-                              style={{
-                                transform: `translateY(${row.start}px)`,
-                              }}
-                            >
-                              <label className="flex min-w-0 cursor-pointer items-center gap-3">
-                                <input
-                                  type="checkbox"
-                                  className="peer sr-only"
-                                  checked={checked}
-                                  onChange={() =>
-                                    setEntitySelected(item.entity.id, !checked)
-                                  }
-                                  disabled={running}
-                                />
-                                <SelectionMark checked={checked} />
-                                <span className="min-w-0">
-                                  <span className="flex min-w-0 items-center gap-2">
-                                    <span className="truncate font-medium">
-                                      {item.entity.label}
-                                    </span>
-                                    <Badge
-                                      variant="outline"
-                                      className="capitalize"
-                                    >
-                                      {item.entity.kind}
-                                    </Badge>
-                                  </span>
-                                  <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                                    {item.chatCount
-                                      ? `${item.visibleChats.length.toLocaleString()} of ${item.chatCount.toLocaleString()} chats match this filter`
-                                      : "No chats in this export"}
-                                    {!destination.override && saved
-                                      ? ` · Will reuse ${saved.spaceName}`
-                                      : ""}
-                                  </span>
-                                </span>
-                              </label>
-                              <DestinationSelect
-                                value={destinationValue(destination)}
-                                spaces={spaces}
-                                disabled={busy}
-                                size="sm"
-                                ariaLabel={`Destination for ${item.entity.label}`}
-                                onChange={(value) =>
-                                  setDestination(item.entity.id, value)
-                                }
-                              />
-                              {item.visibleChats.length ? (
-                                <div className="flex flex-wrap items-center gap-2 sm:col-span-2 sm:pl-7">
-                                  <span className="text-xs text-muted-foreground">
-                                    {selectedChatCount.toLocaleString()} of{" "}
-                                    {item.visibleChats.length.toLocaleString()}{" "}
-                                    matching chats selected
-                                  </span>
-                                  <Button
-                                    type="button"
-                                    size="xs"
-                                    variant="outline"
-                                    disabled={
-                                      running ||
-                                      selectedChatCount ===
-                                        item.visibleChats.length
-                                    }
-                                    aria-label={`Select chats for ${item.entity.label}`}
-                                    onClick={() =>
-                                      commitSelection(
-                                        selectMatchingChats(
-                                          matchingSelection(),
-                                          item.visibleChats
-                                        )
-                                      )
-                                    }
-                                  >
-                                    Select chats
-                                  </Button>
-                                  <Button
-                                    type="button"
-                                    size="xs"
-                                    variant="ghost"
-                                    disabled={
-                                      running || selectedChatCount === 0
-                                    }
-                                    aria-label={`Clear chats for ${item.entity.label}`}
-                                    onClick={() =>
-                                      commitSelection(
-                                        clearMatchingChats(
-                                          matchingSelection(),
-                                          item.visibleChats
-                                        )
-                                      )
-                                    }
-                                  >
-                                    Clear chats
-                                  </Button>
-                                </div>
-                              ) : null}
-                            </div>
-                          )
-                        }
-                        const record = item.record
+                        const record = visible[row.index]!
                         const checked = selected.has(record.sourceId)
                         return (
                           <div
                             key={record.sourceId}
-                            data-index={row.index}
-                            ref={virtualizer.measureElement}
                             className={cn(
-                              "absolute top-0 left-0 flex w-full items-center gap-3 py-2 pr-3 pl-10 text-sm transition-colors hover:bg-muted/60",
+                              "absolute flex w-full items-center gap-3 px-3 py-2 text-sm transition-colors hover:bg-muted/60",
                               checked && "bg-muted/50"
                             )}
                             style={{
+                              height: row.size,
                               transform: `translateY(${row.start}px)`,
                             }}
                           >
@@ -1118,47 +1294,10 @@ export function ConversationImportSettings() {
                         )
                       })}
                     </div>
-                  )
-                ) : visible.length === 0 ? (
-                  <p className="px-3 py-8 text-center text-sm text-muted-foreground">
-                    No conversations match this filter.
-                  </p>
-                ) : (
-                  <div
-                    className="relative"
-                    style={{ height: virtualizer.getTotalSize() }}
-                  >
-                    {virtualizer.getVirtualItems().map((row) => {
-                      const record = visible[row.index]!
-                      const checked = selected.has(record.sourceId)
-                      return (
-                        <div
-                          key={record.sourceId}
-                          className={cn(
-                            "absolute flex w-full items-center gap-3 px-3 py-2 text-sm transition-colors hover:bg-muted/60",
-                            checked && "bg-muted/50"
-                          )}
-                          style={{
-                            height: row.size,
-                            transform: `translateY(${row.start}px)`,
-                          }}
-                        >
-                          <ChatImportRow
-                            record={record}
-                            checked={checked}
-                            running={running}
-                            onToggle={() =>
-                              setChatSelected(record.sourceId, !checked)
-                            }
-                            onWarnings={() => setWarningRecord(record)}
-                          />
-                        </div>
-                      )
-                    })}
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
-            </div>
+            ) : null}
           </>
         ) : null}
         {result ? (
@@ -1174,7 +1313,7 @@ export function ConversationImportSettings() {
             className="group/failures overflow-hidden rounded-xl ring-1 ring-foreground/8"
           >
             <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm font-medium outline-none hover:bg-muted/60 focus-visible:ring-[3px] focus-visible:ring-ring/50">
-              Failed conversations ({failures.length})
+              Failed imports ({failures.length})
               <HugeiconsIcon
                 icon={ArrowDown01Icon}
                 strokeWidth={2}
@@ -1380,7 +1519,7 @@ function ChatImportRow({
 }) {
   return (
     <>
-      <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-3">
+      <label className="relative flex min-w-0 flex-1 cursor-pointer items-center gap-3">
         <input
           type="checkbox"
           className="peer sr-only"
@@ -1408,6 +1547,25 @@ function ChatImportRow({
       </span>
     </>
   )
+}
+
+function bookEntityId(book: DiscoveredBook) {
+  return sillyTavernBookEntityId(book.source, book.linkedEntityId)
+}
+
+function bookImportHint(
+  book: DiscoveredBook,
+  saved?: { bookName: string; fingerprint: string }
+) {
+  if (!saved) return ""
+  if (book.replace) return ` · Will replace ${saved.bookName}`
+  if (
+    saved.fingerprint &&
+    saved.fingerprint === contextBookFingerprint(book.book)
+  )
+    return ` · Will reuse ${saved.bookName}`
+  if (!saved.fingerprint) return ` · Already imported as ${saved.bookName}`
+  return ` · Export changed · ${saved.bookName}`
 }
 
 function groupImportRows(
@@ -1484,15 +1642,31 @@ function importPlan(
   }
 }
 
-function indexedMessage(chats: number, entities: number, label: string) {
-  if (chats && entities)
-    return `Indexed ${chats.toLocaleString()} conversations and ${entities.toLocaleString()} characters`
-  if (!chats && entities)
-    return `Indexed ${entities.toLocaleString()} ${label} characters`
-  return `Indexed ${chats.toLocaleString()} ${label} conversations`
+function indexedMessage(
+  chats: number,
+  entities: number,
+  books: number,
+  label: string
+) {
+  const parts = [
+    ...(chats
+      ? [
+          `${chats.toLocaleString()} ${label} conversation${chats === 1 ? "" : "s"}`,
+        ]
+      : []),
+    ...(entities
+      ? [`${entities.toLocaleString()} character${entities === 1 ? "" : "s"}`]
+      : []),
+    ...(books
+      ? [`${books.toLocaleString()} context ${books === 1 ? "book" : "books"}`]
+      : []),
+  ]
+  if (!parts.length)
+    return `No ${label} chats, characters, or world info were found`
+  return `Indexed ${parts.join(" and ").replace(/ and (?=.* and )/, ", ")}`
 }
 
-function importedMessage(chats: number, characters: number) {
+function importedMessage(chats: number, characters: number, books = 0) {
   const parts = [
     ...(chats
       ? [`${chats.toLocaleString()} conversation${chats === 1 ? "" : "s"}`]
@@ -1501,6 +1675,9 @@ function importedMessage(chats: number, characters: number) {
       ? [
           `${characters.toLocaleString()} character${characters === 1 ? "" : "s"}`,
         ]
+      : []),
+    ...(books
+      ? [`${books.toLocaleString()} context ${books === 1 ? "book" : "books"}`]
       : []),
   ]
   return parts.length ? `Imported ${parts.join(" and ")}` : "Nothing to import"

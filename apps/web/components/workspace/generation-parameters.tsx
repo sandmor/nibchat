@@ -37,6 +37,7 @@ export function GenerationParameters({
   defaults?: boolean
 }) {
   const replayId = useId()
+  const macrosId = useId()
   const [config, setConfig] = useState(existing)
   const [stopText, setStopText] = useState(
     (existing.stopSequences ?? []).join(", ")
@@ -183,6 +184,20 @@ export function GenerationParameters({
           </Label>
         </div>
         <SpaceLockHint lock={locks?.replayReasoning} />
+        <div className="flex items-center gap-2">
+          <Switch
+            id={macrosId}
+            disabled={Boolean(locks?.expandMessageMacros)}
+            checked={Boolean(config.expandMessageMacros)}
+            onCheckedChange={(checked) =>
+              setConfig({ ...config, expandMessageMacros: checked })
+            }
+          />
+          <Label htmlFor={macrosId} className="text-xs text-muted-foreground">
+            Expand macros in messages
+          </Label>
+        </div>
+        <SpaceLockHint lock={locks?.expandMessageMacros} />
         <Button
           onClick={() => void save()}
           className="w-full"

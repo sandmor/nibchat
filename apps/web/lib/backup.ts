@@ -20,6 +20,10 @@ const chatRowSchema = z
     }, "Invalid chat view state"),
     prompt_stack_id: z.string().nullable(),
     variables_json: z.string().default("{}"),
+    expand_message_macros: z
+      .union([z.boolean(), z.literal(0), z.literal(1)])
+      .transform(Boolean)
+      .default(false),
     space_overrides_json: z.string().default("{}"),
     space_id: z.string().nullable().optional().default(null),
     created_at: z.string(),
@@ -206,6 +210,28 @@ const importSpaceMappingSchema = z.object({
   space_id: z.string(),
   created_at: z.string(),
 })
+const importBookMappingSchema = z.object({
+  user_id: z.string(),
+  source: z.string(),
+  entity_id: z.string(),
+  context_book_id: z.string(),
+  source_fingerprint: z.string().optional().default(""),
+  created_at: z.string(),
+})
+const chatTemplateSchema = z.object({
+  id: z.string(),
+  user_id: z.string(),
+  name: z.string(),
+  document_json: z.string(),
+  revision: z.number().int().nonnegative(),
+  source_json: z.string(),
+  created_at: z.string(),
+  updated_at: z.string(),
+})
+const templateAttachmentSchema = z.object({
+  template_id: z.string(),
+  attachment_id: z.string(),
+})
 
 /** Portable snapshot (no passwords, sessions, or attachment bytes).
  * Bytes live next to this manifest in the backup zip. */
@@ -225,6 +251,8 @@ export const backupSchema = z.object({
     .array(messageAttachmentBackupSchema)
     .optional()
     .default([]),
+  chatTemplates: z.array(chatTemplateSchema).optional().default([]),
+  templateAttachments: z.array(templateAttachmentSchema).optional().default([]),
   instance: z
     .object({
       titleModelConfig: z
@@ -240,6 +268,7 @@ export const backupSchema = z.object({
   userPreferences: z.array(userPreferencesSchema).optional().default([]),
   importReceipts: z.array(importReceiptSchema).optional().default([]),
   importSpaceMappings: z.array(importSpaceMappingSchema).optional().default([]),
+  importBookMappings: z.array(importBookMappingSchema).optional().default([]),
   createdAt: z.string().optional(),
 })
 

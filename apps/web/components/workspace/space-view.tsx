@@ -87,6 +87,7 @@ import type { WorkspaceData } from "@/lib/workspace-cache"
 import type { ChatRow } from "@/lib/types"
 
 const ADDABLE_KEYS = [
+  "chatTemplate",
   "promptStack",
   "model",
   "reasoning",
@@ -97,8 +98,12 @@ type AddableKey = (typeof ADDABLE_KEYS)[number]
 
 function defaultSlotValue(
   key: AddableKey,
-  stacks: Array<{ id: string }>
+  stacks: Array<{ id: string }>,
+  templates: Array<{ id: string }>
 ): SpaceSettings[AddableKey] {
+  if (key === "chatTemplate") {
+    return { mode: "default", value: templates[0]?.id ?? null }
+  }
   if (key === "promptStack") {
     return { mode: "default", value: stacks[0]?.id ?? "" }
   }
@@ -112,6 +117,9 @@ function defaultSlotValue(
     return { mode: "default", value: DEFAULT_CHAT_CONFIG.contextScanDepth }
   if (key === "replayReasoning") {
     return { mode: "default", value: true }
+  }
+  if (key === "expandMessageMacros") {
+    return { mode: "default", value: false }
   }
   if (key === "stopSequences") {
     return { mode: "default", value: [] }
@@ -190,10 +198,14 @@ export function SpaceView({
     initialData: initial,
   })
   const settingsQuery = useQuery(trpc.workspace.getSettings.queryOptions())
+  const templatesQuery = useQuery(
+    trpc.workspace.listChatTemplates.queryOptions()
+  )
   const spaces = workspaceQuery.data?.spaces ?? initial.spaces
   const chats = workspaceQuery.data?.chats ?? initial.chats
   const space = spaces.find((row) => row.id === spaceId) ?? null
   const stacks = settingsQuery.data?.promptStacks ?? []
+  const templates = templatesQuery.data ?? []
   const contextBooks = settingsQuery.data?.contextBooks ?? []
   const defaultStackId = settingsQuery.data?.defaultPromptStackId ?? null
 
@@ -274,9 +286,13 @@ export function SpaceView({
   }
 
   function addSlot(key: AddableKey) {
-    const slot = defaultSlotValue(key, stacks)
+    const slot = defaultSlotValue(key, stacks, templates)
     if (key === "promptStack" && !stacks[0]) {
       toast.error("Create a prompt stack in Settings first")
+      return
+    }
+    if (key === "chatTemplate" && !templates[0]) {
+      toast.error("Create a chat template first")
       return
     }
     patchSettings((current) => ({ ...current, [key]: slot }))
@@ -329,6 +345,12 @@ export function SpaceView({
   )
   const definedStackId = settings.promptStack?.value
   const stackMissing = isOrphanPromptStackRef(definedStackId, stacks)
+  const definedTemplateId = settings.chatTemplate?.value
+  const templateMissing = Boolean(
+    definedTemplateId &&
+    templates.length > 0 &&
+    templates.every((template) => template.id !== definedTemplateId)
+  )
   const chatsHere = chats
     .filter((chat) => chat.space_id === spaceId)
     .sort((left, right) => right.updated_at.localeCompare(left.updated_at))
@@ -721,6 +743,101 @@ export function SpaceView({
                           ))}
                         </SelectContent>
                       </Select>
+                    </DefinitionRow>
+                  </RevealItem>
+                ) : null}
+                {settings.chatTemplate ? (
+                  <RevealItem
+                    key="chatTemplate"
+                    itemKey="chatTemplate"
+                    animate={animate}
+                    transition={transition}
+                  >
+                    <DefinitionRow
+                      title="Chat template"
+                      mode={settings.chatTemplate.mode}
+                      canEnable={
+                        Boolean(settings.chatTemplate.value) && !templateMissing
+                      }
+                      enableBlockedReason={
+                        templateMissing
+                          ? "Choose a template that still exists"
+                          : "Choose a template before requiring"
+                      }
+                      onMode={(mode) =>
+                        patchSettings((current) =>
+                          current.chatTemplate
+                            ? {
+                                ...current,
+                                chatTemplate: { ...current.chatTemplate, mode },
+                              }
+                            : current
+                        )
+                      }
+                      onRemove={() =>
+                        patchSettings((current) => {
+                          const next = { ...current }
+                          delete next.chatTemplate
+                          return next
+                        })
+                      }
+                    >
+                      {templateMissing ? (
+                        <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                          This template was removed. New chats start blank until
+                          you pick another.
+                        </p>
+                      ) : null}
+                      <Select
+                        value={settings.chatTemplate.value ?? "__none"}
+                        items={{
+                          __none: "Blank chat",
+                          ...(templateMissing && definedTemplateId
+                            ? { [definedTemplateId]: "Missing template" }
+                            : {}),
+                          ...Object.fromEntries(
+                            templates.map((template) => [
+                              template.id,
+                              template.name,
+                            ])
+                          ),
+                        }}
+                        onValueChange={(value) =>
+                          patchSettings((current) =>
+                            current.chatTemplate
+                              ? {
+                                  ...current,
+                                  chatTemplate: {
+                                    ...current.chatTemplate,
+                                    value:
+                                      value === "__none" ? null : String(value),
+                                  },
+                                }
+                              : current
+                          )
+                        }
+                      >
+                        <SelectTrigger className="w-full max-w-xs">
+                          <SelectValue placeholder="Choose a template" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__none">Blank chat</SelectItem>
+                          {templateMissing && definedTemplateId ? (
+                            <SelectItem value={definedTemplateId}>
+                              Missing template
+                            </SelectItem>
+                          ) : null}
+                          {templates.map((template) => (
+                            <SelectItem key={template.id} value={template.id}>
+                              {template.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-[11px] text-muted-foreground">
+                        New chats in this space start from that conversation
+                        tree, including branches.
+                      </p>
                     </DefinitionRow>
                   </RevealItem>
                 ) : null}
@@ -1507,7 +1624,7 @@ function SamplingDefinition({
           value={(slot.value as Record<string, unknown>) ?? {}}
           onCommit={(value) => patchSlot({ value })}
         />
-      ) : field === "replayReasoning" ? (
+      ) : field === "replayReasoning" || field === "expandMessageMacros" ? (
         <Switch
           checked={Boolean(slot.value)}
           onCheckedChange={(checked) => patchSlot({ value: checked })}

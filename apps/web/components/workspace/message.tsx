@@ -12,6 +12,10 @@ import {
   type MouseEvent,
 } from "react"
 import { toast } from "sonner"
+import {
+  expandPromptMacros,
+  type MacroContext,
+} from "@/lib/prompt-macros"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
   ArrowMoveUpRightIcon,
@@ -191,6 +195,7 @@ function MessageLiveBody({
   interactiveTools,
   toolResults,
   onAnswerTool,
+  macroContext,
 }: {
   persistedParts: Parts
   streamId: string | null | undefined
@@ -202,6 +207,7 @@ function MessageLiveBody({
     toolName: string,
     output: unknown
   ) => void | Promise<void>
+  macroContext?: MacroContext
 }) {
   const streamBuffer = useStreamBuffer(streamId ?? "")
   const sourceParts = overlayStreamParts(
@@ -209,7 +215,12 @@ function MessageLiveBody({
     streamBuffer.parts,
     streamId
   )
-  const displayParts = applyLocalToolResults(sourceParts, toolResults)
+  const displayParts = applyLocalToolResults(sourceParts, toolResults).map(
+    (part) =>
+      part.type === "text" && macroContext
+        ? { ...part, text: expandPromptMacros(part.text, macroContext) }
+        : part
+  )
   const hasStructuredBody = displayParts.some(
     (part) =>
       part.type === "reasoning" ||
@@ -335,6 +346,36 @@ export const Message = memo(function Message({
     () => parseJson<Record<string, unknown>>(node.metadata_json, {}),
     [node.metadata_json]
   )
+  const literalParts = useMemo(() => {
+    if (!Array.isArray(metadata.literalParts)) return null
+    const parsed = messagePartsSchema.safeParse(metadata.literalParts)
+    return parsed.success ? parsed.data : null
+  }, [metadata.literalParts])
+  const liveMacroContext = useMemo<MacroContext | undefined>(() => {
+    const value = metadata.liveMacroContext
+    if (!value || typeof value !== "object") return undefined
+    const raw = value as Record<string, unknown>
+    if (typeof raw.now !== "string" || typeof raw.timeZone !== "string")
+      return undefined
+    const chat = raw.chat as Record<string, unknown> | undefined
+    return {
+      now: new Date(raw.now),
+      timeZone: raw.timeZone,
+      ...(chat &&
+      typeof chat.id === "string" &&
+      typeof chat.createdAt === "string"
+        ? {
+            chat: { id: chat.id, createdAt: new Date(chat.createdAt) },
+          }
+        : {}),
+      ...(raw.variables && typeof raw.variables === "object"
+        ? { variables: raw.variables as Record<string, string | boolean> }
+        : {}),
+      ...(raw.contextEntries && typeof raw.contextEntries === "object"
+        ? { contextEntries: raw.contextEntries as Record<string, string> }
+        : {}),
+    }
+  }, [metadata.liveMacroContext])
   const editSlot = messageEditSlotId(node.chat_id, node.id)
   const liveEdit = useHasEditorSession(editSlot)
   const editSession = useEditorSession(editSlot)
@@ -552,7 +593,10 @@ export const Message = memo(function Message({
   }
   const beginEdit = () => {
     if (hasEditorSession(editSlot)) return
-    const latest = overlayFor(parts, streamId)
+    const latest = overlayFor(
+      literalParts ?? parts,
+      streamId
+    )
     const editParts =
       node.status === "streaming" || streamId
         ? durableAuthoredParts(latest)
@@ -739,7 +783,7 @@ export const Message = memo(function Message({
               draftRole === "user" ? undefined : pendingMutation === "fork"
             }
             onSend={() => {
-              if (draftRole === "user") {
+              if (editor) {
                 void editor?.onSend(node)
                 return
               }
@@ -817,11 +861,12 @@ export const Message = memo(function Message({
           </p>
         ) : null}
         <MessageLiveBody
-          persistedParts={parts}
+          persistedParts={literalParts ?? parts}
           streamId={streamId}
           streaming={node.status === "streaming" || Boolean(streamId)}
           interactiveTools={interactiveTools}
           toolResults={toolResults}
+          macroContext={liveMacroContext}
           onAnswerTool={
             onAnswerTools
               ? async (toolCallId, _toolName, output) => {

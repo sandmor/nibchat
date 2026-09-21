@@ -5,6 +5,8 @@ import {
 import type { ImportArchivePort } from "@/lib/imports/model"
 import { readArchiveEntry } from "@/lib/imports/adapters/browser-archive"
 import { sillyTavernCardJson } from "@/lib/imports/adapters/silly-tavern"
+import { rewriteSillyTavernMacros } from "@/lib/imports/silly-tavern-macros"
+import { MAX_COLLECTION, MAX_ID } from "@/lib/limits"
 
 type Raw = Record<string, unknown>
 export type WorldInfoImport = {
@@ -12,6 +14,11 @@ export type WorldInfoImport = {
   book: ContextBookDocument
   issues: Array<{ entryId: string; reason: string }>
 }
+export type ExtractedWorldInfo = WorldInfoImport & {
+  source: string
+  fromCharacter?: boolean
+}
+
 const object = (value: unknown): Raw | null =>
   value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Raw)
@@ -29,15 +36,57 @@ const strings = (value: unknown) =>
           .filter(Boolean)
       : []
 
+function worldInfoEntries(raw: unknown) {
+  const root = object(raw)
+  if (!root) return []
+  return Array.isArray(root.entries)
+    ? root.entries
+    : Object.values(object(root.entries) ?? {})
+}
+
+function looksLikeWorldInfoEntry(value: unknown) {
+  const source = object(value)
+  if (!source) return false
+  return (
+    typeof source.content === "string" ||
+    Array.isArray(source.key) ||
+    Array.isArray(source.keys) ||
+    typeof source.key === "string"
+  )
+}
+
+export function looksLikeWorldInfo(raw: unknown) {
+  return worldInfoEntries(raw).some(looksLikeWorldInfoEntry)
+}
+
+function looksLikeWorldInfoPath(name: string) {
+  return /(^|\/)worlds?\//i.test(name) || /world.?info|lorebook/i.test(name)
+}
+
+function isCharacterCardPath(name: string) {
+  const lower = name.toLowerCase()
+  return /(^|\/)characters\/[^/]+\.png$/.test(lower) || !name.includes("/")
+}
+
+function characterBookPayload(raw: unknown) {
+  const card = object(raw)
+  if (!card) return null
+  const data = object(card.data) ?? card
+  const embedded = data && object(data.character_book)
+  if (!embedded || !looksLikeWorldInfo(embedded)) return null
+  return {
+    book: embedded,
+    name: typeof data.name === "string" ? `${data.name} context` : undefined,
+  }
+}
+
 export function importSillyTavernWorldInfo(raw: unknown): WorldInfoImport {
   const root = object(raw)
   if (!root) throw new Error("Invalid SillyTavern World Info file")
-  const sourceEntries = Array.isArray(root.entries)
-    ? root.entries
-    : Object.values(object(root.entries) ?? {})
+  const sourceEntries = worldInfoEntries(root)
   const book = defaultContextBook(),
     issues: WorldInfoImport["issues"] = []
-  book.entries = sourceEntries.flatMap((value, index) => {
+  const mapped = sourceEntries.flatMap((value, index) => {
     const source = object(value)
     if (!source) return []
     const id = String(source.uid ?? source.id ?? index)
@@ -73,14 +122,16 @@ export function importSillyTavernWorldInfo(raw: unknown): WorldInfoImport {
     return [
       {
         id,
-        title: String(
-          source.comment ?? source.memo ?? keys[0] ?? `Entry ${index + 1}`
+        title: rewriteSillyTavernMacros(
+          String(
+            source.comment ?? source.memo ?? keys[0] ?? `Entry ${index + 1}`
+          )
         ),
         enabled:
           source.disable !== true &&
           source.enabled !== false &&
           unsupported.length === 0,
-        content: String(source.content ?? ""),
+        content: rewriteSillyTavernMacros(String(source.content ?? "")),
         namespace: outlet.trim() || "default",
         activation:
           source.constant === true
@@ -109,6 +160,12 @@ export function importSillyTavernWorldInfo(raw: unknown): WorldInfoImport {
       },
     ]
   })
+  if (mapped.length > MAX_COLLECTION)
+    issues.push({
+      entryId: "*",
+      reason: `Only the first ${MAX_COLLECTION} entries were imported`,
+    })
+  book.entries = mapped.slice(0, MAX_COLLECTION)
   return {
     name: typeof root.name === "string" ? root.name : undefined,
     book,
@@ -116,50 +173,77 @@ export function importSillyTavernWorldInfo(raw: unknown): WorldInfoImport {
   }
 }
 
+export function sillyTavernBookEntityId(
+  sourcePath: string,
+  characterEntityId?: string
+) {
+  return (
+    characterEntityId
+      ? `character-book:${characterEntityId}`
+      : `path:${sourcePath}`
+  ).slice(0, MAX_ID)
+}
+
+function discoveredBook(
+  imported: WorldInfoImport,
+  source: string,
+  options?: { name?: string; fromCharacter?: boolean }
+): ExtractedWorldInfo {
+  return {
+    ...imported,
+    ...(options?.name || imported.name
+      ? { name: options?.name ?? imported.name }
+      : {}),
+    source,
+    ...(options?.fromCharacter ? { fromCharacter: true } : {}),
+  }
+}
+
 export async function extractSillyTavernWorldInfo(
   archive: ImportArchivePort
-): Promise<Array<WorldInfoImport & { source: string }>> {
-  const found: Array<WorldInfoImport & { source: string }> = []
+): Promise<ExtractedWorldInfo[]> {
+  const found: ExtractedWorldInfo[] = []
   for (const name of archive.names()) {
     const lower = name.toLowerCase()
     try {
-      if (
-        lower.endsWith(".png") &&
-        (lower.includes("characters/") || !name.includes("/"))
-      ) {
+      if (lower.endsWith(".png") && isCharacterCardPath(name)) {
         const card = sillyTavernCardJson(await readArchiveEntry(archive, name))
-        const data = object(card?.data) ?? card
-        const embedded = data && object(data.character_book)
+        const embedded = characterBookPayload(card)
         if (embedded)
-          found.push({
-            ...importSillyTavernWorldInfo(embedded),
-            name:
-              typeof data?.name === "string"
-                ? `${data.name} context`
-                : undefined,
-            source: name,
-          })
-      } else if (
-        lower.endsWith(".json") &&
-        (/(^|\/)worlds?\//i.test(name) || /world.?info|lorebook/i.test(name))
-      ) {
-        const parsed = JSON.parse(
-          new TextDecoder().decode(await readArchiveEntry(archive, name))
-        )
-        found.push({ ...importSillyTavernWorldInfo(parsed), source: name })
+          found.push(
+            discoveredBook(importSillyTavernWorldInfo(embedded.book), name, {
+              name: embedded.name,
+              fromCharacter: true,
+            })
+          )
+        continue
       }
+      if (!lower.endsWith(".json")) continue
+      const parsed = JSON.parse(
+        new TextDecoder().decode(await readArchiveEntry(archive, name))
+      )
+      const embedded = characterBookPayload(parsed)
+      if (embedded) {
+        found.push(
+          discoveredBook(importSillyTavernWorldInfo(embedded.book), name, {
+            name: embedded.name,
+            fromCharacter: true,
+          })
+        )
+        continue
+      }
+      if (looksLikeWorldInfo(parsed) || looksLikeWorldInfoPath(name))
+        found.push(discoveredBook(importSillyTavernWorldInfo(parsed), name))
     } catch {
       // Conversation imports already report malformed cards. Book extraction
       // stays best-effort so one historical file cannot hide valid books.
     }
   }
-  const unique = new Map<string, WorldInfoImport & { source: string }>()
+  const unique = new Map<string, ExtractedWorldInfo>()
   for (const item of found) {
     const fingerprint = JSON.stringify(item.book)
     const existing = unique.get(fingerprint)
-    // An embedded card copy carries the more specific relationship.
-    if (!existing || item.source.toLowerCase().endsWith(".png"))
-      unique.set(fingerprint, item)
+    if (!existing || item.fromCharacter) unique.set(fingerprint, item)
   }
   return [...unique.values()]
 }

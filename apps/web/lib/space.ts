@@ -45,6 +45,7 @@ export const SPACE_SAMPLING_KEYS = [
   "stopSequences",
   "providerOptions",
   "replayReasoning",
+  "expandMessageMacros",
 ] as const
 
 export type SpaceSamplingKey = (typeof SPACE_SAMPLING_KEYS)[number]
@@ -61,6 +62,7 @@ const spaceSettingsShape = z.object({
     })
     .optional(),
   promptStack: policySchema(z.string().min(1)).optional(),
+  chatTemplate: policySchema(z.string().nullable()).optional(),
   variables: z
     .record(variableNameSchema, policySchema(promptVariableValueSchema))
     .refine(
@@ -78,6 +80,7 @@ const spaceSettingsShape = z.object({
   stopSequences: policySchema(z.array(z.string())).optional(),
   providerOptions: policySchema(z.record(z.string(), z.unknown())).optional(),
   replayReasoning: policySchema(z.boolean()).optional(),
+  expandMessageMacros: policySchema(z.boolean()).optional(),
   rules: z
     .array(
       z.object({
@@ -103,6 +106,7 @@ export type SpaceLockSource = { spaceId: string; spaceName: string }
 
 export type ChatSettingLocks = {
   promptStack?: SpaceLockSource
+  chatTemplate?: SpaceLockSource
   variables: Record<string, SpaceLockSource>
   model?: SpaceLockSource
   reasoning?: SpaceLockSource
@@ -147,6 +151,7 @@ export function chatSpaceOverridesToJson(value: ChatSpaceOverrides): string {
 export type ResolvedChatSettings = {
   effective: {
     promptStackId: string | null
+    chatTemplateId: string | null
     variables: Record<string, unknown>
     model: ModelConfig
     contextBookIds: string[]
@@ -407,6 +412,7 @@ export function resolveChatSettings(input: {
     model.providerOptions = { ...input.chat.model.providerOptions }
   }
   let promptStackId = input.chat.promptStackId
+  let chatTemplateId: string | null = null
   const variables: Record<string, unknown> = { ...input.chat.variables }
   const contextBookIds: string[] = []
   const contextBookState = new Map<string, boolean>()
@@ -526,6 +532,21 @@ export function resolveChatSettings(input: {
         ? Boolean(input.chat.explicit.promptStack)
         : input.chat.promptStackId !== null
     )
+    applyPolicy(
+      settings.chatTemplate,
+      source,
+      (value) => {
+        chatTemplateId = value
+      },
+      (lockSource) => {
+        if (lockSource) locks.chatTemplate = lockSource
+        else delete locks.chatTemplate
+      },
+      () => {
+        chatTemplateId = null
+      },
+      false
+    )
     for (const [name, slot] of Object.entries(settings.variables ?? {})) {
       applyPolicy(
         slot,
@@ -616,6 +637,7 @@ export function resolveChatSettings(input: {
   return {
     effective: {
       promptStackId,
+      chatTemplateId,
       variables,
       model,
       contextBookIds: [
@@ -718,6 +740,7 @@ export const spaceNameSchema = z.string().trim().min(1).max(MAX_NAME)
 export const spaceDescriptionSchema = z.string().max(MAX_DESCRIPTION)
 
 export const SETTING_SLOT_LABELS: Record<string, string> = {
+  chatTemplate: "Chat template",
   contextScanDepth: "Context scan depth",
   promptStack: "Prompt stack",
   model: "Model",
@@ -730,11 +753,13 @@ export const SETTING_SLOT_LABELS: Record<string, string> = {
   stopSequences: "Stop sequences",
   providerOptions: "Provider JSON",
   replayReasoning: "Replay reasoning",
+  expandMessageMacros: "Message macros",
 }
 
 export function definedSettingKeys(settings: SpaceSettings): string[] {
   const keys: string[] = []
   if (settings.promptStack) keys.push("promptStack")
+  if (settings.chatTemplate) keys.push("chatTemplate")
   if (settings.model) keys.push("model")
   if (settings.reasoning) keys.push("reasoning")
   for (const key of SPACE_SAMPLING_KEYS) {

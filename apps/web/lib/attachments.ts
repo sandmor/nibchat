@@ -298,6 +298,12 @@ export async function deletePendingAttachment(userId: string, id: string) {
     .where("attachment_id", "=", id)
     .executeTakeFirst()
   if (reference) throw new Error("Attachment is already in a message")
+  const templateReference = await db
+    .selectFrom("template_attachments")
+    .select("attachment_id")
+    .where("attachment_id", "=", id)
+    .executeTakeFirst()
+  if (templateReference) throw new Error("Attachment is already in a template")
   await db.deleteFrom("attachments").where("id", "=", id).execute()
   if (row.storage_key) await removeFileIfUnreferenced(row.storage_key)
 }
@@ -316,6 +322,12 @@ export async function cleanupDetachedAttachments() {
       .where("attachment_id", "=", row.id)
       .executeTakeFirst()
     if (reference) continue
+    const templateReference = await db
+      .selectFrom("template_attachments")
+      .select("attachment_id")
+      .where("attachment_id", "=", row.id)
+      .executeTakeFirst()
+    if (templateReference) continue
     await db.deleteFrom("attachments").where("id", "=", row.id).execute()
     if (row.storage_key) await removeFileIfUnreferenced(row.storage_key)
   }

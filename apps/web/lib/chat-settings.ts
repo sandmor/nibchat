@@ -22,6 +22,7 @@ export const chatConfigSchema = z.object({
   stopSequences: z.array(z.string()).optional(),
   providerOptions: z.record(z.string(), z.unknown()).optional(),
   replayReasoning: z.boolean().optional(),
+  expandMessageMacros: z.boolean().optional(),
   contextScanDepth: scanDepthSchema.optional(),
 })
 

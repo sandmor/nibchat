@@ -22,10 +22,19 @@ import { Input } from "@/components/ui/input"
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -90,6 +99,10 @@ import { PromptStackPicker } from "./prompt-stack-picker"
 import { ContextBookPicker } from "./context-book-picker"
 import { ChatVariablesPicker } from "./chat-variables-picker"
 import { ChatHeaderMore } from "./chat-header-more"
+import {
+  ChatTemplatePicker,
+  chatTemplatePickerLabel,
+} from "./chat-template-picker"
 import { ChatTranscript } from "./chat-transcript"
 import { ChatTree } from "./chat-tree"
 import { drainChatViewStateSaves } from "./chat-view-state-persistence"
@@ -100,7 +113,10 @@ import { useConversationFindSession } from "./conversation-find-session"
 import { SessionMessageEditor } from "./message-editor"
 import { type MessageEditorBindings } from "./message"
 import { ContextPreviewProvider } from "./context-preview"
-import { MessageMutationProvider } from "./message-mutations"
+import {
+  MessageMutationProvider,
+  type MessageMutationOperation,
+} from "./message-mutations"
 import {
   composerSlotId,
   clearSubmittedComposerDraft,
@@ -129,7 +145,15 @@ import {
   MAX_FILE_ATTACHMENT_BYTES,
   MAX_FILE_ATTACHMENTS,
   type NodeRow,
+  type Parts,
 } from "@/lib/types"
+import { expandPromptMacros, idleSinceFromPath } from "@/lib/prompt-macros"
+import { resolveContextEntries } from "@/lib/context-books"
+import {
+  chatTemplateDocumentSchema,
+  type ChatTemplateDocument,
+} from "@/lib/chat-template"
+import { MAX_NAME } from "@/lib/limits"
 import { analyzePdf } from "@/lib/pdf-analysis-client"
 import type { PdfAnalysis } from "@/lib/pdf-analysis"
 import {
@@ -164,6 +188,42 @@ type Props = {
   /** When set, select this node into the active path on mount. */
   selectNodeId?: string | null
   draftSpaceId?: string | null
+  draftTemplateId?: string | null
+}
+
+const EMPTY_DRAFT_TEMPLATE: ChatTemplateDocument = {
+  version: 1,
+  selectedRootId: null,
+  expandMessageMacros: false,
+  nodes: [],
+}
+
+const SAVE_TEMPLATE_NEW = "__new"
+
+function draftRowsFromTemplate(document: ChatTemplateDocument): NodeRow[] {
+  const timestamp = new Date().toISOString()
+  return document.nodes.map((node) => ({
+    id: node.id,
+    chat_id: "draft",
+    parent_id: node.parentId,
+    selected_child_id: node.selectedChildId,
+    sort_key: node.sortKey,
+    revision: 0,
+    role: node.role,
+    parts_json: JSON.stringify(node.parts),
+    search_text: "",
+    metadata_json: "{}",
+    excluded_from_context: node.excludedFromContext,
+    status: "complete",
+    created_at: timestamp,
+    updated_at: timestamp,
+  }))
+}
+
+function draftTemplateEditSlots() {
+  return Object.keys(useConversationSessionStore.getState().sessions).filter(
+    (slot) => slot.startsWith("draft:edit:") || slot.startsWith("draft:tree:")
+  )
 }
 
 function isPdfFile(file: File) {
@@ -176,10 +236,17 @@ function readChatViewState(raw: string | undefined): ChatViewState {
   return raw ? parseChatViewState(raw) : DEFAULT_CHAT_VIEW_STATE
 }
 
-function MessageLayer(props: ComponentProps<typeof ConversationFindLayer>) {
+function MessageLayer(
+  props: ComponentProps<typeof ConversationFindLayer> & {
+    resolveOperation?: (
+      operation: MessageMutationOperation
+    ) => Promise<MessageMutationOperation>
+  }
+) {
+  const { resolveOperation, ...layerProps } = props
   return (
-    <MessageMutationProvider>
-      <ConversationFindLayer {...props} />
+    <MessageMutationProvider resolveOperation={resolveOperation}>
+      <ConversationFindLayer {...layerProps} />
     </MessageMutationProvider>
   )
 }
@@ -190,6 +257,7 @@ export function ChatView({
   initial,
   selectNodeId,
   draftSpaceId: initialDraftSpaceId = null,
+  draftTemplateId: initialDraftTemplateId = null,
 }: Props) {
   const { appearance, providers: chromeProviders } = useWorkspaceChrome()
   const trpc = useTRPC()
@@ -216,6 +284,13 @@ export function ChatView({
   const [promptPickerOpen, setPromptPickerOpen] = useState(false)
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameTitle, setRenameTitle] = useState("")
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false)
+  const [saveTemplateName, setSaveTemplateName] = useState("")
+  const [replaceTemplateId, setReplaceTemplateId] = useState(SAVE_TEMPLATE_NEW)
+  const [templateOpen, setTemplateOpen] = useState(false)
+  const [pendingTemplateId, setPendingTemplateId] = useState<
+    string | null | undefined
+  >(undefined)
   const [parametersOpen, setParametersOpen] = useState(false)
   const [stackOpen, setStackOpen] = useState(false)
   const [booksOpen, setBooksOpen] = useState(false)
@@ -236,6 +311,15 @@ export function ChatView({
   const [draftSpaceId, setDraftSpaceId] = useState<string | null>(
     initialDraftSpaceId
   )
+  const [draftTemplateId, setDraftTemplateId] = useState<string | null>(
+    initialDraftTemplateId
+  )
+  const [draftTemplateDocument, setDraftTemplateDocument] =
+    useState<ChatTemplateDocument>(EMPTY_DRAFT_TEMPLATE)
+  const [draftTemplateRootId, setDraftTemplateRootId] = useState<string | null>(
+    null
+  )
+  const [draftTemplateNodes, setDraftTemplateNodes] = useState<NodeRow[]>([])
   const [treeComposerRoles, setTreeComposerRoles] = useState<
     Record<string, "user" | "assistant">
   >({})
@@ -274,6 +358,8 @@ export function ChatView({
   const [scrollTargetId, setScrollTargetId] = useState<string | null>(null)
   const paneRef = useRef<HTMLElement>(null)
   const createChatLock = useRef<Promise<string> | null>(null)
+  const draftMaterializationId = useRef(crypto.randomUUID())
+  const draftNodeIdMap = useRef<Record<string, string>>({})
   const selectedChatIdRef = useRef(selectedChatId)
   const nodeDeepLinkDone = useRef(false)
   /** Last route identity we bound deep-link / scroll lifecycle to. */
@@ -497,7 +583,72 @@ export function ChatView({
     ...trpc.workspace.listProviders.queryOptions(),
     initialData: chromeProviders,
   })
-
+  const templatesQuery = useQuery(
+    trpc.workspace.listChatTemplates.queryOptions()
+  )
+  const templateOptions = (templatesQuery.data ?? []).map((template) => ({
+    id: template.id,
+    name: template.name,
+    nodeCount: template.document.nodes.length,
+  }))
+  const appliedSpaceTemplate = useRef<string | null>(null)
+  const selectDraftTemplate = useCallback(
+    (templateId: string | null) => {
+      for (const slot of draftTemplateEditSlots()) clearSessionDraft(slot)
+      setDraftTemplateId(templateId)
+      const applyMessageMacros = (expand: boolean) => {
+        setDraftModelConfig((current) => {
+          const next = { ...current }
+          if (expand) next.expandMessageMacros = true
+          else delete next.expandMessageMacros
+          return next
+        })
+        setDraftExplicit((current) => {
+          const model = (current.model ?? []).filter(
+            (key) => key !== "expandMessageMacros"
+          )
+          if (expand) model.push("expandMessageMacros")
+          return { ...current, model }
+        })
+      }
+      if (!templateId) {
+        setDraftTemplateDocument(EMPTY_DRAFT_TEMPLATE)
+        setDraftTemplateRootId(null)
+        setDraftTemplateNodes([])
+        applyMessageMacros(false)
+        return
+      }
+      const template = templatesQuery.data?.find(
+        (item) => item.id === templateId
+      )
+      if (!template) {
+        setDraftTemplateDocument(EMPTY_DRAFT_TEMPLATE)
+        setDraftTemplateRootId(null)
+        setDraftTemplateNodes([])
+        applyMessageMacros(false)
+        return
+      }
+      const document = chatTemplateDocumentSchema.parse(
+        structuredClone(template.document)
+      )
+      setDraftTemplateDocument(document)
+      setDraftTemplateRootId(document.selectedRootId)
+      applyMessageMacros(document.expandMessageMacros)
+      setDraftTemplateNodes(draftRowsFromTemplate(document))
+    },
+    [clearSessionDraft, templatesQuery.data]
+  )
+  const requestDraftTemplate = useCallback(
+    (templateId: string | null) => {
+      if (templateId === draftTemplateId) return
+      if (draftTemplateEditSlots().length > 0) {
+        setPendingTemplateId(templateId)
+        return
+      }
+      selectDraftTemplate(templateId)
+    },
+    [draftTemplateId, selectDraftTemplate]
+  )
   const workspace = workspaceQuery.data ?? initial
   const data: WorkspaceData = useMemo(
     () =>
@@ -505,6 +656,7 @@ export function ChatView({
       workspace,
     [stoppingBuffers, streamMetas, workspace]
   )
+  const nodes = data.chat ? data.nodes : draftTemplateNodes
   useEffect(() => {
     // Draft routes can be reused by the App Router without changing the
     // component identity. Once the pending create has been handed off, an
@@ -631,6 +783,27 @@ export function ChatView({
   )
   const activeModelConfig = resolvedSettings.effective.model
   const effectivePromptStackId = resolvedSettings.effective.promptStackId
+  useEffect(() => {
+    if (mode !== "draft") return
+    const spaceTemplateId = resolvedSettings.effective.chatTemplateId
+    const urlTemplateId = initialDraftTemplateId
+    if ((spaceTemplateId || urlTemplateId) && !templatesQuery.data) return
+    const signature = JSON.stringify([spaceId, spaceTemplateId])
+    if (appliedSpaceTemplate.current === signature) return
+    const locked = Boolean(resolvedSettings.locks.chatTemplate)
+    const honorUrl =
+      Boolean(urlTemplateId) && !locked && appliedSpaceTemplate.current === null
+    appliedSpaceTemplate.current = signature
+    selectDraftTemplate(honorUrl ? urlTemplateId : spaceTemplateId)
+  }, [
+    initialDraftTemplateId,
+    mode,
+    resolvedSettings.effective.chatTemplateId,
+    resolvedSettings.locks.chatTemplate,
+    selectDraftTemplate,
+    spaceId,
+    templatesQuery.data,
+  ])
   const settingsQuery = useQuery(trpc.workspace.getSettings.queryOptions())
   const declaredVariableNames = useMemo(() => {
     const stacks = settingsQuery.data?.promptStacks ?? []
@@ -687,8 +860,20 @@ export function ChatView({
     await queryClient.invalidateQueries(trpc.workspace.get.queryFilter())
   }
 
-  const createChatMutation = useMutation(
-    trpc.workspace.createChat.mutationOptions()
+  const materializeTemplateMutation = useMutation(
+    trpc.workspace.materializeChatTemplate.mutationOptions()
+  )
+  const saveTemplateMutation = useMutation(
+    trpc.workspace.saveChatTemplateFromChat.mutationOptions({
+      onSuccess: async () => {
+        await queryClient.invalidateQueries(
+          trpc.workspace.listChatTemplates.queryFilter()
+        )
+        toast.success("Chat template saved")
+        setSaveTemplateOpen(false)
+      },
+      onError: (error) => toast.error(error.message),
+    })
   )
   const createMessageMutation = useMutation(
     trpc.workspace.createMessage.mutationOptions()
@@ -912,19 +1097,107 @@ export function ChatView({
 
   const density = appearance.density
 
+  const renderNodes = useMemo(() => {
+    if (!activeModelConfig.expandMessageMacros) return nodes
+    const now = new Date()
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    const literalPath = resolveActivePath(
+      nodes,
+      data.chat?.selected_root_node_id ?? draftTemplateRootId
+    )
+    const baseMacroContext = {
+      now,
+      timeZone,
+      idleSince: idleSinceFromPath(literalPath),
+      ...(data.chat
+        ? {
+            chat: {
+              id: data.chat.id,
+              createdAt: new Date(data.chat.created_at),
+            },
+          }
+        : {}),
+      variables: resolvedSettings.effective.variables as Record<
+        string,
+        string | boolean
+      >,
+    }
+    const contextEntries = resolveContextEntries({
+      books: previewContextBooks,
+      messages: literalPath.flatMap((node) => {
+        if (
+          node.excluded_from_context ||
+          (node.role !== "user" && node.role !== "assistant")
+        )
+          return []
+        return [
+          {
+            role: node.role,
+            text: parseJson<Parts>(node.parts_json, [])
+              .flatMap((part) => (part.type === "text" ? [part.text] : []))
+              .join("\n"),
+          },
+        ]
+      }),
+      scanDepth: activeModelConfig.contextScanDepth,
+      macroContext: baseMacroContext,
+    })
+    const macroContext = {
+      ...baseMacroContext,
+      contextEntries: contextEntries.namespaces,
+    }
+    return nodes.map((node) => {
+      const literalParts = parseJson<Parts>(node.parts_json, [])
+      const parts = literalParts.map((part) =>
+        part.type === "text"
+          ? { ...part, text: expandPromptMacros(part.text, macroContext) }
+          : part
+      )
+      return {
+        ...node,
+        parts_json: JSON.stringify(parts),
+        metadata_json: JSON.stringify({
+          ...parseJson<Record<string, unknown>>(node.metadata_json, {}),
+          literalParts,
+          liveMacroContext: {
+            ...macroContext,
+            now: now.toISOString(),
+            ...(macroContext.chat
+              ? {
+                  chat: {
+                    ...macroContext.chat,
+                    createdAt: macroContext.chat.createdAt.toISOString(),
+                  },
+                }
+              : {}),
+          },
+        }),
+      }
+    })
+  }, [
+    data.chat,
+    nodes,
+    draftTemplateRootId,
+    previewContextBooks,
+    activeModelConfig.contextScanDepth,
+    activeModelConfig.expandMessageMacros,
+    resolvedSettings.effective.variables,
+  ])
+
   const activePath = useMemo(
     () =>
-      data.chat
-        ? resolveActivePath(data.nodes, data.chat.selected_root_node_id)
-        : [],
-    [data]
+      resolveActivePath(
+        renderNodes,
+        data.chat?.selected_root_node_id ?? draftTemplateRootId
+      ),
+    [data.chat?.selected_root_node_id, draftTemplateRootId, renderNodes]
   )
   const pathIds = useMemo(() => activePath.map((node) => node.id), [activePath])
   const find = useConversationFindSession({
     chatIdentity,
     view,
     setView: setPersistedView,
-    nodes: data.nodes,
+    nodes,
     pathIds,
     pathChatId: data.chat?.id ?? chatId,
     renameOpen,
@@ -1119,9 +1392,7 @@ export function ChatView({
     return !failed
   }
 
-  async function ensureChatId(
-    modelConfig: ModelConfigLocal
-  ): Promise<{ chatId: string; created: boolean }> {
+  async function ensureChatId(): Promise<{ chatId: string; created: boolean }> {
     if (data.chat?.id) return { chatId: data.chat.id, created: false }
     if (selectedChatId) return { chatId: selectedChatId, created: false }
     // Draft already created this mount (pending replace / second send).
@@ -1134,16 +1405,27 @@ export function ChatView({
     let ownsCreate = false
     if (!createChatLock.current) {
       ownsCreate = true
-      createChatLock.current = createChatMutation
+      const createInput = {
+        config: draftModelConfig,
+        promptStackId: draftPromptStackId,
+        variables: draftVariables,
+        spaceId: draftSpaceId,
+        contextBookIds: draftContextBookIds,
+        explicit: draftExplicit,
+      }
+      createChatLock.current = materializeTemplateMutation
         .mutateAsync({
-          config: draftModelConfig,
-          promptStackId: draftPromptStackId,
-          variables: draftVariables,
-          spaceId: draftSpaceId,
-          contextBookIds: draftContextBookIds,
-          explicit: draftExplicit,
+          ...createInput,
+          ...(draftTemplateId ? { templateId: draftTemplateId } : {}),
+          document: draftTemplateDocument,
+          draftId: draftMaterializationId.current,
+          selectedRootId: draftTemplateRootId,
+          selectedChildren: Object.fromEntries(
+            draftTemplateNodes.map((node) => [node.id, node.selected_child_id])
+          ),
         })
-        .then((chat) => {
+        .then(({ chat, nodes: createdNodes, nodeIds }) => {
+          draftNodeIdMap.current = nodeIds
           // Track the new id before replace so stream UI still matches on /chat/new.
           selectedChatIdRef.current = chat.id
           setPendingChatId(chat.id)
@@ -1151,7 +1433,7 @@ export function ChatView({
             chats: [chat, ...knownChats.filter((c) => c.id !== chat.id)],
             spaces: workspace.spaces,
             chat,
-            nodes: [],
+            nodes: createdNodes,
             activeGenerations: [],
           }
           queryClient.setQueryData(
@@ -1176,6 +1458,50 @@ export function ChatView({
     }
     const id = await createChatLock.current
     return { chatId: id, created: ownsCreate }
+  }
+
+  async function resolveDraftMessageOperation(
+    operation: MessageMutationOperation
+  ): Promise<MessageMutationOperation> {
+    if (data.chat) return operation
+    const ensured = await ensureChatId()
+    if (ensured.created)
+      router.replace(`/chat/${ensured.chatId}`, { scroll: false })
+    const remap = (nodeId: string | null | undefined) =>
+      nodeId ? (draftNodeIdMap.current[nodeId] ?? nodeId) : nodeId
+    if (operation.kind === "context")
+      return {
+        ...operation,
+        chatId: ensured.chatId,
+        input: { ...operation.input, nodeId: remap(operation.input.nodeId)! },
+      }
+    if (operation.kind === "move")
+      return {
+        ...operation,
+        input: {
+          ...operation.input,
+          nodeId: remap(operation.input.nodeId)!,
+          destinationParentId:
+            remap(operation.input.destinationParentId) ?? null,
+          ...(operation.input.beforeNodeId
+            ? { beforeNodeId: remap(operation.input.beforeNodeId)! }
+            : {}),
+        },
+      }
+    if (operation.kind === "fork")
+      return {
+        kind: "fork",
+        input: { ...operation.input, nodeId: remap(operation.input.nodeId)! },
+      }
+    if (operation.kind === "replace")
+      return {
+        kind: "replace",
+        input: { ...operation.input, nodeId: remap(operation.input.nodeId)! },
+      }
+    return {
+      kind: "delete",
+      input: { ...operation.input, nodeId: remap(operation.input.nodeId)! },
+    }
   }
 
   /**
@@ -1207,7 +1533,7 @@ export function ChatView({
     let ensuredId: string | null = null
     let created = false
     try {
-      const ensured = await ensureChatId(modelConfig)
+      const ensured = await ensureChatId()
       ensuredId = ensured.chatId
       created = ensured.created
       // Start the stream before URL replace so remount sees Zustand state.
@@ -1216,13 +1542,21 @@ export function ChatView({
           ? {
               chatId: ensuredId,
               intent: "generate",
-              parentNodeId: created ? null : contextLeafId,
+              parentNodeId: created
+                ? contextLeafId
+                  ? (draftNodeIdMap.current[contextLeafId] ?? null)
+                  : null
+                : contextLeafId,
               attachSelection: true,
             }
           : {
               chatId: ensuredId,
               intent: "submit",
-              parentNodeId: created ? null : contextLeafId,
+              parentNodeId: created
+                ? contextLeafId
+                  ? (draftNodeIdMap.current[contextLeafId] ?? null)
+                  : null
+                : contextLeafId,
               content,
               attachSelection: true,
               ...(pendingAttachments.length
@@ -1399,12 +1733,22 @@ export function ChatView({
   }
 
   async function streamRegenerate(assistantNodeId: string) {
-    if (!data.chat) return
-    await runStream({
-      chatId: data.chat.id,
-      intent: "regenerate",
-      assistantNodeId,
-    })
+    const ensured = await ensureChatId()
+    await runStream(
+      {
+        chatId: ensured.chatId,
+        intent: "regenerate",
+        assistantNodeId: ensured.created
+          ? (draftNodeIdMap.current[assistantNodeId] ?? assistantNodeId)
+          : assistantNodeId,
+      },
+      ensured.created
+        ? {
+            onStreamStarted: () =>
+              router.replace(`/chat/${ensured.chatId}`, { scroll: false }),
+          }
+        : undefined
+    )
   }
 
   function treeSlot(anchor: string | null) {
@@ -1412,7 +1756,6 @@ export function ChatView({
   }
 
   function openTreeDraft(anchor: string | null) {
-    if (!data.chat) return
     const slot = treeSlot(anchor)
     if (!hasComposerDraft(slot)) updateSessionDraft(slot, { text: "" })
   }
@@ -1421,7 +1764,6 @@ export function ChatView({
     anchor: string | null,
     mode: "discard" | "sent" = "discard"
   ) {
-    if (!data.chat) return
     const slot = treeSlot(anchor)
     const draft = readComposerDraft(slot)
     for (const attachment of draft.attachments) {
@@ -1461,7 +1803,6 @@ export function ChatView({
   }
 
   async function streamTreeSend(parentNodeId: string | null) {
-    if (!data.chat) return false
     const slot = treeSlot(parentNodeId)
     const draft = readComposerDraft(slot)
     const content = draft.text.trim()
@@ -1471,7 +1812,11 @@ export function ChatView({
     if (!content && draft.attachments.length === 0) {
       if (role !== "user") return false
       if (!ensureModelReady(activeModelConfig)) return false
-      const treeChatId = data.chat.id
+      const ensured = await ensureChatId()
+      const persistedParentId = parentNodeId
+        ? (draftNodeIdMap.current[parentNodeId] ?? parentNodeId)
+        : null
+      const treeChatId = ensured.chatId
       return new Promise<boolean>((resolve) => {
         let started = false
         let settled = false
@@ -1484,7 +1829,7 @@ export function ChatView({
           {
             chatId: treeChatId,
             intent: "generate",
-            parentNodeId,
+            parentNodeId: persistedParentId,
           },
           {
             suppressSelectionFollow: true,
@@ -1502,16 +1847,22 @@ export function ChatView({
         toast.error("Assistant messages cannot contain attachments.")
         return false
       }
+      const ensured = await ensureChatId()
+      const persistedParentId = parentNodeId
+        ? (draftNodeIdMap.current[parentNodeId] ?? parentNodeId)
+        : null
       try {
         await createMessageMutation.mutateAsync({
-          chatId: data.chat.id,
-          parentId: parentNodeId,
+          chatId: ensured.chatId,
+          parentId: persistedParentId,
           role,
           parts: [{ type: "text", text: content }],
           attachSelection: false,
         })
         updateSessionDraft(slot, { text: "", attachments: [] })
         await invalidateWorkspace()
+        if (ensured.created)
+          router.replace(`/chat/${ensured.chatId}`, { scroll: false })
         return true
       } catch (error) {
         toast.error(
@@ -1521,7 +1872,11 @@ export function ChatView({
       }
     }
     if (!ensureModelReady(activeModelConfig)) return false
-    const treeChatId = data.chat.id
+    const ensured = await ensureChatId()
+    const persistedParentId = parentNodeId
+      ? (draftNodeIdMap.current[parentNodeId] ?? parentNodeId)
+      : null
+    const treeChatId = ensured.chatId
     const pendingAttachments = [...draft.attachments]
     updateSessionDraft(slot, {
       attachments: pendingAttachments.map((item) => ({
@@ -1541,7 +1896,7 @@ export function ChatView({
         {
           chatId: treeChatId,
           intent: "submit",
-          parentNodeId,
+          parentNodeId: persistedParentId,
           content,
           ...(pendingAttachments.length
             ? {
@@ -1561,6 +1916,8 @@ export function ChatView({
             }
           },
           onWorkspaceReady: () => {
+            if (ensured.created)
+              router.replace(`/chat/${ensured.chatId}`, { scroll: false })
             finish(true)
           },
         }
@@ -1580,11 +1937,12 @@ export function ChatView({
   }
 
   async function streamEditSend(node: NodeRow) {
-    if (!data.chat || !ensureModelReady(activeModelConfig)) return false
     const slot = messageEditSlotId(node.chat_id, node.id)
     if (isEditorSending(slot)) return false
     const session = useConversationSessionStore.getState().sessions[slot]
-    if (!session || session.role !== "user") return false
+    if (!session) return false
+    if (session.role === "user" && !ensureModelReady(activeModelConfig))
+      return false
     const authored = authoredPartsFromSession(session)
     const parts = durableAuthoredParts(authored.parts)
     if (isEmptyParts(parts) && authored.attachments.length === 0) return false
@@ -1592,7 +1950,7 @@ export function ChatView({
       return false
     if (session.attachments.some((attachment) => attachment.uploading))
       return false
-    const chatId = data.chat.id
+    let chatId = data.chat?.id ?? null
     const pendingAttachments = [...session.attachments]
     setSessionSending(slot, true)
     updateSessionDraft(slot, {
@@ -1603,21 +1961,32 @@ export function ChatView({
     })
     let persisted = false
     try {
+      const ensured = await ensureChatId()
+      chatId = ensured.chatId
+      const persistedNodeId = ensured.created
+        ? (draftNodeIdMap.current[node.id] ?? node.id)
+        : node.id
       const forked = await forkMessagePartsMutation.mutateAsync({
-        nodeId: node.id,
+        nodeId: persistedNodeId,
         parts,
         attachments: authored.attachments,
-        role: "user",
+        role: session.role,
         attachSelection: view === "linear",
       })
       persisted = true
       // The authored branch is durable now; close the editor before starting
       // generation so a retry cannot fork the same draft again.
       closeMessageEdit(node, "sent")
+      if (session.role === "assistant") {
+        await invalidateWorkspace()
+        if (ensured.created)
+          router.replace(`/chat/${ensured.chatId}`, { scroll: false })
+        return true
+      }
       let started = false
       await runStream(
         {
-          chatId,
+          chatId: chatId,
           intent: "generate",
           parentNodeId: forked.id,
           attachSelection: view === "linear",
@@ -1626,11 +1995,13 @@ export function ChatView({
           suppressSelectionFollow: true,
           onStreamStarted: () => {
             started = true
+            if (ensured.created)
+              router.replace(`/chat/${ensured.chatId}`, { scroll: false })
           },
           onWorkspaceReady: async ({ assistantNodeId }) => {
             if (view === "linear")
               await selectPathMutation.mutateAsync({
-                chatId,
+                chatId: chatId!,
                 nodeId: assistantNodeId,
               })
           },
@@ -1653,10 +2024,24 @@ export function ChatView({
   }
 
   async function streamTreeRegenerate(assistantNodeId: string) {
-    if (!data.chat) return
+    const ensured = await ensureChatId()
     await runStream(
-      { chatId: data.chat.id, intent: "regenerate", assistantNodeId },
-      { suppressSelectionFollow: true }
+      {
+        chatId: ensured.chatId,
+        intent: "regenerate",
+        assistantNodeId: ensured.created
+          ? (draftNodeIdMap.current[assistantNodeId] ?? assistantNodeId)
+          : assistantNodeId,
+      },
+      {
+        suppressSelectionFollow: true,
+        ...(ensured.created
+          ? {
+              onStreamStarted: () =>
+                router.replace(`/chat/${ensured.chatId}`, { scroll: false }),
+            }
+          : {}),
+      }
     )
   }
 
@@ -1733,7 +2118,7 @@ export function ChatView({
   ])
 
   const pathVisibleStreams = streamsForActiveChat.filter(([, stream]) => {
-    const place = streamPlacement(stream, activePath, data.nodes)
+    const place = streamPlacement(stream, activePath, nodes)
     return place === "inline" || place === "after-tip"
   })
 
@@ -1744,8 +2129,7 @@ export function ChatView({
 
   const afterTipStreams = streamsForActiveChat
     .filter(
-      ([, stream]) =>
-        streamPlacement(stream, activePath, data.nodes) === "after-tip"
+      ([, stream]) => streamPlacement(stream, activePath, nodes) === "after-tip"
     )
     .map(([streamId, stream]) => ({ streamId, nodeId: stream.nodeId }))
 
@@ -1770,29 +2154,39 @@ export function ChatView({
       activeModelConfig.contextScanDepth,
     ]
   )
-  const treeSlotSignature = useTreeDraftSlotSignature(data.chat?.id)
+  const sessionChatId = data.chat?.id ?? "draft"
+  const treeSlotSignature = useTreeDraftSlotSignature(sessionChatId)
   const treeDraftAnchors = useMemo(() => {
-    if (!data.chat) return new Set<string | null>()
     const anchors = treeDraftAnchorsForChat(
       useConversationSessionStore.getState().sessions,
-      data.chat.id
+      sessionChatId
     )
     // Hide the composer in the same render the user node appears, so layout
     // does not slide the open plus (composer) to the right of the new child.
     for (const [nodeId, layoutId] of Object.entries(composeMorphs)) {
-      if (!data.nodes.some((node) => node.id === nodeId)) continue
+      if (!nodes.some((node) => node.id === nodeId)) continue
       anchors.delete(composeLayoutAnchor(layoutId))
     }
     return anchors
-  }, [data.chat, data.nodes, treeSlotSignature, composeMorphs])
-  const editSlotSignature = useMessageEditSlotSignature(data.chat?.id)
+  }, [sessionChatId, nodes, treeSlotSignature, composeMorphs])
+  const editSlotSignature = useMessageEditSlotSignature(sessionChatId)
   const editingNodeIds = useMemo(() => {
-    if (!data.chat || !editSlotSignature) return new Set<string>()
+    if (!editSlotSignature) return new Set<string>()
     return messageEditNodeIdsForChat(
       useConversationSessionStore.getState().sessions,
-      data.chat.id
+      sessionChatId
     )
-  }, [data.chat, editSlotSignature])
+  }, [sessionChatId, editSlotSignature])
+
+  const showTemplatePicker =
+    !data.chat &&
+    (templateOptions.length > 0 ||
+      Boolean(draftTemplateId) ||
+      Boolean(settingLocks.chatTemplate))
+  const templatePickerLabel = chatTemplatePickerLabel(
+    templateOptions,
+    draftTemplateId
+  )
 
   const messageEditor: MessageEditorBindings = {
     mcpAvailable: mcpAvailableForGeneration,
@@ -1814,9 +2208,35 @@ export function ChatView({
     onRevealContextMessage: setScrollTargetId,
   }
 
+  function submitSaveTemplate() {
+    if (
+      !data.chat ||
+      !saveTemplateName.trim() ||
+      saveTemplateMutation.isPending
+    )
+      return
+    if (inFlightCount > 0) {
+      toast.error("Wait for replies to finish before saving a template")
+      return
+    }
+    const existing = templatesQuery.data?.find(
+      (template) => template.id === replaceTemplateId
+    )
+    saveTemplateMutation.mutate({
+      chatId: data.chat.id,
+      name: saveTemplateName.trim(),
+      ...(existing
+        ? {
+            templateId: existing.id,
+            expectedRevision: existing.revision,
+          }
+        : {}),
+    })
+  }
+
   return (
     <ContextPreviewProvider
-      nodes={data.nodes}
+      nodes={renderNodes}
       chatStackId={effectivePromptStackId}
       draftStackId={effectivePromptStackId}
       hasChat={Boolean(data.chat)}
@@ -1859,16 +2279,31 @@ export function ChatView({
               {displayChatTitle(data.chat?.title)}
             </h1>
             <p className="hidden truncate text-xs text-muted-foreground sm:block">
-              Each reply can become its own direction.
+              {!data.chat &&
+              templateOptions.some(
+                (template) => template.id === draftTemplateId
+              )
+                ? `Starting from ${templatePickerLabel}. Send to create the chat.`
+                : "Each reply can become its own direction."}
             </p>
           </div>
           <div className="flex min-w-0 flex-nowrap items-center gap-0.5 overflow-hidden sm:max-w-[min(44rem,78%)] sm:shrink-0 sm:gap-1">
+            {showTemplatePicker ? (
+              <div className="hidden min-w-0 md:contents">
+                <ChatTemplatePicker
+                  templates={templateOptions}
+                  value={draftTemplateId}
+                  onSelect={requestDraftTemplate}
+                  lockedBy={settingLocks.chatTemplate}
+                />
+              </div>
+            ) : null}
             <Button
               type="button"
               variant="ghost"
               size="sm"
               className="shrink-0 gap-1.5"
-              disabled={!data.chat}
+              disabled={!data.chat && nodes.length === 0}
               aria-label={view === "tree" ? "Linear" : "Tree"}
               onClick={() =>
                 setPersistedView((current) =>
@@ -1964,6 +2399,22 @@ export function ChatView({
             </div>
             <ChatHeaderMore
               compactItems={[
+                ...(showTemplatePicker
+                  ? [
+                      {
+                        label: `Template · ${templatePickerLabel}`,
+                        onSelect: () => {
+                          if (settingLocks.chatTemplate) {
+                            router.push(
+                              `/space/${settingLocks.chatTemplate.spaceId}`
+                            )
+                            return
+                          }
+                          setTemplateOpen(true)
+                        },
+                      },
+                    ]
+                  : []),
                 {
                   label: "Prompt stack",
                   onSelect: () => {
@@ -1991,6 +2442,20 @@ export function ChatView({
                 },
               ]}
               items={[
+                ...(data.chat
+                  ? [
+                      {
+                        label: "Save as template",
+                        onSelect: () => {
+                          setSaveTemplateName(
+                            data.chat?.title?.trim() || "New template"
+                          )
+                          setReplaceTemplateId(SAVE_TEMPLATE_NEW)
+                          setSaveTemplateOpen(true)
+                        },
+                      },
+                    ]
+                  : []),
                 {
                   label: "Chat settings",
                   onSelect: () => setParametersOpen(true),
@@ -1999,6 +2464,17 @@ export function ChatView({
             />
           </div>
         </header>
+        {showTemplatePicker ? (
+          <ChatTemplatePicker
+            hideTrigger
+            open={templateOpen}
+            onOpenChange={setTemplateOpen}
+            templates={templateOptions}
+            value={draftTemplateId}
+            onSelect={requestDraftTemplate}
+            lockedBy={settingLocks.chatTemplate}
+          />
+        ) : null}
         <PromptStackPicker
           hideTrigger
           open={stackOpen}
@@ -2076,17 +2552,25 @@ export function ChatView({
           }}
         />
 
-        <MessageLayer value={find.layerValue}>
+        <MessageLayer
+          value={find.layerValue}
+          resolveOperation={resolveDraftMessageOperation}
+        >
           {view === "linear" ? (
             <ChatTranscript
               chatKey={chatKey}
               density={density}
               activePath={activePath}
-              nodes={data.nodes}
+              nodes={renderNodes}
               providers={providers}
               streamIdByNodeId={streamIdByNodeId}
               afterTipStreams={afterTipStreams}
               showEmpty={showEmpty}
+              emptyHint={
+                showTemplatePicker
+                  ? "Or choose a chat template to start from a saved conversation."
+                  : undefined
+              }
               ariaBusy={ariaBusy}
               animate={animate}
               transition={transition}
@@ -2096,14 +2580,24 @@ export function ChatView({
               onScrollTargetConsumed={consumeScrollTarget}
               findLocateKey={find.locateKey}
               onSelect={(parentId, childId) => {
-                if (parentId)
+                if (!data.chat) {
+                  if (parentId)
+                    setDraftTemplateNodes((current) =>
+                      current.map((node) =>
+                        node.id === parentId
+                          ? { ...node, selected_child_id: childId }
+                          : node
+                      )
+                    )
+                  else setDraftTemplateRootId(childId)
+                } else if (parentId)
                   selectChildMutation.mutate({
                     nodeId: parentId,
                     childId,
                   })
                 else
                   selectRootMutation.mutate({
-                    chatId: data.chat!.id,
+                    chatId: data.chat.id,
                     nodeId: childId,
                   })
                 // User-driven branch navigation — bring the selected tip into view.
@@ -2117,7 +2611,7 @@ export function ChatView({
           ) : (
             <ChatTree
               key={chatIdentity}
-              nodes={data.nodes}
+              nodes={renderNodes}
               activePath={activePath}
               draftAnchors={treeDraftAnchors}
               editingNodeIds={editingNodeIds}
@@ -2204,9 +2698,9 @@ export function ChatView({
                 streamsForActiveChat.forEach(([id]) => stopStream(id))
               }
               initialCamera={renderedViewState.camera}
-              onCameraChange={(camera) =>
-                persistTreeCamera(data.chat!.id, camera)
-              }
+              onCameraChange={(camera) => {
+                if (data.chat) persistTreeCamera(data.chat.id, camera)
+              }}
             />
           )}
           <AnimatePresence>
@@ -2488,6 +2982,124 @@ export function ChatView({
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        <Dialog open={saveTemplateOpen} onOpenChange={setSaveTemplateOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Save chat template</DialogTitle>
+              <DialogDescription>
+                Saves this conversation&apos;s complete message tree, including
+                branches. New chats can start from it, and a space can use it as
+                the default.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-3">
+              <div className="grid gap-1.5">
+                <Label htmlFor="save-template-name">Name</Label>
+                <Input
+                  id="save-template-name"
+                  value={saveTemplateName}
+                  maxLength={MAX_NAME}
+                  onChange={(event) => setSaveTemplateName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter") return
+                    event.preventDefault()
+                    submitSaveTemplate()
+                  }}
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="save-template-replace">Save as</Label>
+                <Select
+                  value={replaceTemplateId}
+                  items={{
+                    [SAVE_TEMPLATE_NEW]: "New template",
+                    ...Object.fromEntries(
+                      (templatesQuery.data ?? []).map((template) => [
+                        template.id,
+                        `Replace ${template.name}`,
+                      ])
+                    ),
+                  }}
+                  onValueChange={(value) => {
+                    if (value == null) return
+                    const id = String(value)
+                    setReplaceTemplateId(id)
+                    const selected = templatesQuery.data?.find(
+                      (template) => template.id === id
+                    )
+                    if (selected) setSaveTemplateName(selected.name)
+                  }}
+                >
+                  <SelectTrigger id="save-template-replace" className="w-full">
+                    <SelectValue placeholder="New template" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={SAVE_TEMPLATE_NEW}>
+                      New template
+                    </SelectItem>
+                    {(templatesQuery.data ?? []).map((template) => (
+                      <SelectItem key={template.id} value={template.id}>
+                        Replace {template.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {replaceTemplateId !== SAVE_TEMPLATE_NEW ? (
+                <p className="text-xs text-muted-foreground">
+                  This overwrites the saved tree. Existing chats stay as they
+                  are.
+                </p>
+              ) : null}
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setSaveTemplateOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                disabled={
+                  !data.chat ||
+                  !saveTemplateName.trim() ||
+                  saveTemplateMutation.isPending ||
+                  inFlightCount > 0
+                }
+                onClick={submitSaveTemplate}
+              >
+                {replaceTemplateId === SAVE_TEMPLATE_NEW ? "Save" : "Replace"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+        <AlertDialog
+          open={pendingTemplateId !== undefined}
+          onOpenChange={(open) => {
+            if (!open) setPendingTemplateId(undefined)
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Switch templates?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Unfinished message edits in this draft will be discarded.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Keep editing</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  if (pendingTemplateId === undefined) return
+                  selectDraftTemplate(pendingTemplateId)
+                  setPendingTemplateId(undefined)
+                }}
+              >
+                Switch template
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </section>
     </ContextPreviewProvider>
   )

@@ -63,6 +63,11 @@ describe("applySchema", () => {
     await db.selectFrom("import_nodes").select("position").limit(1).execute()
     await db.selectFrom("import_assets").select("state").limit(1).execute()
     await db
+      .selectFrom("import_book_mappings")
+      .select("source_fingerprint")
+      .limit(1)
+      .execute()
+    await db
       .selectFrom("message_attachments")
       .select("attachment_id")
       .limit(1)

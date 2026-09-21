@@ -1,5 +1,9 @@
 import { expect, test } from "@playwright/test"
-import { ensureWorkspace, openBranchPrev } from "./helpers/workspace"
+import {
+  ensureWorkspace,
+  openBranchNext,
+  openBranchPrev,
+} from "./helpers/workspace"
 
 function pngCard(card: unknown) {
   const encoder = new TextEncoder()
@@ -51,7 +55,7 @@ test("imports a SillyTavern JSONL with its selected swipe as a branch", async ({
     page.getByText("Import conversations", { exact: true })
   ).toBeVisible()
   await page.getByRole("button", { name: "SillyTavern" }).click()
-  await page.locator('input[type="file"][accept*=".jsonl"]').setInputFiles({
+  await page.locator('input[type="file"][multiple]').setInputFiles({
     name: `${title}.jsonl`,
     mimeType: "application/jsonl",
     buffer: Buffer.from(jsonl),
@@ -77,18 +81,25 @@ test("imports a SillyTavern character card with no chats", async ({ page }) => {
   await ensureWorkspace(page)
   const name = `ST card ${Date.now()}`
 
+  const card = pngCard({
+    spec: "chara_card_v2",
+    data: {
+      name,
+      description: "Imported without chats",
+      first_mes: "Primary greeting",
+      alternate_greetings: ["Alternate greeting"],
+    },
+  })
+
   await page.goto("/settings")
   await page.getByRole("button", { name: "SillyTavern" }).click()
   await expect(
     page.getByText("Import from SillyTavern", { exact: true })
   ).toBeVisible()
-  await page.locator('input[type="file"][accept*=".png"]').setInputFiles({
+  await page.locator('input[type="file"][multiple]').setInputFiles({
     name: `${name}.png`,
     mimeType: "image/png",
-    buffer: pngCard({
-      spec: "chara_card_v2",
-      data: { name, description: "Imported without chats" },
-    }),
+    buffer: card,
   })
   await expect(page.getByText(name, { exact: true })).toBeVisible({
     timeout: 15_000,
@@ -107,4 +118,62 @@ test("imports a SillyTavern character card with no chats", async ({ page }) => {
     page.getByRole("heading", { name: "Spaces inside" })
   ).toBeVisible({ timeout: 15_000 })
   await expect(page.getByRole("list").getByRole("link", { name })).toBeVisible()
+
+  await page.goto("/chat/new")
+  await page.getByRole("button", { name: /Chat template/ }).click()
+  await page.getByRole("button", { name: `${name} 2 messages` }).click()
+  await expect(page.getByText("Primary greeting", { exact: true })).toBeVisible(
+    { timeout: 15_000 }
+  )
+  await openBranchNext(page)
+  await expect(
+    page.getByText("Alternate greeting", { exact: true })
+  ).toBeVisible()
+  await expect(page).toHaveURL(/\/chat\/new$/)
+})
+
+test("imports a SillyTavern world info JSON as a context book", async ({
+  page,
+}) => {
+  await ensureWorkspace(page)
+  const name = `ST world ${Date.now()}`
+  const worldInfo = {
+    name: `${name}.json`,
+    mimeType: "application/json" as const,
+    buffer: Buffer.from(
+      JSON.stringify({
+        name,
+        entries: {
+          1: {
+            uid: 1,
+            comment: "Castle",
+            key: ["castle"],
+            content: "Welcome {{char}}.",
+            position: 7,
+          },
+        },
+      })
+    ),
+  }
+
+  await page.goto("/settings")
+  await page.getByRole("button", { name: "SillyTavern" }).click()
+  await expect(
+    page.getByText("Import from SillyTavern", { exact: true })
+  ).toBeVisible()
+  await page.locator('input[type="file"][multiple]').setInputFiles(worldInfo)
+  await expect(page.getByText(name, { exact: true })).toBeVisible({
+    timeout: 15_000,
+  })
+  await expect(
+    page.getByRole("button", { name: "Import 1 context book" })
+  ).toBeVisible()
+  await page.getByRole("button", { name: "Import 1 context book" }).click()
+  await expect(page.getByText("Imported 1 context book")).toBeVisible({
+    timeout: 20_000,
+  })
+
+  await expect(
+    page.getByRole("combobox", { name: "Selected context book" })
+  ).toHaveText(name, { timeout: 15_000 })
 })

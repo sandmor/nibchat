@@ -8,7 +8,18 @@ import {
   claimUploadedAttachments,
 } from "@/lib/attachments"
 import { messagePartsSchema, searchTextFromParts } from "@/lib/agent/parts"
-import { prepareChatRow, createSpace } from "@/lib/chat-service"
+import {
+  prepareChatRow,
+  createSpace,
+  updateSpace,
+  createContextBook,
+  updateContextBook,
+  includeContextBookInSpace,
+} from "@/lib/chat-service"
+import {
+  contextBookFingerprint,
+  type ContextBookDocument,
+} from "@/lib/context-books"
 import type { AttachmentPart, ImportAssetsTable, Parts } from "@/lib/types"
 import { MAX_ATTACHMENT_TEXT_CHARS } from "@/lib/types"
 import {
@@ -25,7 +36,7 @@ import type {
   ImportNode,
   ImportOutcome,
 } from "@/lib/imports/model"
-import type { SpaceSettings } from "@/lib/space"
+import { parseSpaceSettings, type SpaceSettings } from "@/lib/space"
 
 type Scope = {
   userId: string
@@ -166,6 +177,146 @@ export async function listImportSpaceMappings(userId: string, source: string) {
     .execute()
 }
 
+export async function listImportBookMappings(userId: string, source: string) {
+  return db
+    .selectFrom("import_book_mappings")
+    .innerJoin(
+      "context_books",
+      "context_books.id",
+      "import_book_mappings.context_book_id"
+    )
+    .select([
+      "import_book_mappings.entity_id as entityId",
+      "import_book_mappings.source_fingerprint as fingerprint",
+      "context_books.id as bookId",
+      "context_books.name as bookName",
+    ])
+    .where("import_book_mappings.user_id", "=", userId)
+    .where("import_book_mappings.source", "=", source)
+    .where("context_books.user_id", "=", userId)
+    .execute()
+}
+
+async function rememberImportBook(
+  userId: string,
+  source: string,
+  entityId: string,
+  bookId: string,
+  fingerprint: string
+) {
+  await db
+    .insertInto("import_book_mappings")
+    .values({
+      user_id: userId,
+      source,
+      entity_id: entityId,
+      context_book_id: bookId,
+      source_fingerprint: fingerprint,
+      created_at: now(),
+    })
+    .onConflict((oc) =>
+      oc.columns(["user_id", "source", "entity_id"]).doUpdateSet({
+        context_book_id: bookId,
+        source_fingerprint: fingerprint,
+      })
+    )
+    .execute()
+}
+
+function importBookOutcome(
+  book: { id: string; name: string },
+  flags: { created: boolean; replaced: boolean; changed: boolean }
+) {
+  return { id: book.id, name: book.name, ...flags }
+}
+
+/** Reuse a previously imported context book unless `replace` is set. Content is
+ * only written on first create or an explicit replace, so a later export cannot
+ * overwrite user edits by default. Deleting the book drops the mapping. */
+export async function resolveImportBook(input: {
+  userId: string
+  source: string
+  entityId: string
+  name: string
+  book: ContextBookDocument
+  spaceId?: string
+  replace?: boolean
+}) {
+  const fingerprint = contextBookFingerprint(input.book)
+  const mapped = await db
+    .selectFrom("import_book_mappings")
+    .select(["context_book_id", "source_fingerprint"])
+    .where("user_id", "=", input.userId)
+    .where("source", "=", input.source)
+    .where("entity_id", "=", input.entityId)
+    .executeTakeFirst()
+  if (mapped) {
+    const existing = await db
+      .selectFrom("context_books")
+      .select(["id", "name"])
+      .where("id", "=", mapped.context_book_id)
+      .where("user_id", "=", input.userId)
+      .executeTakeFirst()
+    if (existing) {
+      const changed = mapped.source_fingerprint !== fingerprint
+      if (input.replace) {
+        const updated = await updateContextBook(input.userId, existing.id, {
+          name: input.name,
+          book: input.book,
+        })
+        await rememberImportBook(
+          input.userId,
+          input.source,
+          input.entityId,
+          updated.id,
+          fingerprint
+        )
+        if (input.spaceId)
+          await includeContextBookInSpace(
+            input.userId,
+            updated.id,
+            input.spaceId,
+            { force: true }
+          )
+        return importBookOutcome(updated, {
+          created: false,
+          replaced: true,
+          changed,
+        })
+      }
+      if (input.spaceId)
+        await includeContextBookInSpace(
+          input.userId,
+          existing.id,
+          input.spaceId
+        )
+      return importBookOutcome(existing, {
+        created: false,
+        replaced: false,
+        changed,
+      })
+    }
+  }
+  const created = await createContextBook({
+    userId: input.userId,
+    name: input.name,
+    book: input.book,
+    spaceId: input.spaceId,
+  })
+  await rememberImportBook(
+    input.userId,
+    input.source,
+    input.entityId,
+    created.id,
+    fingerprint
+  )
+  return importBookOutcome(created, {
+    created: true,
+    replaced: false,
+    changed: false,
+  })
+}
+
 async function rememberImportSpace(
   userId: string,
   source: string,
@@ -189,8 +340,9 @@ async function rememberImportSpace(
     .execute()
 }
 
-/** Resolve a durable import entity mapping. Managed spaces are only populated
- * on first creation, so a later export cannot overwrite user edits. */
+/** Resolve a durable import entity mapping. Reimporting the same entity
+ * updates that space's imported fields. Changing destination (`override`)
+ * remaps to another space instead. Deleting the space drops the mapping. */
 export async function resolveImportSpace(input: {
   userId: string
   source: string
@@ -229,7 +381,38 @@ export async function resolveImportSpace(input: {
           input.entityId,
           existing.id
         )
-      return existing
+      const current = parseSpaceSettings(existing.settings_json)
+      const replaced = await updateSpace({
+        userId: input.userId,
+        spaceId: existing.id,
+        name: input.label,
+        ...(input.description !== undefined
+          ? { description: input.description }
+          : {}),
+        settings: {
+          ...current,
+          ...input.settings,
+          variables: {
+            ...current.variables,
+            ...input.settings?.variables,
+          },
+        },
+      })
+      if (input.metadata)
+        await db
+          .updateTable("spaces")
+          .set({
+            metadata_json: JSON.stringify({
+              import: {
+                source: input.source,
+                entityId: input.entityId,
+                ...input.metadata,
+              },
+            }),
+          })
+          .where("id", "=", existing.id)
+          .execute()
+      return replaced
     }
   }
   const root = await db
@@ -646,6 +829,7 @@ export async function publishImport(
       .values({
         ...chat,
         variables_json: active.variables_json,
+        expand_message_macros: toDbBool(false),
         created_at: active.source_created_at,
         updated_at: active.source_updated_at,
         selected_root_node_id: active.selected_root_source_id

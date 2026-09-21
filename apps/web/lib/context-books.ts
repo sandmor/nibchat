@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { sha256 } from "@noble/hashes/sha2.js"
 import { MAX_COLLECTION, MAX_NAME, MAX_PROMPT_CHARS } from "@/lib/limits"
 import { expandPromptMacros, type MacroContext } from "@/lib/prompt-macros"
 import { DEFAULT_CHAT_CONFIG, scanDepthSchema } from "@/lib/chat-settings"
@@ -114,6 +115,13 @@ export function readContextBook(value: unknown): ContextBookDocument {
 
 export function contextBookToJson(value: ContextBookDocument): string {
   return JSON.stringify(contextBookDocumentSchema.parse(value))
+}
+
+export function contextBookFingerprint(book: ContextBookDocument): string {
+  const digest = sha256(new TextEncoder().encode(contextBookToJson(book)))
+  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(
+    ""
+  )
 }
 
 export function createContextBookEntry(): ContextBookEntry {

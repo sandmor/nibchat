@@ -59,7 +59,15 @@ function errorFallback(kind: MessageMutationOperation["kind"]) {
 }
 
 /** One mutation observer services every mounted message in the active view. */
-export function MessageMutationProvider({ children }: { children: ReactNode }) {
+export function MessageMutationProvider({
+  children,
+  resolveOperation,
+}: {
+  children: ReactNode
+  resolveOperation?: (
+    operation: MessageMutationOperation
+  ) => Promise<MessageMutationOperation>
+}) {
   useEffect(() => retainStaticTooltips(), [])
   const trpc = useTRPC()
   const trpcClient = useTRPCClient()
@@ -71,6 +79,9 @@ export function MessageMutationProvider({ children }: { children: ReactNode }) {
     MessageMutationContext
   >({
     mutationFn: async (operation) => {
+      operation = resolveOperation
+        ? await resolveOperation(operation)
+        : operation
       switch (operation.kind) {
         case "fork":
           return await trpcClient.workspace.forkMessageParts.mutate(

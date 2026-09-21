@@ -88,6 +88,7 @@ describe("resolveChatSettings", () => {
     const spaces = [
       space("work", null, {
         promptStack: { mode: "require", value: "stack-a" },
+        chatTemplate: { mode: "require", value: "template-a" },
         temperature: { mode: "release", value: 0.1 },
       }),
     ]
@@ -102,6 +103,8 @@ describe("resolveChatSettings", () => {
     expect(resolved.effective.promptStackId).toBe("stack-a")
     expect(resolved.effective.model.temperature).toBe(0.9)
     expect(resolved.locks.promptStack?.spaceId).toBe("work")
+    expect(resolved.effective.chatTemplateId).toBe("template-a")
+    expect(resolved.locks.chatTemplate?.spaceId).toBe("work")
     expect(resolved.locks.temperature).toBeUndefined()
   })
 

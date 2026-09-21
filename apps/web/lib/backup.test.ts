@@ -60,6 +60,7 @@ describe("parseBackup", () => {
     expect(backup.promptStacks).toHaveLength(1)
     expect(backup.spaces).toEqual([])
     expect(backup.importSpaceMappings).toEqual([])
+    expect(backup.importBookMappings).toEqual([])
     expect(backup.chats[0]?.space_id).toBeNull()
   })
 

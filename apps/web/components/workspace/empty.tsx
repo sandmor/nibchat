@@ -3,7 +3,13 @@
 import { Logo } from "@/components/logo"
 import type { ProviderSummary } from "./types"
 
-export function Empty({ providers }: { providers: ProviderSummary[] }) {
+export function Empty({
+  providers,
+  hint,
+}: {
+  providers: ProviderSummary[]
+  hint?: string
+}) {
   return (
     <div className="grid min-h-[40vh] place-items-center text-center">
       <div className="max-w-sm">
@@ -15,6 +21,9 @@ export function Empty({ providers }: { providers: ProviderSummary[] }) {
           Edits and regenerations become branches. Pick a model above if you
           need one.
         </p>
+        {hint ? (
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">{hint}</p>
+        ) : null}
         {!providers.length && (
           <p className="mt-5 rounded-lg border border-dashed p-3 text-sm">
             Add your first provider in Settings to send.

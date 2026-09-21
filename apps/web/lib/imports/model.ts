@@ -62,6 +62,12 @@ export const importEntitySchema = z.object({
   description: z.string().max(MAX_DESCRIPTION).optional(),
   variables: collectionRecord(promptText).optional(),
   metadata: collectionRecord(z.unknown()).optional(),
+  chatTemplate: z
+    .object({
+      beginnings: z.array(promptText).min(1).max(MAX_COLLECTION),
+      warnings: z.array(z.string().max(MAX_DESCRIPTION)).max(MAX_COLLECTION),
+    })
+    .optional(),
 })
 export const inspectConversationSchema = z.object({
   sourceId: identity,

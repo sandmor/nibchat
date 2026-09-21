@@ -65,7 +65,9 @@ import {
   finishImportAsset,
   getOrCreateImportSpace,
   listImportSpaceMappings,
+  listImportBookMappings,
   resolveImportSpace,
+  resolveImportBook,
   importAssetStatus,
   omitImportAsset,
   publishImport,
@@ -85,6 +87,7 @@ import {
   MAX_COLLECTION,
   MAX_DESCRIPTION,
   MAX_ID,
+  MAX_IMPORT_NODES,
   MAX_NAME,
   MAX_UPLOAD_CHUNK_BYTES,
 } from "@/lib/limits"
@@ -118,6 +121,15 @@ import { chatConfigSchema } from "@/lib/chat-settings"
 import { chatViewStateSchema } from "@/lib/chat-view-state"
 import { providerConnectionConfigSchema } from "@/lib/provider-config"
 import { db } from "@/lib/db"
+import {
+  deleteChatTemplate,
+  listChatTemplates,
+  materializeChatTemplate,
+  renameChatTemplate,
+  saveChatTemplateFromChat,
+  upsertSillyTavernCharacterTemplate,
+} from "@/lib/chat-template-service"
+import { chatTemplateDocumentSchema } from "@/lib/chat-template"
 import {
   createManagedUser,
   deleteManagedUser,
@@ -342,6 +354,11 @@ export const appRouter = t.router({
       .query(({ ctx, input }) =>
         listImportSpaceMappings(ctx.user.id, input.source)
       ),
+    importBookMappings: userProcedure
+      .input(z.object({ source: sourceSchema }))
+      .query(({ ctx, input }) =>
+        listImportBookMappings(ctx.user.id, input.source)
+      ),
     resolveImportSpace: userProcedure
       .input(
         z.object({
@@ -353,8 +370,30 @@ export const appRouter = t.router({
           override: z.boolean().optional(),
         })
       )
-      .mutation(({ ctx, input }) =>
-        resolveImportSpace({
+      .mutation(async ({ ctx, input }) => {
+        const template =
+          input.source === "sillytavern" && input.entity.kind === "character"
+            ? await upsertSillyTavernCharacterTemplate({
+                userId: ctx.user.id,
+                entityId: input.entity.id,
+                name: input.entity.label,
+                beginnings: input.entity.chatTemplate?.beginnings ?? [],
+                warnings: input.entity.chatTemplate?.warnings,
+              })
+            : null
+        const variables = input.entity.variables
+        const variableSettings =
+          variables && Object.keys(variables).length
+            ? {
+                variables: Object.fromEntries(
+                  Object.entries(variables).map(([name, value]) => [
+                    name,
+                    { mode: "require" as const, value },
+                  ])
+                ),
+              }
+            : {}
+        const space = await resolveImportSpace({
           userId: ctx.user.id,
           source: input.source,
           entityId: input.entity.id,
@@ -367,22 +406,42 @@ export const appRouter = t.router({
           label: input.entity.label,
           description: input.entity.description,
           settings:
-            input.entity.variables && Object.keys(input.entity.variables).length
+            Object.keys(variableSettings).length || template
               ? {
-                  variables: Object.fromEntries(
-                    Object.entries(input.entity.variables).map(
-                      ([name, value]) => [
-                        name,
-                        { mode: "require" as const, value },
-                      ]
-                    )
-                  ),
+                  ...variableSettings,
+                  ...(template
+                    ? {
+                        chatTemplate: {
+                          mode: "default" as const,
+                          value: template.id,
+                        },
+                      }
+                    : {}),
                 }
               : undefined,
           metadata: input.entity.metadata,
           override: input.override,
         })
-      ),
+        return space
+      }),
+    resolveImportBook: userProcedure
+      .input(
+        z.object({
+          source: sourceSchema,
+          entityId: z.string().min(1).max(MAX_ID),
+          name: z.string().min(1).max(MAX_NAME),
+          book: contextBookDocumentSchema,
+          spaceId: z.string().optional(),
+          replace: z.boolean().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await resolveImportBook({ ...input, userId: ctx.user.id })
+        } catch (error) {
+          mapError(error)
+        }
+      }),
     inspectImports: userProcedure
       .input(
         z.object({
@@ -496,7 +555,13 @@ export const appRouter = t.router({
       )
       .mutation(async ({ ctx, input }) => {
         try {
-          await updateChat(input.chatId, { title: input.title }, ctx.user.id)
+          await updateChat(
+            input.chatId,
+            {
+              title: input.title,
+            },
+            ctx.user.id
+          )
           return { ok: true }
         } catch (error) {
           mapError(error)
@@ -814,6 +879,67 @@ export const appRouter = t.router({
       const settings = await getInstanceSettings(ctx.user.id)
       return ctx.isOwner ? settings : { ...settings, titleModelConfig: null }
     }),
+    listChatTemplates: userProcedure.query(({ ctx }) =>
+      listChatTemplates(ctx.user.id)
+    ),
+    saveChatTemplateFromChat: userProcedure
+      .input(
+        z.object({
+          chatId: z.string().min(1).max(MAX_ID),
+          name: z.string().trim().min(1).max(MAX_NAME),
+          templateId: z.string().min(1).max(MAX_ID).optional(),
+          expectedRevision: z.number().int().min(0).optional(),
+        })
+      )
+      .mutation(({ ctx, input }) =>
+        saveChatTemplateFromChat({ ...input, userId: ctx.user.id })
+      ),
+    deleteChatTemplate: userProcedure
+      .input(z.object({ templateId: z.string().min(1).max(MAX_ID) }))
+      .mutation(async ({ ctx, input }) => {
+        await deleteChatTemplate(ctx.user.id, input.templateId)
+        return { ok: true as const }
+      }),
+    renameChatTemplate: userProcedure
+      .input(
+        z.object({
+          templateId: z.string().min(1).max(MAX_ID),
+          name: z.string().trim().min(1).max(MAX_NAME),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        await renameChatTemplate(ctx.user.id, input.templateId, input.name)
+        return { ok: true as const }
+      }),
+    materializeChatTemplate: userProcedure
+      .input(
+        z.object({
+          templateId: z.string().min(1).max(MAX_ID).optional(),
+          document: chatTemplateDocumentSchema,
+          draftId: z.string().min(1).max(MAX_ID),
+          selectedRootId: z.string().min(1).max(MAX_ID).nullable().optional(),
+          selectedChildren: z
+            .record(
+              z.string().min(1).max(MAX_ID),
+              z.string().min(1).max(MAX_ID).nullable()
+            )
+            .refine(
+              (entries) => Object.keys(entries).length <= MAX_IMPORT_NODES
+            )
+            .optional(),
+          title: z.string().trim().min(1).max(MAX_NAME).nullable().optional(),
+          config: modelConfigSchema.optional(),
+          promptStackId: z.string().nullable().optional(),
+          variables: z.record(z.string(), promptVariableValueSchema).optional(),
+          spaceId: z.string().nullable().optional(),
+          contextBookIds: z.array(z.string()).max(MAX_COLLECTION).optional(),
+          explicit: chatSpaceOverridesSchema.optional(),
+          expandMessageMacros: z.boolean().optional(),
+        })
+      )
+      .mutation(({ ctx, input }) =>
+        materializeChatTemplate({ ...input, userId: ctx.user.id })
+      ),
     setChatDefaults: userProcedure
       .input(chatConfigSchema)
       .mutation(async ({ ctx, input }) => {

@@ -17,7 +17,7 @@ export async function openBrowserArchive(
   if (files.length > 1) {
     if (files.some((file) => file.name.toLowerCase().endsWith(".zip")))
       throw new Error(
-        "Choose one ZIP export, or one or more JSONL and character card files"
+        "Choose one ZIP export, or one or more JSONL, JSON, and character card files"
       )
     const entries = new Map<string, File>()
     for (const [index, file] of files.entries()) {

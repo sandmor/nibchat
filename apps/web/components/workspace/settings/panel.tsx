@@ -12,6 +12,7 @@ import { AppearanceSettings } from "./appearance"
 import { McpSettings } from "./mcp"
 import { UsersSettings } from "./users"
 import { ConversationImportSettings } from "./conversation-import"
+import { ChatTemplateSettings } from "./chat-templates"
 
 export function SettingsPanel({
   providers,
@@ -52,6 +53,7 @@ export function SettingsPanel({
           <ChatDefaultsSettings providers={providers} />
           <PromptStackSettings />
           <ContextBookSettings />
+          <ChatTemplateSettings />
           <BuiltInToolsSettings />
           <ConversationImportSettings />
           {isOwner && (

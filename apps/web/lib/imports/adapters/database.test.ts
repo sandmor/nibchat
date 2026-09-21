@@ -6,6 +6,7 @@ import {
   getOrCreateImportSpace,
   publishImport,
   resolveImportSpace,
+  resolveImportBook,
 } from "@/lib/imports/adapters/database"
 
 const userId = "import-test-user"
@@ -165,4 +166,149 @@ describe("database import adapter", () => {
     expect(space.parent_id).toBe(root.id)
     expect(space.settings_json).toContain("character_name")
   })
+
+  it("updates a managed character space when the same entity is reimported", async () => {
+    const source = `managed-reuse-${crypto.randomUUID()}`
+    const root = await getOrCreateImportSpace(userId, source, "Imports")
+    const created = await resolveImportSpace({
+      userId,
+      source,
+      entityId: "character:reuse",
+      mode: "managed",
+      rootSpaceId: root.id,
+      label: "Reuse",
+      settings: {
+        chatTemplate: { mode: "default", value: "template-original" },
+      },
+    })
+    await db
+      .updateTable("spaces")
+      .set({ settings_json: "{}" })
+      .where("id", "=", created.id)
+      .execute()
+
+    const updated = await resolveImportSpace({
+      userId,
+      source,
+      entityId: "character:reuse",
+      mode: "managed",
+      rootSpaceId: root.id,
+      label: "Reuse renamed upstream",
+      settings: {
+        chatTemplate: { mode: "default", value: "template-reimported" },
+      },
+    })
+
+    expect(updated.id).toBe(created.id)
+    expect(updated.name).toBe("Reuse renamed upstream")
+    expect(updated.settings_json).toContain("template-reimported")
+  })
+
+  it("reuses an imported context book without overwriting edits", async () => {
+    const source = `book-reuse-${crypto.randomUUID()}`
+    const first = await resolveImportBook({
+      userId,
+      source,
+      entityId: "path:worlds/Castle.json",
+      name: "Castle",
+      book: sampleBook("A keep."),
+    })
+    expect(first.created).toBe(true)
+    const same = await resolveImportBook({
+      userId,
+      source,
+      entityId: "path:worlds/Castle.json",
+      name: "Castle",
+      book: sampleBook("A keep."),
+    })
+    expect(same).toMatchObject({
+      id: first.id,
+      created: false,
+      replaced: false,
+      changed: false,
+    })
+    await db
+      .updateTable("context_books")
+      .set({ name: "Edited castle", book_json: '{"version":1,"entries":[]}' })
+      .where("id", "=", first.id)
+      .execute()
+
+    const reused = await resolveImportBook({
+      userId,
+      source,
+      entityId: "path:worlds/Castle.json",
+      name: "Castle from a new export",
+      book: sampleBook("Updated keep."),
+    })
+    expect(reused).toMatchObject({
+      created: false,
+      replaced: false,
+      changed: true,
+    })
+    expect(reused.id).toBe(first.id)
+    expect(reused.name).toBe("Edited castle")
+    const stored = await db
+      .selectFrom("context_books")
+      .select("book_json")
+      .where("id", "=", first.id)
+      .executeTakeFirstOrThrow()
+    expect(stored.book_json).toBe('{"version":1,"entries":[]}')
+  })
+
+  it("replaces an imported context book when asked", async () => {
+    const source = `book-replace-${crypto.randomUUID()}`
+    const first = await resolveImportBook({
+      userId,
+      source,
+      entityId: "path:worlds/Keep.json",
+      name: "Keep",
+      book: sampleBook("Original."),
+    })
+    await db
+      .updateTable("context_books")
+      .set({ name: "Local keep", book_json: '{"version":1,"entries":[]}' })
+      .where("id", "=", first.id)
+      .execute()
+
+    const replaced = await resolveImportBook({
+      userId,
+      source,
+      entityId: "path:worlds/Keep.json",
+      name: "Keep from export",
+      book: sampleBook("From export."),
+      replace: true,
+    })
+    expect(replaced).toMatchObject({
+      id: first.id,
+      name: "Keep from export",
+      created: false,
+      replaced: true,
+      changed: true,
+    })
+    const stored = await db
+      .selectFrom("context_books")
+      .select("book_json")
+      .where("id", "=", first.id)
+      .executeTakeFirstOrThrow()
+    expect(stored.book_json).toContain("From export.")
+  })
 })
+
+function sampleBook(content: string) {
+  return {
+    version: 1 as const,
+    entries: [
+      {
+        id: "1",
+        title: "Keep",
+        enabled: true,
+        content,
+        namespace: "default",
+        activation: { kind: "always" as const },
+        priority: 100,
+      },
+    ],
+    scanRoles: ["user" as const, "assistant" as const],
+    tokenBudget: null,
+  }
+}

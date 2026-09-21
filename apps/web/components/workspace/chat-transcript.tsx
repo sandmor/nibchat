@@ -76,6 +76,7 @@ export type ChatTranscriptProps = {
   streamIdByNodeId: ReadonlyMap<string, string>
   afterTipStreams: Array<{ streamId: string; nodeId: string }>
   showEmpty: boolean
+  emptyHint?: string
   ariaBusy: boolean
   animate: boolean
   transition: { duration: number; ease: [number, number, number, number] }
@@ -108,6 +109,7 @@ function VirtualChatTranscript({
   streamIdByNodeId,
   afterTipStreams,
   showEmpty,
+  emptyHint,
   ariaBusy,
   animate,
   transition,
@@ -511,7 +513,7 @@ function VirtualChatTranscript({
                     animate={{ opacity: 1 }}
                     transition={transition}
                   >
-                    <Empty providers={providers} />
+                    <Empty providers={providers} hint={emptyHint} />
                   </motion.div>
                 ) : row.kind === "after-tip" ? (
                   <AfterTipSlot

@@ -290,24 +290,45 @@ async function loadCatalog(archive: ImportArchivePort): Promise<Catalog> {
         metadata: {
           source: "sillytavern",
           characterId: key,
-          ...(text(data.first_mes)
-            ? { firstMessage: safe(text(data.first_mes)!) }
-            : {}),
-          ...(array(data.alternate_greetings).filter(
-            (value) => typeof value === "string"
-          ).length
-            ? {
-                alternateGreetings: array(data.alternate_greetings)
-                  .filter((value): value is string => typeof value === "string")
-                  .slice(0, MAX_COLLECTION)
-                  .map((value) => safe(value)),
-              }
-            : {}),
         },
+        ...characterTemplate(data),
       },
     })
   }
   return { groups, cards, unreadableCards, malformedGroupDefinition }
+}
+
+function characterTemplate(data: Raw) {
+  const beginnings = [
+    text(data.first_mes),
+    ...array(data.alternate_greetings).map((value) =>
+      typeof value === "string" ? value : undefined
+    ),
+  ]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .slice(0, MAX_COLLECTION)
+    .map((value) => safe(value))
+  if (!beginnings.length) return {}
+  const unsupported = new Set<string>()
+  for (const beginning of beginnings) {
+    for (const match of beginning.matchAll(/{{\s*([^{}]+?)\s*}}/g)) {
+      const macro = match[1]!.toLowerCase()
+      if (
+        macro !== "char" &&
+        macro !== "character" &&
+        macro !== "character_name"
+      )
+        unsupported.add(macro)
+    }
+  }
+  return {
+    chatTemplate: {
+      beginnings,
+      warnings: [...unsupported].map(
+        (macro) => `The SillyTavern macro {{${macro}}} was kept literally.`
+      ),
+    },
+  }
 }
 
 function chatVariables(metadata: Raw, warnings: string[]) {
@@ -456,8 +477,6 @@ export const sillyTavernFormat: ImportFormatPort = {
     const { groups, cards, unreadableCards, malformedGroupDefinition } =
       await catalog(archive)
     const names = archive.names().filter(isChatEntry)
-    if (!names.length && !cards.size && !groups.length)
-      throw new Error("No SillyTavern chats or character cards were found")
     for (const name of names) {
       const raw = await readArchiveEntry(archive, name)
       const warnings: string[] = []

@@ -57,6 +57,13 @@ import { getUserSettings } from "@/lib/user-settings"
 import { SEED_THEMES } from "@/lib/appearance"
 import { defaultPromptStack, promptStackToJson } from "@/lib/prompt-stack"
 import { parseChatViewState } from "@/lib/chat-view-state"
+import {
+  listChatTemplates,
+  deleteChatTemplate,
+  materializeChatTemplate,
+  saveChatTemplateFromChat,
+} from "@/lib/chat-template-service"
+import { parseChatTemplateDocument } from "@/lib/chat-template"
 
 const userId = "test-owner"
 afterEach(() => {
@@ -86,6 +93,104 @@ beforeAll(async () => {
 })
 
 describe("SQLite chat repository", () => {
+  it("saves and idempotently materializes a branching chat template", async () => {
+    const source = await createChat(userId, "Template source")
+    const first = await insertNode({
+      chatId: source.id,
+      parentId: null,
+      role: "assistant",
+      parts: [{ type: "text", text: "First" }],
+    })
+    const second = await insertNode({
+      chatId: source.id,
+      parentId: null,
+      role: "assistant",
+      parts: [{ type: "text", text: "Second" }],
+    })
+    await db
+      .updateTable("chats")
+      .set({ selected_root_node_id: second.id })
+      .where("id", "=", source.id)
+      .execute()
+    const saved = await saveChatTemplateFromChat({
+      userId,
+      chatId: source.id,
+      name: "Branching template",
+    })
+    const input = {
+      userId,
+      templateId: saved.id,
+      document: parseChatTemplateDocument(saved.document_json),
+      draftId: crypto.randomUUID(),
+      selectedRootId: first.id,
+    }
+    await deleteChatTemplate(userId, saved.id)
+    const created = await materializeChatTemplate(input)
+    const retried = await materializeChatTemplate(input)
+    expect(retried.chat.id).toBe(created.chat.id)
+    expect(created.nodes).toHaveLength(2)
+    expect(created.chat.selected_root_node_id).toBe(created.nodeIds[first.id])
+    expect(
+      (await listChatTemplates(userId)).some((item) => item.id === saved.id)
+    ).toBe(false)
+
+    const blankInput = {
+      userId,
+      draftId: crypto.randomUUID(),
+      document: {
+        version: 1 as const,
+        selectedRootId: null,
+        expandMessageMacros: false,
+        nodes: [],
+      },
+    }
+    const blank = await materializeChatTemplate(blankInput)
+    expect((await materializeChatTemplate(blankInput)).chat.id).toBe(
+      blank.chat.id
+    )
+  })
+
+  it("rejects a draft that bypasses a required space template", async () => {
+    const source = await createChat(userId, "Required template source")
+    await insertNode({
+      chatId: source.id,
+      parentId: null,
+      role: "assistant",
+      parts: [{ type: "text", text: "Required opening" }],
+    })
+    const template = await saveChatTemplateFromChat({
+      userId,
+      chatId: source.id,
+      name: "Required template",
+    })
+    const requiredSpace = await createSpace({
+      userId,
+      name: "Required template space",
+      settings: {
+        chatTemplate: { mode: "require", value: template.id },
+      },
+    })
+    const document = parseChatTemplateDocument(template.document_json)
+    await expect(
+      materializeChatTemplate({
+        userId,
+        draftId: crypto.randomUUID(),
+        spaceId: requiredSpace.id,
+        document,
+      })
+    ).rejects.toThrow(/locked by Required template space/)
+    await expect(
+      materializeChatTemplate({
+        userId,
+        draftId: crypto.randomUUID(),
+        spaceId: requiredSpace.id,
+        templateId: template.id,
+        document,
+      })
+    ).resolves.toMatchObject({
+      chat: { space_id: requiredSpace.id },
+    })
+  })
   it("persists a selected branch", async () => {
     const chat = await createChat(userId, "Repository test")
     const root = await insertNode({

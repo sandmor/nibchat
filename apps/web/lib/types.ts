@@ -137,6 +137,8 @@ export interface ChatsTable {
   prompt_stack_id: string | null
   /** Explicit prompt-stack variable overrides for this conversation. */
   variables_json: string
+  /** Resolve macros in message text for display and model context. */
+  expand_message_macros: boolean
   /** Explicit chat choices used to distinguish space defaults from baselines. */
   space_overrides_json: string
   /** Innermost space; null = ungrouped. */
@@ -163,6 +165,26 @@ export interface MessageNodesTable {
   status: MessageStatus
   created_at: string
   updated_at: string
+}
+export interface ChatTemplatesTable {
+  id: string
+  user_id: string
+  name: string
+  document_json: string
+  revision: number
+  source_json: string
+  created_at: string
+  updated_at: string
+}
+export interface TemplateAttachmentsTable {
+  template_id: string
+  attachment_id: string
+}
+export interface DraftMaterializationsTable {
+  user_id: string
+  draft_id: string
+  chat_id: string
+  created_at: string
 }
 /** One currently-owned generation per assistant node. Removed at terminal state. */
 export interface GenerationRunsTable {
@@ -255,6 +277,14 @@ export interface ImportSpaceMappingsTable {
   space_id: string
   created_at: string
 }
+export interface ImportBookMappingsTable {
+  user_id: string
+  source: string
+  entity_id: string
+  context_book_id: string
+  source_fingerprint: string
+  created_at: string
+}
 export interface PromptStacksTable {
   id: string
   user_id: string
@@ -336,6 +366,9 @@ export interface McpServerProfilesTable {
 }
 export interface DB {
   chats: ChatsTable
+  chat_templates: ChatTemplatesTable
+  template_attachments: TemplateAttachmentsTable
+  draft_materializations: DraftMaterializationsTable
   spaces: SpacesTable
   message_nodes: MessageNodesTable
   generation_runs: GenerationRunsTable
@@ -347,6 +380,7 @@ export interface DB {
   import_nodes: ImportNodesTable
   import_assets: ImportAssetsTable
   import_space_mappings: ImportSpaceMappingsTable
+  import_book_mappings: ImportBookMappingsTable
   prompt_stacks: PromptStacksTable
   context_books: ContextBooksTable
   chat_context_books: ChatContextBooksTable
@@ -417,6 +451,7 @@ export interface DB {
 }
 export type ChatRow = Selectable<ChatsTable>
 export type NodeRow = Selectable<MessageNodesTable>
+export type ChatTemplateRow = Selectable<ChatTemplatesTable>
 export type PromptStackRow = Selectable<PromptStacksTable>
 export type SpaceRow = Selectable<SpacesTable>
 export type ThemeRow = Selectable<ThemesTable>

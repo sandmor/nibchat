@@ -639,6 +639,7 @@ export async function prepareChatRow(
       ? defaultStackId
       : promptStackId,
     variables_json: JSON.stringify(storedVariables),
+    expand_message_macros: toDbBool(Boolean(storedModel.expandMessageMacros)),
     space_overrides_json: chatSpaceOverridesToJson({
       promptStack: explicitPromptStack || undefined,
       model: explicitConfigKeys,
@@ -1005,8 +1006,6 @@ export async function updateChat(
   userId?: string
 ) {
   if (userId) await assertChatOwner(chatId, userId)
-  let modelJson: string | undefined
-  let overridesJson: string | undefined
   if (patch.model) {
     if (!userId) throw new Error("Chat not found")
     const chat = await db
@@ -1024,23 +1023,33 @@ export async function updateChat(
     if (!chat) throw new Error("Chat not found")
     const resolved = await resolveSettingsForChat(chat, userId)
     const stored = parseJson<ModelConfig>(chat.model_config_json, {})
-    modelJson = JSON.stringify(
-      mergeUnlockedModelConfig(stored, patch.model, resolved.locks)
-    )
+    const merged = mergeUnlockedModelConfig(stored, patch.model, resolved.locks)
     const explicit = parseChatSpaceOverrides(chat.space_overrides_json)
-    overridesJson = chatSpaceOverridesToJson({
-      ...explicit,
-      model: [
-        ...new Set([...(explicit.model ?? []), ...Object.keys(patch.model)]),
-      ],
-    })
+    await db
+      .updateTable("chats")
+      .set({
+        ...(patch.title !== undefined ? { title: patch.title } : {}),
+        model_config_json: JSON.stringify(merged),
+        space_overrides_json: chatSpaceOverridesToJson({
+          ...explicit,
+          model: [
+            ...new Set([
+              ...(explicit.model ?? []),
+              ...Object.keys(patch.model),
+            ]),
+          ],
+        }),
+        expand_message_macros: toDbBool(Boolean(merged.expandMessageMacros)),
+        updated_at: now(),
+      })
+      .where("id", "=", chatId)
+      .execute()
+    return
   }
   await db
     .updateTable("chats")
     .set({
       ...(patch.title !== undefined ? { title: patch.title } : {}),
-      ...(modelJson ? { model_config_json: modelJson } : {}),
-      ...(overridesJson ? { space_overrides_json: overridesJson } : {}),
       updated_at: now(),
     })
     .where("id", "=", chatId)
@@ -2427,6 +2436,60 @@ function contextBookSummary(row: {
   }
 }
 
+export async function includeContextBookInSpace(
+  userId: string,
+  bookId: string,
+  spaceId: string,
+  options?: { force?: boolean }
+) {
+  await db.transaction().execute(async (trx) => {
+    await includeContextBookInSpaceTx(
+      trx,
+      userId,
+      bookId,
+      spaceId,
+      now(),
+      options
+    )
+  })
+}
+
+async function includeContextBookInSpaceTx(
+  trx: Transaction<DB>,
+  userId: string,
+  bookId: string,
+  spaceId: string,
+  timestamp: string,
+  options?: { force?: boolean }
+) {
+  const space = await trx
+    .selectFrom("spaces")
+    .selectAll()
+    .where("id", "=", spaceId)
+    .where("user_id", "=", userId)
+    .executeTakeFirst()
+  if (!space) throw new Error("Space not found")
+  const settings = parseSpaceSettings(space.settings_json)
+  if (!options?.force && settings.books?.decisions[bookId]) return
+  await trx
+    .updateTable("spaces")
+    .set({
+      settings_json: spaceSettingsToJson({
+        ...settings,
+        books: {
+          reset: settings.books?.reset ?? false,
+          decisions: {
+            ...settings.books?.decisions,
+            [bookId]: "include",
+          },
+        },
+      }),
+      updated_at: timestamp,
+    })
+    .where("id", "=", space.id)
+    .execute()
+}
+
 export async function createContextBook(input: {
   userId: string
   name: string
@@ -2444,33 +2507,14 @@ export async function createContextBook(input: {
   }
   await db.transaction().execute(async (trx) => {
     await trx.insertInto("context_books").values(row).execute()
-    if (input.spaceId) {
-      const space = await trx
-        .selectFrom("spaces")
-        .selectAll()
-        .where("id", "=", input.spaceId)
-        .where("user_id", "=", input.userId)
-        .executeTakeFirst()
-      if (!space) throw new Error("Space not found")
-      const settings = parseSpaceSettings(space.settings_json)
-      await trx
-        .updateTable("spaces")
-        .set({
-          settings_json: spaceSettingsToJson({
-            ...settings,
-            books: {
-              reset: settings.books?.reset ?? false,
-              decisions: {
-                ...settings.books?.decisions,
-                [row.id]: "include",
-              },
-            },
-          }),
-          updated_at: timestamp,
-        })
-        .where("id", "=", space.id)
-        .execute()
-    }
+    if (input.spaceId)
+      await includeContextBookInSpaceTx(
+        trx,
+        input.userId,
+        row.id,
+        input.spaceId,
+        timestamp
+      )
   })
   return contextBookSummary(row)
 }
@@ -3238,6 +3282,7 @@ async function restoreOwnerBackup(
         view_state_json: chat.view_state_json,
         prompt_stack_id: chat.prompt_stack_id ?? null,
         variables_json: chat.variables_json ?? "{}",
+        expand_message_macros: toDbBool(chat.expand_message_macros ?? false),
         space_overrides_json: chat.space_overrides_json ?? "{}",
         space_id: chat.space_id ?? null,
         created_at: chat.created_at,
@@ -3254,6 +3299,11 @@ async function restoreOwnerBackup(
   for (const mapping of backup.importSpaceMappings)
     await trx
       .insertInto("import_space_mappings")
+      .values({ ...mapping, user_id: userId })
+      .execute()
+  for (const mapping of backup.importBookMappings)
+    await trx
+      .insertInto("import_book_mappings")
       .values({ ...mapping, user_id: userId })
       .execute()
 
@@ -3291,6 +3341,15 @@ async function restoreOwnerBackup(
     restoredAttachmentIds.add(attachment.id)
   }
 
+  for (const template of backup.chatTemplates)
+    await trx
+      .insertInto("chat_templates")
+      .values({
+        ...template,
+        user_id: userId,
+      })
+      .execute()
+
   await insertRestoredMessageNodes(trx, backup.nodes)
   for (const link of backup.chatContextBooks)
     await trx.insertInto("chat_context_books").values(link).execute()
@@ -3311,6 +3370,8 @@ async function restoreOwnerBackup(
       })
       .execute()
   }
+  for (const link of backup.templateAttachments)
+    await trx.insertInto("template_attachments").values(link).execute()
   for (const provider of backup.providerProfiles) {
     await trx
       .insertInto("provider_profiles")
@@ -3522,6 +3583,23 @@ function validateMultiUserBackup(
   const attachments = new Set(
     backup.attachments.map((attachment) => attachment.id)
   )
+  const templates = new Map(
+    backup.chatTemplates.map((template) => [template.id, template])
+  )
+  for (const template of backup.chatTemplates) {
+    if (!users.has(template.user_id))
+      throw new Error(
+        `Backup template ${template.id} references an unknown user`
+      )
+  }
+  for (const link of backup.templateAttachments) {
+    const template = templates.get(link.template_id)
+    const attachment = backup.attachments.find(
+      (item) => item.id === link.attachment_id
+    )
+    if (!template || !attachment || template.user_id !== attachment.user_id)
+      throw new Error("Backup contains an invalid template attachment")
+  }
   for (const link of backup.messageAttachments) {
     if (
       !nodes.has(link.message_node_id) ||
@@ -3578,6 +3656,15 @@ function validateMultiUserBackup(
       space.user_id !== mapping.user_id
     )
       throw new Error("Backup import mapping references another user's space")
+  }
+  for (const mapping of backup.importBookMappings) {
+    const book = booksByBackupId.get(mapping.context_book_id)
+    if (
+      !users.has(mapping.user_id) ||
+      !book ||
+      book.user_id !== mapping.user_id
+    )
+      throw new Error("Backup import mapping references another user's book")
   }
   const preferenceUsers = backup.userPreferences.map((prefs) => prefs.user_id)
   if (
@@ -3645,6 +3732,16 @@ async function restoreMultiUserBackup(
     nodes: ownerNodes,
     attachments: ownerAttachments,
     messageAttachments: ownerLinks,
+    chatTemplates: backup.chatTemplates
+      .filter((template) => template.user_id === sourceOwner.id)
+      .map((template) => ({ ...template, user_id: ownerId })),
+    templateAttachments: backup.templateAttachments.filter((link) =>
+      backup.chatTemplates.some(
+        (template) =>
+          template.id === link.template_id &&
+          template.user_id === sourceOwner.id
+      )
+    ),
     providerProfiles: backup.providerProfiles,
     mcpServerProfiles: backup.mcpServerProfiles,
     promptStacks: backup.promptStacks
@@ -3668,6 +3765,9 @@ async function restoreMultiUserBackup(
       .filter((receipt) => receipt.user_id === sourceOwner.id)
       .map((receipt) => ({ ...receipt, user_id: ownerId })),
     importSpaceMappings: backup.importSpaceMappings
+      .filter((mapping) => mapping.user_id === sourceOwner.id)
+      .map((mapping) => ({ ...mapping, user_id: ownerId })),
+    importBookMappings: backup.importBookMappings
       .filter((mapping) => mapping.user_id === sourceOwner.id)
       .map((mapping) => ({ ...mapping, user_id: ownerId })),
   }
@@ -3733,6 +3833,12 @@ async function restoreMultiUserBackup(
       )
       const userLinks = backup.messageAttachments.filter((link) =>
         userNodes.some((node) => node.id === link.message_node_id)
+      )
+      const userTemplates = backup.chatTemplates.filter(
+        (template) => template.user_id === sourceUser.id
+      )
+      const userTemplateIds = new Set(
+        userTemplates.map((template) => template.id)
       )
       for (const theme of backup.themes.filter(
         (theme) => theme.user_id === sourceUser.id
@@ -3817,6 +3923,9 @@ async function restoreMultiUserBackup(
             view_state_json: chat.view_state_json,
             prompt_stack_id: chat.prompt_stack_id ?? null,
             variables_json: chat.variables_json ?? "{}",
+            expand_message_macros: toDbBool(
+              chat.expand_message_macros ?? false
+            ),
             space_overrides_json: chat.space_overrides_json ?? "{}",
             space_id: chat.space_id ?? null,
             created_at: chat.created_at,
@@ -3854,8 +3963,14 @@ async function restoreMultiUserBackup(
           })
           .execute()
       }
+      for (const template of userTemplates)
+        await trx.insertInto("chat_templates").values(template).execute()
       for (const link of userLinks)
         await trx.insertInto("message_attachments").values(link).execute()
+      for (const link of backup.templateAttachments.filter((link) =>
+        userTemplateIds.has(link.template_id)
+      ))
+        await trx.insertInto("template_attachments").values(link).execute()
       for (const receipt of backup.importReceipts.filter(
         (row) => row.user_id === sourceUser.id
       ))
@@ -3864,6 +3979,10 @@ async function restoreMultiUserBackup(
         (row) => row.user_id === sourceUser.id
       ))
         await trx.insertInto("import_space_mappings").values(mapping).execute()
+      for (const mapping of backup.importBookMappings.filter(
+        (row) => row.user_id === sourceUser.id
+      ))
+        await trx.insertInto("import_book_mappings").values(mapping).execute()
     }
   })
 }
@@ -3940,6 +4059,14 @@ export async function createBackup() {
             "message_attachments.attachment_id",
           ])
           .execute()
+  const chatTemplates = await db
+    .selectFrom("chat_templates")
+    .selectAll()
+    .execute()
+  const templateAttachments = await db
+    .selectFrom("template_attachments")
+    .selectAll()
+    .execute()
   const normalizedStacks = promptStacks.map((row) => ({
     ...row,
     stack_json: promptStackToJson(readStackJson(row.stack_json)),
@@ -3968,6 +4095,10 @@ export async function createBackup() {
     .selectFrom("import_space_mappings")
     .selectAll()
     .execute()
+  const importBookMappings = await db
+    .selectFrom("import_book_mappings")
+    .selectAll()
+    .execute()
   return {
     version: 1 as const,
     createdAt: new Date().toISOString(),
@@ -3986,6 +4117,8 @@ export async function createBackup() {
     nodes,
     attachments,
     messageAttachments,
+    chatTemplates,
+    templateAttachments,
     providerProfiles,
     mcpServerProfiles,
     users: users.map((user) => ({
@@ -4003,6 +4136,7 @@ export async function createBackup() {
     userPreferences,
     importReceipts,
     importSpaceMappings,
+    importBookMappings,
   }
 }
 

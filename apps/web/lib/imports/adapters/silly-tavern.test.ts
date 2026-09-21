@@ -62,7 +62,7 @@ describe("SillyTavern import adapter", () => {
           data: {
             name: "Ada",
             system_prompt: "Be Ada",
-            first_mes: "Welcome",
+            first_mes: "Welcome {{char}} and {{user}}",
             character_book: { entries: [{ content: "Do not import" }] },
           },
         }),
@@ -101,7 +101,10 @@ describe("SillyTavern import adapter", () => {
     expect(chat.entity).toMatchObject({
       aliases: ["character:Ada"],
       variables: { character_name: "Ada", system_prompt: "Be Ada" },
-      metadata: { firstMessage: "Welcome" },
+      chatTemplate: {
+        beginnings: ["Welcome {{char}} and {{user}}"],
+        warnings: ["The SillyTavern macro {{user}} was kept literally."],
+      },
     })
     expect(JSON.stringify(chat.entity)).not.toContain("Do not import")
     expect(chat.variables).toEqual({ location: "library" })

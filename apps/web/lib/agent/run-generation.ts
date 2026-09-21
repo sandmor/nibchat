@@ -47,6 +47,7 @@ import {
 } from "@/lib/prompt-stack"
 import {
   chatIdentityFromRow,
+  expandPromptMacros,
   idleSinceFromPath,
   normalizeTimeZone,
 } from "@/lib/prompt-macros"
@@ -275,12 +276,6 @@ export async function createGenerationResponse(
       assertPdfFallbackAvailable(
         contextNodes.flatMap((node) => parseJson<Parts>(node.parts_json, []))
       )
-    const pathMessages = await buildEmbeddedModelMessages({
-      nodes: contextNodes,
-      replayReasoning,
-      responsesReplay,
-      pdfInputMode,
-    })
     const mcpServerInstructionsEnabled = promptStack.modules.some(
       (module) => module.kind === "mcp-instructions" && module.enabled
     )
@@ -325,6 +320,27 @@ export async function createGenerationResponse(
       ...macroContext,
       contextEntries: resolvedEntries.namespaces,
     }
+    const modelNodes = config.expandMessageMacros
+      ? contextNodes.map((node) => ({
+          ...node,
+          parts_json: JSON.stringify(
+            parseJson<Parts>(node.parts_json, []).map((part) =>
+              part.type === "text"
+                ? {
+                    ...part,
+                    text: expandPromptMacros(part.text, macroContextWithBooks),
+                  }
+                : part
+            )
+          ),
+        }))
+      : contextNodes
+    const pathMessages = await buildEmbeddedModelMessages({
+      nodes: modelNodes,
+      replayReasoning,
+      responsesReplay,
+      pdfInputMode,
+    })
     const [mcp, builtInPrefs] = await Promise.all([
       prepareMcpTools({
         includeInstructionsText: mcpServerInstructionsEnabled,

@@ -52,7 +52,13 @@ import {
   type ContextBookEntry,
   type ContextEntryDecision,
 } from "@/lib/context-books"
-import { importSillyTavernWorldInfo } from "@/lib/imports/silly-tavern-world-info"
+import { openBrowserArchive } from "@/lib/imports/adapters/browser-archive"
+import {
+  extractSillyTavernWorldInfo,
+  importSillyTavernWorldInfo,
+  looksLikeWorldInfo,
+  sillyTavernBookEntityId,
+} from "@/lib/imports/silly-tavern-world-info"
 import { catalogMacroContext } from "@/lib/prompt-macros"
 import { useTRPC } from "@/lib/trpc-react"
 import { MacroPicker } from "./macro-picker"
@@ -258,6 +264,11 @@ export function ContextBookSettings() {
       onError: (error) => toast.error(error.message),
     })
   )
+  const resolveImported = useMutation(
+    trpc.workspace.resolveImportBook.mutationOptions({
+      onError: (error) => toast.error(error.message),
+    })
+  )
   const update = useMutation(
     trpc.workspace.updateContextBook.mutationOptions({
       onSuccess: async () => {
@@ -309,23 +320,81 @@ export function ContextBookSettings() {
     )
   }, [book, name, selected, testText])
 
+  async function importSillyTavernBook(
+    name: string,
+    book: ContextBookDocument,
+    sourcePath: string
+  ) {
+    const resolved = await resolveImported.mutateAsync({
+      source: "sillytavern",
+      entityId: sillyTavernBookEntityId(sourcePath),
+      name,
+      book,
+    })
+    await refresh()
+    setSelectedId(resolved.id)
+    setDraft(null)
+    toast.success(
+      resolved.created
+        ? "Context book created"
+        : resolved.replaced
+          ? "Context book replaced"
+          : resolved.changed
+            ? "A newer export was skipped to keep local edits"
+            : "Context book already imported"
+    )
+  }
+
   async function importFile(file: File) {
     try {
-      const raw = JSON.parse(await file.text())
-      let importName = file.name.replace(/\.json$/i, "")
-      let imported: ContextBookDocument
-      try {
-        imported = readContextBook(raw)
-      } catch {
-        const converted = importSillyTavernWorldInfo(raw)
-        imported = converted.book
-        importName = converted.name ?? importName
-        if (converted.issues.length)
-          toast.warning(
-            `${converted.issues.length} entries need review and were disabled`
+      const lower = file.name.toLowerCase()
+      const fallbackName = file.name.replace(/\.(json|png|zip)$/i, "")
+      if (lower.endsWith(".json")) {
+        const raw = JSON.parse(await file.text())
+        let native: ContextBookDocument | undefined
+        try {
+          native = readContextBook(raw)
+        } catch {
+          native = undefined
+        }
+        if (native) {
+          await create.mutateAsync({ name: fallbackName, book: native })
+          return
+        }
+        if (looksLikeWorldInfo(raw)) {
+          const converted = importSillyTavernWorldInfo(raw)
+          if (converted.issues.length)
+            toast.warning(
+              `${converted.issues.length} entries need review and were disabled`
+            )
+          await importSillyTavernBook(
+            converted.name ?? fallbackName,
+            converted.book,
+            file.name
           )
+          return
+        }
       }
-      await create.mutateAsync({ name: importName, book: imported })
+      const found = await extractSillyTavernWorldInfo(
+        await openBrowserArchive(file)
+      )
+      if (!found.length) throw new Error("No SillyTavern world info was found")
+      for (const item of found) {
+        if (item.issues.length)
+          toast.warning(
+            `${item.name ?? item.source}: ${item.issues.length} entries need review and were disabled`
+          )
+        await importSillyTavernBook(
+          item.name ??
+            item.source
+              .split("/")
+              .at(-1)
+              ?.replace(/\.(json|png)$/i, "") ??
+            fallbackName,
+          item.book,
+          item.source
+        )
+      }
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Could not import book"
@@ -358,7 +427,10 @@ export function ContextBookSettings() {
               }}
               disabled={!loaded || books.length === 0}
             >
-              <SelectTrigger className="w-full min-w-0 sm:w-auto sm:min-w-[12rem]">
+              <SelectTrigger
+                className="w-full min-w-0 sm:w-auto sm:min-w-[12rem]"
+                aria-label="Selected context book"
+              >
                 <SelectValue placeholder="Select a book" />
               </SelectTrigger>
               <SelectContent>
@@ -406,7 +478,7 @@ export function ContextBookSettings() {
             <input
               ref={fileRef}
               type="file"
-              accept="application/json,.json"
+              accept="application/json,.json,image/png,.png,application/zip,.zip"
               hidden
               onChange={(event) => {
                 const file = event.target.files?.[0]
@@ -642,7 +714,7 @@ export function ContextBookSettings() {
         ) : (
           <p className="text-sm text-muted-foreground">
             {loaded
-              ? "No context books yet. Create one or import a world-info JSON file."
+              ? "No context books yet. Create one or import a SillyTavern world-info JSON, character card, or ZIP."
               : "Loading…"}
           </p>
         )}

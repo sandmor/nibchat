@@ -12,20 +12,20 @@ export const metadata: Metadata = {
 export default async function NewChatPage({
   searchParams,
 }: {
-  searchParams: Promise<{ space?: string }>
+  searchParams: Promise<{ space?: string; template?: string }>
 }) {
   const user = await requireWorkspaceUser()
   const workspace = await getWorkspace(user.id, { draft: true })
-  const { space } = await searchParams
+  const { space, template } = await searchParams
   const draftSpaceId =
     space && workspace.spaces.some((row) => row.id === space) ? space : null
-
   return (
     <ChatView
       mode="draft"
       chatId={null}
       initial={workspace}
       draftSpaceId={draftSpaceId}
+      draftTemplateId={template?.trim() || null}
     />
   )
 }

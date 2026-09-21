@@ -1,22 +1,23 @@
 # Nibchat
 
-Yet another AI Chat Platform.
+Nibchat is a self-hosted AI chat client. It exists to give you absolute control over the chat and the interaction: what the model sees, which reply you keep, whether an edit branches a message or replaces it, which tools it may call, and how the interface looks. Every client ships choices you want and choices you don't. Here you choose what works for you.
 
-Nibchat was created to give you two things: Full freedom to interact with LLMs, and a beautiful highly customizable interface for it.
-
-Every AI chat client has features you love and features you hate. Here you choose what works for you.
+Chats are trees. Messages have sibling branches. You pick the path you want, return to a previous one, and search across every branch. You can exclude a message from context without deleting it, regenerate a reply as a new sibling, or edit and delete when you want the history changed. Spaces hold those chats and pass settings down. A setting in a space can stay a default, or you can require it (model, prompt stack, sampling, context books) so every descendant uses what you set.
 
 ## Features
 
-- Appearance is handled through themes, defined through JSON (CSS vars, density, motion, optional remote stylesheet)
-- Full user control
-- First-class OpenAI, Anthropic, and Ollama providers, plus OpenAI-compatible endpoints
-- Chats are trees, made from messages with sibling branches, path selection, and search across all branches. Our goal is maximum flexibility and non-destructive editing, though the alternative is also possible.
-- No additional services required. SQLite by default; PostgreSQL is optional.
-- Serverless support. Stateful default.
-- Backup / restore (passwords and sessions excluded)
+- Prompt stacks are ordered modules that build what the model receives, including where chat history sits. Prompt text expands dates, times, macros, and per-chat variables when you send. They provide a way to set the chrome of a conversation for a specific use case without you having to see it the whole time.
+- Context books are notes you write ahead of time. When a keyword shows up in the conversation, the matching notes are inserted, so that piece of context arrives the same way every time.
+- Chat templates save a whole conversation tree. New chats can start from one, and a space can set the default.
+- OpenAI, Anthropic, and Ollama, plus OpenAI-compatible endpoints. You set reasoning effort per model in the chat. Unfamiliar endpoints need an explicit format in provider settings.
+- Built-in tools, and MCP servers. You approve a tool once in settings, before the model can call it.
+- Appearance is a JSON theme that you can visually edit: CSS variables, density, motion, and even an optional remote stylesheet.
+- Import ChatGPT exports, or SillyTavern archives. Character cards become spaces, with their chats and context books.
+- SQLite by default, PostgreSQL if you set `DATABASE_URL`. Backup and restore omit passwords and sessions. The first signup owns the instance and can add other users.
 
 ## Setup
+
+Requires Node 20 or newer.
 
 ```bash
 pnpm install
@@ -25,21 +26,13 @@ cp .env.example .env
 pnpm --filter web dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The first signup becomes the sole owner of the instance, then you can connect a model provider.
+Open [http://localhost:3000](http://localhost:3000). Create the owner account, then connect a model provider.
 
-For Docker Compose, see [DEPLOYMENT.md](./DEPLOYMENT.md). Compose stores its SQLite database and filesystem attachments in a Docker-managed `nibchat-data` volume by default, separate from the `./data/` directory used by local development.
-
-### Reasoning controls
-
-Use the reasoning picker beside the model to set effort or a thinking budget. Choices are remembered per provider/model in each chat. **Default** omits the override; **Off** explicitly disables thinking where supported. Reasoning replay remains a separate setting in Parameters.
-
-For custom endpoints, open **Settings → provider → Advanced** and configure each model’s reasoning format and supported API values. **OpenAI effort** works with both Responses (`reasoning.effort`) and Chat Completions (`reasoning_effort`), including automatic protocol fallback. Auto recognizes a small set of native models; unfamiliar endpoints require explicit configuration.
-
-For provider-specific fields, use **Custom JSON** and edit the SDK provider options in Parameters. Compatible endpoints using custom reasoning must pin their API type. Saving reasoning JSON switches that chat/model out of managed controls; the picker shows **Custom**. Managed thinking budgets share the total **Max output** limit with the answer.
+For Docker Compose, Ollama on another host, and stateless or Redis-backed generation, see [DEPLOYMENT.md](./DEPLOYMENT.md). Compose stores its SQLite database and filesystem attachments in a Docker-managed `nibchat-data` volume, separate from the `./data/` directory used by local development.
 
 ### Password reset
 
-There is no outbound email for now. Generate a recovery link:
+There is no outbound email yet. Generate a recovery link:
 
 ```bash
 pnpm --filter web reset-password -- owner@example.com
@@ -62,7 +55,7 @@ Open the printed URL (or `/reset-password?token=…`).
 | `REDIS_URL`                 | Redis for generation streams (`redis://` TCP or `https://` HTTP)    |
 | `REDIS_TOKEN`               | Optional Bearer token for HTTP Redis                                |
 
-Copy [`.env.example`](./.env.example) to `.env` and fill secrets. See [DEPLOYMENT.md](./DEPLOYMENT.md) for Ollama Cloud, Docker host networking, and production.
+Copy [`.env.example`](./.env.example) to `.env` and fill secrets.
 
 ## Development
 

@@ -222,7 +222,7 @@ export function PromptStackSettings() {
     })
   )
   const setDefaultMut = useMutation(
-    trpc.workspace.setInstanceDefaultPromptStack.mutationOptions({
+    trpc.workspace.setUserPromptStack.mutationOptions({
       onSuccess: async () => {
         toast.success("New chat default updated")
         await refetch()

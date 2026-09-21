@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/popover"
 import { isOrphanPromptStackRef } from "@/lib/prompt-stack"
 import { cn } from "@/lib/utils"
-import type { SpaceLockSource } from "@/lib/space"
+import type { SpaceLockSource } from "@/lib/spaces"
 import { LockedPickerTrigger } from "./space-lock-hint"
 import { useTRPC } from "@/lib/trpc-react"
 import { useMediaMdUp } from "./hooks"
@@ -27,6 +27,7 @@ export function PromptStackPicker({
   chatId,
   promptStackId,
   onChanged,
+  effectiveStackId,
   draftStackId,
   onDraftChange,
   lockedBy,
@@ -35,10 +36,12 @@ export function PromptStackPicker({
   hideTrigger = false,
 }: {
   chatId?: string
-  /** Chat's prompt_stack_id (null = inherit). */
+  /** Stored override. Null means this chat inherits. */
   promptStackId: string | null
+  /** Resolved stack used for the label while inheriting. */
+  effectiveStackId?: string | null
   onChanged?: () => void | Promise<void>
-  /** Draft chats before first message: local-only selection. */
+  /** Draft chats before first message: local-only override. Null inherits. */
   draftStackId?: string | null
   onDraftChange?: (stackId: string | null) => void
   lockedBy?: SpaceLockSource
@@ -68,10 +71,13 @@ export function PromptStackPicker({
     : null
   const isOrphan = isOrphanPromptStackRef(activeRef, stacks)
   const inherits = activeRef === null
+  const inheritedStack = stacks.find(
+    (stack) => stack.id === (effectiveStackId ?? defaultId)
+  )
 
   const label = inherits
-    ? defaultStack
-      ? `Stack · ${defaultStack.name}`
+    ? inheritedStack
+      ? `Stack · ${inheritedStack.name}`
       : "Prompt stack"
     : isOrphan
       ? "Missing stack"
@@ -93,7 +99,7 @@ export function PromptStackPicker({
   async function selectStack(stackId: string | null) {
     if (locked) return
     if (!chatId) {
-      onDraftChange?.(stackId ?? defaultId)
+      onDraftChange?.(stackId)
       setOpen(false)
       return
     }
@@ -122,7 +128,7 @@ export function PromptStackPicker({
             onClick={() => void selectStack(null)}
           >
             <span className="min-w-0 flex-1 truncate">
-              Use new-chat default
+              Use default
               {defaultStack ? (
                 <span className="text-muted-foreground">
                   {" "}

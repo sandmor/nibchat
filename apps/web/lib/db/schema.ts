@@ -37,7 +37,7 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create table if not exists spaces (id text primary key, user_id text not null references "user"(id) on delete cascade, parent_id text references spaces(id) on delete set null, sort_key ${sortKeyType} not null, name text not null, description text not null default '', metadata_json text not null default '{}', settings_json text not null default '{}', created_at text not null, updated_at text not null)`.execute(
     db
   )
-  await sql`create table if not exists chats (id text primary key, user_id text not null references "user"(id) on delete cascade, title text, selected_root_node_id text, model_config_json text not null, view_state_json text not null, prompt_stack_id text, variables_json text not null default '{}', expand_message_macros boolean not null default false, space_overrides_json text not null default '{}', space_id text references spaces(id) on delete set null, created_at text not null, updated_at text not null)`.execute(
+  await sql`create table if not exists chats (id text primary key, user_id text not null references "user"(id) on delete cascade, title text, selected_root_node_id text, settings_json text not null default '{}', view_state_json text not null, space_id text references spaces(id) on delete set null, created_at text not null, updated_at text not null)`.execute(
     db
   )
   await sql`create table if not exists chat_templates (id text primary key, user_id text not null references "user"(id) on delete cascade, name text not null, document_json text not null, revision integer not null default 0, source_json text not null default '{}', created_at text not null, updated_at text not null)`.execute(
@@ -117,7 +117,7 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create table if not exists mcp_server_profiles (id text primary key, user_id text not null references "user"(id) on delete cascade, name text not null, namespace text not null, enabled boolean not null default true, transport text not null, protocol_mode text not null, config_json text not null, catalog_json text not null default '{}', tool_allowlist_json text not null default '[]', created_at text not null, updated_at text not null, unique(user_id, namespace))`.execute(
     db
   )
-  await sql`create table if not exists user_preferences (user_id text primary key references "user"(id) on delete cascade, light_theme_id text not null, dark_theme_id text not null, default_prompt_stack_id text not null, theme_mode text not null default 'system', builtin_tools_json text not null default '{"disabled":[]}', chat_defaults_json text not null default '{}', created_at text not null, updated_at text not null)`.execute(
+  await sql`create table if not exists user_preferences (user_id text primary key references "user"(id) on delete cascade, light_theme_id text not null, dark_theme_id text not null, theme_mode text not null default 'system', builtin_tools_json text not null default '{"disabled":[]}', chat_defaults_json text not null default '{}', created_at text not null, updated_at text not null)`.execute(
     db
   )
 
@@ -141,6 +141,7 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   )
 
   const seedAt = new Date().toISOString()
+
   await db
     .insertInto("instance")
     .values({

@@ -1420,7 +1420,7 @@ describe("SQLite chat repository", () => {
     })
   })
 
-  it("seeds new chats from latest chat model config when available", async () => {
+  it("does not copy another chat's model onto a new chat", async () => {
     const provider = await createProvider(userId, {
       name: `Seed provider ${Date.now()}`,
       kind: "openai-compatible",
@@ -1436,13 +1436,10 @@ describe("SQLite chat repository", () => {
       ],
     })
     await createChat(userId, "Template chat", {
-      providerId: provider.id,
-      model: "seed-model",
+      model: { providerId: provider.id, model: "seed-model" },
     })
     const chat = await createChat(userId, "Seeded chat")
-    const config = parseJson<ModelConfig>(chat.model_config_json, {})
-    expect(config.providerId).toBe(provider.id)
-    expect(config.model).toBe("seed-model")
+    expect(JSON.parse(chat.settings_json)).toEqual({})
   })
 
   it("finishSetup saves a provider, optional title model, and completes onboarding", async () => {
@@ -2332,8 +2329,10 @@ describe("prompt stacks", () => {
         ],
       },
     })
-    const chat = await createChat(userId, "Stack test", undefined, stack.id)
-    expect(chat.prompt_stack_id).toBe(stack.id)
+    const chat = await createChat(userId, "Stack test", {
+      promptStack: stack.id,
+    })
+    expect(JSON.parse(chat.settings_json).promptStack).toBe(stack.id)
     const resolved = await resolveStackForChat(chat, userId)
     expect(resolved.source).toBe("chat")
     const first = resolved.stack.modules[0]
@@ -2345,23 +2344,23 @@ describe("prompt stacks", () => {
     await setChatPromptStack(userId, chat.id, null)
     const afterClear = await db
       .selectFrom("chats")
-      .select("prompt_stack_id")
+      .select("settings_json")
       .where("id", "=", chat.id)
       .executeTakeFirstOrThrow()
-    expect(afterClear.prompt_stack_id).toBeNull()
+    expect(JSON.parse(afterClear.settings_json).promptStack).toBeUndefined()
 
     await setChatPromptStack(userId, chat.id, stack.id)
     await deletePromptStack(userId, stack.id)
     const afterDelete = await db
       .selectFrom("chats")
-      .select("prompt_stack_id")
+      .select("settings_json")
       .where("id", "=", chat.id)
       .executeTakeFirstOrThrow()
-    expect(afterDelete.prompt_stack_id).toBeNull()
+    expect(JSON.parse(afterDelete.settings_json).promptStack).toBeUndefined()
 
     const settings = await getUserSettings(userId)
     await expect(
-      deletePromptStack(userId, settings.default_prompt_stack_id)
+      deletePromptStack(userId, settings.promptStackId!)
     ).rejects.toThrow(/default stack/i)
   })
 })
@@ -2668,10 +2667,12 @@ function fixturePrefs(
     user_id: ownerId,
     light_theme_id: light,
     dark_theme_id: dark,
-    default_prompt_stack_id: stack,
     theme_mode: "system" as const,
     builtin_tools_json: builtinToolsJson,
-    chat_defaults_json: chatDefaultsJson,
+    chat_defaults_json: JSON.stringify({
+      ...JSON.parse(chatDefaultsJson),
+      promptStack: stack,
+    }),
     created_at: "t",
     updated_at: "t",
   }
@@ -2702,10 +2703,8 @@ function fixtureChat(id: string, ownerId: string) {
     user_id: ownerId,
     title: id,
     selected_root_node_id: null,
-    model_config_json: "{}",
+    settings_json: "{}",
     view_state_json: '{"mode":"linear","camera":null}',
-    prompt_stack_id: null,
-    variables_json: "{}",
     space_id: null,
     created_at: "t",
     updated_at: "t",
@@ -2773,22 +2772,8 @@ describe("spaces", () => {
       parentId: parent.id,
       name: "Child",
     })
-    const inChild = await createChat(
-      userId,
-      "In child",
-      undefined,
-      null,
-      undefined,
-      child.id
-    )
-    const inParent = await createChat(
-      userId,
-      "In parent",
-      undefined,
-      null,
-      undefined,
-      parent.id
-    )
+    const inChild = await createChat(userId, "In child", {}, child.id)
+    const inParent = await createChat(userId, "In parent", {}, parent.id)
     const ungrouped = await createChat(userId, "Ungrouped")
     await deleteSpace(userId, child.id)
     const afterChild = await getWorkspace(userId, { draft: true })
@@ -2862,7 +2847,7 @@ describe("spaces", () => {
 
   it("rejects prompt stack changes while a space locks the stack", async () => {
     const prefs = await getUserSettings(userId)
-    const stackId = prefs.default_prompt_stack_id
+    const stackId = prefs.promptStackId!
     const space = await createSpace({
       userId,
       name: "Locked stack",
@@ -2870,14 +2855,7 @@ describe("spaces", () => {
         promptStack: { mode: "require", value: stackId },
       },
     })
-    const chat = await createChat(
-      userId,
-      "Locked",
-      undefined,
-      null,
-      undefined,
-      space.id
-    )
+    const chat = await createChat(userId, "Locked", {}, space.id)
     await expect(setChatPromptStack(userId, chat.id, stackId)).rejects.toThrow(
       /locked/i
     )
@@ -2889,7 +2867,7 @@ describe("spaces", () => {
 
   it("stores chat settings separately from space locks", async () => {
     const prefs = await getUserSettings(userId)
-    const stackId = prefs.default_prompt_stack_id
+    const stackId = prefs.promptStackId!
     const space = await createSpace({
       userId,
       name: "Locked",
@@ -2901,27 +2879,19 @@ describe("spaces", () => {
     const chat = await createChat(
       userId,
       "Draft",
-      { temperature: 0.9 },
-      stackId,
-      undefined,
+      { temperature: 0.9, promptStack: stackId },
       space.id
     )
-    expect(chat.prompt_stack_id).toBe(stackId)
+    expect(JSON.parse(chat.settings_json).promptStack).toBeUndefined()
     expect(chat.space_id).toBe(space.id)
-    const stored = parseJson<ModelConfig>(chat.model_config_json, {})
-    expect(stored.temperature).not.toBe(0.15)
-    await updateChat(
-      chat.id,
-      { model: { ...stored, temperature: 0.2 } },
-      userId
-    )
+    const stored = JSON.parse(chat.settings_json) as { temperature?: number }
+    expect(stored.temperature).toBeUndefined()
+    await updateChat(chat.id, { model: { temperature: 0.2 } }, userId)
     const row = await db
       .selectFrom("chats")
-      .select("model_config_json")
+      .select("settings_json")
       .where("id", "=", chat.id)
       .executeTakeFirstOrThrow()
-    expect(parseJson<ModelConfig>(row.model_config_json, {}).temperature).toBe(
-      stored.temperature
-    )
+    expect(JSON.parse(row.settings_json).temperature).toBeUndefined()
   })
 })

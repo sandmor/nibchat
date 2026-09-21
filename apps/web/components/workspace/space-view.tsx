@@ -46,32 +46,36 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { useTRPC } from "@/lib/trpc-react"
 import {
-  SETTING_SLOT_LABELS,
-  SPACE_SAMPLING_KEYS,
+  ADDABLE_SETTING_KEYS,
+  SAMPLING_SETTING_KEYS,
+  SETTING_LABELS,
+  initialSettingValue,
+  maxOutputTokensLockable,
+  modelIdentityComplete,
+  resolveSettings,
+  type SamplingSettingKey,
+  type SettingValues,
+} from "@/lib/chat-settings"
+import {
   definedSettingKeys,
   parseSpaceSettings,
-  resolveChatSettings,
   spaceFromRow,
-  spaceMaxOutputTokensLockable,
-  spaceModelIdentityComplete,
-  type SpaceSamplingKey,
   type SpacePolicyMode,
   type SpaceResolutionDecision,
   type SpaceRule,
   type SpaceSettings,
   type SpaceUnresolvedReference,
-} from "@/lib/space"
+} from "@/lib/spaces"
 import { isOrphanPromptStackRef, resolvePromptStack } from "@/lib/prompt-stack"
 import { displayChatTitle } from "@/lib/chat-title"
 import { cn } from "@/lib/utils"
 import { ModelPicker } from "./model-picker"
-import { ScanDepthField } from "./scan-depth-field"
 import {
   inheritedContextBooks,
   SpaceContextBooksCard,
 } from "./context-book-picker"
-import { DEFAULT_CHAT_CONFIG } from "@/lib/chat-settings"
 import { ReasoningPicker } from "./reasoning-picker"
+import { SamplingSettingControl } from "./settings-fields/sampling-fields"
 import { StringVariableField } from "./string-variable-field"
 import { usePrefersReducedMotion } from "./hooks"
 import { useWorkspaceChrome } from "./shell"
@@ -86,48 +90,17 @@ import type { SlotMotion } from "./slot-crossfade"
 import type { WorkspaceData } from "@/lib/workspace-cache"
 import type { ChatRow } from "@/lib/types"
 
-const ADDABLE_KEYS = [
-  "chatTemplate",
-  "promptStack",
-  "model",
-  "reasoning",
-  ...SPACE_SAMPLING_KEYS,
-] as const
-
-type AddableKey = (typeof ADDABLE_KEYS)[number]
+type AddableKey = (typeof ADDABLE_SETTING_KEYS)[number]
 
 function defaultSlotValue(
   key: AddableKey,
   stacks: Array<{ id: string }>,
   templates: Array<{ id: string }>
-): SpaceSettings[AddableKey] {
-  if (key === "chatTemplate") {
-    return { mode: "default", value: templates[0]?.id ?? null }
-  }
-  if (key === "promptStack") {
-    return { mode: "default", value: stacks[0]?.id ?? "" }
-  }
-  if (key === "model") {
-    return { mode: "default", value: {} }
-  }
-  if (key === "reasoning") {
-    return { mode: "default", value: {} }
-  }
-  if (key === "contextScanDepth")
-    return { mode: "default", value: DEFAULT_CHAT_CONFIG.contextScanDepth }
-  if (key === "replayReasoning") {
-    return { mode: "default", value: true }
-  }
-  if (key === "expandMessageMacros") {
-    return { mode: "default", value: false }
-  }
-  if (key === "stopSequences") {
-    return { mode: "default", value: [] }
-  }
-  if (key === "providerOptions") {
-    return { mode: "default", value: {} }
-  }
-  return { mode: "default", value: 0 }
+): NonNullable<SpaceSettings[AddableKey]> {
+  let value = initialSettingValue(key)
+  if (key === "chatTemplate") value = templates[0]?.id ?? null
+  if (key === "promptStack") value = stacks[0]?.id ?? ""
+  return { mode: "default", value } as NonNullable<SpaceSettings[AddableKey]>
 }
 
 function SpaceChatRow({
@@ -299,7 +272,7 @@ export function SpaceView({
   }
 
   const defined = definedSettingKeys(settings)
-  const available = ADDABLE_KEYS.filter((key) => !defined.includes(key))
+  const available = ADDABLE_SETTING_KEYS.filter((key) => !defined.includes(key))
   const variableNames = Object.keys(settings.variables ?? {})
   const stackById = useMemo(
     () => new Map(stacks.map((row) => [row.id, row.stack])),
@@ -308,30 +281,24 @@ export function SpaceView({
   const spaceRecords = useMemo(() => spaces.map(spaceFromRow), [spaces])
   const resolvedForSpace = useMemo(
     () =>
-      resolveChatSettings({
-        chat: {
-          spaceId,
-          promptStackId: null,
-          variables: {},
-          model: {},
-        },
+      resolveSettings({
+        user: defaultStackId ? { promptStack: defaultStackId } : {},
+        chat: {},
+        spaceId,
         spaces: spaceRecords,
       }),
-    [spaceId, spaceRecords]
+    [defaultStackId, spaceId, spaceRecords]
   )
   const effectiveStackId = resolvedForSpace.effective.promptStackId
   const inheritedRules = useMemo(
     () =>
-      resolveChatSettings({
-        chat: {
-          spaceId: space?.parent_id ?? null,
-          promptStackId: null,
-          variables: {},
-          model: {},
-        },
+      resolveSettings({
+        user: defaultStackId ? { promptStack: defaultStackId } : {},
+        chat: {},
+        spaceId: space?.parent_id ?? null,
         spaces: spaceRecords,
       }).effective.rules,
-    [space?.parent_id, spaceRecords]
+    [defaultStackId, space?.parent_id, spaceRecords]
   )
   const inheritedBooks = inheritedContextBooks(spaceId, spaces, false)
   const resolvedStack = resolvePromptStack({
@@ -393,7 +360,7 @@ export function SpaceView({
             <DropdownMenuLabel>Chat settings</DropdownMenuLabel>
             {available.map((key) => (
               <DropdownMenuItem key={key} onClick={() => addSlot(key)}>
-                {SETTING_SLOT_LABELS[key] ?? key}
+                {SETTING_LABELS[key] ?? key}
               </DropdownMenuItem>
             ))}
           </DropdownMenuGroup>
@@ -852,9 +819,7 @@ export function SpaceView({
                     <DefinitionRow
                       title="Model"
                       mode={settings.model.mode}
-                      canEnable={spaceModelIdentityComplete(
-                        settings.model.value
-                      )}
+                      canEnable={modelIdentityComplete(settings.model.value)}
                       enableBlockedReason="Choose a provider and model before requiring"
                       onMode={(mode) =>
                         patchSettings((current) => {
@@ -948,7 +913,7 @@ export function SpaceView({
                   </RevealItem>
                 ) : null}
 
-                {SPACE_SAMPLING_KEYS.filter((key) => settings[key]).map(
+                {SAMPLING_SETTING_KEYS.filter((key) => settings[key]).map(
                   (key) => (
                     <RevealItem
                       key={key}
@@ -1150,7 +1115,9 @@ function decisionLabel(
   if (decision.kind === "setting") {
     const name = decision.key.startsWith("variable:")
       ? decision.key.slice("variable:".length)
-      : (SETTING_SLOT_LABELS[decision.key] ?? decision.key)
+      : decision.key in SETTING_LABELS
+        ? SETTING_LABELS[decision.key as keyof typeof SETTING_LABELS]
+        : decision.key
     return `${name} · ${POLICY_ACTION_LABELS[decision.action] ?? decision.action}`
   }
   if (decision.kind === "book") {
@@ -1576,15 +1543,14 @@ function SamplingDefinition({
   settings,
   onChange,
 }: {
-  field: SpaceSamplingKey
+  field: SamplingSettingKey
   settings: SpaceSettings
   onChange: (patch: (current: SpaceSettings) => SpaceSettings) => void
 }) {
   const slot = settings[field]
   if (!slot) return null
   const canEnable =
-    field !== "maxOutputTokens" ||
-    spaceMaxOutputTokensLockable(Number(slot.value))
+    field !== "maxOutputTokens" || maxOutputTokensLockable(Number(slot.value))
 
   function patchSlot(update: Record<string, unknown>) {
     onChange((current) => {
@@ -1596,7 +1562,7 @@ function SamplingDefinition({
 
   return (
     <DefinitionRow
-      title={SETTING_SLOT_LABELS[field] ?? field}
+      title={SETTING_LABELS[field] ?? field}
       mode={slot.mode}
       canEnable={canEnable}
       enableBlockedReason="Max output must be greater than 0 before requiring"
@@ -1609,74 +1575,12 @@ function SamplingDefinition({
         })
       }}
     >
-      {field === "contextScanDepth" ? (
-        <ScanDepthField
-          value={slot.value as number | null}
-          onChange={(value) => patchSlot({ value })}
-        />
-      ) : field === "stopSequences" ? (
-        <StopSequencesField
-          value={slot.value as string[]}
-          onCommit={(value) => patchSlot({ value })}
-        />
-      ) : field === "providerOptions" ? (
-        <ProviderOptionsField
-          value={(slot.value as Record<string, unknown>) ?? {}}
-          onCommit={(value) => patchSlot({ value })}
-        />
-      ) : field === "replayReasoning" || field === "expandMessageMacros" ? (
-        <Switch
-          checked={Boolean(slot.value)}
-          onCheckedChange={(checked) => patchSlot({ value: checked })}
-        />
-      ) : (
-        <SamplingNumberField
-          label={SETTING_SLOT_LABELS[field] ?? field}
-          value={typeof slot.value === "number" ? slot.value : 0}
-          onCommit={(value) => patchSlot({ value })}
-        />
-      )}
+      <SamplingSettingControl
+        field={field}
+        value={slot.value as SettingValues[SamplingSettingKey]}
+        onChange={(value) => patchSlot({ value })}
+      />
     </DefinitionRow>
-  )
-}
-
-function ProviderOptionsField({
-  value,
-  onCommit,
-}: {
-  value: Record<string, unknown>
-  onCommit: (value: Record<string, unknown>) => void
-}) {
-  const committed = JSON.stringify(value ?? {}, null, 2)
-  const [text, setText] = useState(committed)
-  useEffect(() => {
-    setText(committed)
-  }, [committed])
-
-  function commit() {
-    try {
-      const parsed: unknown = JSON.parse(text)
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        throw new Error("Expected a JSON object")
-      }
-      const next = parsed as Record<string, unknown>
-      if (JSON.stringify(next) === JSON.stringify(value ?? {})) return
-      onCommit(next)
-    } catch {
-      toast.error("Provider JSON is invalid")
-      setText(committed)
-    }
-  }
-
-  return (
-    <Textarea
-      className="font-mono text-xs"
-      rows={4}
-      value={text}
-      onChange={(event) => setText(event.target.value)}
-      onBlur={commit}
-      aria-label="Provider-specific JSON"
-    />
   )
 }
 
@@ -1706,82 +1610,6 @@ function SpaceStringVariableField({
       value={text}
       onChange={setText}
       onBlur={commit}
-    />
-  )
-}
-
-function SamplingNumberField({
-  label,
-  value,
-  onCommit,
-}: {
-  label: string
-  value: number
-  onCommit: (value: number) => void
-}) {
-  const [text, setText] = useState(String(value))
-  useEffect(() => {
-    setText(String(value))
-  }, [value])
-
-  function commit() {
-    const next = Number(text)
-    if (text.trim() === "" || !Number.isFinite(next)) {
-      setText(String(value))
-      return
-    }
-    if (next === value) return
-    onCommit(next)
-  }
-
-  return (
-    <Input
-      type="number"
-      aria-label={label}
-      value={text}
-      onChange={(event) => setText(event.target.value)}
-      onBlur={commit}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") {
-          event.currentTarget.blur()
-        }
-      }}
-    />
-  )
-}
-
-function StopSequencesField({
-  value,
-  onCommit,
-}: {
-  value: string[]
-  onCommit: (value: string[]) => void
-}) {
-  const committed = value.join(", ")
-  const [text, setText] = useState(committed)
-  useEffect(() => {
-    setText(committed)
-  }, [committed])
-
-  function commit() {
-    const next = text
-      .split(",")
-      .map((part) => part.trim())
-      .filter(Boolean)
-    if (next.join(", ") === committed) return
-    onCommit(next)
-  }
-
-  return (
-    <Input
-      value={text}
-      onChange={(event) => setText(event.target.value)}
-      onBlur={commit}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") {
-          event.currentTarget.blur()
-        }
-      }}
     />
   )
 }

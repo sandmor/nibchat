@@ -149,6 +149,22 @@ export function resolvePromptVariableValues(
   return values
 }
 
+/** Keep only declared values that differ from an effective inherited baseline. */
+export function promptVariableOverrides(
+  variables: readonly PromptVariable[],
+  values: PromptVariableValues,
+  inherited: Readonly<Record<string, unknown>> = {}
+): PromptVariableValues {
+  const baseline = resolvePromptVariableValues(variables, inherited)
+  const overrides: PromptVariableValues = {}
+  for (const variable of variables) {
+    const value = values[variable.name]
+    if (value === undefined || value === baseline[variable.name]) continue
+    overrides[variable.name] = value
+  }
+  return overrides
+}
+
 /**
  * Apply updated stack defaults without overwriting values edited in the picker.
  * Values that still match the previous resolution continue following defaults.

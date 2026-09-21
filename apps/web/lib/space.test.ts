@@ -2,22 +2,17 @@ import { describe, expect, it } from "vitest"
 import {
   assertSpaceMoveAllowed,
   assertSpaceSettingsLocks,
-  bindVariableLocksToStack,
-  mergeUnlockedModelConfig,
-  mergeUnlockedVariables,
   omitModelProviderRef,
   omitPromptStackRef,
   parseSpaceSettings,
-  resolveChatSettings,
   spaceChain,
   spaceDepth,
   spaceSettingsToJson,
   spaceSubtreeHeight,
   spaceSubtreeIds,
-  type ChatSettingsSource,
   type SpaceRecord,
-} from "@/lib/space"
-import type { ModelConfig } from "@/lib/providers"
+} from "@/lib/spaces"
+import { bindVariableLocksToStack } from "@/lib/chat-settings"
 
 function space(
   id: string,
@@ -26,16 +21,6 @@ function space(
   name = id
 ): SpaceRecord {
   return { id, parent_id, name, settings }
-}
-
-function chat(patch: Partial<ChatSettingsSource> = {}): ChatSettingsSource {
-  return {
-    spaceId: null,
-    promptStackId: null,
-    variables: {},
-    model: { providerId: "p", model: "m", temperature: 0.7 },
-    ...patch,
-  }
 }
 
 describe("parseSpaceSettings", () => {
@@ -70,240 +55,6 @@ describe("parseSpaceSettings", () => {
   })
 })
 
-describe("resolveChatSettings", () => {
-  it("uses stored chat values when ungrouped", () => {
-    const stored = chat({
-      promptStackId: "mine",
-      variables: { tone: "casual" },
-    })
-    const resolved = resolveChatSettings({ chat: stored, spaces: [] })
-    expect(resolved.effective.promptStackId).toBe("mine")
-    expect(resolved.effective.variables).toEqual({ tone: "casual" })
-    expect(resolved.effective.model.temperature).toBe(0.7)
-    expect(resolved.locks.promptStack).toBeUndefined()
-    expect(resolved.chain).toEqual([])
-  })
-
-  it("locks enabled slots and ignores disabled ones", () => {
-    const spaces = [
-      space("work", null, {
-        promptStack: { mode: "require", value: "stack-a" },
-        chatTemplate: { mode: "require", value: "template-a" },
-        temperature: { mode: "release", value: 0.1 },
-      }),
-    ]
-    const resolved = resolveChatSettings({
-      chat: chat({
-        spaceId: "work",
-        promptStackId: "chat-stack",
-        model: { providerId: "p", model: "m", temperature: 0.9 },
-      }),
-      spaces,
-    })
-    expect(resolved.effective.promptStackId).toBe("stack-a")
-    expect(resolved.effective.model.temperature).toBe(0.9)
-    expect(resolved.locks.promptStack?.spaceId).toBe("work")
-    expect(resolved.effective.chatTemplateId).toBe("template-a")
-    expect(resolved.locks.chatTemplate?.spaceId).toBe("work")
-    expect(resolved.locks.temperature).toBeUndefined()
-  })
-
-  it("cascades field-by-field with innermost enabled winning", () => {
-    const spaces = [
-      space("root", null, {
-        promptStack: { mode: "require", value: "parent-stack" },
-        temperature: { mode: "require", value: 0.2 },
-        model: { mode: "require", value: { providerId: "p1", model: "m1" } },
-      }),
-      space("leaf", "root", {
-        temperature: { mode: "require", value: 0.9 },
-      }),
-    ]
-    const resolved = resolveChatSettings({
-      chat: chat({ spaceId: "leaf" }),
-      spaces,
-    })
-    expect(resolved.effective.promptStackId).toBe("parent-stack")
-    expect(resolved.effective.model.providerId).toBe("p1")
-    expect(resolved.effective.model.model).toBe("m1")
-    expect(resolved.effective.model.temperature).toBe(0.9)
-    expect(resolved.locks.promptStack?.spaceId).toBe("root")
-    expect(resolved.locks.model?.spaceId).toBe("root")
-    expect(resolved.locks.temperature?.spaceId).toBe("leaf")
-  })
-
-  it("locks only the variables the space enables", () => {
-    const spaces = [
-      space("work", null, {
-        variables: {
-          tone: { mode: "require", value: "formal" },
-          skipped: { mode: "release", value: "nope" },
-        },
-      }),
-    ]
-    const resolved = resolveChatSettings({
-      chat: chat({
-        spaceId: "work",
-        variables: { tone: "casual", extra: true, skipped: "chat" },
-      }),
-      spaces,
-    })
-    expect(resolved.effective.variables).toEqual({
-      tone: "formal",
-      extra: true,
-      skipped: "chat",
-    })
-    expect(resolved.locks.variables.tone?.spaceId).toBe("work")
-    expect(resolved.locks.variables.skipped).toBeUndefined()
-    expect(resolved.locks.variables.extra).toBeUndefined()
-  })
-
-  it("lets defaults yield to chat writes and releases restore chat values", () => {
-    const spaces = [
-      space("root", null, {
-        temperature: { mode: "require", value: 0.2 },
-      }),
-      space("default", "root", {
-        temperature: { mode: "default", value: 0.5 },
-      }),
-      space("released", "default", {
-        temperature: { mode: "release", value: 0 },
-      }),
-    ]
-    const defaulted = resolveChatSettings({
-      chat: chat({
-        spaceId: "default",
-        model: { providerId: "p", model: "m" },
-      }),
-      spaces,
-    })
-    expect(defaulted.effective.model.temperature).toBe(0.5)
-    expect(defaulted.locks.temperature).toBeUndefined()
-
-    const explicitlySet = resolveChatSettings({
-      chat: chat({ spaceId: "default" }),
-      spaces,
-    })
-    expect(explicitlySet.effective.model.temperature).toBe(0.7)
-
-    const released = resolveChatSettings({
-      chat: chat({ spaceId: "released" }),
-      spaces,
-    })
-    expect(released.effective.model.temperature).toBe(0.7)
-    expect(released.locks.temperature).toBeUndefined()
-  })
-
-  it("uses explicit markers instead of mistaking stored baselines for choices", () => {
-    const spaces = [
-      space("root", null, {
-        promptStack: { mode: "default", value: "space-stack" },
-        temperature: { mode: "default", value: 0.2 },
-        variables: { tone: { mode: "default", value: "formal" } },
-      }),
-    ]
-    const baseline = chat({
-      spaceId: "root",
-      promptStackId: "instance-stack",
-      variables: { tone: "casual" },
-    })
-
-    const inherited = resolveChatSettings({
-      chat: { ...baseline, explicit: { model: [], variables: [] } },
-      spaces,
-    })
-    expect(inherited.effective.promptStackId).toBe("space-stack")
-    expect(inherited.effective.model.temperature).toBe(0.2)
-    expect(inherited.effective.variables.tone).toBe("formal")
-
-    const chosen = resolveChatSettings({
-      chat: {
-        ...baseline,
-        explicit: {
-          promptStack: true,
-          model: ["temperature"],
-          variables: ["tone"],
-        },
-      },
-      spaces,
-    })
-    expect(chosen.effective.promptStackId).toBe("instance-stack")
-    expect(chosen.effective.model.temperature).toBe(0.7)
-    expect(chosen.effective.variables.tone).toBe("casual")
-  })
-
-  it("resolves book exclusions and stable rule exceptions by branch", () => {
-    const spaces = [
-      space("root", null, {
-        books: { reset: false, decisions: { a: "include", b: "include" } },
-        rules: [
-          {
-            id: "tone",
-            operation: "define",
-            title: "Tone",
-            content: "Formal",
-          },
-        ],
-      }),
-      space("child", "root", {
-        books: {
-          reset: false,
-          decisions: { a: "exclude" },
-          entries: { b: { entry: "disable" } },
-        },
-        rules: [
-          {
-            id: "tone",
-            operation: "replace",
-            title: "Tone",
-            content: "Conversational",
-          },
-        ],
-      }),
-      space("leaf", "child", {
-        books: { reset: false, decisions: { a: "include" } },
-        rules: [{ id: "tone", operation: "disable" }],
-      }),
-    ]
-    const child = resolveChatSettings({
-      chat: chat({ spaceId: "child", contextBookIds: ["a", "chat"] }),
-      spaces,
-    })
-    expect(child.effective.contextBookIds).toEqual(["b", "chat"])
-    expect(child.effective.contextEntryDecisions).toEqual({
-      b: { entry: "disable" },
-    })
-    expect(child.effective.rules[0]?.content).toBe("Conversational")
-
-    const leaf = resolveChatSettings({
-      chat: chat({ spaceId: "leaf" }),
-      spaces,
-    })
-    expect(leaf.effective.contextBookIds).toEqual(["a", "b"])
-    expect(leaf.effective.rules).toEqual([])
-  })
-})
-
-describe("bindVariableLocksToStack", () => {
-  it("drops locks for names not on the effective stack", () => {
-    const spaces = [
-      space("work", null, {
-        variables: {
-          tone: { mode: "require", value: "formal" },
-          gone: { mode: "require", value: "x" },
-        },
-      }),
-    ]
-    const resolved = resolveChatSettings({
-      chat: chat({ spaceId: "work" }),
-      spaces,
-    })
-    const bound = bindVariableLocksToStack(resolved.locks, ["tone"])
-    expect(bound.variables.tone).toEqual(resolved.locks.variables.tone)
-    expect(bound.variables.gone).toBeUndefined()
-  })
-})
-
 describe("omit*Ref", () => {
   it("drops only the matching prompt-stack slot", () => {
     const settings: SpaceRecord["settings"] = {
@@ -328,41 +79,19 @@ describe("omit*Ref", () => {
   })
 })
 
-describe("mergeUnlocked*", () => {
-  it("keeps stored model fields that a space locks", () => {
-    const stored: ModelConfig = {
-      providerId: "stored-p",
-      model: "stored-m",
-      temperature: 0.4,
-      topP: 0.8,
-    }
-    const incoming: ModelConfig = {
-      providerId: "ui-p",
-      model: "ui-m",
-      temperature: 0.1,
-      topP: 0.2,
-    }
-    const merged = mergeUnlockedModelConfig(stored, incoming, {
-      variables: {},
-      model: { spaceId: "s", spaceName: "Work" },
-      temperature: { spaceId: "s", spaceName: "Work" },
-    })
-    expect(merged.providerId).toBe("stored-p")
-    expect(merged.model).toBe("stored-m")
-    expect(merged.temperature).toBe(0.4)
-    expect(merged.topP).toBe(0.2)
-  })
-
-  it("keeps stored values for locked variables", () => {
-    const merged = mergeUnlockedVariables(
-      { tone: "casual", extra: true },
-      { tone: "formal", extra: false, other: "x" },
+describe("bindVariableLocksToStack", () => {
+  it("drops locks for names not on the effective stack", () => {
+    const bound = bindVariableLocksToStack(
       {
-        variables: { tone: { spaceId: "s", spaceName: "Work" } },
+        variables: {
+          tone: { spaceId: "work", spaceName: "Work" },
+          gone: { spaceId: "work", spaceName: "Work" },
+        },
       },
-      ["tone", "extra", "other"]
+      ["tone"]
     )
-    expect(merged).toEqual({ tone: "casual", extra: false, other: "x" })
+    expect(bound.variables.tone?.spaceId).toBe("work")
+    expect(bound.variables.gone).toBeUndefined()
   })
 })
 

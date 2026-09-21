@@ -98,20 +98,19 @@ describe("applySchema", () => {
     )
     expect(chatColumns).toContainEqual(
       expect.objectContaining({
-        name: "variables_json",
+        name: "settings_json",
         notnull: 1,
         dflt_value: "'{}'",
       })
+    )
+    expect(chatColumns.map((column) => column.name)).not.toContain(
+      "model_config_json"
+    )
+    expect(chatColumns.map((column) => column.name)).not.toContain(
+      "space_overrides_json"
     )
     expect(chatColumns).toContainEqual(
       expect.objectContaining({ name: "space_id", notnull: 0 })
-    )
-    expect(chatColumns).toContainEqual(
-      expect.objectContaining({
-        name: "space_overrides_json",
-        notnull: 1,
-        dflt_value: "'{}'",
-      })
     )
     await db.selectFrom("spaces").select("id").limit(1).execute()
     const instanceColumns = sqlite
@@ -143,6 +142,9 @@ describe("applySchema", () => {
         notnull: 1,
         dflt_value: `'{}'`,
       })
+    )
+    expect(prefColumns.map((column) => column.name)).not.toContain(
+      "default_prompt_stack_id"
     )
     await db.destroy()
     sqlite.close()

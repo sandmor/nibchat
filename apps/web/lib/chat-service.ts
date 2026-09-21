@@ -47,7 +47,7 @@ import type {
 } from "@/lib/types"
 import { generateChatTitle } from "@/lib/agent/generate-title"
 import { seedChatTitle } from "@/lib/chat-title"
-import { defaultModelConfig, type ModelConfig } from "@/lib/providers"
+import { type ModelConfig } from "@/lib/providers"
 import { orderNodesForInsert, parseBackup, type Backup } from "@/lib/backup"
 import {
   parseChatViewState,
@@ -112,16 +112,24 @@ import {
 } from "@/lib/user-settings"
 import { MAX_SPACE_DEPTH, MAX_SPACES } from "@/lib/limits"
 import {
-  assertSpaceMoveAllowed,
   bindVariableLocksToStack,
-  mergeUnlockedModelConfig,
-  mergeUnlockedVariables,
+  generationOverrides,
+  parseSettingValues,
+  parseUserSettingValues,
+  replaceGenerationSlice,
+  resolveSettings,
+  settingValuesToJson,
+  toModelConfig,
+  userPromptStackId,
+  withoutLockedSettings,
+  type ResolvedSettings,
+  type SettingValues,
+} from "@/lib/chat-settings"
+import {
+  assertSpaceMoveAllowed,
   omitModelProviderRef,
   omitPromptStackRef,
   parseSpaceSettings,
-  parseChatSpaceOverrides,
-  chatSpaceOverridesToJson,
-  resolveChatSettings,
   spaceDescriptionSchema,
   spaceFromRow,
   spaceNameSchema,
@@ -131,11 +139,9 @@ import {
   spaceSubtreeIds,
   spacesById,
   orderSpacesForInsert,
-  type ChatSpaceOverrides,
-  type ResolvedChatSettings,
   type SpaceRecord,
   type SpaceSettings,
-} from "@/lib/space"
+} from "@/lib/spaces"
 
 function normalizeNodeRow(node: NodeRow): NodeRow {
   return {
@@ -397,29 +403,20 @@ async function assertSpaceSettingsStack(
 export async function resolveSettingsForChat(
   chat: {
     space_id?: string | null
-    prompt_stack_id: string | null
-    variables_json?: string
-    model_config_json?: string
+    settings_json?: string
     contextBookIds?: string[]
-    space_overrides_json?: string
   },
   userId: string,
   spaces?: readonly SpaceRecord[]
-): Promise<ResolvedChatSettings> {
+): Promise<ResolvedSettings> {
+  const prefs = await ensureUserSettings(userId)
   const records = spaces ?? (await loadSpaceRecords(userId))
-  return resolveChatSettings({
-    chat: {
-      spaceId: chat.space_id ?? null,
-      promptStackId: chat.prompt_stack_id,
-      variables: parseJson<Record<string, unknown>>(
-        chat.variables_json ?? "{}",
-        {}
-      ),
-      model: parseJson<ModelConfig>(chat.model_config_json ?? "{}", {}),
-      contextBookIds: chat.contextBookIds,
-      explicit: parseChatSpaceOverrides(chat.space_overrides_json),
-    },
+  return resolveSettings({
+    user: parseUserSettingValues(prefs.chat_defaults_json),
+    chat: parseSettingValues(chat.settings_json),
+    spaceId: chat.space_id ?? null,
     spaces: records,
+    contextBookIds: chat.contextBookIds,
   })
 }
 
@@ -500,12 +497,13 @@ export async function getWorkspace(
         .where("generation_runs.state", "in", [...FOLLOWABLE_RUN_STATES])
         .execute()
     : []
+  const prefs = await ensureUserSettings(userId)
+  const userDefaults = parseUserSettingValues(prefs.chat_defaults_json)
   return {
     chats,
     spaces,
-    chatDefaults: await defaultModelConfig(userId),
-    defaultPromptStackId: (await ensureUserSettings(userId))
-      .default_prompt_stack_id,
+    chatDefaults: toModelConfig(userDefaults),
+    defaultPromptStackId: userPromptStackId(userDefaults) ?? "",
     chat: selected ?? null,
     nodes: nodes.map((node) => normalizeNodeRow(node)),
     activeGenerations,
@@ -515,22 +513,11 @@ export async function getWorkspace(
 export async function createChat(
   userId: string,
   title: string | null = null,
-  config?: ModelConfig,
-  promptStackId?: string | null,
-  variables?: PromptVariableValues,
-  spaceId?: string | null,
-  contextBookIds: string[] = [],
-  explicit?: ChatSpaceOverrides
+  overrides: SettingValues = {},
+  spaceId: string | null = null,
+  contextBookIds: string[] = []
 ) {
-  const chat = await prepareChatRow(
-    userId,
-    title,
-    config,
-    promptStackId,
-    variables,
-    spaceId,
-    explicit
-  )
+  const chat = await prepareChatRow(userId, title, overrides, spaceId)
   const uniqueBookIds = [...new Set(contextBookIds)]
   if (uniqueBookIds.length) {
     const owned = await db
@@ -563,94 +550,70 @@ export async function createChat(
 export async function prepareChatRow(
   userId: string,
   title: string | null = null,
-  config?: ModelConfig,
-  promptStackId?: string | null,
-  variables?: PromptVariableValues,
-  spaceId?: string | null,
-  explicit?: ChatSpaceOverrides
+  overrides: SettingValues = {},
+  spaceId: string | null = null
 ) {
-  const explicitConfigKeys =
-    explicit?.model ?? (config ? Object.keys(config) : [])
-  const explicitPromptStack = explicit
-    ? explicit.promptStack === true
-    : promptStackId !== undefined
-  const baseline = await defaultModelConfig(userId)
-  const defaultStackId = (await ensureUserSettings(userId))
-    .default_prompt_stack_id
-  // A supplied config is a draft's snapshot, including intentionally unset fields.
-  const incoming = config ?? baseline
-  promptStackId = promptStackId ?? defaultStackId
-  if (promptStackId) {
+  const requested = { ...overrides }
+  if (typeof requested.promptStack === "string") {
     const existing = await db
       .selectFrom("prompt_stacks")
       .select("id")
-      .where("id", "=", promptStackId)
+      .where("id", "=", requested.promptStack)
       .where("user_id", "=", userId)
       .executeTakeFirst()
     if (!existing) throw new Error("Prompt stack not found")
   }
+  if (requested.model?.providerId) {
+    const provider = await db
+      .selectFrom("provider_profiles")
+      .select("id")
+      .where("id", "=", requested.model.providerId)
+      .executeTakeFirst()
+    if (!provider) throw new Error("Provider not found")
+  }
   const resolvedSpaceId = spaceId ?? null
   if (resolvedSpaceId) await assertSpaceOwner(resolvedSpaceId, userId)
-  const lockPreview = await resolveSettingsForChat(
-    {
-      space_id: resolvedSpaceId,
-      prompt_stack_id: promptStackId ?? null,
-      model_config_json: JSON.stringify(incoming),
-      variables_json: "{}",
-    },
-    userId
-  )
-  const storedModel = mergeUnlockedModelConfig(
-    baseline,
-    incoming,
-    lockPreview.locks
-  )
-  const storedVariables =
-    variables && Object.keys(variables).length > 0
-      ? sanitizePromptVariableOverrides(
-          (
-            await resolveStackForChat(
-              {
-                prompt_stack_id: promptStackId ?? null,
-                space_id: resolvedSpaceId,
-                model_config_json: JSON.stringify(storedModel),
-                variables_json: "{}",
-              },
-              userId
-            )
-          ).stack.variables ?? [],
-          mergeUnlockedVariables(
-            {},
-            variables,
-            lockPreview.locks,
-            Object.keys(variables)
-          )
-        )
-      : {}
+  const prefs = await ensureUserSettings(userId)
+  const preview = resolveSettings({
+    user: parseUserSettingValues(prefs.chat_defaults_json),
+    chat: requested,
+    spaceId: resolvedSpaceId,
+    spaces: await loadSpaceRecords(userId),
+  })
+  let stored = withoutLockedSettings(requested, preview.locks)
+  if (stored.variables) {
+    const stack = (
+      await resolveStackForChat(
+        {
+          settings_json: settingValuesToJson(stored),
+          space_id: resolvedSpaceId,
+        },
+        userId
+      )
+    ).stack
+    const sanitized = sanitizePromptVariableOverrides(
+      stack.variables ?? [],
+      stored.variables
+    )
+    if (Object.keys(sanitized).length)
+      stored = { ...stored, variables: sanitized }
+    else {
+      stored = { ...stored }
+      delete stored.variables
+    }
+  }
   const timestamp = now()
-  const chat = {
+  return {
     id: id(),
     user_id: userId,
     title,
     selected_root_node_id: null,
-    model_config_json: JSON.stringify(storedModel),
+    settings_json: settingValuesToJson(stored),
     view_state_json: chatViewStateToJson({ mode: "linear", camera: null }),
-    prompt_stack_id: lockPreview.locks.promptStack
-      ? defaultStackId
-      : promptStackId,
-    variables_json: JSON.stringify(storedVariables),
-    expand_message_macros: toDbBool(Boolean(storedModel.expandMessageMacros)),
-    space_overrides_json: chatSpaceOverridesToJson({
-      promptStack: explicitPromptStack || undefined,
-      model: explicitConfigKeys,
-      variables:
-        explicit?.variables ?? (variables ? Object.keys(variables) : []),
-    }),
     space_id: resolvedSpaceId,
     created_at: timestamp,
     updated_at: timestamp,
   }
-  return chat
 }
 
 function uniqueChatIds(chatIds: readonly string[]) {
@@ -1010,36 +973,30 @@ export async function updateChat(
     if (!userId) throw new Error("Chat not found")
     const chat = await db
       .selectFrom("chats")
-      .select([
-        "space_id",
-        "prompt_stack_id",
-        "model_config_json",
-        "variables_json",
-        "space_overrides_json",
-      ])
+      .select(["space_id", "settings_json"])
       .where("id", "=", chatId)
       .where("user_id", "=", userId)
       .executeTakeFirst()
     if (!chat) throw new Error("Chat not found")
-    const resolved = await resolveSettingsForChat(chat, userId)
-    const stored = parseJson<ModelConfig>(chat.model_config_json, {})
-    const merged = mergeUnlockedModelConfig(stored, patch.model, resolved.locks)
-    const explicit = parseChatSpaceOverrides(chat.space_overrides_json)
+    const prefs = await ensureUserSettings(userId)
+    const spaces = await loadSpaceRecords(userId)
+    const inherited = resolveSettings({
+      user: parseUserSettingValues(prefs.chat_defaults_json),
+      chat: {},
+      spaceId: chat.space_id,
+      spaces,
+    })
+    const stored = parseSettingValues(chat.settings_json)
+    const overrides = withoutLockedSettings(
+      generationOverrides(patch.model, inherited.effective.model),
+      inherited.locks
+    )
+    const next = replaceGenerationSlice(stored, overrides)
     await db
       .updateTable("chats")
       .set({
         ...(patch.title !== undefined ? { title: patch.title } : {}),
-        model_config_json: JSON.stringify(merged),
-        space_overrides_json: chatSpaceOverridesToJson({
-          ...explicit,
-          model: [
-            ...new Set([
-              ...(explicit.model ?? []),
-              ...Object.keys(patch.model),
-            ]),
-          ],
-        }),
-        expand_message_macros: toDbBool(Boolean(merged.expandMessageMacros)),
+        settings_json: settingValuesToJson(next),
         updated_at: now(),
       })
       .where("id", "=", chatId)
@@ -2657,14 +2614,7 @@ export async function effectiveContextBooks(
 ): Promise<ContextBookSource[]> {
   const chat = await db
     .selectFrom("chats")
-    .select([
-      "id",
-      "space_id",
-      "prompt_stack_id",
-      "variables_json",
-      "space_overrides_json",
-      "model_config_json",
-    ])
+    .select(["id", "space_id", "settings_json"])
     .where("id", "=", chatId)
     .where("user_id", "=", userId)
     .executeTakeFirst()
@@ -2789,7 +2739,10 @@ export async function duplicatePromptStack(
 
 export async function deletePromptStack(userId: string, stackId: string) {
   const prefs = await ensureUserSettings(userId)
-  if (prefs.default_prompt_stack_id === stackId) {
+  if (
+    userPromptStackId(parseUserSettingValues(prefs.chat_defaults_json)) ===
+    stackId
+  ) {
     throw new Error(
       "Cannot delete the default stack. Choose another default first."
     )
@@ -2802,12 +2755,24 @@ export async function deletePromptStack(userId: string, stackId: string) {
     .executeTakeFirst()
   if (!existing) throw new Error("Prompt stack not found")
   await db.transaction().execute(async (trx) => {
-    await trx
-      .updateTable("chats")
-      .set({ prompt_stack_id: null })
-      .where("prompt_stack_id", "=", stackId)
+    const chats = await trx
+      .selectFrom("chats")
+      .select(["id", "settings_json"])
       .where("user_id", "=", userId)
       .execute()
+    for (const chat of chats) {
+      const settings = parseSettingValues(chat.settings_json)
+      if (settings.promptStack !== stackId) continue
+      delete settings.promptStack
+      await trx
+        .updateTable("chats")
+        .set({
+          settings_json: settingValuesToJson(settings),
+          updated_at: now(),
+        })
+        .where("id", "=", chat.id)
+        .execute()
+    }
     await rewriteSpaceSettings(
       (settings) => omitPromptStackRef(settings, stackId),
       trx,
@@ -2821,51 +2786,14 @@ export async function deletePromptStack(userId: string, stackId: string) {
   })
 }
 
-export async function setInstanceDefaultPromptStack(
-  userId: string,
-  stackId: string
-) {
-  const existing = await db
-    .selectFrom("prompt_stacks")
-    .select("id")
-    .where("id", "=", stackId)
-    .where("user_id", "=", userId)
-    .executeTakeFirst()
-  if (!existing) throw new Error("Prompt stack not found")
-  const prefs = await ensureUserSettings(userId)
-  await db.transaction().execute(async (trx) => {
-    // Materialize legacy inherited references before changing the new-chat default.
-    await trx
-      .updateTable("chats")
-      .set({ prompt_stack_id: prefs.default_prompt_stack_id })
-      .where("user_id", "=", userId)
-      .where("prompt_stack_id", "is", null)
-      .execute()
-    await trx
-      .updateTable("user_preferences")
-      .set({ default_prompt_stack_id: stackId, updated_at: now() })
-      .where("user_id", "=", userId)
-      .execute()
-  })
-  return { ok: true as const, defaultPromptStackId: stackId }
-}
-
 export async function setChatPromptStack(
   userId: string,
   chatId: string,
   stackId: string | null
 ) {
-  const explicitChoice = stackId !== null
   const chat = await db
     .selectFrom("chats")
-    .select([
-      "id",
-      "space_id",
-      "prompt_stack_id",
-      "model_config_json",
-      "variables_json",
-      "space_overrides_json",
-    ])
+    .select(["id", "space_id", "settings_json"])
     .where("id", "=", chatId)
     .where("user_id", "=", userId)
     .executeTakeFirst()
@@ -2885,14 +2813,13 @@ export async function setChatPromptStack(
       .executeTakeFirst()
     if (!existing) throw new Error("Prompt stack not found")
   }
+  const settings = parseSettingValues(chat.settings_json)
+  if (stackId) settings.promptStack = stackId
+  else delete settings.promptStack
   await db
     .updateTable("chats")
     .set({
-      prompt_stack_id: stackId,
-      space_overrides_json: chatSpaceOverridesToJson({
-        ...parseChatSpaceOverrides(chat.space_overrides_json),
-        promptStack: explicitChoice || undefined,
-      }),
+      settings_json: settingValuesToJson(settings),
       updated_at: now(),
     })
     .where("id", "=", chatId)
@@ -2908,14 +2835,7 @@ export async function setChatVariables(input: {
 }) {
   const chat = await db
     .selectFrom("chats")
-    .select([
-      "id",
-      "prompt_stack_id",
-      "space_id",
-      "model_config_json",
-      "variables_json",
-      "space_overrides_json",
-    ])
+    .select(["id", "space_id", "settings_json"])
     .where("id", "=", input.chatId)
     .where("user_id", "=", input.userId)
     .executeTakeFirst()
@@ -2926,26 +2846,24 @@ export async function setChatVariables(input: {
     (variable) => variable.name
   )
   const locks = bindVariableLocksToStack(settings.locks, declared)
-  const stored = parseJson<Record<string, unknown>>(chat.variables_json, {})
-  const merged = mergeUnlockedVariables(stored, input.values, locks, declared)
-  const values = sanitizePromptVariableOverrides(
+  const sanitized = sanitizePromptVariableOverrides(
     resolved.stack.variables ?? [],
-    merged
+    input.values
   )
+  for (const name of Object.keys(locks.variables)) delete sanitized[name]
+  const stored = parseSettingValues(chat.settings_json)
+  if (Object.keys(sanitized).length) stored.variables = sanitized
+  else delete stored.variables
   await db
     .updateTable("chats")
     .set({
-      variables_json: JSON.stringify(values),
-      space_overrides_json: chatSpaceOverridesToJson({
-        ...parseChatSpaceOverrides(chat.space_overrides_json),
-        variables: Object.keys(input.values),
-      }),
+      settings_json: settingValuesToJson(stored),
       updated_at: now(),
     })
     .where("id", "=", input.chatId)
     .where("user_id", "=", input.userId)
     .execute()
-  return { ok: true as const, variables: values }
+  return { ok: true as const, variables: sanitized }
 }
 
 async function loadStacksById(userId: string) {
@@ -2963,10 +2881,8 @@ async function loadStacksById(userId: string) {
 
 export async function resolveStackForChat(
   chat: {
-    prompt_stack_id: string | null
+    settings_json?: string
     space_id?: string | null
-    variables_json?: string
-    model_config_json?: string
   },
   userId: string
 ) {
@@ -2975,7 +2891,9 @@ export async function resolveStackForChat(
   const settings = await resolveSettingsForChat(chat, userId)
   return resolvePromptStack({
     chatStackId: settings.effective.promptStackId,
-    defaultStackId: prefs.default_prompt_stack_id,
+    defaultStackId: userPromptStackId(
+      parseUserSettingValues(prefs.chat_defaults_json)
+    ),
     stacksById,
   })
 }
@@ -3156,9 +3074,10 @@ export async function setChatsSpace(
 
 export async function getInstanceSettings(userId: string) {
   const prefs = await getUserSettings(userId)
+  const userDefaults = parseUserSettingValues(prefs.chat_defaults_json)
   return {
-    defaultPromptStackId: prefs.default_prompt_stack_id,
-    chatDefaults: await defaultModelConfig(userId),
+    defaultPromptStackId: prefs.promptStackId ?? "",
+    chatDefaults: toModelConfig(userDefaults),
     promptStacks: prefs.promptStacks,
     contextBooks: prefs.contextBooks,
     themes: prefs.themes,
@@ -3178,7 +3097,6 @@ function preferenceInsertValues(
     user_id: userId,
     light_theme_id: prefs.light_theme_id,
     dark_theme_id: prefs.dark_theme_id,
-    default_prompt_stack_id: prefs.default_prompt_stack_id,
     theme_mode: prefs.theme_mode,
     builtin_tools_json: prefs.builtin_tools_json,
     chat_defaults_json: prefs.chat_defaults_json,
@@ -3278,12 +3196,8 @@ async function restoreOwnerBackup(
         user_id: userId,
         title: chat.title,
         selected_root_node_id: chat.selected_root_node_id,
-        model_config_json: chat.model_config_json,
+        settings_json: chat.settings_json,
         view_state_json: chat.view_state_json,
-        prompt_stack_id: chat.prompt_stack_id ?? null,
-        variables_json: chat.variables_json ?? "{}",
-        expand_message_macros: toDbBool(chat.expand_message_macros ?? false),
-        space_overrides_json: chat.space_overrides_json ?? "{}",
         space_id: chat.space_id ?? null,
         created_at: chat.created_at,
         updated_at: chat.updated_at,
@@ -3552,8 +3466,9 @@ function validateMultiUserBackup(
   const stacks = new Map(backup.promptStacks.map((stack) => [stack.id, stack]))
   const spaces = new Map(backup.spaces.map((space) => [space.id, space]))
   for (const chat of backup.chats) {
-    if (!chat.prompt_stack_id) continue
-    const stack = stacks.get(chat.prompt_stack_id)
+    const stackId = userPromptStackId(parseSettingValues(chat.settings_json))
+    if (!stackId) continue
+    const stack = stacks.get(stackId)
     if (!stack || stack.user_id !== chat.user_id)
       throw new Error(
         `Backup chat ${chat.id} references another user's prompt stack`
@@ -3627,7 +3542,10 @@ function validateMultiUserBackup(
       throw new Error("Backup preferences reference an unknown user")
     const light = themes.get(prefs.light_theme_id)
     const dark = themes.get(prefs.dark_theme_id)
-    const stack = stacks.get(prefs.default_prompt_stack_id)
+    const stackId = userPromptStackId(
+      parseUserSettingValues(prefs.chat_defaults_json)
+    )
+    const stack = stackId ? stacks.get(stackId) : undefined
     if (
       !light ||
       !dark ||
@@ -3794,7 +3712,6 @@ async function restoreMultiUserBackup(
         oc.column("user_id").doUpdateSet({
           light_theme_id: ownerPrefs.light_theme_id,
           dark_theme_id: ownerPrefs.dark_theme_id,
-          default_prompt_stack_id: ownerPrefs.default_prompt_stack_id,
           theme_mode: ownerPrefs.theme_mode,
           builtin_tools_json: ownerPrefs.builtin_tools_json,
           chat_defaults_json: ownerPrefs.chat_defaults_json,
@@ -3919,14 +3836,8 @@ async function restoreMultiUserBackup(
             user_id: sourceUser.id,
             title: chat.title,
             selected_root_node_id: chat.selected_root_node_id,
-            model_config_json: chat.model_config_json,
+            settings_json: chat.settings_json,
             view_state_json: chat.view_state_json,
-            prompt_stack_id: chat.prompt_stack_id ?? null,
-            variables_json: chat.variables_json ?? "{}",
-            expand_message_macros: toDbBool(
-              chat.expand_message_macros ?? false
-            ),
-            space_overrides_json: chat.space_overrides_json ?? "{}",
             space_id: chat.space_id ?? null,
             created_at: chat.created_at,
             updated_at: chat.updated_at,

@@ -16,7 +16,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover"
 import { cn } from "@/lib/utils"
-import { spaceChain, spaceFromRow, spacesById } from "@/lib/space"
+import { spaceChain, spaceFromRow, spacesById } from "@/lib/spaces"
 import type { SpaceRow } from "@/lib/types"
 import { useMediaMdUp } from "./hooks"
 

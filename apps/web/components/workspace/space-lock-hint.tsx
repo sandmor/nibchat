@@ -5,7 +5,7 @@ import { SquareLock01Icon } from "@hugeicons/core-free-icons"
 import { buttonVariants } from "@/components/ui/button"
 import { TooltipProvider, WithTooltip } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
-import type { SpaceLockSource } from "@/lib/space"
+import type { SpaceLockSource } from "@/lib/spaces"
 
 export function SpaceLockHint({ lock }: { lock?: SpaceLockSource }) {
   if (!lock) return null

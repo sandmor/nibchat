@@ -2,11 +2,12 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { db, migrate, toDbBool } from "@/lib/db"
 import {
   getBuiltInToolsPrefs,
+  getUserSettings,
   setBuiltInToolsPrefs,
   setChatDefaults,
 } from "@/lib/user-settings"
-import { defaultModelConfig } from "@/lib/providers"
-import { createChat } from "@/lib/chat-service"
+import { parseUserSettingValues, toModelConfig } from "@/lib/chat-settings"
+import { createChat, resolveSettingsForChat } from "@/lib/chat-service"
 
 const ownerId = "builtin-tools-owner"
 const guestId = "builtin-tools-guest"
@@ -72,19 +73,25 @@ describe("built-in tool preferences", () => {
 })
 
 describe("new chat defaults", () => {
-  it("seeds new chats from saved defaults instead of recent chats", async () => {
+  it("lets chats follow user defaults until they override a key", async () => {
     await setChatDefaults(ownerId, {
       contextScanDepth: 8,
       temperature: 0.4,
     })
-    const baseline = await defaultModelConfig(ownerId)
-    expect(JSON.parse((await createChat(ownerId)).model_config_json)).toEqual(
-      baseline
-    )
+    const chat = await createChat(ownerId)
+    expect(JSON.parse(chat.settings_json)).toEqual({})
+    const resolved = await resolveSettingsForChat(chat, ownerId)
+    expect(resolved.effective.model.contextScanDepth).toBe(8)
+    expect(resolved.effective.model.temperature).toBe(0.4)
     await createChat(ownerId, "Custom chat", {
       contextScanDepth: 100,
       temperature: 1.2,
     })
-    expect(await defaultModelConfig(ownerId)).toEqual(baseline)
+    const prefs = await getUserSettings(ownerId)
+    const defaults = toModelConfig(
+      parseUserSettingValues(prefs.chat_defaults_json)
+    )
+    expect(defaults.contextScanDepth).toBe(8)
+    expect(defaults.temperature).toBe(0.4)
   })
 })

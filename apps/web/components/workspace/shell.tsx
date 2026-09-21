@@ -49,6 +49,7 @@ import {
   shouldAnimate,
 } from "@/lib/appearance"
 import type { PromptStackDocument } from "@/lib/prompt-stack"
+import { SETTING_LABELS } from "@/lib/chat-settings"
 import type { BuiltInToolsPrefs } from "@/lib/agent/tools/catalog"
 import { useAppearanceStore } from "@/lib/appearance-store"
 import { activeThemeId } from "@/lib/theme-slot"
@@ -73,10 +74,9 @@ import {
 import { SidebarNav } from "./sidebar-nav"
 import {
   parseSpaceSettings,
-  SETTING_SLOT_LABELS,
   spacePolicyImpact,
   spaceSubtreeIds,
-} from "@/lib/space"
+} from "@/lib/spaces"
 import { WorkspaceSelectionProvider } from "./chat-selection"
 import { ChatSelectionBar } from "./chat-selection-bar"
 import { ChatSelectToggle } from "./chat-list"
@@ -295,7 +295,7 @@ export function WorkspaceShell({
       chats: chats.filter((chat) => chat.space_id && subtree.has(chat.space_id))
         .length,
       children: [...subtree].filter((id) => id !== target.id).length,
-      settings: policies.settings.map((key) => SETTING_SLOT_LABELS[key] ?? key),
+      settings: policies.settings.map((key) => SETTING_LABELS[key]),
       variables: policies.variables,
       books: policies.books,
       rules: policies.rules,

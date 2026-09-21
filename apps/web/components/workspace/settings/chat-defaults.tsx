@@ -21,6 +21,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { useTRPC } from "@/lib/trpc-react"
+import { PRODUCT_DEFAULTS, toModelConfig } from "@/lib/chat-settings"
 import type { ModelConfigLocal, ProviderSummary } from "../types"
 import { ModelPicker } from "../model-picker"
 import { ReasoningPicker } from "../reasoning-picker"
@@ -47,7 +48,7 @@ export function ChatDefaultsSettings({
     trpc.workspace.setChatDefaults.mutationOptions({ onSuccess: refresh })
   )
   const stackSave = useMutation(
-    trpc.workspace.setInstanceDefaultPromptStack.mutationOptions({
+    trpc.workspace.setUserPromptStack.mutationOptions({
       onSuccess: refresh,
       onError: (error) => toast.error(error.message),
     })
@@ -61,9 +62,8 @@ export function ChatDefaultsSettings({
       <CardHeader>
         <CardTitle>New chat defaults</CardTitle>
         <CardDescription>
-          Starting settings for new chats, including model, stack, and scan
-          depth. Existing chats keep their settings. Space locks take
-          precedence.
+          Existing chats follow these values until they override a key. A space
+          that requires a setting still wins.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -120,6 +120,7 @@ export function ChatDefaultsSettings({
               open={parametersOpen}
               onOpenChange={setParametersOpen}
               config={settings.chatDefaults}
+              inherited={toModelConfig(PRODUCT_DEFAULTS)}
               onChange={commit}
               defaults
             />

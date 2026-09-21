@@ -41,10 +41,10 @@ import {
 } from "@/lib/providers"
 import {
   assemblePromptContext,
-  parsePromptVariableValues,
   resolvePromptVariableValues,
   type PromptStackDocument,
 } from "@/lib/prompt-stack"
+import { parseSettingValues } from "@/lib/chat-settings"
 import {
   chatIdentityFromRow,
   expandPromptMacros,
@@ -283,7 +283,7 @@ export async function createGenerationResponse(
     // injects server initialize instructions (if any) at its stack position.
     const chat = await db
       .selectFrom("chats")
-      .select(["id", "created_at", "variables_json"])
+      .select(["id", "created_at", "settings_json"])
       .where("id", "=", assistant.chat_id)
       .where("user_id", "=", userId)
       .executeTakeFirst()
@@ -295,7 +295,9 @@ export async function createGenerationResponse(
       ...(chatIdentity ? { chat: chatIdentity } : {}),
       variables: resolvePromptVariableValues(
         promptStack.variables ?? [],
-        variableOverrides ?? parsePromptVariableValues(chat?.variables_json)
+        variableOverrides ??
+          parseSettingValues(chat?.settings_json).variables ??
+          {}
       ),
     }
     const contextBooks = await effectiveContextBooks(userId, assistant.chat_id)

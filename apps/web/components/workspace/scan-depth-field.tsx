@@ -10,7 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { DEFAULT_CHAT_CONFIG } from "@/lib/chat-settings"
+import { PRODUCT_DEFAULTS } from "@/lib/chat-settings"
 import { MAX_SCAN_DEPTH } from "@/lib/limits"
 
 export function ScanDepthField({
@@ -29,7 +29,7 @@ export function ScanDepthField({
   const id = useId()
   const depth =
     value === undefined && !inherit
-      ? DEFAULT_CHAT_CONFIG.contextScanDepth
+      ? PRODUCT_DEFAULTS.contextScanDepth
       : value
   const mode =
     depth === undefined ? "inherit" : depth === null ? "branch" : "recent"
@@ -52,7 +52,7 @@ export function ScanDepthField({
             onChange(
               typeof depth === "number"
                 ? depth
-                : DEFAULT_CHAT_CONFIG.contextScanDepth
+                : PRODUCT_DEFAULTS.contextScanDepth
             )
         }}
       >
@@ -76,7 +76,7 @@ export function ScanDepthField({
           step={1}
           aria-label="Number of recent messages"
           disabled={disabled}
-          defaultValue={depth ?? DEFAULT_CHAT_CONFIG.contextScanDepth}
+          defaultValue={depth ?? PRODUCT_DEFAULTS.contextScanDepth}
           onBlur={(event) => {
             const next = Number(event.target.value)
             if (Number.isInteger(next) && next >= 1 && next <= MAX_SCAN_DEPTH)

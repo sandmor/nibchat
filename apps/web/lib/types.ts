@@ -130,17 +130,10 @@ export interface ChatsTable {
   /** Null means unnamed; UI shows "New conversation". */
   title: string | null
   selected_root_node_id: string | null
-  model_config_json: string
+  /** Sparse explicit overrides. Missing keys inherit user and space defaults. */
+  settings_json: string
   /** Durable per-conversation linear/tree mode and tree camera. */
   view_state_json: string
-  /** Library stack ref; null = use instance default. */
-  prompt_stack_id: string | null
-  /** Explicit prompt-stack variable overrides for this conversation. */
-  variables_json: string
-  /** Resolve macros in message text for display and model context. */
-  expand_message_macros: boolean
-  /** Explicit chat choices used to distinguish space defaults from baselines. */
-  space_overrides_json: string
   /** Innermost space; null = ungrouped. */
   space_id: string | null
   created_at: string
@@ -440,7 +433,6 @@ export interface DB {
     user_id: string
     light_theme_id: string
     dark_theme_id: string
-    default_prompt_stack_id: string
     theme_mode: "system" | "light" | "dark"
     /** `{ disabled: string[] }` JSON. Empty disabled list means all tools on. */
     builtin_tools_json: string

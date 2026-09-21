@@ -48,20 +48,23 @@ import {
 import { cn } from "@/lib/utils"
 import { parseJson, resolveActivePath } from "@/lib/domain"
 import { displayChatTitle } from "@/lib/chat-title"
-import {
-  parsePromptVariableValues,
-  type PromptVariableValues,
-} from "@/lib/prompt-stack"
+import { type PromptVariableValues } from "@/lib/prompt-stack"
+import { firstAvailableModel } from "@/lib/provider-models"
 import {
   bindVariableLocksToStack,
+  generationOverrides,
+  modelConfigToSettingValues,
+  parseSettingValues,
+  replaceGenerationSlice,
+  resolveSettings,
+  type SettingValues,
+} from "@/lib/chat-settings"
+import {
   formatSpaceRules,
-  parseChatSpaceOverrides,
-  resolveChatSettings,
   spaceChain,
   spaceFromRow,
   spacesById,
-  type ChatSpaceOverrides,
-} from "@/lib/space"
+} from "@/lib/spaces"
 import { SpacePicker } from "./space-picker"
 import {
   abortChatStreamReaders,
@@ -91,7 +94,6 @@ import {
 import { motionTransition, shouldAnimate } from "@/lib/appearance"
 import type { ModelConfigLocal } from "./types"
 import { usePrefersReducedMotion } from "./hooks"
-import { DEFAULT_CHAT_CONFIG } from "@/lib/chat-settings"
 import { ReasoningPicker } from "./reasoning-picker"
 import { ModelPicker } from "./model-picker"
 import { GenerationParameters } from "./generation-parameters"
@@ -232,6 +234,12 @@ function isPdfFile(file: File) {
   )
 }
 
+function userSettingsFromWorkspace(data: WorkspaceData): SettingValues {
+  const values = modelConfigToSettingValues(data.chatDefaults ?? {})
+  if (data.defaultPromptStackId) values.promptStack = data.defaultPromptStackId
+  return values
+}
+
 function readChatViewState(raw: string | undefined): ChatViewState {
   return raw ? parseChatViewState(raw) : DEFAULT_CHAT_VIEW_STATE
 }
@@ -296,17 +304,7 @@ export function ChatView({
   const [booksOpen, setBooksOpen] = useState(false)
   const [variablesOpen, setVariablesOpen] = useState(false)
   const [spaceOpen, setSpaceOpen] = useState(false)
-  const [draftModelConfig, setDraftModelConfig] = useState<ModelConfigLocal>(
-    () => initial.chatDefaults ?? { ...DEFAULT_CHAT_CONFIG }
-  )
-  const [draftPromptStackId, setDraftPromptStackId] = useState<string | null>(
-    initial.defaultPromptStackId ?? null
-  )
-  const [draftVariables, setDraftVariables] = useState<PromptVariableValues>({})
-  const [draftExplicit, setDraftExplicit] = useState<ChatSpaceOverrides>({
-    model: [],
-    variables: [],
-  })
+  const [draftSettings, setDraftSettings] = useState<SettingValues>({})
   const [draftContextBookIds, setDraftContextBookIds] = useState<string[]>([])
   const [draftSpaceId, setDraftSpaceId] = useState<string | null>(
     initialDraftSpaceId
@@ -597,18 +595,11 @@ export function ChatView({
       for (const slot of draftTemplateEditSlots()) clearSessionDraft(slot)
       setDraftTemplateId(templateId)
       const applyMessageMacros = (expand: boolean) => {
-        setDraftModelConfig((current) => {
+        setDraftSettings((current) => {
           const next = { ...current }
           if (expand) next.expandMessageMacros = true
           else delete next.expandMessageMacros
           return next
-        })
-        setDraftExplicit((current) => {
-          const model = (current.model ?? []).filter(
-            (key) => key !== "expandMessageMacros"
-          )
-          if (expand) model.push("expandMessageMacros")
-          return { ...current, model }
         })
       }
       if (!templateId) {
@@ -738,14 +729,15 @@ export function ChatView({
     workspace.nodes,
   ])
 
-  const storedModelConfig: ModelConfigLocal = data.chat
-    ? parseJson<ModelConfigLocal>(data.chat.model_config_json, {})
-    : draftModelConfig
-  const storedVariables = data.chat
-    ? parsePromptVariableValues(data.chat.variables_json)
-    : draftVariables
   const spaceId = data.chat?.space_id ?? draftSpaceId
-  const storedPromptStackId = data.chat?.prompt_stack_id ?? draftPromptStackId
+  const userLayer = useMemo(() => userSettingsFromWorkspace(data), [data])
+  const chatOverrides = data.chat
+    ? parseSettingValues(data.chat.settings_json)
+    : draftSettings
+  const storedPromptStackId =
+    typeof chatOverrides.promptStack === "string"
+      ? chatOverrides.promptStack
+      : null
   const chatContextBooksQuery = useQuery({
     ...trpc.workspace.listChatContextBooks.queryOptions({
       chatId: data.chat?.id ?? "",
@@ -757,29 +749,25 @@ export function ChatView({
     : draftContextBookIds
   const resolvedSettings = useMemo(
     () =>
-      resolveChatSettings({
-        chat: {
-          spaceId,
-          promptStackId: storedPromptStackId,
-          variables: storedVariables,
-          model: storedModelConfig,
-          contextBookIds: chatContextBookIds,
-          explicit: data.chat
-            ? parseChatSpaceOverrides(data.chat.space_overrides_json)
-            : draftExplicit,
-        },
+      resolveSettings({
+        user: userLayer,
+        chat: chatOverrides,
+        spaceId,
         spaces: (data.spaces ?? []).map(spaceFromRow),
+        contextBookIds: chatContextBookIds,
       }),
-    [
-      spaceId,
-      storedPromptStackId,
-      storedVariables,
-      storedModelConfig,
-      chatContextBookIds,
-      data.spaces,
-      data.chat,
-      draftExplicit,
-    ]
+    [userLayer, chatOverrides, spaceId, chatContextBookIds, data.spaces]
+  )
+  const inheritedSettings = useMemo(
+    () =>
+      resolveSettings({
+        user: userLayer,
+        chat: {},
+        spaceId,
+        spaces: (data.spaces ?? []).map(spaceFromRow),
+        contextBookIds: chatContextBookIds,
+      }),
+    [userLayer, spaceId, chatContextBookIds, data.spaces]
   )
   const activeModelConfig = resolvedSettings.effective.model
   const effectivePromptStackId = resolvedSettings.effective.promptStackId
@@ -1208,11 +1196,10 @@ export function ChatView({
   })
 
   function ensureModelReady(config: ModelConfigLocal) {
-    if (!config.providerId || !config.model) {
-      toast.error("Choose a provider and model before sending a message.")
-      return false
-    }
-    return true
+    if (config.providerId && config.model) return true
+    if (firstAvailableModel(providers)) return true
+    toast.error("Choose a provider and model before sending a message.")
+    return false
   }
 
   async function runStream(
@@ -1406,12 +1393,12 @@ export function ChatView({
     if (!createChatLock.current) {
       ownsCreate = true
       const createInput = {
-        config: draftModelConfig,
-        promptStackId: draftPromptStackId,
-        variables: draftVariables,
+        settings: draftSettings,
         spaceId: draftSpaceId,
         contextBookIds: draftContextBookIds,
-        explicit: draftExplicit,
+        ...(draftSettings.expandMessageMacros
+          ? { expandMessageMacros: true }
+          : {}),
       }
       createChatLock.current = materializeTemplateMutation
         .mutateAsync({
@@ -1432,6 +1419,8 @@ export function ChatView({
           const payload: WorkspaceData = {
             chats: [chat, ...knownChats.filter((c) => c.id !== chat.id)],
             spaces: workspace.spaces,
+            chatDefaults: workspace.chatDefaults,
+            defaultPromptStackId: workspace.defaultPromptStackId,
             chat,
             nodes: createdNodes,
             activeGenerations: [],
@@ -2094,11 +2083,11 @@ export function ChatView({
       })
       return
     }
-    setDraftModelConfig(next)
-    setDraftExplicit((current) => ({
-      ...current,
-      model: Object.keys(next),
-    }))
+    const overrides = generationOverrides(
+      next,
+      inheritedSettings.effective.model
+    )
+    setDraftSettings((current) => replaceGenerationSlice(current, overrides))
   }
 
   function assignDraftSpace(next: string | null) {
@@ -2323,14 +2312,16 @@ export function ChatView({
             <div className="hidden min-w-0 md:contents">
               <PromptStackPicker
                 chatId={data.chat?.id}
-                promptStackId={effectivePromptStackId}
-                draftStackId={effectivePromptStackId}
+                promptStackId={storedPromptStackId}
+                effectiveStackId={effectivePromptStackId}
+                draftStackId={storedPromptStackId}
                 onDraftChange={(value) => {
-                  setDraftPromptStackId(value)
-                  setDraftExplicit((current) => ({
-                    ...current,
-                    promptStack: true,
-                  }))
+                  setDraftSettings((current) => {
+                    const next = { ...current }
+                    if (value) next.promptStack = value
+                    else delete next.promptStack
+                    return next
+                  })
                 }}
                 onChanged={invalidateWorkspace}
                 lockedBy={settingLocks.promptStack}
@@ -2346,18 +2337,19 @@ export function ChatView({
                 chatId={data.chat?.id}
                 promptStackId={effectivePromptStackId}
                 draftStackId={effectivePromptStackId}
-                variablesJson={JSON.stringify(
-                  resolvedSettings.effective.variables
-                )}
+                variablesJson={JSON.stringify(chatOverrides.variables ?? {})}
                 draftValues={
-                  resolvedSettings.effective.variables as PromptVariableValues
+                  (chatOverrides.variables ?? {}) as PromptVariableValues
                 }
+                effectiveValues={resolvedSettings.effective.variables}
+                inheritedValues={inheritedSettings.effective.variables}
                 onDraftChange={(values) => {
-                  setDraftVariables(values)
-                  setDraftExplicit((current) => ({
-                    ...current,
-                    variables: Object.keys(values),
-                  }))
+                  setDraftSettings((current) => {
+                    const next = { ...current }
+                    if (Object.keys(values).length) next.variables = values
+                    else delete next.variables
+                    return next
+                  })
                 }}
                 onChanged={invalidateWorkspace}
                 lockedVariables={settingLocks.variables}
@@ -2480,14 +2472,16 @@ export function ChatView({
           open={stackOpen}
           onOpenChange={setStackOpen}
           chatId={data.chat?.id}
-          promptStackId={effectivePromptStackId}
-          draftStackId={effectivePromptStackId}
+          promptStackId={storedPromptStackId}
+          effectiveStackId={effectivePromptStackId}
+          draftStackId={storedPromptStackId}
           onDraftChange={(value) => {
-            setDraftPromptStackId(value)
-            setDraftExplicit((current) => ({
-              ...current,
-              promptStack: true,
-            }))
+            setDraftSettings((current) => {
+              const next = { ...current }
+              if (value) next.promptStack = value
+              else delete next.promptStack
+              return next
+            })
           }}
           onChanged={invalidateWorkspace}
           lockedBy={settingLocks.promptStack}
@@ -2509,16 +2503,17 @@ export function ChatView({
           chatId={data.chat?.id}
           promptStackId={effectivePromptStackId}
           draftStackId={effectivePromptStackId}
-          variablesJson={JSON.stringify(resolvedSettings.effective.variables)}
-          draftValues={
-            resolvedSettings.effective.variables as PromptVariableValues
-          }
+          variablesJson={JSON.stringify(chatOverrides.variables ?? {})}
+          draftValues={(chatOverrides.variables ?? {}) as PromptVariableValues}
+          effectiveValues={resolvedSettings.effective.variables}
+          inheritedValues={inheritedSettings.effective.variables}
           onDraftChange={(values) => {
-            setDraftVariables(values)
-            setDraftExplicit((current) => ({
-              ...current,
-              variables: Object.keys(values),
-            }))
+            setDraftSettings((current) => {
+              const next = { ...current }
+              if (Object.keys(values).length) next.variables = values
+              else delete next.variables
+              return next
+            })
           }}
           onChanged={invalidateWorkspace}
           lockedVariables={settingLocks.variables}
@@ -2528,6 +2523,7 @@ export function ChatView({
           onOpenChange={setParametersOpen}
           key={`${data.chat?.id ?? "draft"}:${activeModelConfig.providerId ?? ""}:${activeModelConfig.model ?? ""}`}
           config={activeModelConfig}
+          inherited={inheritedSettings.effective.model}
           chatId={data.chat?.id}
           onChange={commitModelConfig}
           locks={settingLocks}

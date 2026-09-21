@@ -162,6 +162,19 @@ export function firstEnabledModelId(models: ProviderModel[]) {
   return models.find((model) => model.enabled)?.id
 }
 
+/** Pick the first usable model from an already ordered provider list. */
+export function firstAvailableModel(
+  providers: readonly { id: string; models_json: string }[]
+) {
+  for (const provider of providers) {
+    const model = firstEnabledModelId(
+      parseProviderModelsJson(provider.models_json)
+    )
+    if (model) return { providerId: provider.id, model }
+  }
+  return null
+}
+
 export function isEnabledModelId(models: ProviderModel[], modelId: string) {
   return models.some((model) => model.enabled && model.id === modelId)
 }

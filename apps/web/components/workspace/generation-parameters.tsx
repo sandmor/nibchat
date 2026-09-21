@@ -1,6 +1,6 @@
 "use client"
 
-import { useId, useState } from "react"
+import { useState } from "react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import {
@@ -9,20 +9,32 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Switch } from "@/components/ui/switch"
-import { Textarea } from "@/components/ui/textarea"
 import { hasCustomReasoning, withReasoning } from "@/lib/reasoning"
+import {
+  SAMPLING_SETTING_KEYS,
+  SETTING_LABELS,
+  type SamplingSettingKey,
+  type SettingLocks,
+  type SettingValues,
+} from "@/lib/chat-settings"
 import type { ModelConfigLocal } from "./types"
-import type { ChatSettingLocks } from "@/lib/space"
 import { SpaceLockHint } from "./space-lock-hint"
-import { ScanDepthField } from "./scan-depth-field"
+import { SamplingSettingControl } from "./settings-fields/sampling-fields"
+
+const NUMBER_FIELDS = [
+  "temperature",
+  "maxOutputTokens",
+  "topP",
+  "frequencyPenalty",
+  "presencePenalty",
+] as const satisfies readonly SamplingSettingKey[]
 
 export function GenerationParameters({
   open,
   onOpenChange,
   config: existing,
+  inherited,
   chatId,
   onChange,
   locks,
@@ -31,62 +43,56 @@ export function GenerationParameters({
   open: boolean
   onOpenChange: (open: boolean) => void
   config: ModelConfigLocal
+  /** Values used when this layer clears its overrides. */
+  inherited?: ModelConfigLocal
   chatId?: string
   onChange: (config: ModelConfigLocal) => void | Promise<void>
-  locks?: ChatSettingLocks
+  locks?: SettingLocks
   defaults?: boolean
 }) {
-  const replayId = useId()
-  const macrosId = useId()
   const [config, setConfig] = useState(existing)
-  const [stopText, setStopText] = useState(
-    (existing.stopSequences ?? []).join(", ")
-  )
-  const [optionsText, setOptionsText] = useState(
-    JSON.stringify(existing.providerOptions ?? {}, null, 2)
-  )
   const [pending, setPending] = useState(false)
   const [draftOpen, setDraftOpen] = useState(open)
 
   if (open !== draftOpen) {
     setDraftOpen(open)
-    if (open) {
-      setConfig(existing)
-      setOptionsText(JSON.stringify(existing.providerOptions ?? {}, null, 2))
-      setStopText((existing.stopSequences ?? []).join(", "))
-    }
+    if (open) setConfig(existing)
   }
 
-  async function save() {
-    let providerOptions = config.providerOptions
-    try {
-      const parsed: unknown = JSON.parse(optionsText)
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-        throw new Error("Expected a JSON object")
-      providerOptions = parsed as Record<string, unknown>
-    } catch {
+  function patch(
+    field: SamplingSettingKey,
+    value: SettingValues[SamplingSettingKey]
+  ) {
+    setConfig((current) => {
+      const next = { ...current }
+      if (value === undefined) delete next[field]
+      else Object.assign(next, { [field]: value })
+      return next
+    })
+  }
+
+  async function save(nextConfig: ModelConfigLocal, replaceReasoning = false) {
+    const providerOptions = nextConfig.providerOptions
+    if (
+      providerOptions &&
+      (typeof providerOptions !== "object" || Array.isArray(providerOptions))
+    ) {
       toast.error("Provider JSON is invalid")
       return
     }
-    const stopSequences = stopText
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
     const next = {
-      ...config,
-      reasoning: existing.reasoning,
-      providerOptions,
-      stopSequences: stopSequences.length ? stopSequences : undefined,
+      ...nextConfig,
+      reasoning: replaceReasoning ? nextConfig.reasoning : existing.reasoning,
     }
     setPending(true)
     try {
       await onChange(
-        hasCustomReasoning(providerOptions) ? withReasoning(next) : next
+        hasCustomReasoning(next.providerOptions) ? withReasoning(next) : next
       )
       onOpenChange(false)
       toast.success(
         defaults
-          ? "New chat defaults saved"
+          ? "Chat defaults saved"
           : chatId
             ? "Settings applied"
             : "Settings set for this conversation"
@@ -107,104 +113,61 @@ export function GenerationParameters({
           <DialogTitle>Chat settings</DialogTitle>
         </DialogHeader>
         <div className="grid grid-cols-1 gap-2 min-[380px]:grid-cols-2">
-          {(
-            [
-              ["temperature", "Temperature"],
-              ["maxOutputTokens", "Max output"],
-              ["topP", "Top P"],
-              ["frequencyPenalty", "Frequency"],
-              ["presencePenalty", "Presence"],
-            ] as const
-          ).map(([field, label]) => (
+          {NUMBER_FIELDS.map((field) => (
             <div key={field} className="grid gap-1">
               <Label className="text-[11px]" htmlFor={`gen-${field}`}>
-                {label}
+                {SETTING_LABELS[field]}
               </Label>
-              <Input
+              <SamplingSettingControl
                 id={`gen-${field}`}
-                type="number"
+                field={field}
+                value={config[field]}
                 disabled={Boolean(locks?.[field])}
-                value={config[field] ?? ""}
-                onChange={(event) =>
-                  setConfig({
-                    ...config,
-                    [field]:
-                      event.target.value === ""
-                        ? undefined
-                        : Number(event.target.value),
-                  })
-                }
+                commit="change"
+                onChange={(value) => patch(field, value)}
               />
               <SpaceLockHint lock={locks?.[field]} />
             </div>
           ))}
         </div>
-        <ScanDepthField
-          compact
-          value={config.contextScanDepth}
-          disabled={Boolean(locks?.contextScanDepth)}
-          onChange={(contextScanDepth) =>
-            setConfig({ ...config, contextScanDepth })
-          }
-        />
-        <SpaceLockHint lock={locks?.contextScanDepth} />
-        <div className="grid gap-1.5">
-          <Label className="text-[11px]" htmlFor="gen-stop">
-            Stop sequences
-          </Label>
-          <Input
-            id="gen-stop"
-            value={stopText}
-            disabled={Boolean(locks?.stopSequences)}
-            onChange={(e) => setStopText(e.target.value)}
-            placeholder="comma-separated"
-          />
-          <SpaceLockHint lock={locks?.stopSequences} />
-        </div>
-        <Textarea
-          value={optionsText}
-          disabled={Boolean(locks?.providerOptions)}
-          onChange={(e) => setOptionsText(e.target.value)}
-          rows={4}
-          className="font-mono text-xs"
-          aria-label="Provider-specific JSON"
-        />
-        <SpaceLockHint lock={locks?.providerOptions} />
-        <div className="flex items-center gap-2">
-          <Switch
-            id={replayId}
-            disabled={Boolean(locks?.replayReasoning)}
-            checked={config.replayReasoning ?? true}
-            onCheckedChange={(checked) =>
-              setConfig({ ...config, replayReasoning: checked })
-            }
-          />
-          <Label htmlFor={replayId} className="text-xs text-muted-foreground">
-            Replay saved reasoning when supported
-          </Label>
-        </div>
-        <SpaceLockHint lock={locks?.replayReasoning} />
-        <div className="flex items-center gap-2">
-          <Switch
-            id={macrosId}
-            disabled={Boolean(locks?.expandMessageMacros)}
-            checked={Boolean(config.expandMessageMacros)}
-            onCheckedChange={(checked) =>
-              setConfig({ ...config, expandMessageMacros: checked })
-            }
-          />
-          <Label htmlFor={macrosId} className="text-xs text-muted-foreground">
-            Expand macros in messages
-          </Label>
-        </div>
-        <SpaceLockHint lock={locks?.expandMessageMacros} />
+        {SAMPLING_SETTING_KEYS.filter(
+          (field) =>
+            !NUMBER_FIELDS.includes(field as (typeof NUMBER_FIELDS)[number])
+        ).map((field) => (
+          <div key={field} className="grid gap-1.5">
+            {field === "contextScanDepth" || field === "stopSequences" ? (
+              <Label className="text-[11px]">{SETTING_LABELS[field]}</Label>
+            ) : null}
+            <SamplingSettingControl
+              field={field}
+              value={config[field]}
+              disabled={Boolean(locks?.[field])}
+              commit="change"
+              onChange={(value) => patch(field, value)}
+            />
+            <SpaceLockHint lock={locks?.[field]} />
+          </div>
+        ))}
+        {inherited ? (
+          <Button
+            type="button"
+            variant="outline"
+            disabled={pending}
+            onClick={() => {
+              setConfig(inherited)
+              void save(inherited, true)
+            }}
+          >
+            Use default
+          </Button>
+        ) : null}
         <Button
-          onClick={() => void save()}
+          onClick={() => void save(config)}
           className="w-full"
           disabled={pending}
         >
           {defaults
-            ? "Save new chat defaults"
+            ? "Save chat defaults"
             : chatId
               ? "Apply to this chat"
               : "Use for this chat"}

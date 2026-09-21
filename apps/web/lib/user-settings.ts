@@ -1,8 +1,16 @@
 import "server-only"
 import { db } from "@/lib/db"
 import { id, now, parseJson } from "@/lib/domain"
-import { chatConfigSchema, DEFAULT_CHAT_CONFIG } from "@/lib/chat-settings"
-import type { ModelConfig } from "@/lib/providers"
+import {
+  modelConfigSchema,
+  modelConfigToSettingValues,
+  parseUserSettingValues,
+  replaceGenerationSlice,
+  seededUserDefaults,
+  userPromptStackId,
+  userSettingValuesToJson,
+  type ModelConfig,
+} from "@/lib/chat-settings"
 import {
   appearanceToJson,
   parseAppearance,
@@ -73,10 +81,11 @@ export async function ensureUserSettings(userId: string) {
       user_id: userId,
       light_theme_id: lightThemeId,
       dark_theme_id: darkThemeId,
-      default_prompt_stack_id: defaultPromptStackId,
       theme_mode: "system" as const,
       builtin_tools_json: builtInToolsToJson(defaultBuiltInToolsPrefs),
-      chat_defaults_json: JSON.stringify(DEFAULT_CHAT_CONFIG),
+      chat_defaults_json: userSettingValuesToJson(
+        seededUserDefaults(defaultPromptStackId)
+      ),
       created_at: timestamp,
       updated_at: timestamp,
     }
@@ -135,12 +144,15 @@ export async function getUserSettings(userId: string) {
       created_at: row.created_at,
       updated_at: row.updated_at,
     })),
+    promptStackId: userPromptStackId(
+      parseUserSettingValues(prefs.chat_defaults_json)
+    ),
   }
 }
 
 export async function setChatDefaults(userId: string, config: ModelConfig) {
   await ensureUserSettings(userId)
-  const parsed = chatConfigSchema.parse(config)
+  const parsed = modelConfigSchema.parse(config)
   if (parsed.providerId) {
     const provider = await db
       .selectFrom("provider_profiles")
@@ -149,14 +161,45 @@ export async function setChatDefaults(userId: string, config: ModelConfig) {
       .executeTakeFirst()
     if (!provider) throw new Error("Provider not found")
   }
+  const current = await db
+    .selectFrom("user_preferences")
+    .select("chat_defaults_json")
+    .where("user_id", "=", userId)
+    .executeTakeFirstOrThrow()
+  const next = replaceGenerationSlice(
+    parseUserSettingValues(current.chat_defaults_json),
+    modelConfigToSettingValues(parsed)
+  )
   await db
     .updateTable("user_preferences")
     .set({
-      chat_defaults_json: JSON.stringify({ ...DEFAULT_CHAT_CONFIG, ...parsed }),
+      chat_defaults_json: userSettingValuesToJson(next),
       updated_at: now(),
     })
     .where("user_id", "=", userId)
     .execute()
+}
+
+export async function setUserPromptStack(userId: string, stackId: string) {
+  const existing = await db
+    .selectFrom("prompt_stacks")
+    .select("id")
+    .where("id", "=", stackId)
+    .where("user_id", "=", userId)
+    .executeTakeFirst()
+  if (!existing) throw new Error("Prompt stack not found")
+  const prefs = await ensureUserSettings(userId)
+  const next = parseUserSettingValues(prefs.chat_defaults_json)
+  next.promptStack = stackId
+  await db
+    .updateTable("user_preferences")
+    .set({
+      chat_defaults_json: userSettingValuesToJson(next),
+      updated_at: now(),
+    })
+    .where("user_id", "=", userId)
+    .execute()
+  return { ok: true as const, defaultPromptStackId: stackId }
 }
 
 export async function setUserThemeSlots(

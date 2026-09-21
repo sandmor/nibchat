@@ -2,7 +2,7 @@ import { z } from "zod"
 import { sha256 } from "@noble/hashes/sha2.js"
 import { MAX_COLLECTION, MAX_NAME, MAX_PROMPT_CHARS } from "@/lib/limits"
 import { expandPromptMacros, type MacroContext } from "@/lib/prompt-macros"
-import { DEFAULT_CHAT_CONFIG, scanDepthSchema } from "@/lib/chat-settings"
+import { PRODUCT_DEFAULTS, scanDepthSchema } from "@/lib/chat-settings"
 
 const matchModeSchema = z.enum(["any", "all"])
 const secondaryModeSchema = z.enum(["any", "all", "none", "not_all"])
@@ -247,7 +247,7 @@ export function resolveContextEntries(input: {
         source.book,
         input.messages,
         input.scanDepth === undefined
-          ? DEFAULT_CHAT_CONFIG.contextScanDepth
+          ? PRODUCT_DEFAULTS.contextScanDepth
           : input.scanDepth
       )
       if (!match.yes) {

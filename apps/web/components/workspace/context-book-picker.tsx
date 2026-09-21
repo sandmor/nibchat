@@ -44,7 +44,7 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { cn } from "@/lib/utils"
-import { spaceChain, spaceFromRow, spacesById } from "@/lib/space"
+import { spaceChain, spaceFromRow, spacesById } from "@/lib/spaces"
 import { useTRPC } from "@/lib/trpc-react"
 import type { SpaceRow } from "@/lib/types"
 import { useMediaMdUp } from "./hooks"

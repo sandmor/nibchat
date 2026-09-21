@@ -85,10 +85,12 @@ describe("database import adapter", () => {
     ).toHaveLength(2)
     const published = await db
       .selectFrom("chats")
-      .select("variables_json")
+      .select("settings_json")
       .where("id", "=", first.chatId!)
       .executeTakeFirstOrThrow()
-    expect(published.variables_json).toBe('{"imported_location":"library"}')
+    expect(JSON.parse(published.settings_json).variables).toEqual({
+      imported_location: "library",
+    })
     const assistant = await db
       .selectFrom("message_nodes")
       .select("metadata_json")

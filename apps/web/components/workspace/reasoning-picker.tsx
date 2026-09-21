@@ -33,7 +33,7 @@ import {
 } from "@/lib/reasoning"
 import { cn } from "@/lib/utils"
 import type { ModelConfigLocal, ProviderSummary } from "./types"
-import type { SpaceLockSource } from "@/lib/space"
+import type { SpaceLockSource } from "@/lib/spaces"
 import { LockedPickerTrigger } from "./space-lock-hint"
 import { useMediaMdUp } from "./hooks"
 

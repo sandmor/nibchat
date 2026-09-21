@@ -47,7 +47,6 @@ import {
   setChatVariables,
   setChatSpace,
   setChatsSpace,
-  setInstanceDefaultPromptStack,
   setInstanceTitleModel,
   updatePromptStack,
   updateContextBook,
@@ -91,7 +90,7 @@ import {
   MAX_NAME,
   MAX_UPLOAD_CHUNK_BYTES,
 } from "@/lib/limits"
-import { chatSpaceOverridesSchema, spaceSettingsSchema } from "@/lib/space"
+import { spaceSettingsSchema } from "@/lib/spaces"
 import {
   promptStackDocumentSchema,
   promptVariableValueSchema,
@@ -116,8 +115,9 @@ import {
   setUserThemeMode,
   setBuiltInToolsPrefs,
   setChatDefaults,
+  setUserPromptStack,
 } from "@/lib/user-settings"
-import { chatConfigSchema } from "@/lib/chat-settings"
+import { modelConfigSchema, settingValuesSchema } from "@/lib/chat-settings"
 import { chatViewStateSchema } from "@/lib/chat-view-state"
 import { providerConnectionConfigSchema } from "@/lib/provider-config"
 import { db } from "@/lib/db"
@@ -195,7 +195,6 @@ const userProcedure = t.procedure.use(({ ctx, next }) => {
   return next({ ctx: { ...ctx, user: ctx.user } })
 })
 
-const modelConfigSchema = chatConfigSchema
 const importScopeSchema = z.object({
   source: sourceSchema,
   parserVersion: z.number().int().positive(),
@@ -316,14 +315,9 @@ export const appRouter = t.router({
         z
           .object({
             title: z.string().trim().min(1).max(MAX_NAME).optional(),
-            config: modelConfigSchema.optional(),
-            promptStackId: z.string().nullable().optional(),
-            variables: z
-              .record(z.string(), promptVariableValueSchema)
-              .optional(),
+            settings: settingValuesSchema.optional(),
             spaceId: z.string().nullable().optional(),
             contextBookIds: z.array(z.string()).max(MAX_COLLECTION).optional(),
-            explicit: chatSpaceOverridesSchema.optional(),
           })
           .optional()
       )
@@ -331,12 +325,9 @@ export const appRouter = t.router({
         createChat(
           ctx.user.id,
           input?.title,
-          input?.config,
-          input?.promptStackId,
-          input?.variables,
+          input?.settings,
           input?.spaceId,
-          input?.contextBookIds,
-          input?.explicit
+          input?.contextBookIds
         )
       ),
     getOrCreateImportSpace: userProcedure
@@ -928,12 +919,9 @@ export const appRouter = t.router({
             )
             .optional(),
           title: z.string().trim().min(1).max(MAX_NAME).nullable().optional(),
-          config: modelConfigSchema.optional(),
-          promptStackId: z.string().nullable().optional(),
-          variables: z.record(z.string(), promptVariableValueSchema).optional(),
+          settings: settingValuesSchema.optional(),
           spaceId: z.string().nullable().optional(),
           contextBookIds: z.array(z.string()).max(MAX_COLLECTION).optional(),
-          explicit: chatSpaceOverridesSchema.optional(),
           expandMessageMacros: z.boolean().optional(),
         })
       )
@@ -941,7 +929,7 @@ export const appRouter = t.router({
         materializeChatTemplate({ ...input, userId: ctx.user.id })
       ),
     setChatDefaults: userProcedure
-      .input(chatConfigSchema)
+      .input(modelConfigSchema)
       .mutation(async ({ ctx, input }) => {
         await setChatDefaults(ctx.user.id, input)
         return { ok: true }
@@ -1148,11 +1136,11 @@ export const appRouter = t.router({
           mapError(error)
         }
       }),
-    setInstanceDefaultPromptStack: userProcedure
+    setUserPromptStack: userProcedure
       .input(z.object({ stackId: z.string() }))
       .mutation(async ({ ctx, input }) => {
         try {
-          return await setInstanceDefaultPromptStack(ctx.user.id, input.stackId)
+          return await setUserPromptStack(ctx.user.id, input.stackId)
         } catch (error) {
           mapError(error)
         }

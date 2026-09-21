@@ -8,6 +8,7 @@ import {
   claimUploadedAttachments,
 } from "@/lib/attachments"
 import { messagePartsSchema, searchTextFromParts } from "@/lib/agent/parts"
+import { parseSettingValues, settingValuesToJson } from "@/lib/chat-settings"
 import {
   prepareChatRow,
   createSpace,
@@ -36,7 +37,7 @@ import type {
   ImportNode,
   ImportOutcome,
 } from "@/lib/imports/model"
-import { parseSpaceSettings, type SpaceSettings } from "@/lib/space"
+import { parseSpaceSettings, type SpaceSettings } from "@/lib/spaces"
 
 type Scope = {
   userId: string
@@ -775,14 +776,27 @@ export async function publishImport(
     .execute()
   if (stagedAssets.some((asset) => asset.state === "uploading"))
     throw new Error("Import attachments are incomplete")
+  const importedVariables = parseJson<Record<string, unknown>>(
+    active.variables_json,
+    {}
+  )
+  const variables: Record<string, string | boolean> = {}
+  for (const [name, value] of Object.entries(importedVariables)) {
+    if (typeof value === "string" || typeof value === "boolean") {
+      variables[name] = value
+    }
+  }
   const chat = await prepareChatRow(
     scope.userId,
     active.title,
-    undefined,
-    undefined,
-    undefined,
+    {},
     active.space_id
   )
+  if (Object.keys(variables).length) {
+    const settings = parseSettingValues(chat.settings_json)
+    settings.variables = variables
+    chat.settings_json = settingValuesToJson(settings)
+  }
   const ids = new Map(stagedNodes.map((node) => [node.source_node_id, id()]))
   for (const node of stagedNodes) {
     if (node.parent_source_id && !ids.has(node.parent_source_id))
@@ -828,8 +842,6 @@ export async function publishImport(
       .insertInto("chats")
       .values({
         ...chat,
-        variables_json: active.variables_json,
-        expand_message_macros: toDbBool(false),
         created_at: active.source_created_at,
         updated_at: active.source_updated_at,
         selected_root_node_id: active.selected_root_source_id

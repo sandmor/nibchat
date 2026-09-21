@@ -2,16 +2,13 @@ import "server-only"
 import { db, toDbBool } from "@/lib/db"
 import { id, now, parseJson } from "@/lib/domain"
 import { searchTextFromParts } from "@/lib/agent/parts"
-import { prepareChatRow } from "@/lib/chat-service"
-import type { ChatSpaceOverrides } from "@/lib/space"
+import { prepareChatRow, resolveSettingsForChat } from "@/lib/chat-service"
+import { resolveSettings, type SettingValues } from "@/lib/chat-settings"
 import {
   parseSpaceSettings,
-  resolveChatSettings,
   spaceFromRow,
   spaceSettingsToJson,
-} from "@/lib/space"
-import type { PromptVariableValues } from "@/lib/prompt-stack"
-import type { ModelConfig } from "@/lib/providers"
+} from "@/lib/spaces"
 import {
   chatTemplateFromNodes,
   chatTemplateNameSchema,
@@ -94,8 +91,8 @@ export async function saveChatTemplateFromChat(input: {
     nodes,
     chat.selected_root_node_id,
     Boolean(
-      parseJson<{ expandMessageMacros?: boolean }>(chat.model_config_json, {})
-        .expandMessageMacros ?? chat.expand_message_macros
+      (await resolveSettingsForChat(chat, input.userId)).effective.model
+        .expandMessageMacros
     )
   )
   return saveChatTemplateDocument({ ...input, document })
@@ -296,12 +293,9 @@ export async function materializeChatTemplate(input: {
   selectedRootId?: string | null
   selectedChildren?: Record<string, string | null>
   title?: string | null
-  config?: ModelConfig
-  promptStackId?: string | null
-  variables?: PromptVariableValues
+  settings?: SettingValues
   spaceId?: string | null
   contextBookIds?: string[]
-  explicit?: ChatSpaceOverrides
   expandMessageMacros?: boolean
 }) {
   const previous = await db
@@ -338,14 +332,10 @@ export async function materializeChatTemplate(input: {
     .selectAll()
     .where("user_id", "=", input.userId)
     .execute()
-  const resolved = resolveChatSettings({
-    chat: {
-      spaceId: input.spaceId ?? null,
-      promptStackId: input.promptStackId ?? null,
-      variables: input.variables ?? {},
-      model: input.config ?? {},
-      explicit: input.explicit,
-    },
+  const settings: SettingValues = { ...(input.settings ?? {}) }
+  const resolved = resolveSettings({
+    chat: settings,
+    spaceId: input.spaceId ?? null,
     spaces: spaces.map(spaceFromRow),
   })
   if (resolved.locks.chatTemplate) {
@@ -371,29 +361,12 @@ export async function materializeChatTemplate(input: {
   const expandMacros = Boolean(
     input.expandMessageMacros ?? document.expandMessageMacros
   )
-  const config = {
-    ...input.config,
-    ...(expandMacros ? { expandMessageMacros: true } : {}),
-  }
-  const explicit: ChatSpaceOverrides | undefined = expandMacros
-    ? {
-        ...input.explicit,
-        model: [
-          ...new Set([
-            ...(input.explicit?.model ?? Object.keys(config)),
-            "expandMessageMacros",
-          ]),
-        ],
-      }
-    : input.explicit
+  if (expandMacros) settings.expandMessageMacros = true
   const prepared = await prepareChatRow(
     input.userId,
     input.title ?? null,
-    config,
-    input.promptStackId,
-    input.variables,
-    input.spaceId,
-    explicit
+    settings,
+    input.spaceId
   )
   const ids = new Map(document.nodes.map((node) => [node.id, id()]))
   const selectedChildren = input.selectedChildren ?? {}

@@ -20,7 +20,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { cn } from "@/lib/utils"
 import { siblingSort } from "@/lib/sort-key"
-import { parseSpaceSettings, spacePolicyImpact } from "@/lib/space"
+import { parseSpaceSettings, spacePolicyImpact } from "@/lib/spaces"
 import type { ChatRow, SpaceRow } from "@/lib/types"
 import { ChatListItem } from "./chat-list"
 import { SpaceDroppable } from "./space-dnd"

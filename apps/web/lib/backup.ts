@@ -10,7 +10,7 @@ const chatRowSchema = z
     user_id: z.string(),
     title: z.string().nullable(),
     selected_root_node_id: z.string().nullable(),
-    model_config_json: z.string(),
+    settings_json: z.string().default("{}"),
     view_state_json: z.string().refine((value) => {
       try {
         return chatViewStateSchema.safeParse(JSON.parse(value)).success
@@ -18,13 +18,6 @@ const chatRowSchema = z
         return false
       }
     }, "Invalid chat view state"),
-    prompt_stack_id: z.string().nullable(),
-    variables_json: z.string().default("{}"),
-    expand_message_macros: z
-      .union([z.boolean(), z.literal(0), z.literal(1)])
-      .transform(Boolean)
-      .default(false),
-    space_overrides_json: z.string().default("{}"),
     space_id: z.string().nullable().optional().default(null),
     created_at: z.string(),
     updated_at: z.string(),
@@ -187,7 +180,6 @@ const userPreferencesSchema = z.object({
   user_id: z.string(),
   light_theme_id: z.string(),
   dark_theme_id: z.string(),
-  default_prompt_stack_id: z.string(),
   theme_mode: z.enum(["system", "light", "dark"]),
   builtin_tools_json: z.string(),
   chat_defaults_json: z.string().default("{}"),

@@ -43,7 +43,13 @@ import { resolveConversationAttachments } from "@/lib/conversation-attachments"
 import { assertPdfFallbackAvailable } from "@/lib/pdf-input"
 import { streamBodySchema } from "@/lib/stream-body"
 import { firstTurnTitleAction } from "@/lib/chat-title"
-import { formatSpaceRules } from "@/lib/space"
+import { formatSpaceRules } from "@/lib/spaces"
+import {
+  parseSettingValues,
+  settingValuesToJson,
+  valuesEqual,
+} from "@/lib/chat-settings"
+import { withModelFallback } from "@/lib/providers"
 import type { NodeRow, Parts } from "@/lib/types"
 
 export const runtime = "nodejs"
@@ -87,22 +93,29 @@ export async function POST(request: Request) {
       .executeTakeFirst()
     if (!chat)
       return Response.json({ error: "Chat not found" }, { status: 404 })
-    const savedConfig = parseJson<ModelConfig>(chat.model_config_json, {})
-    const normalizedStored = await resolveModelConfig(user.id, savedConfig)
-    if (JSON.stringify(normalizedStored) !== JSON.stringify(savedConfig))
+    const stored = parseSettingValues(chat.settings_json)
+    const storedModel = stored.model
+    const normalizedModel = storedModel
+      ? await resolveModelConfig(user.id, storedModel)
+      : storedModel
+    if (
+      storedModel &&
+      normalizedModel &&
+      !valuesEqual(storedModel, normalizedModel)
+    ) {
+      const next = { ...stored, model: normalizedModel }
       await db
         .updateTable("chats")
         .set({
-          model_config_json: JSON.stringify(normalizedStored),
+          settings_json: settingValuesToJson(next),
           updated_at: new Date().toISOString(),
         })
         .where("id", "=", chat.id)
         .execute()
-    const settings = await resolveSettingsForChat(
-      { ...chat, model_config_json: JSON.stringify(normalizedStored) },
-      user.id
-    )
-    let config = await resolveModelConfig(user.id, settings.effective.model)
+      chat.settings_json = settingValuesToJson(next)
+    }
+    const settings = await resolveSettingsForChat(chat, user.id)
+    let config = await withModelFallback(user.id, settings.effective.model)
     let languageModel = await modelFor(user.id, config, {
       chatId: chat.id,
       timeZone: body.timeZone,

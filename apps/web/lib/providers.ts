@@ -19,6 +19,7 @@ import { providerConfigFromJson } from "@/lib/provider-config"
 import { resolveHeaderEntries } from "@/lib/config-entries"
 import { chatIdentityFromRow, normalizeTimeZone } from "@/lib/prompt-macros"
 import {
+  firstAvailableModel,
   firstEnabledModelId,
   isEnabledModelId,
   parseProviderModelsJson,
@@ -36,7 +37,7 @@ import {
 } from "@/lib/openai-responses"
 
 /** Existing callers use this name for the shared per-chat configuration. */
-export type ModelConfig = import("@/lib/chat-settings").ChatConfig
+export type ModelConfig = import("@/lib/chat-settings").ModelConfig
 
 /** Identifies the only Responses metadata that may be replayed for a turn. */
 export type ResponsesReplayTarget = {
@@ -98,6 +99,8 @@ export async function listProviders() {
       "created_at",
       "updated_at",
     ])
+    .orderBy("name")
+    .orderBy("id")
     .execute()
   return rows.map(({ config_json, ...row }) => ({
     ...row,
@@ -124,6 +127,7 @@ export async function listAvailableProviders() {
       "updated_at",
     ])
     .orderBy("name")
+    .orderBy("id")
     .execute()
   return rows.map(({ config_json, ...row }) => ({
     ...row,
@@ -137,12 +141,11 @@ export async function listAvailableProviders() {
   }))
 }
 
-/** Personal defaults seed new chats; existing conversations are never consulted. */
-export async function defaultModelConfig(userId: string): Promise<ModelConfig> {
-  const { ensureUserSettings } = await import("@/lib/user-settings")
-  const { parseChatDefaults } = await import("@/lib/chat-settings")
-  const prefs = await ensureUserSettings(userId)
-  const config = parseChatDefaults(prefs.chat_defaults_json)
+/** Fill an empty model identity for display and send. Never write this onto a chat. */
+export async function withModelFallback(
+  userId: string,
+  config: ModelConfig = {}
+): Promise<ModelConfig> {
   if (config.providerId) {
     const selected = await db
       .selectFrom("provider_profiles")
@@ -151,20 +154,30 @@ export async function defaultModelConfig(userId: string): Promise<ModelConfig> {
       .executeTakeFirst()
     if (selected) return resolveModelConfig(userId, config)
   }
-  const provider = await db
+  const providers = await db
     .selectFrom("provider_profiles")
     .select(["id", "models_json"])
-    .orderBy("created_at", "asc")
-    .executeTakeFirst()
-  if (!provider) return { ...config, providerId: undefined, model: undefined }
-  const model = firstEnabledModelId(
-    parseProviderModelsJson(provider.models_json)
-  )
+    .orderBy("name")
+    .orderBy("id")
+    .execute()
+  const fallback = firstAvailableModel(providers)
+  if (!fallback) return { ...config, providerId: undefined, model: undefined }
   return {
     ...config,
-    providerId: provider.id,
-    model: model ?? undefined,
+    ...fallback,
   }
+}
+
+/** User defaults plus the first-provider fill. Existing chats are not consulted. */
+export async function defaultModelConfig(userId: string): Promise<ModelConfig> {
+  const { ensureUserSettings } = await import("@/lib/user-settings")
+  const { parseUserSettingValues, toModelConfig } =
+    await import("@/lib/chat-settings")
+  const prefs = await ensureUserSettings(userId)
+  return withModelFallback(
+    userId,
+    toModelConfig(parseUserSettingValues(prefs.chat_defaults_json))
+  )
 }
 
 export async function modelFor(

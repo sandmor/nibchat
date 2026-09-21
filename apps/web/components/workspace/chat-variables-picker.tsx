@@ -22,13 +22,14 @@ import {
 import {
   isOrphanPromptStackRef,
   parsePromptVariableValues,
+  promptVariableOverrides,
   reconcilePromptVariableDraft,
   resolvePromptVariableValues,
   type PromptVariable,
   type PromptVariableValues,
 } from "@/lib/prompt-stack"
 import { useTRPC } from "@/lib/trpc-react"
-import type { SpaceLockSource } from "@/lib/space"
+import type { SpaceLockSource } from "@/lib/spaces"
 import { SpaceLockHint } from "./space-lock-hint"
 import { useMediaMdUp } from "./hooks"
 import {
@@ -47,19 +48,6 @@ function sameValues(left: PromptVariableValues, right: PromptVariableValues) {
     (Object.keys(left).length === Object.keys(right).length &&
       Object.keys(right).every((name) => left[name] === right[name]))
   )
-}
-
-function explicitOverrides(
-  variables: readonly PromptVariable[],
-  values: PromptVariableValues
-): PromptVariableValues {
-  const overrides: PromptVariableValues = {}
-  for (const variable of variables) {
-    const value = values[variable.name]
-    if (value === undefined || value === variable.default) continue
-    overrides[variable.name] = value
-  }
-  return overrides
 }
 
 type PromptStringVariable = Extract<PromptVariable, { type: "string" }>
@@ -120,6 +108,8 @@ export function ChatVariablesPicker({
   draftStackId,
   variablesJson = "{}",
   draftValues = EMPTY_VALUES,
+  effectiveValues,
+  inheritedValues = EMPTY_VALUES,
   onDraftChange,
   onChanged,
   lockedVariables,
@@ -132,6 +122,10 @@ export function ChatVariablesPicker({
   draftStackId?: string | null
   variablesJson?: string
   draftValues?: PromptVariableValues
+  /** Fully resolved values shown in the controls. */
+  effectiveValues?: PromptVariableValues
+  /** Effective values without this chat's overrides, used for sparse saves. */
+  inheritedValues?: PromptVariableValues
   onDraftChange?: (values: PromptVariableValues) => void
   onChanged?: () => void | Promise<void>
   lockedVariables?: Record<string, SpaceLockSource>
@@ -159,8 +153,16 @@ export function ChatVariablesPicker({
     [chatId, variablesJson, draftValues]
   )
   const resolved = useMemo(
-    () => resolvePromptVariableValues(variables, storedOverrides),
-    [variables, storedOverrides]
+    () =>
+      resolvePromptVariableValues(
+        variables,
+        effectiveValues ?? storedOverrides
+      ),
+    [variables, effectiveValues, storedOverrides]
+  )
+  const inheritedResolved = useMemo(
+    () => resolvePromptVariableValues(variables, inheritedValues),
+    [variables, inheritedValues]
   )
   const identity = `${chatId ?? "draft"}:${effectiveStack?.id ?? "none"}:${variablesJson}`
   const sessionIdentity = `${chatId ?? "draft"}:${effectiveStack?.id ?? "none"}`
@@ -220,11 +222,17 @@ export function ChatVariablesPicker({
       ? variables[0]
       : null
   const hasCustom =
-    Object.keys(explicitOverrides(variables, draftForRender)).length > 0
+    Object.keys(
+      promptVariableOverrides(variables, draftForRender, inheritedResolved)
+    ).length > 0
 
   function commit(next: PromptVariableValues) {
     setDraft(next)
-    const overrides = explicitOverrides(variables, next)
+    const overrides = promptVariableOverrides(
+      variables,
+      next,
+      inheritedResolved
+    )
     if (!chatId) {
       onDraftChange?.(overrides)
       return
@@ -234,6 +242,11 @@ export function ChatVariablesPicker({
 
   function stringValue(name: string, fallback = "") {
     const value = draftForRender[name]
+    return typeof value === "string" ? value : fallback
+  }
+
+  function inheritedStringValue(name: string, fallback = "") {
+    const value = inheritedResolved[name]
     return typeof value === "string" ? value : fallback
   }
 
@@ -310,7 +323,8 @@ export function ChatVariablesPicker({
   const body = (
     <div className="flex flex-col gap-3">
       <p className="text-xs text-muted-foreground">
-        Values for this conversation. Unchanged fields keep the stack default.
+        Values for this conversation. Unchanged fields keep their inherited
+        value.
       </p>
       {variables.map((variable) => {
         const value = draftForRender[variable.name] ?? variable.default
@@ -475,7 +489,10 @@ export function ChatVariablesPicker({
             title={focusVariable.name}
             description={focusVariable.description}
             initialValue={focus.snapshot}
-            defaultValue={focusVariable.default}
+            defaultValue={inheritedStringValue(
+              focusVariable.name,
+              focusVariable.default
+            )}
             disabled={Boolean(lockedVariables?.[focus.name])}
             onCommit={(value) => closeFocus(value)}
             onCancel={() => closeFocus()}

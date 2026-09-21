@@ -19,11 +19,12 @@ import {
 } from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
 import {
+  firstAvailableModel,
   parseProviderModelsJson,
   pickerModels,
   resolveModelLabel,
 } from "@/lib/provider-models"
-import type { SpaceLockSource } from "@/lib/space"
+import type { SpaceLockSource } from "@/lib/spaces"
 import { LockedPickerTrigger } from "./space-lock-hint"
 import type { CatalogModel, ModelConfigLocal, ProviderSummary } from "./types"
 import { useMediaMdUp } from "./hooks"
@@ -77,8 +78,11 @@ export function ModelPicker({
   const [query, setQuery] = useState("")
   const [pending, setPending] = useState(false)
 
-  const selectedProvider = providers.find((p) => p.id === existing.providerId)
-  const modelId = existing.model
+  const suggested = !existing.providerId ? firstAvailableModel(providers) : null
+  const selectedProvider = providers.find(
+    (p) => p.id === (existing.providerId ?? suggested?.providerId)
+  )
+  const modelId = existing.model ?? suggested?.model
   const displayName =
     resolveModelLabel(
       parseProviderModelsJson(selectedProvider?.models_json ?? "[]"),

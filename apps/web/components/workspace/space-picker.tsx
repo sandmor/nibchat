@@ -2,7 +2,11 @@
 
 import { useMemo, useState } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { Folder01Icon, Tick02Icon } from "@hugeicons/core-free-icons"
+import {
+  Folder01Icon,
+  Tick02Icon,
+  UnfoldMoreIcon,
+} from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -26,6 +30,8 @@ export function SpacePicker({
   onSelect,
   triggerLabel = "Move to…",
   showMembership = false,
+  menuLabel,
+  appearance = "toolbar",
   disabled,
   open: openProp,
   onOpenChange,
@@ -38,6 +44,10 @@ export function SpacePicker({
   triggerLabel?: string
   /** Show the current space instead of a "Move to…" verb. */
   showMembership?: boolean
+  /** Popover heading. Defaults to "Move this chat" when showing membership. */
+  menuLabel?: string
+  /** `field` is a full-width form control. `toolbar` is the compact chat-header button. */
+  appearance?: "toolbar" | "field"
   disabled?: boolean
   open?: boolean
   onOpenChange?: (open: boolean) => void
@@ -60,6 +70,8 @@ export function SpacePicker({
   const triggerAria = showMembership
     ? `Space: ${label}`
     : `${triggerLabel} ${label}`
+  const heading = menuLabel ?? (showMembership ? "Move this chat" : null)
+  const field = appearance === "field"
 
   function choose(spaceId: string | null) {
     onSelect(spaceId)
@@ -147,6 +159,14 @@ export function SpacePicker({
         aria-hidden
       />
       <span className="truncate">{triggerText}</span>
+      {field ? (
+        <HugeiconsIcon
+          icon={UnfoldMoreIcon}
+          strokeWidth={2}
+          className="ms-auto size-4 shrink-0 text-muted-foreground"
+          aria-hidden
+        />
+      ) : null}
     </>
   )
 
@@ -157,11 +177,13 @@ export function SpacePicker({
           render={
             <Button
               type="button"
-              variant="ghost"
-              size="sm"
+              variant={field ? "outline" : "ghost"}
+              size={field ? "default" : "sm"}
               disabled={disabled}
               className={cn(
-                "max-w-[min(8rem,22vw)] min-w-0 gap-1 px-2",
+                field
+                  ? "h-9 w-full max-w-none justify-start px-3"
+                  : "max-w-[min(8rem,22vw)] min-w-0 gap-1 px-2",
                 className
               )}
               aria-label={triggerAria}
@@ -170,9 +192,12 @@ export function SpacePicker({
         >
           {trigger}
         </PopoverTrigger>
-        <PopoverContent align="end" className="w-72 p-3">
-          {showMembership ? (
-            <p className="mb-2 text-xs text-muted-foreground">Move this chat</p>
+        <PopoverContent
+          align={field ? "start" : "end"}
+          className={cn("p-3", field ? "w-80" : "w-72")}
+        >
+          {heading ? (
+            <p className="mb-2 text-xs text-muted-foreground">{heading}</p>
           ) : null}
           {list}
         </PopoverContent>
@@ -184,10 +209,15 @@ export function SpacePicker({
     <>
       <Button
         type="button"
-        variant="ghost"
-        size="sm"
+        variant={field ? "outline" : "ghost"}
+        size={field ? "default" : "sm"}
         disabled={disabled}
-        className={cn("max-w-[8rem] min-w-0 gap-1 px-2", className)}
+        className={cn(
+          field
+            ? "h-9 w-full max-w-none justify-start px-3"
+            : "max-w-[8rem] min-w-0 gap-1 px-2",
+          className
+        )}
         aria-label={triggerAria}
         onClick={() => setOpen(true)}
       >

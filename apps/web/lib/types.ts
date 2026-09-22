@@ -159,6 +159,28 @@ export interface MessageNodesTable {
   created_at: string
   updated_at: string
 }
+export type ScheduleRunStatus =
+  | "running"
+  | "complete"
+  | "awaiting_input"
+  | "error"
+  | "skipped"
+export interface ScheduledGenerationsTable {
+  id: string
+  user_id: string
+  template_id: string
+  space_id: string | null
+  name: string
+  cadence_json: string
+  enabled: boolean
+  next_run_at: string
+  last_run_at: string | null
+  last_status: ScheduleRunStatus | null
+  last_error: string | null
+  last_chat_id: string | null
+  created_at: string
+  updated_at: string
+}
 export interface ChatTemplatesTable {
   id: string
   user_id: string
@@ -360,6 +382,7 @@ export interface McpServerProfilesTable {
 export interface DB {
   chats: ChatsTable
   chat_templates: ChatTemplatesTable
+  scheduled_generations: ScheduledGenerationsTable
   template_attachments: TemplateAttachmentsTable
   draft_materializations: DraftMaterializationsTable
   spaces: SpacesTable
@@ -444,6 +467,7 @@ export interface DB {
 export type ChatRow = Selectable<ChatsTable>
 export type NodeRow = Selectable<MessageNodesTable>
 export type ChatTemplateRow = Selectable<ChatTemplatesTable>
+export type ScheduledGenerationRow = Selectable<ScheduledGenerationsTable>
 export type PromptStackRow = Selectable<PromptStacksTable>
 export type SpaceRow = Selectable<SpacesTable>
 export type ThemeRow = Selectable<ThemesTable>

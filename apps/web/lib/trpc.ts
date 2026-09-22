@@ -130,6 +130,15 @@ import {
   upsertSillyTavernCharacterTemplate,
 } from "@/lib/chat-template-service"
 import { chatTemplateDocumentSchema } from "@/lib/chat-template"
+import { cadenceInputSchema } from "@/lib/schedules/cadence"
+import {
+  createSchedule,
+  deleteSchedule,
+  listSchedules,
+  runScheduleNow,
+  scheduleFromChat,
+  updateSchedule,
+} from "@/lib/schedules/service"
 import {
   createManagedUser,
   deleteManagedUser,
@@ -890,6 +899,77 @@ export const appRouter = t.router({
       .mutation(async ({ ctx, input }) => {
         await deleteChatTemplate(ctx.user.id, input.templateId)
         return { ok: true as const }
+      }),
+    listSchedules: userProcedure.query(({ ctx }) => listSchedules(ctx.user.id)),
+    createSchedule: userProcedure
+      .input(
+        z.object({
+          name: z.string().trim().min(1).max(MAX_NAME),
+          templateId: z.string().min(1).max(MAX_ID),
+          spaceId: z.string().min(1).max(MAX_ID).nullable().optional(),
+          cadence: cadenceInputSchema,
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await createSchedule({ ...input, userId: ctx.user.id })
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    updateSchedule: userProcedure
+      .input(
+        z.object({
+          id: z.string().min(1).max(MAX_ID),
+          name: z.string().trim().min(1).max(MAX_NAME).optional(),
+          spaceId: z.string().min(1).max(MAX_ID).nullable().optional(),
+          cadence: cadenceInputSchema.optional(),
+          enabled: z.boolean().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          const { id, ...patch } = input
+          return await updateSchedule({ ...patch, id, userId: ctx.user.id })
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    deleteSchedule: userProcedure
+      .input(z.object({ id: z.string().min(1).max(MAX_ID) }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await deleteSchedule(ctx.user.id, input.id)
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    scheduleFromChat: userProcedure
+      .input(
+        z.object({
+          chatId: z.string().min(1).max(MAX_ID),
+          name: z.string().trim().min(1).max(MAX_NAME),
+          templateId: z.string().min(1).max(MAX_ID).optional(),
+          expectedRevision: z.number().int().min(0).optional(),
+          spaceId: z.string().min(1).max(MAX_ID).nullable().optional(),
+          cadence: cadenceInputSchema,
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await scheduleFromChat({ ...input, userId: ctx.user.id })
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    runScheduleNow: userProcedure
+      .input(z.object({ id: z.string().min(1).max(MAX_ID) }))
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await runScheduleNow(ctx.user.id, input.id)
+        } catch (error) {
+          mapError(error)
+        }
       }),
     renameChatTemplate: userProcedure
       .input(

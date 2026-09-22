@@ -28,6 +28,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
+import { Switch } from "@/components/ui/switch"
 import {
   Select,
   SelectContent,
@@ -101,6 +102,12 @@ import { PromptStackPicker } from "./prompt-stack-picker"
 import { ContextBookPicker } from "./context-book-picker"
 import { ChatVariablesPicker } from "./chat-variables-picker"
 import { ChatHeaderMore } from "./chat-header-more"
+import {
+  ScheduleClockFields,
+  cadenceFromClock,
+  defaultScheduleClock,
+  type ScheduleClock,
+} from "./schedule-dialog"
 import {
   ChatTemplatePicker,
   chatTemplatePickerLabel,
@@ -295,6 +302,10 @@ export function ChatView({
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false)
   const [saveTemplateName, setSaveTemplateName] = useState("")
   const [replaceTemplateId, setReplaceTemplateId] = useState(SAVE_TEMPLATE_NEW)
+  const [scheduleEnabled, setScheduleEnabled] = useState(false)
+  const [scheduleClock, setScheduleClock] = useState<ScheduleClock>(() =>
+    defaultScheduleClock()
+  )
   const [templateOpen, setTemplateOpen] = useState(false)
   const [pendingTemplateId, setPendingTemplateId] = useState<
     string | null | undefined
@@ -584,6 +595,10 @@ export function ChatView({
   const templatesQuery = useQuery(
     trpc.workspace.listChatTemplates.queryOptions()
   )
+  const schedulesQuery = useQuery({
+    ...trpc.workspace.listSchedules.queryOptions(),
+    enabled: saveTemplateOpen,
+  })
   const templateOptions = (templatesQuery.data ?? []).map((template) => ({
     id: template.id,
     name: template.name,
@@ -858,6 +873,25 @@ export function ChatView({
           trpc.workspace.listChatTemplates.queryFilter()
         )
         toast.success("Chat template saved")
+        setSaveTemplateOpen(false)
+      },
+      onError: (error) => toast.error(error.message),
+    })
+  )
+  const scheduleFromChatMutation = useMutation(
+    trpc.workspace.scheduleFromChat.mutationOptions({
+      onSuccess: async (_result, input) => {
+        await Promise.all([
+          queryClient.invalidateQueries(
+            trpc.workspace.listChatTemplates.queryFilter()
+          ),
+          queryClient.invalidateQueries(
+            trpc.workspace.listSchedules.queryFilter()
+          ),
+        ])
+        toast.success(
+          input.templateId ? "Template and schedule updated" : "Schedule saved"
+        )
         setSaveTemplateOpen(false)
       },
       onError: (error) => toast.error(error.message),
@@ -2197,11 +2231,16 @@ export function ChatView({
     onRevealContextMessage: setScrollTargetId,
   }
 
+  const leafIsUser = activePath.at(-1)?.role === "user"
+  const canSchedule =
+    leafIsUser && schedulesQuery.data?.available === true && inFlightCount === 0
+
   function submitSaveTemplate() {
     if (
       !data.chat ||
       !saveTemplateName.trim() ||
-      saveTemplateMutation.isPending
+      saveTemplateMutation.isPending ||
+      scheduleFromChatMutation.isPending
     )
       return
     if (inFlightCount > 0) {
@@ -2211,9 +2250,30 @@ export function ChatView({
     const existing = templatesQuery.data?.find(
       (template) => template.id === replaceTemplateId
     )
+    const name = saveTemplateName.trim()
+    if (scheduleEnabled && canSchedule) {
+      const cadence = cadenceFromClock(scheduleClock)
+      if (!cadence) {
+        toast.error("Enter a time")
+        return
+      }
+      scheduleFromChatMutation.mutate({
+        chatId: data.chat.id,
+        name,
+        spaceId: scheduleClock.spaceId,
+        cadence,
+        ...(existing
+          ? {
+              templateId: existing.id,
+              expectedRevision: existing.revision,
+            }
+          : {}),
+      })
+      return
+    }
     saveTemplateMutation.mutate({
       chatId: data.chat.id,
-      name: saveTemplateName.trim(),
+      name,
       ...(existing
         ? {
             templateId: existing.id,
@@ -2443,6 +2503,8 @@ export function ChatView({
                             data.chat?.title?.trim() || "New template"
                           )
                           setReplaceTemplateId(SAVE_TEMPLATE_NEW)
+                          setScheduleEnabled(false)
+                          setScheduleClock(defaultScheduleClock(spaceId))
                           setSaveTemplateOpen(true)
                         },
                       },
@@ -2979,7 +3041,7 @@ export function ChatView({
           </DialogContent>
         </Dialog>
         <Dialog open={saveTemplateOpen} onOpenChange={setSaveTemplateOpen}>
-          <DialogContent>
+          <DialogContent className="max-h-[min(40rem,calc(100%-2rem))] max-w-md overflow-y-auto">
             <DialogHeader>
               <DialogTitle>Save chat template</DialogTitle>
               <DialogDescription>
@@ -3043,9 +3105,48 @@ export function ChatView({
               </div>
               {replaceTemplateId !== SAVE_TEMPLATE_NEW ? (
                 <p className="text-xs text-muted-foreground">
-                  This overwrites the saved tree. Existing chats stay as they
-                  are.
+                  {scheduleEnabled && canSchedule
+                    ? "This overwrites the saved tree. Schedules that already use it take this clock. Existing chats stay as they are."
+                    : "This overwrites the saved tree. Existing chats stay as they are."}
                 </p>
+              ) : null}
+              <div className="flex items-start justify-between gap-3">
+                <div className="grid gap-0.5">
+                  <Label htmlFor="save-template-schedule">
+                    Run on a schedule
+                  </Label>
+                  {!leafIsUser ? (
+                    <p className="text-xs text-muted-foreground">
+                      A schedule continues from your last message. Send one, or
+                      select a branch that ends on one.
+                    </p>
+                  ) : inFlightCount > 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      Wait for replies to finish before scheduling this chat.
+                    </p>
+                  ) : schedulesQuery.isSuccess &&
+                    !schedulesQuery.data.available ? (
+                    <p className="text-xs text-muted-foreground">
+                      This server is in stateless generation mode, so schedules
+                      stay stored and do not run.
+                    </p>
+                  ) : null}
+                </div>
+                <Switch
+                  id="save-template-schedule"
+                  checked={canSchedule && scheduleEnabled}
+                  disabled={!canSchedule}
+                  onCheckedChange={(checked) => setScheduleEnabled(checked)}
+                />
+              </div>
+              {canSchedule && scheduleEnabled ? (
+                <ScheduleClockFields
+                  clock={scheduleClock}
+                  spaces={data.spaces ?? []}
+                  onChange={(patch) =>
+                    setScheduleClock((current) => ({ ...current, ...patch }))
+                  }
+                />
               ) : null}
             </div>
             <DialogFooter>
@@ -3060,6 +3161,7 @@ export function ChatView({
                   !data.chat ||
                   !saveTemplateName.trim() ||
                   saveTemplateMutation.isPending ||
+                  scheduleFromChatMutation.isPending ||
                   inFlightCount > 0
                 }
                 onClick={submitSaveTemplate}

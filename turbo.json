@@ -6,6 +6,7 @@
     "BETTER_AUTH_URL",
     "NODE_ENV",
     "NEXT_PHASE",
+    "NEXT_RUNTIME",
     "DATABASE_URL",
     "DATABASE_POOL_SIZE",
     "SQLITE_PATH",

@@ -1,8 +1,10 @@
 import { ZodError } from "zod"
+import { ResumeClaimError } from "@/lib/agent/run-generation"
 import {
-  createGenerationResponse,
-  ResumeClaimError,
-} from "@/lib/agent/run-generation"
+  continueChatGeneration,
+  generationAssistantMeta,
+  openGenerationResponse,
+} from "@/lib/agent/open-generation"
 import {
   applyToolOutputs,
   pendingToolInvocations,
@@ -20,10 +22,8 @@ import {
   maybeAssignChatTitle,
   nodeParts,
   loadEditSourceUserNode,
-  resolveStackForChat,
   resolveSettingsForChat,
   startRegenerate,
-  startGeneration,
   submitUserTurn,
 } from "@/lib/chat-service"
 import { db } from "@/lib/db"
@@ -33,17 +33,14 @@ import { formatProviderError } from "@/lib/provider-errors"
 import {
   modelFor,
   pdfInputModeFor,
-  rememberCatalogProtocol,
   responsesReplayTargetFor,
   resolveModelConfig,
-  selectedProtocolFor,
   type ModelConfig,
 } from "@/lib/providers"
 import { resolveConversationAttachments } from "@/lib/conversation-attachments"
 import { assertPdfFallbackAvailable } from "@/lib/pdf-input"
 import { streamBodySchema } from "@/lib/stream-body"
 import { firstTurnTitleAction } from "@/lib/chat-title"
-import { formatSpaceRules } from "@/lib/spaces"
 import {
   parseSettingValues,
   settingValuesToJson,
@@ -54,21 +51,6 @@ import type { NodeRow, Parts } from "@/lib/types"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
-
-function streamMeta(
-  config: ModelConfig,
-  responsesReplay?: { providerOptionsKey: string }
-) {
-  return {
-    provider: config.providerId,
-    model: config.model,
-    generationConfig: config,
-    startedAt: new Date().toISOString(),
-    ...(responsesReplay
-      ? { responsesProviderOptionsKey: responsesReplay.providerOptionsKey }
-      : {}),
-  }
-}
 
 export async function POST(request: Request) {
   try {
@@ -93,6 +75,15 @@ export async function POST(request: Request) {
       .executeTakeFirst()
     if (!chat)
       return Response.json({ error: "Chat not found" }, { status: 404 })
+    if (body.intent === "generate")
+      return continueChatGeneration({
+        userId: user.id,
+        chatId: chat.id,
+        parentId: body.parentNodeId ?? null,
+        timeZone: body.timeZone,
+        requestSignal: request.signal,
+        attachSelection: body.attachSelection,
+      })
     const stored = parseSettingValues(chat.settings_json)
     const storedModel = stored.model
     const normalizedModel = storedModel
@@ -121,7 +112,7 @@ export async function POST(request: Request) {
       timeZone: body.timeZone,
     })
     let responsesReplay = await responsesReplayTargetFor(user.id, config)
-    let assistantMeta = streamMeta(config, responsesReplay)
+    let assistantMeta = generationAssistantMeta(config, responsesReplay)
     const generationId = crypto.randomUUID()
 
     let assistant: NodeRow
@@ -209,22 +200,6 @@ export async function POST(request: Request) {
           })
         }
       }
-    } else if (body.intent === "generate") {
-      const result = await startGeneration({
-        userId: user.id,
-        chatId: chat.id,
-        parentId: body.parentNodeId ?? null,
-        generationId,
-        assistantMetadata: assistantMeta,
-        attachSelection: body.attachSelection,
-      })
-      assistant = result.assistant
-      contextLeafId = result.contextLeafId
-      headers = {
-        ...(assistant.parent_id
-          ? { "X-Nibchat-Parent-Node": assistant.parent_id }
-          : {}),
-      }
     } else if (body.intent === "regenerate") {
       const result = await startRegenerate(
         user.id,
@@ -274,7 +249,7 @@ export async function POST(request: Request) {
           requireConfiguredModel: true,
         })
         responsesReplay = await responsesReplayTargetFor(user.id, config)
-        assistantMeta = streamMeta(config, responsesReplay)
+        assistantMeta = generationAssistantMeta(config, responsesReplay)
       }
       // A resumed tool turn may be finished after the chat selection changed.
       // Keep its old metadata identity so provider-native replay is disabled
@@ -352,47 +327,24 @@ export async function POST(request: Request) {
           : {}),
       }
 
-      const resolved = await resolveStackForChat(chat, user.id)
-
-      const allNodes = await db
-        .selectFrom("message_nodes")
-        .selectAll()
-        .where("chat_id", "=", chat.id)
-        .orderBy("created_at")
-        .execute()
-
       try {
-        return await createGenerationResponse(
-          {
-            userId: user.id,
-            assistant,
-            contextLeafId,
-            seedParts,
-            config,
-            languageModel,
-            responsesReplay,
-            selectedProtocol: () => selectedProtocolFor(languageModel),
-            rememberProtocol:
-              config.providerId && config.model
-                ? (protocol) =>
-                    rememberCatalogProtocol(
-                      config.providerId!,
-                      config.model!,
-                      protocol as "responses" | "chat"
-                    )
-                : undefined,
-            promptStack: resolved.stack,
-            variableOverrides: settings.effective.variables,
-            spaceRulesText: formatSpaceRules(settings.effective.rules),
-            timeZone: body.timeZone,
-            requestSignal: request.signal,
-            allNodes,
-            previousMetadata: resumeMetadata,
-            resumeClaim: { originalParts: currentParts },
-            generationId,
-          },
-          headers
-        )
+        return await openGenerationResponse({
+          userId: user.id,
+          chat,
+          settings,
+          config,
+          languageModel,
+          responsesReplay,
+          assistant,
+          contextLeafId,
+          seedParts,
+          headers,
+          timeZone: body.timeZone,
+          requestSignal: request.signal,
+          previousMetadata: resumeMetadata,
+          resumeClaim: { originalParts: currentParts },
+          generationId,
+        })
       } catch (error) {
         if (error instanceof ResumeClaimError) {
           const status = error.kind === "missing" ? 404 : 409
@@ -402,46 +354,23 @@ export async function POST(request: Request) {
       }
     }
 
-    const resolved = await resolveStackForChat(chat, user.id)
-
-    const allNodes = await db
-      .selectFrom("message_nodes")
-      .selectAll()
-      .where("chat_id", "=", chat.id)
-      .orderBy("created_at")
-      .execute()
-
-    return await createGenerationResponse(
-      {
-        userId: user.id,
-        assistant,
-        contextLeafId,
-        seedParts,
-        config,
-        languageModel,
-        responsesReplay,
-        selectedProtocol: () => selectedProtocolFor(languageModel),
-        rememberProtocol:
-          config.providerId && config.model
-            ? (protocol) =>
-                rememberCatalogProtocol(
-                  config.providerId!,
-                  config.model!,
-                  protocol as "responses" | "chat"
-                )
-            : undefined,
-        promptStack: resolved.stack,
-        variableOverrides: settings.effective.variables,
-        spaceRulesText: formatSpaceRules(settings.effective.rules),
-        timeZone: body.timeZone,
-        requestSignal: request.signal,
-        allNodes,
-        previousMetadata: assistantMeta,
-        afterFinalize,
-        generationId,
-      },
-      headers
-    )
+    return await openGenerationResponse({
+      userId: user.id,
+      chat,
+      settings,
+      config,
+      languageModel,
+      responsesReplay,
+      assistant,
+      contextLeafId,
+      seedParts,
+      headers,
+      timeZone: body.timeZone,
+      requestSignal: request.signal,
+      previousMetadata: assistantMeta,
+      afterFinalize,
+      generationId,
+    })
   } catch (error) {
     console.error("[nibchat/stream] setup", error)
     if (statusFromError(error) !== 400) return jsonError(error)

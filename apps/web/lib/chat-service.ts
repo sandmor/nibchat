@@ -1626,7 +1626,7 @@ export async function finalizeStreamingAssistantWithSnapshot(
 }
 
 /** Lazy reconciliation: never treat an adapter outage as a lost producer. */
-async function reconcileChatGenerationRuns(chatId: string) {
+export async function reconcileChatGenerationRuns(chatId: string) {
   const runs = await db
     .selectFrom("generation_runs")
     .selectAll()
@@ -3089,6 +3089,28 @@ export async function getInstanceSettings(userId: string) {
   }
 }
 
+function scheduleInsertValues(
+  row: Backup["scheduledGenerations"][number],
+  userId: string
+) {
+  return {
+    id: row.id,
+    user_id: userId,
+    template_id: row.template_id,
+    space_id: row.space_id,
+    name: row.name,
+    cadence_json: row.cadence_json,
+    enabled: toDbBool(row.enabled),
+    next_run_at: row.next_run_at,
+    last_run_at: row.last_run_at,
+    last_status: row.last_status,
+    last_error: row.last_error,
+    last_chat_id: row.last_chat_id,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }
+}
+
 function preferenceInsertValues(
   prefs: Backup["userPreferences"][number],
   userId: string
@@ -3262,6 +3284,11 @@ async function restoreOwnerBackup(
         ...template,
         user_id: userId,
       })
+      .execute()
+  for (const schedule of backup.scheduledGenerations)
+    await trx
+      .insertInto("scheduled_generations")
+      .values(scheduleInsertValues(schedule, userId))
       .execute()
 
   await insertRestoredMessageNodes(trx, backup.nodes)
@@ -3507,6 +3534,23 @@ function validateMultiUserBackup(
         `Backup template ${template.id} references an unknown user`
       )
   }
+  for (const schedule of backup.scheduledGenerations) {
+    const template = templates.get(schedule.template_id)
+    const space = schedule.space_id ? spaces.get(schedule.space_id) : undefined
+    const chatOwner = schedule.last_chat_id
+      ? chatOwners.get(schedule.last_chat_id)
+      : undefined
+    if (
+      !users.has(schedule.user_id) ||
+      !template ||
+      template.user_id !== schedule.user_id ||
+      (schedule.space_id && (!space || space.user_id !== schedule.user_id)) ||
+      (schedule.last_chat_id && chatOwner !== schedule.user_id)
+    )
+      throw new Error(
+        `Backup schedule ${schedule.id} references another user's data`
+      )
+  }
   for (const link of backup.templateAttachments) {
     const template = templates.get(link.template_id)
     const attachment = backup.attachments.find(
@@ -3660,6 +3704,9 @@ async function restoreMultiUserBackup(
           template.user_id === sourceOwner.id
       )
     ),
+    scheduledGenerations: backup.scheduledGenerations
+      .filter((schedule) => schedule.user_id === sourceOwner.id)
+      .map((schedule) => ({ ...schedule, user_id: ownerId })),
     providerProfiles: backup.providerProfiles,
     mcpServerProfiles: backup.mcpServerProfiles,
     promptStacks: backup.promptStacks
@@ -3876,6 +3923,13 @@ async function restoreMultiUserBackup(
       }
       for (const template of userTemplates)
         await trx.insertInto("chat_templates").values(template).execute()
+      for (const schedule of backup.scheduledGenerations.filter(
+        (row) => row.user_id === sourceUser.id
+      ))
+        await trx
+          .insertInto("scheduled_generations")
+          .values(scheduleInsertValues(schedule, sourceUser.id))
+          .execute()
       for (const link of userLinks)
         await trx.insertInto("message_attachments").values(link).execute()
       for (const link of backup.templateAttachments.filter((link) =>
@@ -3974,6 +4028,14 @@ export async function createBackup() {
     .selectFrom("chat_templates")
     .selectAll()
     .execute()
+  const scheduledGenerationRows = await db
+    .selectFrom("scheduled_generations")
+    .selectAll()
+    .execute()
+  const scheduledGenerations = scheduledGenerationRows.map((row) => ({
+    ...row,
+    enabled: fromDbBool(row.enabled),
+  }))
   const templateAttachments = await db
     .selectFrom("template_attachments")
     .selectAll()
@@ -4030,6 +4092,7 @@ export async function createBackup() {
     messageAttachments,
     chatTemplates,
     templateAttachments,
+    scheduledGenerations,
     providerProfiles,
     mcpServerProfiles,
     users: users.map((user) => ({

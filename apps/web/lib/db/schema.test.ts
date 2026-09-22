@@ -14,6 +14,7 @@ describe("applySchema", () => {
     await applySchema(db, "sqlite")
     await db.selectFrom("chats").select("id").limit(1).execute()
     await db.selectFrom("message_nodes").select("id").limit(1).execute()
+    await db.selectFrom("scheduled_generations").select("id").limit(1).execute()
     const columns = sqlite
       .prepare("pragma table_info(message_nodes)")
       .all() as Array<{

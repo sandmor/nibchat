@@ -285,11 +285,11 @@ export async function upsertSillyTavernCharacterTemplate(input: {
   })
 }
 
-export async function materializeChatTemplate(input: {
+type TemplateChatInput = {
   userId: string
   templateId?: string
   document: ChatTemplateDocument
-  draftId: string
+  draftId?: string
   selectedRootId?: string | null
   selectedChildren?: Record<string, string | null>
   title?: string | null
@@ -297,36 +297,10 @@ export async function materializeChatTemplate(input: {
   spaceId?: string | null
   contextBookIds?: string[]
   expandMessageMacros?: boolean
-}) {
-  const previous = await db
-    .selectFrom("draft_materializations")
-    .select("chat_id")
-    .where("user_id", "=", input.userId)
-    .where("draft_id", "=", input.draftId)
-    .executeTakeFirst()
-  if (previous) {
-    const chat = await db
-      .selectFrom("chats")
-      .selectAll()
-      .where("id", "=", previous.chat_id)
-      .where("user_id", "=", input.userId)
-      .executeTakeFirstOrThrow()
-    const nodes = await db
-      .selectFrom("message_nodes")
-      .selectAll()
-      .where("chat_id", "=", chat.id)
-      .execute()
-    const nodeIds = Object.fromEntries(
-      nodes.flatMap((node) => {
-        const source = parseJson<Record<string, unknown>>(
-          node.metadata_json,
-          {}
-        ).templateNodeId
-        return typeof source === "string" ? [[source, node.id]] : []
-      })
-    )
-    return { chat, nodes, nodeIds }
-  }
+}
+
+/** Copy a template document into a new chat. A draft id records the preview once. */
+export async function createChatFromTemplate(input: TemplateChatInput) {
   const spaces = await db
     .selectFrom("spaces")
     .selectAll()
@@ -347,9 +321,9 @@ export async function materializeChatTemplate(input: {
     if (requiredTemplateId)
       await assertTemplateOwner(input.userId, requiredTemplateId)
   }
-  // Materialize the snapshot the user actually previewed. Templates are
-  // mutable library entries, so re-reading one here could silently create a
-  // different conversation after it was replaced (or fail after deletion).
+  // Materialize the snapshot the caller already chose. Templates are mutable
+  // library entries, so re-reading one here could silently create a different
+  // conversation after it was replaced (or fail after deletion).
   const document = parseChatTemplateDocument(input.document)
   const selectedRootId =
     input.selectedRootId === undefined
@@ -383,88 +357,85 @@ export async function materializeChatTemplate(input: {
   }
   const bookIds = [...new Set(input.contextBookIds ?? [])]
   const attachmentIds = templateAttachmentIds(document)
-  try {
-    return await db.transaction().execute(async (trx) => {
-      if (attachmentIds.length) {
-        const owned = await trx
-          .selectFrom("attachments")
-          .select("id")
-          .where("user_id", "=", input.userId)
-          .where("id", "in", attachmentIds)
-          .execute()
-        if (owned.length !== attachmentIds.length)
-          throw new Error("Template attachment not found")
-      }
-      await trx.insertInto("chats").values(chat).execute()
-      if (bookIds.length) {
-        const owned = await trx
-          .selectFrom("context_books")
-          .select("id")
-          .where("user_id", "=", input.userId)
-          .where("id", "in", bookIds)
-          .execute()
-        if (owned.length !== bookIds.length)
-          throw new Error("Context book not found")
+  return db.transaction().execute(async (trx) => {
+    if (attachmentIds.length) {
+      const owned = await trx
+        .selectFrom("attachments")
+        .select("id")
+        .where("user_id", "=", input.userId)
+        .where("id", "in", attachmentIds)
+        .execute()
+      if (owned.length !== attachmentIds.length)
+        throw new Error("Template attachment not found")
+    }
+    await trx.insertInto("chats").values(chat).execute()
+    if (bookIds.length) {
+      const owned = await trx
+        .selectFrom("context_books")
+        .select("id")
+        .where("user_id", "=", input.userId)
+        .where("id", "in", bookIds)
+        .execute()
+      if (owned.length !== bookIds.length)
+        throw new Error("Context book not found")
+      await trx
+        .insertInto("chat_context_books")
+        .values(
+          bookIds.map((context_book_id, position) => ({
+            chat_id: chat.id,
+            context_book_id,
+            position,
+          }))
+        )
+        .execute()
+    }
+    for (const node of document.nodes) {
+      const parts = node.parts
+      const nodeId = ids.get(node.id)!
+      const selectedChildId = Object.hasOwn(selectedChildren, node.id)
+        ? selectedChildren[node.id]
+        : node.selectedChildId
+      await trx
+        .insertInto("message_nodes")
+        .values({
+          id: nodeId,
+          chat_id: chat.id,
+          parent_id: node.parentId ? ids.get(node.parentId)! : null,
+          selected_child_id: selectedChildId ? ids.get(selectedChildId)! : null,
+          sort_key: node.sortKey,
+          revision: 0,
+          role: node.role,
+          parts_json: JSON.stringify(parts),
+          search_text: searchTextFromParts(parts),
+          metadata_json: JSON.stringify({ templateNodeId: node.id }),
+          excluded_from_context: toDbBool(node.excludedFromContext),
+          status: "complete",
+          created_at: chat.created_at,
+          updated_at: chat.created_at,
+        })
+        .execute()
+      const nodeAttachmentIds = [
+        ...new Set(
+          parts.flatMap((part) =>
+            part.type === "attachment" &&
+            (part.content.kind === "binary" || part.content.kind === "document")
+              ? [part.content.attachmentId]
+              : []
+          )
+        ),
+      ]
+      if (nodeAttachmentIds.length)
         await trx
-          .insertInto("chat_context_books")
+          .insertInto("message_attachments")
           .values(
-            bookIds.map((context_book_id, position) => ({
-              chat_id: chat.id,
-              context_book_id,
-              position,
+            nodeAttachmentIds.map((attachment_id) => ({
+              message_node_id: nodeId,
+              attachment_id,
             }))
           )
           .execute()
-      }
-      for (const node of document.nodes) {
-        const parts = node.parts
-        const nodeId = ids.get(node.id)!
-        const selectedChildId = Object.hasOwn(selectedChildren, node.id)
-          ? selectedChildren[node.id]
-          : node.selectedChildId
-        await trx
-          .insertInto("message_nodes")
-          .values({
-            id: nodeId,
-            chat_id: chat.id,
-            parent_id: node.parentId ? ids.get(node.parentId)! : null,
-            selected_child_id: selectedChildId
-              ? ids.get(selectedChildId)!
-              : null,
-            sort_key: node.sortKey,
-            revision: 0,
-            role: node.role,
-            parts_json: JSON.stringify(parts),
-            search_text: searchTextFromParts(parts),
-            metadata_json: JSON.stringify({ templateNodeId: node.id }),
-            excluded_from_context: toDbBool(node.excludedFromContext),
-            status: "complete",
-            created_at: chat.created_at,
-            updated_at: chat.created_at,
-          })
-          .execute()
-        const nodeAttachmentIds = [
-          ...new Set(
-            parts.flatMap((part) =>
-              part.type === "attachment" &&
-              (part.content.kind === "binary" ||
-                part.content.kind === "document")
-                ? [part.content.attachmentId]
-                : []
-            )
-          ),
-        ]
-        if (nodeAttachmentIds.length)
-          await trx
-            .insertInto("message_attachments")
-            .values(
-              nodeAttachmentIds.map((attachment_id) => ({
-                message_node_id: nodeId,
-                attachment_id,
-              }))
-            )
-            .execute()
-      }
+    }
+    if (input.draftId)
       await trx
         .insertInto("draft_materializations")
         .values({
@@ -474,16 +445,52 @@ export async function materializeChatTemplate(input: {
           created_at: chat.created_at,
         })
         .execute()
-      return {
-        chat,
-        nodes: await trx
-          .selectFrom("message_nodes")
-          .selectAll()
-          .where("chat_id", "=", chat.id)
-          .execute(),
-        nodeIds: Object.fromEntries(ids),
-      }
-    })
+    return {
+      chat,
+      nodes: await trx
+        .selectFrom("message_nodes")
+        .selectAll()
+        .where("chat_id", "=", chat.id)
+        .execute(),
+      nodeIds: Object.fromEntries(ids),
+    }
+  })
+}
+
+export async function materializeChatTemplate(
+  input: TemplateChatInput & { draftId: string }
+) {
+  const previous = await db
+    .selectFrom("draft_materializations")
+    .select("chat_id")
+    .where("user_id", "=", input.userId)
+    .where("draft_id", "=", input.draftId)
+    .executeTakeFirst()
+  if (previous) {
+    const chat = await db
+      .selectFrom("chats")
+      .selectAll()
+      .where("id", "=", previous.chat_id)
+      .where("user_id", "=", input.userId)
+      .executeTakeFirstOrThrow()
+    const nodes = await db
+      .selectFrom("message_nodes")
+      .selectAll()
+      .where("chat_id", "=", chat.id)
+      .execute()
+    const nodeIds = Object.fromEntries(
+      nodes.flatMap((node) => {
+        const source = parseJson<Record<string, unknown>>(
+          node.metadata_json,
+          {}
+        ).templateNodeId
+        return typeof source === "string" ? [[source, node.id]] : []
+      })
+    )
+    return { chat, nodes, nodeIds }
+  }
+  try {
+    return await createChatFromTemplate(input)
   } catch (error) {
     const winner = await db
       .selectFrom("draft_materializations")

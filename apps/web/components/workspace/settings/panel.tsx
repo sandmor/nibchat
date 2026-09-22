@@ -13,6 +13,7 @@ import { McpSettings } from "./mcp"
 import { UsersSettings } from "./users"
 import { ConversationImportSettings } from "./conversation-import"
 import { ChatTemplateSettings } from "./chat-templates"
+import { ScheduleSettings } from "./schedules"
 
 export function SettingsPanel({
   providers,
@@ -30,9 +31,7 @@ export function SettingsPanel({
           {isOwner ? "Instance controls" : "Personal settings"}
         </p>
         <h1 className="mt-1 text-lg font-semibold text-pretty sm:text-xl">
-          {isOwner
-            ? "Providers, MCP, prompts, appearance & users"
-            : "Appearance, tools & prompt stacks"}
+          Workspace settings
         </h1>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
@@ -54,6 +53,7 @@ export function SettingsPanel({
           <PromptStackSettings />
           <ContextBookSettings />
           <ChatTemplateSettings />
+          <ScheduleSettings />
           <BuiltInToolsSettings />
           <ConversationImportSettings />
           {isOwner && (

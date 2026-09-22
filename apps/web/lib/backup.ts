@@ -3,6 +3,7 @@ import { parseAppearance } from "@/lib/appearance"
 import { isProviderModelsJson } from "@/lib/provider-models"
 import { chatViewStateSchema } from "@/lib/chat-view-state"
 import { providerConnectionConfigSchema } from "@/lib/provider-config"
+import { cadenceSchema } from "@/lib/schedules/cadence"
 
 const chatRowSchema = z
   .object({
@@ -224,6 +225,30 @@ const templateAttachmentSchema = z.object({
   template_id: z.string(),
   attachment_id: z.string(),
 })
+const scheduledGenerationSchema = z.object({
+  id: z.string(),
+  user_id: z.string(),
+  template_id: z.string(),
+  space_id: z.string().nullable(),
+  name: z.string(),
+  cadence_json: z.string().refine((value) => {
+    try {
+      return cadenceSchema.safeParse(JSON.parse(value)).success
+    } catch {
+      return false
+    }
+  }, "Invalid schedule cadence"),
+  enabled: z.union([z.boolean(), z.number().transform(Boolean)]),
+  next_run_at: z.string(),
+  last_run_at: z.string().nullable(),
+  last_status: z
+    .enum(["running", "complete", "awaiting_input", "error", "skipped"])
+    .nullable(),
+  last_error: z.string().nullable(),
+  last_chat_id: z.string().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+})
 
 /** Portable snapshot (no passwords, sessions, or attachment bytes).
  * Bytes live next to this manifest in the backup zip. */
@@ -245,6 +270,10 @@ export const backupSchema = z.object({
     .default([]),
   chatTemplates: z.array(chatTemplateSchema).optional().default([]),
   templateAttachments: z.array(templateAttachmentSchema).optional().default([]),
+  scheduledGenerations: z
+    .array(scheduledGenerationSchema)
+    .optional()
+    .default([]),
   instance: z
     .object({
       titleModelConfig: z

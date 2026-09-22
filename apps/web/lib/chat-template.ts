@@ -1,6 +1,6 @@
 import { z } from "zod"
 import { messagePartSchema, type Parts } from "@/lib/agent/parts"
-import { parseJson } from "@/lib/domain"
+import { parseJson, resolveActivePath } from "@/lib/domain"
 import { MAX_ID, MAX_IMPORT_NODES, MAX_NAME } from "@/lib/limits"
 import type { NodeRow } from "@/lib/types"
 
@@ -72,6 +72,38 @@ export const chatTemplateDocumentSchema = z
 
 export type ChatTemplateDocument = z.infer<typeof chatTemplateDocumentSchema>
 export type ChatTemplateNode = ChatTemplateDocument["nodes"][number]
+
+export function templateActiveLeaf(document: {
+  selectedRootId: string | null
+  nodes: ReadonlyArray<{
+    id: string
+    parentId: string | null
+    selectedChildId: string | null
+    sortKey: number
+    role: NodeRow["role"]
+  }>
+}) {
+  const nodes = document.nodes.map(
+    (node) =>
+      ({
+        id: node.id,
+        chat_id: "",
+        parent_id: node.parentId,
+        selected_child_id: node.selectedChildId,
+        sort_key: node.sortKey,
+        revision: 0,
+        role: node.role,
+        parts_json: "[]",
+        search_text: "",
+        metadata_json: "{}",
+        excluded_from_context: false,
+        status: "complete",
+        created_at: "",
+        updated_at: "",
+      }) satisfies NodeRow
+  )
+  return resolveActivePath(nodes, document.selectedRootId).at(-1)
+}
 export const chatTemplateNameSchema = z.string().trim().min(1).max(MAX_NAME)
 
 function portableParts(parts: Parts): Parts {

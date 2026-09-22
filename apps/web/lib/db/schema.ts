@@ -43,6 +43,12 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create table if not exists chat_templates (id text primary key, user_id text not null references "user"(id) on delete cascade, name text not null, document_json text not null, revision integer not null default 0, source_json text not null default '{}', created_at text not null, updated_at text not null)`.execute(
     db
   )
+  await sql`create table if not exists scheduled_generations (id text primary key, user_id text not null references "user"(id) on delete cascade, template_id text not null references chat_templates(id) on delete cascade, space_id text references spaces(id) on delete set null, name text not null, cadence_json text not null, enabled boolean not null default true, next_run_at text not null, last_run_at text, last_status text, last_error text, last_chat_id text references chats(id) on delete set null, created_at text not null, updated_at text not null)`.execute(
+    db
+  )
+  await sql`create index if not exists scheduled_generations_due_idx on scheduled_generations(enabled, next_run_at)`.execute(
+    db
+  )
   await sql`create table if not exists draft_materializations (user_id text not null references "user"(id) on delete cascade, draft_id text not null, chat_id text not null references chats(id) on delete cascade, created_at text not null, primary key(user_id, draft_id))`.execute(
     db
   )

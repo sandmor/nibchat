@@ -5,19 +5,28 @@ import type { GenerationSetup } from "@/lib/agent/run-generation"
 import { continueChatGeneration } from "@/lib/agent/open-generation"
 import {
   createMessage,
+  prepareAuthoredParts,
   reconcileChatGenerationRuns,
   resolveSettingsForChat,
+  selectPathInTransaction,
 } from "@/lib/chat-service"
 import {
   createChatFromTemplate,
   saveChatTemplateFromChat,
+  saveChatTemplateDocument,
 } from "@/lib/chat-template-service"
 import {
   parseChatTemplateDocument,
   templateActiveLeaf,
+  type ChatTemplateDocument,
 } from "@/lib/chat-template"
 import { db, fromDbBool, migrate, toDbBool } from "@/lib/db"
-import { parseSettingValues, type SettingValues } from "@/lib/chat-settings"
+import {
+  parseSettingValues,
+  resolveSettings,
+  type SettingValues,
+} from "@/lib/chat-settings"
+import { spaceFromRow } from "@/lib/spaces"
 import { id, now, resolveActivePath } from "@/lib/domain"
 import { MAX_DESCRIPTION, MAX_NAME } from "@/lib/limits"
 import type {
@@ -823,6 +832,155 @@ export async function scheduleFromChat(input: {
       }),
     ],
   }
+}
+
+/** Save a new user turn as the selected template leaf and schedule fresh chats. */
+export async function sendAndScheduleTemplate(input: {
+  userId: string
+  source:
+    | { kind: "chat"; chatId: string; parentId: string | null }
+    | {
+        kind: "draft"
+        document: ChatTemplateDocument
+        parentId: string | null
+        chatOverrides: SettingValues
+      }
+  parts: Parts
+  attachments?: AttachmentReference[]
+  name: string
+  spaceId?: string | null
+  cadence: CadenceInput
+}) {
+  assertSchedulesAvailable()
+  const created = new Date()
+  const cadence = storeCadence(cadenceInputSchema.parse(input.cadence), created)
+  followingRunAt(cadence, created)
+  await assertSpaceOwner(input.userId, input.spaceId ?? null)
+  if (input.spaceId) {
+    const spaces = await db
+      .selectFrom("spaces")
+      .selectAll()
+      .where("user_id", "=", input.userId)
+      .execute()
+    const settings = resolveSettings({
+      chat: {},
+      spaceId: input.spaceId,
+      spaces: spaces.map(spaceFromRow),
+    })
+    if (settings.locks.chatTemplate)
+      throw new Error("Choose a space without a locked chat template")
+  }
+  const source = input.source
+  const sourceChat =
+    source.kind === "chat"
+      ? await db
+          .selectFrom("chats")
+          .selectAll()
+          .where("id", "=", source.chatId)
+          .where("user_id", "=", input.userId)
+          .executeTakeFirst()
+      : null
+  if (source.kind === "chat" && !sourceChat)
+    throw new Error("Chat not found")
+  const expandMessageMacros = sourceChat
+    ? (await resolveSettingsForChat(sourceChat, input.userId)).effective.model
+        .expandMessageMacros
+    : undefined
+  const preparedParts = await prepareAuthoredParts({
+    userId: input.userId,
+    role: "user",
+    parts: input.parts,
+    attachments: input.attachments,
+  })
+  return db.transaction().execute(async (trx) => {
+    let templateId: string
+    let messageId: string | null = null
+    let chatOverrides: SettingValues
+    if (source.kind === "chat") {
+      if (!sourceChat) throw new Error("Chat not found")
+      const message = await createMessage({
+        userId: input.userId,
+        chatId: source.chatId,
+        parentId: source.parentId,
+        role: "user",
+        parts: input.parts,
+        preparedParts,
+        attachments: input.attachments,
+        trx,
+      })
+      await selectPathInTransaction(
+        trx,
+        input.userId,
+        source.chatId,
+        message.id
+      )
+      const template = await saveChatTemplateFromChat({
+        userId: input.userId,
+        chatId: source.chatId,
+        name: input.name,
+        expandMessageMacros,
+        trx,
+      })
+      templateId = template.id
+      messageId = message.id
+      chatOverrides = parseSettingValues(sourceChat.settings_json)
+    } else {
+      const document = parseChatTemplateDocument(source.document)
+      const nodeId = id()
+      const siblingKeys = document.nodes
+        .filter((node) => node.parentId === source.parentId)
+        .map((node) => node.sortKey)
+      const sortKey = siblingKeys.length ? Math.max(...siblingKeys) + 1 : 0
+      const nodes = document.nodes.map((node) => ({ ...node }))
+      const byId = new Map(nodes.map((node) => [node.id, node]))
+      if (source.parentId && !byId.has(source.parentId))
+        throw new Error("Parent node not found in draft")
+      nodes.push({
+        id: nodeId,
+        parentId: source.parentId,
+        selectedChildId: null,
+        sortKey,
+        role: "user",
+        parts: preparedParts,
+        excludedFromContext: false,
+      })
+      let childId = nodeId
+      let parentId = source.parentId
+      while (parentId) {
+        const parent = byId.get(parentId)
+        if (!parent) throw new Error("Parent node not found in draft")
+        parent.selectedChildId = childId
+        childId = parent.id
+        parentId = parent.parentId
+      }
+      const selected = parseChatTemplateDocument({
+        ...document,
+        selectedRootId: childId,
+        nodes,
+      })
+      const template = await saveChatTemplateDocument({
+        userId: input.userId,
+        name: input.name,
+        document: selected,
+        trx,
+      })
+      templateId = template.id
+      chatOverrides = source.chatOverrides
+    }
+    const scheduleId = await insertScheduleRow(trx, {
+      userId: input.userId,
+      name: input.name,
+      action: {
+        kind: "template",
+        templateId,
+        spaceId: input.spaceId ?? null,
+        chatOverridesJson: JSON.stringify(chatOverrides),
+      },
+      cadence,
+      created,
+    })
+    return { templateId, scheduleId, messageId }
+  })
 }
 export async function runScheduleNow(
   userId: string,

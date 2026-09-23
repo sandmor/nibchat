@@ -216,7 +216,7 @@ async function allocateSortKey(
   return keys.get(NEW_SORT_SLOT)!
 }
 
-async function prepareAuthoredParts(input: {
+export async function prepareAuthoredParts(input: {
   userId: string
   role: Extract<MessageRole, "user" | "assistant">
   parts: Parts
@@ -802,6 +802,8 @@ export async function createMessage(input: {
   beforeNodeId?: string
   role: Extract<MessageRole, "user" | "assistant">
   parts: Parts
+  /** Parts already validated and hydrated before entering a caller's transaction. */
+  preparedParts?: Parts
   attachments?: AttachmentReference[]
   metadata?: Record<string, unknown>
   /** Opt-in; omitted means the view selection is left unchanged. */
@@ -833,12 +835,14 @@ export async function createMessage(input: {
       .executeTakeFirst()
     if (!parent) throw new Error("Parent node not found in chat")
   }
-  const parts = await prepareAuthoredParts({
-    userId: input.userId,
-    role: input.role,
-    parts: input.parts,
-    attachments: input.attachments,
-  })
+  const parts =
+    input.preparedParts ??
+    (await prepareAuthoredParts({
+      userId: input.userId,
+      role: input.role,
+      parts: input.parts,
+      attachments: input.attachments,
+    }))
   const persist = async (trx: Transaction<DB>) => {
     const sortKey = await allocateSortKey(trx, {
       chatId: input.chatId,
@@ -1253,7 +1257,7 @@ export async function selectPath(
   })
 }
 
-async function selectPathInTransaction(
+export async function selectPathInTransaction(
   trx: Transaction<DB>,
   userId: string,
   chatId: string,

@@ -53,6 +53,7 @@ export function UserTurnEditor({
   onTextChange,
   onSend,
   onSchedule,
+  onScheduleTemplate,
   scheduleAvailable,
   scheduleFromAnchor = false,
   onCancel,
@@ -82,6 +83,7 @@ export function UserTurnEditor({
   onTextChange: (text: string) => void
   onSend: () => void
   onSchedule?: () => void
+  onScheduleTemplate?: () => void
   scheduleAvailable?: boolean
   /** Empty draft schedules a generation from this user message. */
   scheduleFromAnchor?: boolean
@@ -240,12 +242,16 @@ export function UserTurnEditor({
       }
       sendLabel={sendLabel}
       onSchedule={onSchedule}
+      onScheduleTemplate={onScheduleTemplate}
       scheduleAvailable={Boolean(scheduleAvailable)}
       scheduleDisabled={
         !(
           Boolean(draft.text.trim() || draft.attachments.length) ||
           scheduleFromAnchor
         )
+      }
+      templateScheduleDisabled={
+        !draft.text.trim() && draft.attachments.length === 0
       }
       scheduleLabel="Generate later…"
       sendDisabled={sendDisabled}

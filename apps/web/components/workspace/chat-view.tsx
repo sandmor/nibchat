@@ -165,6 +165,7 @@ import {
 import { expandPromptMacros, idleSinceFromPath } from "@/lib/prompt-macros"
 import { resolveContextEntries } from "@/lib/context-books"
 import {
+  chatTemplateFromNodes,
   chatTemplateDocumentSchema,
   type ChatTemplateDocument,
 } from "@/lib/chat-template"
@@ -343,6 +344,17 @@ export function ChatView({
     defaultScheduleClock()
   )
   const [scheduleSendOpen, setScheduleSendOpen] = useState(false)
+  const [templateScheduleOpen, setTemplateScheduleOpen] = useState(false)
+  const [templateScheduleName, setTemplateScheduleName] = useState("")
+  const [templateScheduleClock, setTemplateScheduleClock] =
+    useState<ScheduleClock>(() => defaultScheduleClock())
+  const [templateScheduleSource, setTemplateScheduleSource] = useState<{
+    slot: string
+    parentId: string | null
+    chatId: string | null
+    document: ChatTemplateDocument | null
+    draft: ReturnType<typeof readComposerDraft>
+  } | null>(null)
   const [scheduleToCancel, setScheduleToCancel] = useState<string | null>(null)
   const [editingScheduleId, setEditingScheduleId] = useState<string | null>(
     null
@@ -948,6 +960,9 @@ export function ChatView({
       },
       onError: (error) => toast.error(error.message),
     })
+  )
+  const sendAndScheduleTemplateMutation = useMutation(
+    trpc.workspace.sendAndScheduleTemplate.mutationOptions()
   )
   const createChatScheduleMutation = useMutation(
     trpc.workspace.createChatSchedule.mutationOptions()
@@ -1698,6 +1713,92 @@ export function ChatView({
     setScheduleSource({ slot, parentId, draft: readComposerDraft(slot) })
     setScheduleSendClock({ ...defaultScheduleClock(), kind: "once" })
     setScheduleSendOpen(true)
+  }
+
+  function openTemplateSchedule(slot: string, parentId: string | null) {
+    const draft = readComposerDraft(slot)
+    if (!draft.text.trim() && draft.attachments.length === 0) return
+    const chatId = data.chat?.id ?? null
+    setTemplateScheduleSource({
+      slot,
+      parentId,
+      chatId,
+      document: chatId
+        ? null
+        : chatTemplateFromNodes(
+            draftTemplateNodes,
+            draftTemplateRootId,
+            Boolean(draftSettings.expandMessageMacros)
+          ),
+      draft,
+    })
+    setTemplateScheduleName(
+      data.chat?.title?.trim() || generationScheduleName(draft.text)
+    )
+    setTemplateScheduleClock(defaultScheduleClock(spaceId))
+    setTemplateScheduleOpen(true)
+  }
+
+  async function submitTemplateSchedule() {
+    const source = templateScheduleSource
+    if (!source || !templateScheduleName.trim()) return
+    if (source.draft.attachments.some((item) => item.uploading)) return
+    const error = scheduleClockError(templateScheduleClock)
+    const cadence = cadenceFromClock(templateScheduleClock)
+    if (error || !cadence) {
+      toast.error(error ?? "Enter a time")
+      return
+    }
+    try {
+      await sendAndScheduleTemplateMutation.mutateAsync({
+        source: source.chatId
+          ? { kind: "chat", chatId: source.chatId, parentId: source.parentId }
+          : {
+              kind: "draft",
+              document: source.document!,
+              parentId: source.parentId,
+              chatOverrides: draftSettings,
+            },
+        parts: source.draft.text.trim()
+          ? [{ type: "text", text: source.draft.text.trim() }]
+          : [],
+        attachments: source.draft.attachments.map((item) => item.reference),
+        name: templateScheduleName.trim(),
+        spaceId: templateScheduleClock.spaceId,
+        cadence,
+      })
+      if (source.chatId) {
+        updateSessionDraft(
+          source.slot,
+          clearSubmittedComposerDraft(
+            readComposerDraft(source.slot),
+            source.draft.text,
+            source.draft.attachments
+          )
+        )
+      } else {
+        selectDraftTemplate(null)
+        clearSessionChat(null)
+        setDraftSettings({})
+        setDraftContextBookIds([])
+        setDraftSpaceId(null)
+      }
+      await Promise.all([
+        queryClient.invalidateQueries(
+          trpc.workspace.listChatTemplates.queryFilter()
+        ),
+        queryClient.invalidateQueries(
+          trpc.workspace.listSchedules.queryFilter()
+        ),
+        queryClient.invalidateQueries(trpc.workspace.get.queryFilter()),
+      ])
+      setTemplateScheduleOpen(false)
+      toast.success("Template and schedule created")
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not schedule template"
+      )
+    }
   }
 
   async function scheduleComposer() {
@@ -2952,6 +3053,11 @@ export function ChatView({
                             ? () => openScheduleComposer(slot, anchor)
                             : undefined
                         }
+                        onScheduleTemplate={
+                          role === "user"
+                            ? () => openTemplateSchedule(slot, anchor)
+                            : undefined
+                        }
                         scheduleAvailable={
                           schedulesQuery.data?.available === true
                         }
@@ -3045,6 +3151,9 @@ export function ChatView({
                 onSend={() => void streamSubmit()}
                 onSchedule={() =>
                   openScheduleComposer(linearComposerSlot, composerParentId)
+                }
+                onScheduleTemplate={() =>
+                  openTemplateSchedule(linearComposerSlot, composerParentId)
                 }
                 scheduleAvailable={schedulesQuery.data?.available === true}
                 scheduleFromAnchor={leafIsUser}
@@ -3192,6 +3301,65 @@ export function ChatView({
                 onClick={() => void scheduleComposer()}
               >
                 Schedule generation
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={templateScheduleOpen}
+          onOpenChange={setTemplateScheduleOpen}
+        >
+          <DialogContent className="max-h-[min(40rem,calc(100%-2rem))] max-w-md overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Schedule as template</DialogTitle>
+              <DialogDescription>
+                {templateScheduleSource?.chatId
+                  ? "Save this message in the current chat and create a template from it."
+                  : "Create a template from this draft without opening a chat."}{" "}
+                Each run starts a new chat and replies there.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-3">
+              <div className="grid gap-1.5">
+                <Label htmlFor="template-schedule-name">Template name</Label>
+                <Input
+                  id="template-schedule-name"
+                  value={templateScheduleName}
+                  maxLength={MAX_NAME}
+                  onChange={(event) =>
+                    setTemplateScheduleName(event.target.value)
+                  }
+                />
+              </div>
+              <ScheduleClockFields
+                clock={templateScheduleClock}
+                spaces={workspace.spaces}
+                onChange={(patch) =>
+                  setTemplateScheduleClock((current) => ({
+                    ...current,
+                    ...patch,
+                  }))
+                }
+              />
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setTemplateScheduleOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                disabled={
+                  !templateScheduleName.trim() ||
+                  sendAndScheduleTemplateMutation.isPending ||
+                  inFlightCount > 0 ||
+                  Boolean(scheduleClockError(templateScheduleClock))
+                }
+                onClick={() => void submitTemplateSchedule()}
+              >
+                Create schedule
               </Button>
             </DialogFooter>
           </DialogContent>

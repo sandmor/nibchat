@@ -140,6 +140,7 @@ import {
   listSchedules,
   runScheduleNow,
   scheduleFromChat,
+  sendAndScheduleTemplate,
   updateSchedule,
 } from "@/lib/schedules/service"
 import {
@@ -1008,6 +1009,42 @@ export const appRouter = t.router({
       .mutation(async ({ ctx, input }) => {
         try {
           return await scheduleFromChat({ ...input, userId: ctx.user.id })
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    sendAndScheduleTemplate: userProcedure
+      .input(
+        z.object({
+          source: z.discriminatedUnion("kind", [
+            z.object({
+              kind: z.literal("chat"),
+              chatId: z.string().min(1).max(MAX_ID),
+              parentId: z.string().min(1).max(MAX_ID).nullable(),
+            }),
+            z.object({
+              kind: z.literal("draft"),
+              document: chatTemplateDocumentSchema,
+              parentId: z.string().min(1).max(MAX_ID).nullable(),
+              chatOverrides: settingValuesSchema,
+            }),
+          ]),
+          parts: z.array(messagePartSchema),
+          attachments: z
+            .array(attachmentReferenceSchema)
+            .max(MAX_COLLECTION)
+            .optional(),
+          name: z.string().trim().min(1).max(MAX_NAME),
+          spaceId: z.string().min(1).max(MAX_ID).nullable().optional(),
+          cadence: cadenceInputSchema,
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await sendAndScheduleTemplate({
+            ...input,
+            userId: ctx.user.id,
+          })
         } catch (error) {
           mapError(error)
         }

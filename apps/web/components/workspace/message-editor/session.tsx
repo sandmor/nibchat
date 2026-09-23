@@ -30,6 +30,7 @@ export type SessionMessageEditorProps = {
   sendLabel?: string
   onSend: () => void
   onSchedule?: () => void
+  onScheduleTemplate?: () => void
   scheduleAvailable?: boolean
   scheduleFromAnchor?: boolean
   onCancel?: () => void
@@ -75,6 +76,7 @@ export function SessionMessageEditor(props: SessionMessageEditorProps) {
       allowEmptySend={props.allowEmptySend}
       canReplace={Boolean(props.onReplace)}
       canSchedule={Boolean(props.onSchedule)}
+      canScheduleTemplate={Boolean(props.onScheduleTemplate)}
       scheduleAvailable={props.scheduleAvailable}
       scheduleFromAnchor={props.scheduleFromAnchor}
       latestRef={latestRef}
@@ -101,6 +103,7 @@ const SessionMessageEditorLeaf = memo(function SessionMessageEditorLeaf({
   allowEmptySend,
   canReplace,
   canSchedule,
+  canScheduleTemplate,
   scheduleAvailable,
   scheduleFromAnchor,
   latestRef,
@@ -123,6 +126,7 @@ const SessionMessageEditorLeaf = memo(function SessionMessageEditorLeaf({
   allowEmptySend?: boolean
   canReplace?: boolean
   canSchedule?: boolean
+  canScheduleTemplate?: boolean
   scheduleAvailable?: boolean
   scheduleFromAnchor?: boolean
   latestRef: { current: SessionMessageEditorProps }
@@ -144,6 +148,7 @@ const SessionMessageEditorLeaf = memo(function SessionMessageEditorLeaf({
     () => ({
       onSend: () => latestRef.current.onSend(),
       onSchedule: () => latestRef.current.onSchedule?.(),
+      onScheduleTemplate: () => latestRef.current.onScheduleTemplate?.(),
       onCancel: () => latestRef.current.onCancel?.(),
       onReplace: () => latestRef.current.onReplace?.(),
       onFiles: (files: File[] | FileList) => latestRef.current.onFiles?.(files),
@@ -227,6 +232,9 @@ const SessionMessageEditorLeaf = memo(function SessionMessageEditorLeaf({
       allowEmptySend={allowEmptySend}
       onTextChange={onTextChange}
       onSchedule={canSchedule ? actions.onSchedule : undefined}
+      onScheduleTemplate={
+        canScheduleTemplate ? actions.onScheduleTemplate : undefined
+      }
       scheduleAvailable={scheduleAvailable}
       scheduleFromAnchor={scheduleFromAnchor}
       onSend={actions.onSend}

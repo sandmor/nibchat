@@ -1,4 +1,5 @@
 import "server-only"
+import type { Transaction } from "kysely"
 import { db, toDbBool } from "@/lib/db"
 import { id, now, parseJson } from "@/lib/domain"
 import { searchTextFromParts } from "@/lib/agent/parts"
@@ -17,6 +18,7 @@ import {
   type ChatTemplateDocument,
 } from "@/lib/chat-template"
 import { rewriteSillyTavernMacros } from "@/lib/imports/silly-tavern-macros"
+import type { DB } from "@/lib/types"
 
 async function assertTemplateOwner(userId: string, templateId: string) {
   const row = await db
@@ -48,22 +50,28 @@ export async function saveChatTemplateFromChat(input: {
   name: string
   templateId?: string
   expectedRevision?: number
+  trx?: Transaction<DB>
+  /** Resolve before opening trx; settings lookup starts its own transaction. */
+  expandMessageMacros?: boolean
 }) {
-  const chat = await db
+  if (input.trx && input.expandMessageMacros === undefined)
+    throw new Error("Template settings must be resolved before the transaction")
+  const executor = input.trx ?? db
+  const chat = await executor
     .selectFrom("chats")
     .selectAll()
     .where("id", "=", input.chatId)
     .where("user_id", "=", input.userId)
     .executeTakeFirst()
   if (!chat) throw new Error("Chat not found")
-  const active = await db
+  const active = await executor
     .selectFrom("generation_runs")
     .select("id")
     .where("chat_id", "=", chat.id)
     .executeTakeFirst()
   if (active)
     throw new Error("Wait for active generations before saving a template")
-  const nodes = await db
+  const nodes = await executor
     .selectFrom("message_nodes")
     .selectAll()
     .where("chat_id", "=", chat.id)
@@ -87,13 +95,14 @@ export async function saveChatTemplateFromChat(input: {
     )
   )
     throw new Error("Finish incomplete tool calls before saving a template")
+  const expandMessageMacros =
+    input.expandMessageMacros ??
+    (await resolveSettingsForChat(chat, input.userId)).effective.model
+      .expandMessageMacros
   const document = chatTemplateFromNodes(
     nodes,
     chat.selected_root_node_id,
-    Boolean(
-      (await resolveSettingsForChat(chat, input.userId)).effective.model
-        .expandMessageMacros
-    )
+    Boolean(expandMessageMacros)
   )
   return saveChatTemplateDocument({ ...input, document })
 }
@@ -105,12 +114,13 @@ export async function saveChatTemplateDocument(input: {
   templateId?: string
   expectedRevision?: number
   source?: Record<string, unknown>
+  trx?: Transaction<DB>
 }) {
   const name = chatTemplateNameSchema.parse(input.name)
   const document = parseChatTemplateDocument(input.document)
   const attachmentIds = templateAttachmentIds(document)
   const timestamp = now()
-  return db.transaction().execute(async (trx) => {
+  const persist = async (trx: Transaction<DB>) => {
     if (attachmentIds.length) {
       const owned = await trx
         .selectFrom("attachments")
@@ -188,7 +198,8 @@ export async function saveChatTemplateDocument(input: {
       .selectAll()
       .where("id", "=", templateId)
       .executeTakeFirstOrThrow()
-  })
+  }
+  return input.trx ? persist(input.trx) : db.transaction().execute(persist)
 }
 
 export async function deleteChatTemplate(userId: string, templateId: string) {

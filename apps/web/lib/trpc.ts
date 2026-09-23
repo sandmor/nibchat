@@ -115,6 +115,7 @@ import {
   setUserThemeMode,
   setBuiltInToolsPrefs,
   setChatDefaults,
+  setPdfImagePageLimit,
   setUserPromptStack,
 } from "@/lib/user-settings"
 import { modelConfigSchema, settingValuesSchema } from "@/lib/chat-settings"
@@ -217,7 +218,7 @@ const providerModelSchema = z.object({
   label: z.string().trim().max(120).optional(),
   enabled: z.boolean(),
   source: z.enum(["catalog", "custom"]),
-  pdfInput: z.enum(["native", "extracted"]),
+  pdfInput: z.enum(["native", "extracted", "images"]),
   protocol: z.enum(["auto", "responses", "chat"]).optional(),
 })
 const providerInputSchema = z.object({
@@ -1142,6 +1143,11 @@ export const appRouter = t.router({
       .input(z.object({ disabled: z.array(z.string().min(1).max(64)).max(32) }))
       .mutation(async ({ ctx, input }) => {
         return await setBuiltInToolsPrefs(ctx.user.id, input.disabled)
+      }),
+    setPdfImagePageLimit: userProcedure
+      .input(z.object({ pageLimit: z.number().int().positive() }))
+      .mutation(async ({ ctx, input }) => {
+        return await setPdfImagePageLimit(ctx.user.id, input.pageLimit)
       }),
     listPromptStacks: userProcedure.query(({ ctx }) =>
       listPromptStacks(ctx.user.id)

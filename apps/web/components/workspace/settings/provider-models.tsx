@@ -39,6 +39,7 @@ import {
   upsertCustomModel,
   type CatalogModel,
   type ModelVisibilityFilter,
+  type PdfInputMode,
   type ProviderModel,
 } from "@/lib/provider-models"
 
@@ -48,7 +49,7 @@ type MotionTween = {
 }
 
 const MODELS_HELP =
-  "Only enabled models appear in the chat picker. Aliases are labels, not API ids. For PDFs, File sends the original and Text sends extracted text."
+  "Only enabled models appear in the chat picker. Aliases are labels, not API ids. For PDFs, File sends the original, Text sends extracted text, and Images renders every page, including graphics. Images requires image input support; set its page limit under PDF pages as images."
 const PROTOCOL_HELP =
   "API type chooses Chat Completions or the Responses API; Auto follows the catalog."
 const REASONING_HELP =
@@ -81,6 +82,7 @@ const VISIBILITY_ITEMS: { id: ModelVisibilityFilter; label: string }[] = [
 const PDF_INPUT_ITEMS: { id: ProviderModel["pdfInput"]; label: string }[] = [
   { id: "native", label: "File" },
   { id: "extracted", label: "Text" },
+  { id: "images", label: "Images" },
 ]
 const PROTOCOL_ITEMS = [
   { id: "auto", label: "Auto" },
@@ -211,7 +213,7 @@ function ModelRow({
   disabled: boolean
   onToggle: (enabled: boolean) => void
   onAlias: (label: string) => void
-  onPdfInput: (pdfInput: "native" | "extracted") => void
+  onPdfInput: (pdfInput: PdfInputMode) => void
   onProtocol: (protocol: "auto" | "responses" | "chat") => void
   showProtocol: boolean
   showAdvanced: boolean
@@ -246,7 +248,7 @@ function ModelRow({
             </span>
           ) : null}
         </p>
-        <div className="mt-1.5 flex min-w-0 flex-nowrap items-center gap-1.5 overflow-hidden">
+        <div className="mt-1.5 flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center">
           <Input
             value={model.label}
             onChange={(event) => onAlias(event.target.value)}
@@ -255,33 +257,38 @@ function ModelRow({
             disabled={disabled}
             className="h-8 min-w-0 flex-1 rounded-xl text-sm"
           />
-          <ToggleGroup
-            value={[model.pdfInput]}
-            onValueChange={(next) => {
-              const id = firstSelected(PDF_INPUT_ITEMS, next)
-              if (id) onPdfInput(id)
-            }}
-            disabled={disabled}
-            size="sm"
-            spacing={1}
-            className="shrink-0"
-            aria-label={`PDF input for ${model.id}`}
-          >
-            {PDF_INPUT_ITEMS.map((item) => (
-              <ToggleGroupItem
-                key={item.id}
-                value={item.id}
-                className={quietToggleItemClassName}
-                aria-label={
-                  item.id === "native"
-                    ? `Send original PDF for ${model.id}`
-                    : `Send extracted text for ${model.id}`
-                }
-              >
-                {item.label}
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <span className="text-[11px] text-muted-foreground">PDF</span>
+            <ToggleGroup
+              value={[model.pdfInput]}
+              onValueChange={(next) => {
+                const id = firstSelected(PDF_INPUT_ITEMS, next)
+                if (id) onPdfInput(id)
+              }}
+              disabled={disabled}
+              size="sm"
+              spacing={1}
+              className="shrink-0"
+              aria-label={`PDF input for ${model.id}`}
+            >
+              {PDF_INPUT_ITEMS.map((item) => (
+                <ToggleGroupItem
+                  key={item.id}
+                  value={item.id}
+                  className={quietToggleItemClassName}
+                  aria-label={
+                    item.id === "native"
+                      ? `Send original PDF for ${model.id}`
+                      : item.id === "extracted"
+                        ? `Send extracted text for ${model.id}`
+                        : `Send PDF pages as images for ${model.id}`
+                  }
+                >
+                  {item.label}
+                </ToggleGroupItem>
+              ))}
+            </ToggleGroup>
+          </div>
         </div>
         <AnimatePresence initial={false}>
           {showProtocol ? (
@@ -368,7 +375,7 @@ export function ProviderModelsEditor({
   catalog: CatalogModel[]
   onModelsChange: (models: ProviderModel[]) => void
   onCatalogChange: (catalog: CatalogModel[]) => void
-  defaultPdfInput: "native" | "extracted"
+  defaultPdfInput: PdfInputMode
   onLoadingChange?: (loading: boolean) => void
   disabled?: boolean
   refreshOnMount?: boolean

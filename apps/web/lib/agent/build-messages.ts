@@ -8,6 +8,7 @@ import {
 } from "@/lib/agent/parts"
 import type { NodeRow, ToolInvocationPart } from "@/lib/types"
 import type { ResponsesReplayTarget } from "@/lib/providers"
+import type { PdfInputMode } from "@/lib/provider-models"
 
 function nodePartsLocal(node: NodeRow): Parts {
   return parseJson<Parts>(node.parts_json, [])
@@ -23,14 +24,14 @@ export type EmbeddedBinaryAttachment = {
 /** Return file bytes, or `"placeholder"` to send `[Image attachment: name]`. */
 export type ResolveBinaryAttachment = (
   part: AttachmentPart
-) => EmbeddedBinaryAttachment | "placeholder"
+) => EmbeddedBinaryAttachment | EmbeddedBinaryAttachment[] | "placeholder"
 
 export type BuildMessagesOptions = {
   nodes: NodeRow[]
   replayReasoning: boolean
   /** Responses metadata is replayable only to its originating provider/model. */
   responsesReplay?: ResponsesReplayTarget
-  pdfInputMode?: "native" | "extracted"
+  pdfInputMode?: PdfInputMode
   resolveBinaryAttachment?: ResolveBinaryAttachment
 }
 
@@ -95,7 +96,17 @@ export function buildModelMessages(
                     : attachmentModelText(part),
               })
             } else {
-              content.push(resolved)
+              if (Array.isArray(resolved)) {
+                resolved.forEach((image, index) => {
+                  content.push({
+                    type: "text",
+                    text: `[PDF page ${index + 1} of ${resolved.length}: ${part.name}]`,
+                  })
+                  content.push(image)
+                })
+              } else {
+                content.push(resolved)
+              }
             }
           }
         }

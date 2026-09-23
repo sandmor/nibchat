@@ -41,6 +41,7 @@ import {
 } from "@/lib/providers"
 import {
   assemblePromptContext,
+  normalizePromptStack,
   resolvePromptVariableValues,
   type PromptStackDocument,
 } from "@/lib/prompt-stack"
@@ -53,6 +54,7 @@ import {
 } from "@/lib/prompt-macros"
 import { prepareMcpTools } from "@/lib/mcp"
 import { assertPdfFallbackAvailable } from "@/lib/pdf-input"
+import { getPdfImagePageLimit } from "@/lib/user-settings"
 import type { NodeRow, ToolInvocationPart } from "@/lib/types"
 import { db } from "@/lib/db"
 
@@ -270,11 +272,21 @@ export async function createGenerationResponse(
     const contextNodes = contextLeafId
       ? ancestorPath(nodesForContext, contextLeafId)
       : []
+    const historyEnabled = normalizePromptStack(promptStack).modules.some(
+      (module) => module.kind === "history" && module.enabled
+    )
     const replayReasoning = await canReplayReasoning(userId, config)
     const pdfInputMode = await pdfInputModeFor(userId, config)
-    if (pdfInputMode === "extracted")
+    const pdfImagePageLimit = await getPdfImagePageLimit(userId)
+    if (historyEnabled && pdfInputMode === "extracted")
       assertPdfFallbackAvailable(
-        contextNodes.flatMap((node) => parseJson<Parts>(node.parts_json, []))
+        contextNodes.flatMap((node) =>
+          node.role === "user" &&
+          !node.excluded_from_context &&
+          !(node.status === "error" && !node.search_text)
+            ? parseJson<Parts>(node.parts_json, [])
+            : []
+        )
       )
     const mcpServerInstructionsEnabled = promptStack.modules.some(
       (module) => module.kind === "mcp-instructions" && module.enabled
@@ -337,12 +349,15 @@ export async function createGenerationResponse(
           ),
         }))
       : contextNodes
-    const pathMessages = await buildEmbeddedModelMessages({
-      nodes: modelNodes,
-      replayReasoning,
-      responsesReplay,
-      pdfInputMode,
-    })
+    const pathMessages = historyEnabled
+      ? await buildEmbeddedModelMessages({
+          nodes: modelNodes,
+          replayReasoning,
+          responsesReplay,
+          pdfInputMode,
+          pdfImagePageLimit,
+        })
+      : []
     const [mcp, builtInPrefs] = await Promise.all([
       prepareMcpTools({
         includeInstructionsText: mcpServerInstructionsEnabled,

@@ -724,6 +724,54 @@ describe("buildModelMessages", () => {
     ])
   })
 
+  it("expands PDF pages into ordered labeled images in image mode", () => {
+    const messages = buildModelMessages({
+      nodes: [
+        node("u1", "user", [
+          {
+            type: "attachment",
+            id: "pdf1",
+            name: "diagram.pdf",
+            source: { kind: "upload" },
+            content: {
+              kind: "document",
+              attachmentId: "pdf-attachment",
+              mediaType: "application/pdf",
+              byteSize: 100,
+              sha256: "a".repeat(64),
+              analysis: { status: "no-text", pageCount: 2 },
+            },
+          },
+        ]),
+      ],
+      replayReasoning: false,
+      pdfInputMode: "images",
+      resolveBinaryAttachment: () => [
+        {
+          type: "file",
+          filename: "diagram.pdf page 1.png",
+          mediaType: "image/png",
+          data: { type: "data", data: new Uint8Array([1]) },
+        },
+        {
+          type: "file",
+          filename: "diagram.pdf page 2.png",
+          mediaType: "image/png",
+          data: { type: "data", data: new Uint8Array([2]) },
+        },
+      ],
+    })
+    const user = messages[0]
+    expect(user?.role).toBe("user")
+    if (user?.role !== "user" || !Array.isArray(user.content)) return
+    expect(user.content).toEqual([
+      { type: "text", text: "[PDF page 1 of 2: diagram.pdf]" },
+      expect.objectContaining({ filename: "diagram.pdf page 1.png" }),
+      { type: "text", text: "[PDF page 2 of 2: diagram.pdf]" },
+      expect.objectContaining({ filename: "diagram.pdf page 2.png" }),
+    ])
+  })
+
   it("adds truncation metadata to model context", () => {
     expect(
       attachmentModelText({
@@ -771,9 +819,9 @@ describe("editor part conversion", () => {
       expect(asText.text).toContain("lookup")
       expect(asText.text).toContain("```json")
     }
-    expect(convertPart({ type: "text", text: "x" }, "tool-invocation").type).toBe(
-      "tool-invocation"
-    )
+    expect(
+      convertPart({ type: "text", text: "x" }, "tool-invocation").type
+    ).toBe("tool-invocation")
     expect(createEditorPart("text")).toEqual({ type: "text", text: "" })
   })
 
@@ -812,9 +860,9 @@ describe("editor part conversion", () => {
         "assistant"
       )
     ).toEqual([{ type: "text", text: "ask" }])
-    expect(roleConversionLosses(mixed, "assistant", "user").length).toBeGreaterThan(
-      0
-    )
+    expect(
+      roleConversionLosses(mixed, "assistant", "user").length
+    ).toBeGreaterThan(0)
   })
 
   it("round-trips question widget input through the shared schema", () => {

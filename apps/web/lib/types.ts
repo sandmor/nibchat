@@ -475,6 +475,7 @@ export interface DB {
     theme_mode: "system" | "light" | "dark"
     /** `{ disabled: string[] }` JSON. Empty disabled list means all tools on. */
     builtin_tools_json: string
+    pdf_image_page_limit: number | string
     chat_defaults_json: string
     created_at: string
     updated_at: string

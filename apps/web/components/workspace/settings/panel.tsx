@@ -7,6 +7,7 @@ import { PromptStackSettings } from "./prompt-stacks"
 import { ContextBookSettings } from "./context-books"
 import { ChatDefaultsSettings } from "./chat-defaults"
 import { BuiltInToolsSettings } from "./builtin-tools"
+import { PdfImageSettings } from "./pdf-images"
 import { BackupSettings } from "./backup"
 import { AppearanceSettings } from "./appearance"
 import { McpSettings } from "./mcp"
@@ -50,6 +51,7 @@ export function SettingsPanel({
             </>
           )}
           <ChatDefaultsSettings providers={providers} />
+          <PdfImageSettings />
           <PromptStackSettings />
           <ContextBookSettings />
           <ChatTemplateSettings />

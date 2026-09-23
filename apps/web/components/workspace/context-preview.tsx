@@ -149,6 +149,40 @@ function useContextPreviewGraph() {
 
 const HYDRATION_PREVIEW_NOW = new Date(0)
 
+type PdfImageNotice = {
+  kind: "limit" | "unknown"
+  /** Short line for the composer strip. */
+  strip: string
+  /** Full explanation used in the preview panel and the strip tooltip. */
+  detail: string
+}
+
+function pdfImageNotice(
+  data: Pick<AssembledContextPreviewData, "pdfInputMode" | "pdfImagePageLimit">,
+  summary: Pick<
+    AssembledContextPreviewData["summary"],
+    "pdfPageCount" | "unknownPdfCount"
+  >
+): PdfImageNotice | null {
+  if (data.pdfInputMode !== "images") return null
+  if (summary.pdfPageCount > data.pdfImagePageLimit) {
+    return {
+      kind: "limit",
+      strip: `PDF image limit exceeded (${summary.pdfPageCount}/${data.pdfImagePageLimit})`,
+      detail: `This context has ${summary.pdfPageCount} PDF pages, above your ${data.pdfImagePageLimit}-page image limit. Increase it in Settings → PDF pages as images, or remove PDFs from the active context.`,
+    }
+  }
+  if (summary.unknownPdfCount > 0) {
+    return {
+      kind: "unknown",
+      strip: "PDF page count will be checked before send",
+      detail:
+        "A PDF page count is unavailable. It will be checked before sending.",
+    }
+  }
+  return null
+}
+
 function useAssembledContextPreview(
   contextParentId: string | null,
   refreshedAt: Date | null,
@@ -190,6 +224,7 @@ function useAssembledContextPreview(
         graph.modelConfig.replayReasoning
       ),
       pdfInputMode,
+      pdfImagePageLimit: settingsQuery.data?.pdfImagePageLimit ?? 8,
       mcpServerInstructionsText,
       timeZone: timeZone ?? undefined,
       now: timeZone ? (refreshedAt ?? new Date()) : HYDRATION_PREVIEW_NOW,
@@ -260,6 +295,7 @@ function ContextPreviewCompose({
     Boolean(draft?.text) ||
     draftAttachments.length > 0 ||
     merged.layers.some((layer) => layer.id === "draft")
+  const pdfNotice = pdfImageNotice(data, merged)
 
   return (
     <div className="space-y-3 text-sm">
@@ -304,12 +340,22 @@ function ContextPreviewCompose({
         ))}
       </ul>
 
-      {data.warnings.length > 0 ? (
+      {data.warnings.length > 0 || pdfNotice?.kind === "unknown" ? (
         <ul className="space-y-1 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
           {data.warnings.map((warning, index) => (
             <li key={`${warning.moduleId}-${index}`}>{warning.message}</li>
           ))}
+          {pdfNotice?.kind === "unknown" ? <li>{pdfNotice.detail}</li> : null}
         </ul>
+      ) : null}
+
+      {pdfNotice?.kind === "limit" ? (
+        <p
+          role="alert"
+          className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+        >
+          {pdfNotice.detail}
+        </p>
       ) : null}
 
       {data.contextEntries.length > 0 ? (
@@ -549,10 +595,11 @@ export function ContextPreviewStrip({
     ? mergeDraftSummary(data.summary, draft, data.pdfInputMode)
     : data.summary
   const segments = formatCompactSegments(merged)
+  const pdfNotice = pdfImageNotice(data, merged)
   const includedEntries = data.contextEntries.filter(
     (entry) => entry.status === "included"
   ).length
-  const label = [
+  const summaryLabel = [
     ...segments.map((segment) => segment.text),
     includedEntries
       ? `${includedEntries} ${includedEntries === 1 ? "entry" : "entries"}`
@@ -583,8 +630,24 @@ export function ContextPreviewStrip({
     )
   }
 
-  const triggerClass =
-    "w-full truncate rounded-md px-2 py-1 text-left text-[11px] text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+  const triggerClass = cn(
+    "w-full rounded-md px-2 py-1 text-left text-[11px] text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+    pdfNotice ? "flex flex-col gap-0.5" : "truncate",
+    pdfNotice?.kind === "limit" &&
+      "bg-destructive/5 text-destructive hover:bg-destructive/10 hover:text-destructive"
+  )
+  const triggerLabel = pdfNotice
+    ? `Context preview: ${pdfNotice.detail} ${summaryLabel}`
+    : `Context preview: ${summaryLabel}`
+  const triggerTooltip = pdfNotice?.detail ?? TOKEN_ESTIMATE_TOOLTIP
+  const triggerBody = pdfNotice ? (
+    <>
+      <span className="truncate">{pdfNotice.strip}</span>
+      <span className="truncate">{summaryLabel}</span>
+    </>
+  ) : (
+    summaryLabel
+  )
 
   function setPreviewOpen(nextOpen: boolean) {
     if (nextOpen) setRefreshedAt(new Date())
@@ -595,17 +658,17 @@ export function ContextPreviewStrip({
     return (
       <Popover open={open} onOpenChange={setPreviewOpen}>
         <TooltipProvider delay={400}>
-          <WithTooltip label={TOKEN_ESTIMATE_TOOLTIP}>
+          <WithTooltip label={triggerTooltip}>
             <PopoverTrigger
               render={
                 <button
                   type="button"
                   className={triggerClass}
-                  aria-label="Context preview"
+                  aria-label={triggerLabel}
                 />
               }
             >
-              {label}
+              {triggerBody}
             </PopoverTrigger>
           </WithTooltip>
         </TooltipProvider>
@@ -626,10 +689,11 @@ export function ContextPreviewStrip({
       <button
         type="button"
         className={triggerClass}
-        aria-label="Context preview"
+        aria-label={triggerLabel}
+        title={pdfNotice?.detail}
         onClick={() => setPreviewOpen(true)}
       >
-        {label}
+        {triggerBody}
       </button>
       <ContextPreviewDialog
         open={open}

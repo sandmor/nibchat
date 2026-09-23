@@ -31,7 +31,7 @@ describe("provider model documents", () => {
             label: "GPT",
             enabled: true,
             source: "catalog",
-            pdfInput: "native",
+            pdfInput: "images",
           },
         ])
       )
@@ -41,7 +41,7 @@ describe("provider model documents", () => {
         label: "GPT",
         enabled: true,
         source: "catalog",
-        pdfInput: "native",
+        pdfInput: "images",
       },
     ])
   })

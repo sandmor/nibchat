@@ -2,9 +2,11 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { db, migrate, toDbBool } from "@/lib/db"
 import {
   getBuiltInToolsPrefs,
+  getPdfImagePageLimit,
   getUserSettings,
   setBuiltInToolsPrefs,
   setChatDefaults,
+  setPdfImagePageLimit,
 } from "@/lib/user-settings"
 import { parseUserSettingValues, toModelConfig } from "@/lib/chat-settings"
 import { createChat, resolveSettingsForChat } from "@/lib/chat-service"
@@ -42,6 +44,8 @@ beforeAll(async () => {
 beforeEach(async () => {
   await setBuiltInToolsPrefs(ownerId, [])
   await setBuiltInToolsPrefs(guestId, [])
+  await setPdfImagePageLimit(ownerId, 8)
+  await setPdfImagePageLimit(guestId, 8)
 })
 
 describe("built-in tool preferences", () => {
@@ -69,6 +73,17 @@ describe("built-in tool preferences", () => {
     expect(await getBuiltInToolsPrefs(guestId)).toEqual({
       disabled: ["question"],
     })
+  })
+})
+
+describe("PDF image page limits", () => {
+  it("defaults to 8 pages and persists independently per user", async () => {
+    expect(await getPdfImagePageLimit(ownerId)).toBe(8)
+    expect(await getPdfImagePageLimit(guestId)).toBe(8)
+
+    await setPdfImagePageLimit(ownerId, 1000)
+    expect(await getPdfImagePageLimit(ownerId)).toBe(1000)
+    expect(await getPdfImagePageLimit(guestId)).toBe(8)
   })
 })
 

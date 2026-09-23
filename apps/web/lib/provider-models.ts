@@ -1,7 +1,7 @@
 import { reasoningSupportSchema, type ReasoningSupport } from "@/lib/reasoning"
 
 export type ProviderModelSource = "catalog" | "custom"
-export type PdfInputMode = "native" | "extracted"
+export type PdfInputMode = "native" | "extracted" | "images"
 /** The wire protocol chosen for this model. `auto` follows provider catalog data. */
 export type ModelProtocolPreference = "auto" | "responses" | "chat"
 
@@ -103,7 +103,9 @@ export function parseProviderModels(raw: unknown): ProviderModel[] {
       !id ||
       seen.has(id) ||
       (record.source !== "catalog" && record.source !== "custom") ||
-      (record.pdfInput !== "native" && record.pdfInput !== "extracted")
+      (record.pdfInput !== "native" &&
+        record.pdfInput !== "extracted" &&
+        record.pdfInput !== "images")
     )
       continue
     const reasoning = reasoningSupportSchema.safeParse(record.reasoning)

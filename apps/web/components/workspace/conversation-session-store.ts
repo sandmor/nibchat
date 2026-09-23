@@ -13,6 +13,7 @@ export type ComposerSurface = "linear" | "tree"
 
 export type ComposerAttachment = {
   name: string
+  mediaType?: string
   reference: AttachmentReference
   previewUrl?: string
   /** Local extraction result used by the context preview before this upload is sent. */
@@ -166,6 +167,7 @@ export function composerDraftFromUserParts(parts: Parts): ComposerDraft {
     if (part.content.kind === "binary") {
       attachments.push({
         name: part.name,
+        mediaType: part.content.mediaType,
         claimed: true,
         previewUrl: `/api/attachments/${part.content.attachmentId}`,
         reference: {
@@ -178,6 +180,7 @@ export function composerDraftFromUserParts(parts: Parts): ComposerDraft {
     if (part.content.kind === "document") {
       attachments.push({
         name: part.name,
+        mediaType: part.content.mediaType,
         claimed: true,
         reference: {
           kind: "uploaded-file",
@@ -202,7 +205,9 @@ export function sessionFromMessage(input: {
     parts,
     keys: keysForParts(parts),
     attachments:
-      input.role === "user" ? composerDraftFromUserParts(parts).attachments : [],
+      input.role === "user"
+        ? composerDraftFromUserParts(parts).attachments
+        : [],
   }
 }
 
@@ -568,7 +573,8 @@ export function authoredPartsFromSession(session: MessageEditorSession): {
     if (item.uploading) return []
     if (
       session.parts.some(
-        (part) => part.type === "attachment" && attachmentMatchesPart(item, part)
+        (part) =>
+          part.type === "attachment" && attachmentMatchesPart(item, part)
       )
     )
       return []

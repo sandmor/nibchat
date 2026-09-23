@@ -127,6 +127,7 @@ type InstanceSettings = {
   }>
   titleModelConfig: { providerId: string; model: string } | null
   builtInTools: BuiltInToolsPrefs
+  pdfImagePageLimit: number
 }
 
 export function WorkspaceShell({

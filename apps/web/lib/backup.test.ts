@@ -125,6 +125,7 @@ describe("parseBackup", () => {
       JSON.stringify({ disabled: ["question"] })
     )
     expect(withField.userPreferences[0]?.chat_defaults_json).toBe("{}")
+    expect(withField.userPreferences[0]?.pdf_image_page_limit).toBe(8)
   })
 
   it("requires a context-exclusion flag for every message node", () => {

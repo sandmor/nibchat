@@ -150,6 +150,13 @@ describe("applySchema", () => {
         dflt_value: `'{}'`,
       })
     )
+    expect(prefColumns).toContainEqual(
+      expect.objectContaining({
+        name: "pdf_image_page_limit",
+        notnull: 1,
+        dflt_value: "8",
+      })
+    )
     expect(prefColumns.map((column) => column.name)).not.toContain(
       "default_prompt_stack_id"
     )

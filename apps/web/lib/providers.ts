@@ -493,7 +493,7 @@ export async function canReplayReasoning(userId: string, config: ModelConfig) {
 export async function pdfInputModeFor(
   userId: string,
   config: ModelConfig
-): Promise<"native" | "extracted"> {
+): Promise<"native" | "extracted" | "images"> {
   if (!config.providerId) return "extracted"
   const profile = await db
     .selectFrom("provider_profiles")

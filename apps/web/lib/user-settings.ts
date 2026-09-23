@@ -83,6 +83,7 @@ export async function ensureUserSettings(userId: string) {
       dark_theme_id: darkThemeId,
       theme_mode: "system" as const,
       builtin_tools_json: builtInToolsToJson(defaultBuiltInToolsPrefs),
+      pdf_image_page_limit: 8,
       chat_defaults_json: userSettingValuesToJson(
         seededUserDefaults(defaultPromptStackId)
       ),
@@ -270,4 +271,26 @@ export async function setBuiltInToolsPrefs(
     .where("user_id", "=", userId)
     .execute()
   return prefs
+}
+
+export async function setPdfImagePageLimit(userId: string, pageLimit: number) {
+  await ensureUserSettings(userId)
+  if (!Number.isSafeInteger(pageLimit) || pageLimit < 1)
+    throw new Error("PDF image page limit must be a positive whole number")
+  await db
+    .updateTable("user_preferences")
+    .set({ pdf_image_page_limit: pageLimit, updated_at: now() })
+    .where("user_id", "=", userId)
+    .execute()
+  return { pdfImagePageLimit: pageLimit }
+}
+
+export async function getPdfImagePageLimit(userId: string) {
+  await ensureUserSettings(userId)
+  const prefs = await db
+    .selectFrom("user_preferences")
+    .select("pdf_image_page_limit")
+    .where("user_id", "=", userId)
+    .executeTakeFirstOrThrow()
+  return Number(prefs.pdf_image_page_limit)
 }

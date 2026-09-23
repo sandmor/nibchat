@@ -2163,7 +2163,7 @@ type ProviderProfileInput = {
     label?: string
     enabled: boolean
     source: "catalog" | "custom"
-    pdfInput: "native" | "extracted"
+    pdfInput: "native" | "extracted" | "images"
     protocol?: "auto" | "responses" | "chat"
     reasoning?: ReasoningSupport
   }>
@@ -3117,6 +3117,7 @@ export async function getInstanceSettings(userId: string) {
     darkThemeId: prefs.dark_theme_id,
     themeMode: prefs.theme_mode,
     builtInTools: parseBuiltInToolsJson(prefs.builtin_tools_json),
+    pdfImagePageLimit: Number(prefs.pdf_image_page_limit),
     titleModelConfig: await getTitleModelConfig(),
   }
 }
@@ -3162,6 +3163,7 @@ function preferenceInsertValues(
     dark_theme_id: prefs.dark_theme_id,
     theme_mode: prefs.theme_mode,
     builtin_tools_json: prefs.builtin_tools_json,
+    pdf_image_page_limit: prefs.pdf_image_page_limit,
     chat_defaults_json: prefs.chat_defaults_json,
     created_at: prefs.created_at,
     updated_at: prefs.updated_at,
@@ -3852,6 +3854,7 @@ async function restoreMultiUserBackup(
           dark_theme_id: ownerPrefs.dark_theme_id,
           theme_mode: ownerPrefs.theme_mode,
           builtin_tools_json: ownerPrefs.builtin_tools_json,
+          pdf_image_page_limit: ownerPrefs.pdf_image_page_limit,
           chat_defaults_json: ownerPrefs.chat_defaults_json,
           updated_at: ownerPrefs.updated_at,
         })
@@ -4175,6 +4178,12 @@ export async function createBackup() {
     .selectFrom("user_preferences")
     .selectAll()
     .execute()
+    .then((rows) =>
+      rows.map((row) => ({
+        ...row,
+        pdf_image_page_limit: Number(row.pdf_image_page_limit),
+      }))
+    )
   const importReceipts = await db
     .selectFrom("import_receipts")
     .selectAll()

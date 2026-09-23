@@ -346,6 +346,48 @@ describe("context preview helpers", () => {
     expect(mergeDraftSummary(base, { text: "", attachments: [] })).toBe(base)
   })
 
+  it("counts only PDF attachments for the image page limit preview", () => {
+    const base = summarizeAssembledContext({
+      system: "",
+      turns: [],
+      historyEnabled: true,
+      replayReasoning: false,
+      contextNodes: [],
+    }).summary
+    const merged = mergeDraftSummary(
+      base,
+      {
+        text: "",
+        attachments: [
+          {
+            name: "photo.jpg",
+            mediaType: "image/jpeg",
+            previewUrl: "blob:photo",
+            reference: { kind: "uploaded-file" },
+          },
+          {
+            name: "scan.pdf",
+            mediaType: "application/pdf",
+            reference: { kind: "uploaded-file" },
+            pdfAnalysis: {
+              version: 1,
+              status: "no-text",
+              pageCount: 4,
+            },
+          },
+          {
+            name: "unread.pdf",
+            mediaType: "application/pdf",
+            reference: { kind: "uploaded-file" },
+          },
+        ],
+      },
+      "images"
+    )
+    expect(merged.pdfPageCount).toBe(4)
+    expect(merged.unknownPdfCount).toBe(1)
+  })
+
   it("omits zero exclusion segments and labels the token estimate", () => {
     const summary = summarizeAssembledContext({
       system: "sys",

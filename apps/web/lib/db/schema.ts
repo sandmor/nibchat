@@ -135,7 +135,7 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create table if not exists mcp_server_profiles (id text primary key, user_id text not null references "user"(id) on delete cascade, name text not null, namespace text not null, enabled boolean not null default true, transport text not null, protocol_mode text not null, config_json text not null, catalog_json text not null default '{}', tool_allowlist_json text not null default '[]', created_at text not null, updated_at text not null, unique(user_id, namespace))`.execute(
     db
   )
-  await sql`create table if not exists user_preferences (user_id text primary key references "user"(id) on delete cascade, light_theme_id text not null, dark_theme_id text not null, theme_mode text not null default 'system', builtin_tools_json text not null default '{"disabled":[]}', chat_defaults_json text not null default '{}', created_at text not null, updated_at text not null)`.execute(
+  await sql`create table if not exists user_preferences (user_id text primary key references "user"(id) on delete cascade, light_theme_id text not null, dark_theme_id text not null, theme_mode text not null default 'system', builtin_tools_json text not null default '{"disabled":[]}', pdf_image_page_limit bigint not null default 8, chat_defaults_json text not null default '{}', created_at text not null, updated_at text not null)`.execute(
     db
   )
 

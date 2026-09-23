@@ -17,7 +17,7 @@ Chats are trees. Messages have sibling branches. You pick the path you want, ret
 
 ## Setup
 
-Requires Node 20 or newer.
+Requires Node 20.16 or newer.
 
 ```bash
 pnpm install

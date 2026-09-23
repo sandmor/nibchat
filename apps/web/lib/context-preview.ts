@@ -12,6 +12,7 @@ import {
 } from "@/lib/prompt-stack"
 import type { NodeRow, Parts } from "@/lib/types"
 import type { PdfAnalysis } from "@/lib/pdf-analysis"
+import type { PdfInputMode } from "@/lib/provider-models"
 import {
   chatIdentityFromRow,
   idleSinceFromPath,
@@ -42,6 +43,8 @@ export type AssembledContextSummary = {
   excludedCount: number
   attachmentCount: number
   imageCount: number
+  pdfPageCount: number
+  unknownPdfCount: number
   charCount: number
   estimatedTokens: number
   layers: ContextPreviewLayer[]
@@ -62,6 +65,7 @@ export type ContextPreviewDraftInput = {
   text: string
   attachments: Array<{
     name: string
+    mediaType?: string
     reference: { kind: string }
     previewUrl?: string
     pdfAnalysis?: PdfAnalysis
@@ -169,6 +173,7 @@ export function summarizeAssembledContext(input: {
   contextNodes: NodeRow[]
   historyEnabled: boolean
   replayReasoning: boolean
+  pdfInputMode?: PdfInputMode
 }): {
   summary: AssembledContextSummary
   excludedMessages: ExcludedMessagePreview[]
@@ -177,6 +182,8 @@ export function summarizeAssembledContext(input: {
   const excludedMessages: ExcludedMessagePreview[] = []
   let attachmentCount = 0
   let imageCount = 0
+  let pdfPageCount = 0
+  let unknownPdfCount = 0
   let editedReasoningDropped = false
   const pathInContext = input.historyEnabled
 
@@ -207,6 +214,15 @@ export function summarizeAssembledContext(input: {
       if (part.type !== "attachment") continue
       attachmentCount += 1
       if (part.content.kind === "binary") imageCount += 1
+      if (
+        input.pdfInputMode === "images" &&
+        node.role === "user" &&
+        part.content.kind === "document"
+      ) {
+        const count = part.content.analysis.pageCount
+        if (count) pdfPageCount += count
+        else unknownPdfCount += 1
+      }
     }
   }
 
@@ -249,6 +265,8 @@ export function summarizeAssembledContext(input: {
       excludedCount: excludedMessages.length,
       attachmentCount,
       imageCount,
+      pdfPageCount,
+      unknownPdfCount,
       charCount,
       estimatedTokens: estimateTokens(charCount),
       layers: [
@@ -266,7 +284,8 @@ export type AssembledContextPreviewData = {
   stackId: string | null
   missingStackId?: string
   system: string
-  pdfInputMode: "native" | "extracted"
+  pdfInputMode: PdfInputMode
+  pdfImagePageLimit: number
   warnings: ContextPreviewWarning[]
   summary: AssembledContextSummary
   excludedMessages: ExcludedMessagePreview[]
@@ -286,8 +305,9 @@ export type AssembleContextPreviewInput = {
   defaultStackId: string | null | undefined
   stacks: ReadonlyArray<{ id: string; stack: PromptStackDocument }>
   replayReasoning: boolean
-  /** The selected model receives PDFs either as bytes or extracted text. */
-  pdfInputMode?: "native" | "extracted"
+  /** How the selected model receives PDF attachments. */
+  pdfInputMode?: PdfInputMode
+  pdfImagePageLimit?: number
   mcpServerInstructionsText?: string
   spaceRulesText?: string
   /** Browser IANA time zone used for prompt macro expansion. */
@@ -334,6 +354,7 @@ export function assembleContextPreview(
   input: AssembleContextPreviewInput
 ): AssembledContextPreviewData {
   const pdfInputMode = input.pdfInputMode ?? "extracted"
+  const pdfImagePageLimit = input.pdfImagePageLimit ?? 8
   const nodes = overlayContextNodes(input.nodes, input.overlay)
   const stacksById = new Map(
     input.stacks.map((row) => [row.id, row.stack] as const)
@@ -413,6 +434,7 @@ export function assembleContextPreview(
     contextNodes,
     historyEnabled: assembled.historyEnabled,
     replayReasoning: input.replayReasoning,
+    pdfInputMode,
   })
   return {
     source: resolved.source,
@@ -422,6 +444,7 @@ export function assembleContextPreview(
       : undefined,
     system: assembled.system,
     pdfInputMode,
+    pdfImagePageLimit,
     warnings: [...assembled.warnings, ...preview.extraWarnings],
     summary: preview.summary,
     excludedMessages: preview.excludedMessages,
@@ -432,7 +455,7 @@ export function assembleContextPreview(
 export function mergeDraftSummary(
   summary: AssembledContextSummary,
   draft: ContextPreviewDraftInput,
-  pdfInputMode: "native" | "extracted" = "extracted"
+  pdfInputMode: PdfInputMode = "extracted"
 ): AssembledContextSummary {
   const draftPdfChars =
     pdfInputMode === "extracted"
@@ -447,6 +470,24 @@ export function mergeDraftSummary(
       : 0
   const draftChars = draft.text.length + draftPdfChars
   const draftImages = draft.attachments.filter((item) => item.previewUrl).length
+  const draftPdfPages =
+    pdfInputMode === "images"
+      ? draft.attachments.reduce((sum, attachment) => {
+          if (attachment.reference.kind !== "uploaded-file") return sum
+          return sum + (attachment.pdfAnalysis?.pageCount ?? 0)
+        }, 0)
+      : 0
+  const draftUnknownPdfs =
+    pdfInputMode === "images"
+      ? draft.attachments.filter(
+          (attachment) =>
+            attachment.reference.kind === "uploaded-file" &&
+            (attachment.mediaType === "application/pdf" ||
+              attachment.pdfAnalysis !== undefined ||
+              attachment.name.toLowerCase().endsWith(".pdf")) &&
+            !attachment.pdfAnalysis?.pageCount
+        ).length
+      : 0
   const draftAttachments = draft.attachments.length
   if (draftChars === 0 && draftAttachments === 0) return summary
 
@@ -464,6 +505,8 @@ export function mergeDraftSummary(
     ...summary,
     attachmentCount: summary.attachmentCount + draftAttachments,
     imageCount: summary.imageCount + draftImages,
+    pdfPageCount: summary.pdfPageCount + draftPdfPages,
+    unknownPdfCount: summary.unknownPdfCount + draftUnknownPdfs,
     charCount,
     estimatedTokens: estimateTokens(charCount),
     layers,
@@ -493,6 +536,11 @@ export function formatCompactSegments(
       text: `${summary.imageCount} ${
         summary.imageCount === 1 ? "image" : "images"
       }`,
+    })
+  }
+  if (summary.pdfPageCount > 0) {
+    segments.push({
+      text: `${summary.pdfPageCount} PDF ${summary.pdfPageCount === 1 ? "page" : "pages"} as images`,
     })
   }
   const fileCount = summary.attachmentCount - summary.imageCount

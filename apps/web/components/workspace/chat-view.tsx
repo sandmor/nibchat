@@ -1803,6 +1803,7 @@ export function ChatView({
     }
     const placeholders: ComposerAttachment[] = selected.map((file) => ({
       name: file.name,
+      mediaType: isPdfFile(file) ? "application/pdf" : file.type,
       ...(file.type.startsWith("image/")
         ? { previewUrl: URL.createObjectURL(file) }
         : {}),
@@ -1858,6 +1859,7 @@ export function ChatView({
               ? {
                   ...item,
                   name: payload.filename ?? item.name,
+                  mediaType: payload.mediaType ?? item.mediaType,
                   reference: {
                     kind: "uploaded-file" as const,
                     id: payload.id!,

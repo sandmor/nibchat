@@ -183,6 +183,7 @@ const userPreferencesSchema = z.object({
   dark_theme_id: z.string(),
   theme_mode: z.enum(["system", "light", "dark"]),
   builtin_tools_json: z.string(),
+  pdf_image_page_limit: z.number().int().positive().default(8),
   chat_defaults_json: z.string().default("{}"),
   created_at: z.string(),
   updated_at: z.string(),

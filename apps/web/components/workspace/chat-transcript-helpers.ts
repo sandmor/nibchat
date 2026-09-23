@@ -2,6 +2,7 @@ import { defaultRangeExtractor, type Range } from "@tanstack/react-virtual"
 import { parseJson } from "@/lib/domain"
 import { siblingSort } from "@/lib/sort-key"
 import type { NodeRow, Parts } from "@/lib/types"
+import { scheduledGenerationVerb } from "./scheduled-generation"
 
 /** Chats at or below this size keep every row mounted for instant scrolling. */
 export const TRANSCRIPT_EAGER_ROW_LIMIT = 40
@@ -21,6 +22,33 @@ export const TRANSCRIPT_OVERSCAN = 10
 
 export function pathSlotKey(slotIndex: number): string {
   return `slot:${slotIndex}`
+}
+
+/**
+ * Virtual-row identity. Path depths stay put when a scheduled row is inserted
+ * ahead of them, and an after-tip stream keeps the slot it will occupy once
+ * it joins the path.
+ */
+export function transcriptItemKey(
+  rows: readonly TranscriptRow[],
+  index: number
+): string {
+  const row = rows[index]
+  if (!row) return pathSlotKey(index)
+  if (row.kind === "path") return pathSlotKey(row.slotIndex)
+  if (row.kind === "scheduled") return `schedules:${row.parentId}`
+  if (row.kind === "empty") return "empty"
+  let lastSlot = -1
+  let afterTipOrdinal = 0
+  for (let cursor = 0; cursor < rows.length; cursor++) {
+    const candidate = rows[cursor]
+    if (!candidate) continue
+    if (candidate.kind === "path") lastSlot = candidate.slotIndex
+    if (candidate.kind !== "after-tip") continue
+    if (cursor === index) return pathSlotKey(lastSlot + 1 + afterTipOrdinal)
+    afterTipOrdinal++
+  }
+  return pathSlotKey(index)
 }
 
 /** Build branch groups once per workspace revision instead of once per row. */
@@ -135,10 +163,27 @@ export type AfterTipTranscriptRow = {
   streamId: string
 }
 
+export type ScheduledTranscriptItem = {
+  scheduleId: string
+  nextRunAt: string
+  timeZone: string
+}
+
+export type ScheduledTranscriptRow = {
+  kind: "scheduled"
+  messageId: string
+  parentId: string
+  /** Chronological, then schedule id. The same instant stays a separate step. */
+  items: readonly ScheduledTranscriptItem[]
+  /** Regenerates when this user message already continues on the path. */
+  verb: "Generates" | "Regenerates"
+}
+
 export type TranscriptRow =
   | EmptyTranscriptRow
   | PathTranscriptRow
   | AfterTipTranscriptRow
+  | ScheduledTranscriptRow
 
 /**
  * Conservative first-pass sizes for rows without a width-specific cache.
@@ -152,6 +197,7 @@ export function transcriptEstimatedRowHeight(
   if (row?.kind === "path" && row.node.role === "user") {
     return Math.max(160, transcriptContentEstimate(row.node.parts_json, width))
   }
+  if (row?.kind === "scheduled") return row.items.length > 1 ? 128 : 96
   if (
     row?.kind === "after-tip" ||
     (row?.kind === "path" && row.node.role === "assistant")
@@ -235,6 +281,10 @@ export function transcriptRowContentKey(row: TranscriptRow): string {
     return `node:${row.node.id}`
   }
   if (row.kind === "after-tip") return `stream:${row.streamId}`
+  if (row.kind === "scheduled")
+    return `schedules:${row.parentId}:${row.items
+      .map((item) => `${item.scheduleId}:${item.nextRunAt}`)
+      .join(",")}`
   return "empty"
 }
 
@@ -294,6 +344,8 @@ export function buildTranscriptRows(input: {
   streamIdByNodeId: ReadonlyMap<string, string>
   afterTipStreams: Array<{ streamId: string; nodeId: string }>
   showEmpty: boolean
+  /** User messages that already have an assistant child, on or off the path. */
+  assistantParentIds?: ReadonlySet<string>
 }): TranscriptRow[] {
   const rows: TranscriptRow[] = []
 
@@ -311,6 +363,27 @@ export function buildTranscriptRows(input: {
       messageId: node.id,
       node,
       liveStreamId: input.streamIdByNodeId.get(node.id) ?? null,
+    })
+    const scheduled = node.role === "user" ? (node.schedules ?? []) : []
+    if (scheduled.length === 0) return
+    rows.push({
+      kind: "scheduled",
+      messageId: `schedules:${node.id}`,
+      parentId: node.id,
+      verb: scheduledGenerationVerb(
+        input.assistantParentIds?.has(node.id) ?? false
+      ),
+      items: [...scheduled]
+        .sort((left, right) => {
+          if (left.nextRunAt !== right.nextRunAt)
+            return left.nextRunAt < right.nextRunAt ? -1 : 1
+          return left.id < right.id ? -1 : 1
+        })
+        .map((item) => ({
+          scheduleId: item.id,
+          nextRunAt: item.nextRunAt,
+          timeZone: item.timeZone,
+        })),
     })
   })
 

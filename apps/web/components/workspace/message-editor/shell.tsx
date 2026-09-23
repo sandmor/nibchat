@@ -8,8 +8,16 @@ import {
   Loading03Icon,
   SentIcon,
   StopIcon,
+  ArrowDown01Icon,
+  Clock01Icon,
 } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu"
 import { TooltipProvider, WithTooltip } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 
@@ -28,6 +36,10 @@ export function EditorShell({
   sendLabel = "Send",
   sendDisabled,
   onSend,
+  onSchedule,
+  scheduleAvailable = true,
+  scheduleDisabled = false,
+  scheduleLabel = "Generate later…",
   onCancel,
   onStop,
   streaming,
@@ -53,6 +65,11 @@ export function EditorShell({
   sendLabel?: string
   sendDisabled: boolean
   onSend: () => void
+  onSchedule?: () => void
+  scheduleAvailable?: boolean
+  /** Keeps the chevron in place while this draft cannot be scheduled yet. */
+  scheduleDisabled?: boolean
+  scheduleLabel?: string
   onCancel?: () => void
   onStop?: () => void
   streaming?: boolean
@@ -65,6 +82,7 @@ export function EditorShell({
   replaceDisabled?: boolean
 }) {
   const inline = variant === "inline"
+  const showSchedule = Boolean(onSchedule) && scheduleAvailable
   return (
     <div
       data-theme-group="composer"
@@ -158,30 +176,75 @@ export function EditorShell({
               {replaceLabel ?? "Replace"}
             </Button>
           ) : null}
-          <Button
-            size={inline ? "xs" : "sm"}
-            className="gap-1.5"
-            onClick={onSend}
-            disabled={sendDisabled}
-          >
-            {submitting ? (
-              <HugeiconsIcon
-                icon={Loading03Icon}
-                strokeWidth={2}
-                className={cn("size-3.5", animate && "animate-spin")}
-                style={{
-                  animationDuration: "var(--motion-spinner-duration)",
-                }}
-              />
-            ) : inline ? null : (
-              <HugeiconsIcon
-                icon={SentIcon}
-                strokeWidth={2}
-                className="size-4"
-              />
+          <div
+            className={cn(
+              "flex items-center",
+              onSchedule &&
+                showSchedule &&
+                "isolate rounded-4xl bg-primary transition-colors duration-150 has-[[aria-expanded=true]]:bg-button-hover has-[button:enabled:hover]:bg-button-hover has-[button:focus-visible]:ring-2 has-[button:focus-visible]:ring-ring/50 has-[button:focus-visible]:ring-offset-2 has-[button:focus-visible]:ring-offset-composer"
             )}
-            {sendLabel}
-          </Button>
+          >
+            <Button
+              size={inline ? "xs" : "sm"}
+              className={cn(
+                "gap-1.5",
+                onSchedule &&
+                  showSchedule &&
+                  "relative rounded-r-none border-0 bg-transparent pr-2 hover:bg-transparent focus-visible:ring-0 active:translate-y-0"
+              )}
+              onClick={onSend}
+              disabled={sendDisabled}
+            >
+              {submitting ? (
+                <HugeiconsIcon
+                  icon={Loading03Icon}
+                  strokeWidth={2}
+                  className={cn("size-3.5", animate && "animate-spin")}
+                  style={{
+                    animationDuration: "var(--motion-spinner-duration)",
+                  }}
+                />
+              ) : inline ? null : (
+                <HugeiconsIcon
+                  icon={SentIcon}
+                  strokeWidth={2}
+                  className="size-4"
+                />
+              )}
+              {sendLabel}
+            </Button>
+            {showSchedule ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      type="button"
+                      size={inline ? "icon-xs" : "icon-sm"}
+                      className="relative rounded-l-none border-0 bg-transparent before:pointer-events-none before:absolute before:inset-y-2 before:left-0 before:w-px before:rounded-full before:bg-primary-foreground/15 hover:bg-transparent focus-visible:ring-0"
+                      disabled={sendDisabled || scheduleDisabled}
+                      aria-label="Send options"
+                    />
+                  }
+                >
+                  <HugeiconsIcon
+                    icon={ArrowDown01Icon}
+                    className="size-3.5"
+                    strokeWidth={2}
+                  />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" side="top">
+                  <DropdownMenuItem onClick={() => onSchedule?.()}>
+                    <HugeiconsIcon
+                      icon={Clock01Icon}
+                      className="size-4"
+                      strokeWidth={2}
+                    />
+                    {scheduleLabel}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : null}
+          </div>
         </div>
       </div>
     </div>

@@ -228,9 +228,8 @@ const templateAttachmentSchema = z.object({
 const scheduledGenerationSchema = z.object({
   id: z.string(),
   user_id: z.string(),
-  template_id: z.string(),
-  space_id: z.string().nullable(),
   name: z.string(),
+  action_json: z.string(),
   cadence_json: z.string().refine((value) => {
     try {
       return cadenceSchema.safeParse(JSON.parse(value)).success
@@ -239,7 +238,7 @@ const scheduledGenerationSchema = z.object({
     }
   }, "Invalid schedule cadence"),
   enabled: z.union([z.boolean(), z.number().transform(Boolean)]),
-  next_run_at: z.string(),
+  next_run_at: z.string().nullable(),
   last_run_at: z.string().nullable(),
   last_status: z
     .enum(["running", "complete", "awaiting_input", "error", "skipped"])
@@ -248,6 +247,17 @@ const scheduledGenerationSchema = z.object({
   last_chat_id: z.string().nullable(),
   created_at: z.string(),
   updated_at: z.string(),
+})
+const scheduledRunSchema = z.object({
+  id: z.string(),
+  schedule_id: z.string(),
+  scheduled_for: z.string(),
+  started_at: z.string(),
+  finished_at: z.string().nullable(),
+  status: z.enum(["running", "complete", "awaiting_input", "error", "skipped"]),
+  error: z.string().nullable(),
+  chat_id: z.string().nullable(),
+  message_id: z.string().nullable(),
 })
 
 /** Portable snapshot (no passwords, sessions, or attachment bytes).
@@ -274,6 +284,7 @@ export const backupSchema = z.object({
     .array(scheduledGenerationSchema)
     .optional()
     .default([]),
+  scheduledRuns: z.array(scheduledRunSchema).optional().default([]),
   instance: z
     .object({
       titleModelConfig: z

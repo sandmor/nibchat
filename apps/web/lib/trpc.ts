@@ -130,9 +130,11 @@ import {
   upsertSillyTavernCharacterTemplate,
 } from "@/lib/chat-template-service"
 import { chatTemplateDocumentSchema } from "@/lib/chat-template"
-import { cadenceInputSchema } from "@/lib/schedules/cadence"
+import { cadenceInputSchema, timeZoneSchema } from "@/lib/schedules/cadence"
 import {
+  createChatSchedule,
   createSchedule,
+  createScheduledUserMessage,
   deleteSchedule,
   listSchedules,
   runScheduleNow,
@@ -674,14 +676,44 @@ export const appRouter = t.router({
           parts: z.array(messagePartSchema),
           attachments: z.array(attachmentReferenceSchema).max(20).optional(),
           attachSelection: z.boolean().optional(),
+          schedule: z
+            .object({
+              at: z.string().datetime(),
+              timeZone: timeZoneSchema,
+              name: z.string().trim().min(1).max(MAX_NAME),
+            })
+            .optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
         try {
+          if (input.schedule) {
+            if (input.role !== "user")
+              throw new Error(
+                "A generation can only be scheduled from a user message."
+              )
+            return await createScheduledUserMessage({
+              userId: ctx.user.id,
+              chatId: input.chatId,
+              parentId: input.parentId,
+              beforeNodeId: input.beforeNodeId,
+              parts: input.parts as Parts,
+              attachments: input.attachments,
+              attachSelection: input.attachSelection,
+              name: input.schedule.name,
+              at: input.schedule.at,
+              timeZone: input.schedule.timeZone,
+            })
+          }
           return await createMessage({
-            ...input,
             userId: ctx.user.id,
+            chatId: input.chatId,
+            parentId: input.parentId,
+            beforeNodeId: input.beforeNodeId,
+            role: input.role,
             parts: input.parts as Parts,
+            attachments: input.attachments,
+            attachSelection: input.attachSelection,
           })
         } catch (error) {
           mapError(error)
@@ -913,6 +945,23 @@ export const appRouter = t.router({
       .mutation(async ({ ctx, input }) => {
         try {
           return await createSchedule({ ...input, userId: ctx.user.id })
+        } catch (error) {
+          mapError(error)
+        }
+      }),
+    createChatSchedule: userProcedure
+      .input(
+        z.object({
+          name: z.string().trim().min(1).max(MAX_NAME),
+          chatId: z.string().min(1).max(MAX_ID),
+          parentId: z.string().min(1).max(MAX_ID),
+          at: z.string().datetime(),
+          timeZone: timeZoneSchema,
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          return await createChatSchedule({ ...input, userId: ctx.user.id })
         } catch (error) {
           mapError(error)
         }

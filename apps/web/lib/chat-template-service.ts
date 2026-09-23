@@ -193,7 +193,9 @@ export async function saveChatTemplateDocument(input: {
 
 export async function deleteChatTemplate(userId: string, templateId: string) {
   await assertTemplateOwner(userId, templateId)
+  const { deleteTemplateSchedulesFor } = await import("@/lib/schedules/service")
   await db.transaction().execute(async (trx) => {
+    await deleteTemplateSchedulesFor({ userId, templateId, trx })
     const spaces = await trx
       .selectFrom("spaces")
       .select(["id", "settings_json"])

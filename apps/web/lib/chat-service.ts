@@ -499,13 +499,41 @@ export async function getWorkspace(
     : []
   const prefs = await ensureUserSettings(userId)
   const userDefaults = parseUserSettingValues(prefs.chat_defaults_json)
+  const pendingGenerations = selected
+    ? await (
+        await import("@/lib/schedules/service")
+      ).pendingGenerationsForChat(userId, selected.id)
+    : []
+  const schedulesByParent = new Map<
+    string,
+    import("@/lib/types").NodeSchedule[]
+  >()
+  for (const schedule of pendingGenerations) {
+    const list = schedulesByParent.get(schedule.parentId) ?? []
+    list.push({
+      id: schedule.id,
+      nextRunAt: schedule.nextRunAt,
+      timeZone: schedule.timeZone,
+    })
+    schedulesByParent.set(schedule.parentId, list)
+  }
+  for (const list of schedulesByParent.values()) {
+    list.sort((left, right) => {
+      if (left.nextRunAt !== right.nextRunAt)
+        return left.nextRunAt < right.nextRunAt ? -1 : 1
+      return left.id < right.id ? -1 : 1
+    })
+  }
   return {
     chats,
     spaces,
     chatDefaults: toModelConfig(userDefaults),
     defaultPromptStackId: userPromptStackId(userDefaults) ?? "",
     chat: selected ?? null,
-    nodes: nodes.map((node) => normalizeNodeRow(node)),
+    nodes: nodes.map((node) => ({
+      ...normalizeNodeRow(node),
+      schedules: schedulesByParent.get(node.id) ?? [],
+    })),
     activeGenerations,
   }
 }
@@ -684,8 +712,10 @@ export async function deleteChat(userId: string, chatId: string) {
 export async function deleteChats(userId: string, chatIds: readonly string[]) {
   const unique = uniqueChatIds(chatIds)
   if (unique.length === 0) return { ok: true as const, count: 0 }
+  const { deleteChatSchedulesFor } = await import("@/lib/schedules/service")
   const deletion = await db.transaction().execute(async (trx) => {
     await lockOwnedChats(trx, userId, unique)
+    await deleteChatSchedulesFor({ userId, chatIds: unique, trx })
     return await deleteOwnedChats(trx, userId, unique)
   })
   await finishChatDeletion(deletion)
@@ -1819,7 +1849,9 @@ export async function deleteNode(
     .execute()
   const chatId = target[0]?.chat_id
   if (!chatId) throw new Error("Message not found")
+  const { deleteChatSchedulesFor } = await import("@/lib/schedules/service")
   const deletion = await deleteNodeInternal(nodeId, chatId, userId, mode)
+  await deleteChatSchedulesFor({ userId, nodeIds: deletion.nodeIds })
   abortGenerations(deletion.nodeIds)
   await requestCancelGenerationRuns(deletion.generationRunIds)
   await cleanupDetachedAttachments()
@@ -3096,9 +3128,8 @@ function scheduleInsertValues(
   return {
     id: row.id,
     user_id: userId,
-    template_id: row.template_id,
-    space_id: row.space_id,
     name: row.name,
+    action_json: row.action_json,
     cadence_json: row.cadence_json,
     enabled: toDbBool(row.enabled),
     next_run_at: row.next_run_at,
@@ -3109,6 +3140,16 @@ function scheduleInsertValues(
     created_at: row.created_at,
     updated_at: row.updated_at,
   }
+}
+
+function scheduledUploadIds(actionJson: string) {
+  const action = parseJson<{ attachments?: { kind: string; id?: string }[] }>(
+    actionJson,
+    {}
+  )
+  return (action.attachments ?? []).flatMap((item) =>
+    item.kind === "uploaded-file" && item.id ? [item.id] : []
+  )
 }
 
 function preferenceInsertValues(
@@ -3287,11 +3328,22 @@ async function restoreOwnerBackup(
       .execute()
   for (const schedule of backup.scheduledGenerations)
     await trx
-      .insertInto("scheduled_generations")
+      .insertInto("scheduled_jobs")
       .values(scheduleInsertValues(schedule, userId))
       .execute()
+  for (const schedule of backup.scheduledGenerations)
+    for (const attachmentId of scheduledUploadIds(schedule.action_json))
+      await trx
+        .insertInto("scheduled_job_attachments")
+        .values({
+          schedule_id: schedule.id,
+          attachment_id: attachmentId,
+        })
+        .execute()
 
   await insertRestoredMessageNodes(trx, backup.nodes)
+  for (const run of backup.scheduledRuns)
+    await trx.insertInto("scheduled_job_runs").values(run).execute()
   for (const link of backup.chatContextBooks)
     await trx.insertInto("chat_context_books").values(link).execute()
   for (const link of backup.messageAttachments) {
@@ -3535,21 +3587,54 @@ function validateMultiUserBackup(
       )
   }
   for (const schedule of backup.scheduledGenerations) {
-    const template = templates.get(schedule.template_id)
-    const space = schedule.space_id ? spaces.get(schedule.space_id) : undefined
+    const action = parseJson<{
+      kind: "template" | "chat_generate"
+      templateId?: string
+      spaceId?: string | null
+      chatId?: string
+    }>(schedule.action_json, { kind: "template" })
+    const template = action.templateId
+      ? templates.get(action.templateId)
+      : undefined
+    const space = action.spaceId ? spaces.get(action.spaceId) : undefined
     const chatOwner = schedule.last_chat_id
       ? chatOwners.get(schedule.last_chat_id)
       : undefined
+    const targetOwner = action.chatId
+      ? chatOwners.get(action.chatId)
+      : undefined
     if (
       !users.has(schedule.user_id) ||
-      !template ||
-      template.user_id !== schedule.user_id ||
-      (schedule.space_id && (!space || space.user_id !== schedule.user_id)) ||
+      (action.kind === "template" &&
+        (!template || template.user_id !== schedule.user_id)) ||
+      (action.kind !== "template" && targetOwner !== schedule.user_id) ||
+      (action.spaceId && (!space || space.user_id !== schedule.user_id)) ||
       (schedule.last_chat_id && chatOwner !== schedule.user_id)
     )
       throw new Error(
         `Backup schedule ${schedule.id} references another user's data`
       )
+    for (const attachmentId of scheduledUploadIds(schedule.action_json)) {
+      const attachment = backup.attachments.find(
+        (item) => item.id === attachmentId
+      )
+      if (!attachment || attachment.user_id !== schedule.user_id)
+        throw new Error(
+          `Backup schedule ${schedule.id} references an invalid attachment`
+        )
+    }
+  }
+  const schedules = new Map(
+    backup.scheduledGenerations.map((schedule) => [schedule.id, schedule])
+  )
+  for (const run of backup.scheduledRuns) {
+    const schedule = schedules.get(run.schedule_id)
+    if (
+      !schedule ||
+      (run.chat_id && chatOwners.get(run.chat_id) !== schedule.user_id) ||
+      (run.message_id && !nodes.has(run.message_id))
+    )
+      throw new Error(`Backup schedule run ${run.id} is invalid`)
   }
   for (const link of backup.templateAttachments) {
     const template = templates.get(link.template_id)
@@ -3707,6 +3792,12 @@ async function restoreMultiUserBackup(
     scheduledGenerations: backup.scheduledGenerations
       .filter((schedule) => schedule.user_id === sourceOwner.id)
       .map((schedule) => ({ ...schedule, user_id: ownerId })),
+    scheduledRuns: backup.scheduledRuns.filter((run) =>
+      backup.scheduledGenerations.some(
+        (schedule) =>
+          schedule.id === run.schedule_id && schedule.user_id === sourceOwner.id
+      )
+    ),
     providerProfiles: backup.providerProfiles,
     mcpServerProfiles: backup.mcpServerProfiles,
     promptStacks: backup.promptStacks
@@ -3927,9 +4018,29 @@ async function restoreMultiUserBackup(
         (row) => row.user_id === sourceUser.id
       ))
         await trx
-          .insertInto("scheduled_generations")
+          .insertInto("scheduled_jobs")
           .values(scheduleInsertValues(schedule, sourceUser.id))
           .execute()
+      const userScheduleIds = new Set(
+        backup.scheduledGenerations
+          .filter((row) => row.user_id === sourceUser.id)
+          .map((row) => row.id)
+      )
+      for (const run of backup.scheduledRuns.filter((row) =>
+        userScheduleIds.has(row.schedule_id)
+      ))
+        await trx.insertInto("scheduled_job_runs").values(run).execute()
+      for (const schedule of backup.scheduledGenerations.filter(
+        (row) => row.user_id === sourceUser.id
+      ))
+        for (const attachmentId of scheduledUploadIds(schedule.action_json))
+          await trx
+            .insertInto("scheduled_job_attachments")
+            .values({
+              schedule_id: schedule.id,
+              attachment_id: attachmentId,
+            })
+            .execute()
       for (const link of userLinks)
         await trx.insertInto("message_attachments").values(link).execute()
       for (const link of backup.templateAttachments.filter((link) =>
@@ -4029,13 +4140,17 @@ export async function createBackup() {
     .selectAll()
     .execute()
   const scheduledGenerationRows = await db
-    .selectFrom("scheduled_generations")
+    .selectFrom("scheduled_jobs")
     .selectAll()
     .execute()
   const scheduledGenerations = scheduledGenerationRows.map((row) => ({
     ...row,
     enabled: fromDbBool(row.enabled),
   }))
+  const scheduledRuns = await db
+    .selectFrom("scheduled_job_runs")
+    .selectAll()
+    .execute()
   const templateAttachments = await db
     .selectFrom("template_attachments")
     .selectAll()
@@ -4093,6 +4208,7 @@ export async function createBackup() {
     chatTemplates,
     templateAttachments,
     scheduledGenerations,
+    scheduledRuns,
     providerProfiles,
     mcpServerProfiles,
     users: users.map((user) => ({

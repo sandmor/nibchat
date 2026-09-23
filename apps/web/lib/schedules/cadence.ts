@@ -9,7 +9,7 @@ dayjs.extend(timezone)
 const hour = z.number().int().min(0).max(23)
 const minute = z.number().int().min(0).max(59)
 
-const timeZoneSchema = z
+export const timeZoneSchema = z
   .string()
   .min(1)
   .max(100)
@@ -32,7 +32,14 @@ export const dailyCadenceSchema = z.object({
 export const weeklyCadenceSchema = z.object({
   kind: z.literal("weekly"),
   /** 0 is Sunday, in `timeZone`. */
-  weekday: z.number().int().min(0).max(6),
+  weekdays: z
+    .array(z.number().int().min(0).max(6))
+    .min(1)
+    .max(7)
+    .refine(
+      (value) => new Set(value).size === value.length,
+      "Duplicate weekday"
+    ),
   hour,
   minute,
   timeZone: timeZoneSchema,
@@ -47,16 +54,26 @@ export const intervalCadenceSchema = z.object({
   timeZone: timeZoneSchema,
 })
 
+export const onceCadenceSchema = z.object({
+  kind: z.literal("once"),
+  /** Exact UTC instant. */
+  at: z.string().datetime(),
+  /** Zone used to display the instant and passed to generation. */
+  timeZone: timeZoneSchema,
+})
+
 export const cadenceSchema = z.discriminatedUnion("kind", [
   dailyCadenceSchema,
   weeklyCadenceSchema,
   intervalCadenceSchema,
+  onceCadenceSchema,
 ])
 
 export const cadenceInputSchema = z.discriminatedUnion("kind", [
   dailyCadenceSchema,
   weeklyCadenceSchema,
   intervalCadenceSchema.omit({ anchor: true }),
+  onceCadenceSchema,
 ])
 
 export type Cadence = z.infer<typeof cadenceSchema>
@@ -71,6 +88,48 @@ export const WEEKDAY_LABELS = [
   "Friday",
   "Saturday",
 ] as const
+
+/**
+ * First day of the week as `Date#getDay` (Sunday is 0). `Intl.Locale` numbers
+ * Monday as 1 through Sunday as 7. Missing week info stays Sunday-first.
+ */
+function localeTag(locale?: string) {
+  if (locale) return locale
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().locale || "en-US"
+  } catch {
+    return "en-US"
+  }
+}
+
+function weekStartsOn(locale?: string) {
+  try {
+    const localeObject = new Intl.Locale(localeTag(locale)) as Intl.Locale & {
+      getWeekInfo?: () => { firstDay?: number }
+      weekInfo?: { firstDay?: number }
+    }
+    const firstDay =
+      localeObject.getWeekInfo?.().firstDay ?? localeObject.weekInfo?.firstDay
+    if (firstDay === 7) return 0
+    if (typeof firstDay === "number" && firstDay >= 1 && firstDay <= 6)
+      return firstDay
+  } catch {
+    return 0
+  }
+  return 0
+}
+
+/** Weekday numbers beginning on the locale's first day. */
+export function weekdayOrder(locale?: string) {
+  const start = weekStartsOn(locale)
+  return Array.from({ length: 7 }, (_, index) => (start + index) % 7)
+}
+
+function sameWeekdays(days: readonly number[], expected: readonly number[]) {
+  if (days.length !== expected.length) return false
+  const present = new Set(days)
+  return expected.every((day) => present.has(day))
+}
 
 export function parseCadence(value: string | unknown): Cadence {
   return cadenceSchema.parse(
@@ -125,11 +184,26 @@ function wallInstant(
   return parsed.toDate()
 }
 
+export function wallTimeInstant(
+  date: string,
+  hourOfDay: number,
+  minuteOfHour: number,
+  timeZone: string
+) {
+  return wallInstant(date, hourOfDay, minuteOfHour, timeZone)
+}
+
 /**
  * Next slot strictly after `after`. Daily and weekly clocks are wall time in
  * the cadence time zone. Missed occurrences collapse to that single future slot.
  */
 export function followingRunAt(cadence: Cadence, after: Date) {
+  if (cadence.kind === "once") {
+    const instant = new Date(cadence.at)
+    if (instant.getTime() <= after.getTime())
+      throw new Error("The scheduled time must be in the future")
+    return instant
+  }
   if (cadence.kind === "interval") {
     const anchor = new Date(cadence.anchor)
     const step = cadence.everyHours * 60 * 60 * 1000
@@ -141,7 +215,8 @@ export function followingRunAt(cadence: Cadence, after: Date) {
   const start = dayjs(after).tz(cadence.timeZone).startOf("day")
   for (let offset = 0; offset < 8; offset++) {
     const day = start.add(offset, "day")
-    if (cadence.kind === "weekly" && day.day() !== cadence.weekday) continue
+    if (cadence.kind === "weekly" && !cadence.weekdays.includes(day.day()))
+      continue
     const instant = wallInstant(
       day.format("YYYY-MM-DD"),
       cadence.hour,
@@ -163,13 +238,25 @@ function formatClock(hourOfDay: number, minuteOfHour: number, locale?: string) {
 }
 
 export function formatCadence(cadence: Cadence, locale?: string) {
+  if (cadence.kind === "once")
+    return `Once on ${formatRunInstant(cadence.at, cadence.timeZone, locale)}`
   if (cadence.kind === "interval") {
     const hours = cadence.everyHours
     return `Every ${hours} hour${hours === 1 ? "" : "s"}`
   }
   const clock = formatClock(cadence.hour, cadence.minute, locale)
   if (cadence.kind === "daily") return `Every day at ${clock}`
-  return `${WEEKDAY_LABELS[cadence.weekday]}s at ${clock}`
+  if (sameWeekdays(cadence.weekdays, [0, 1, 2, 3, 4, 5, 6]))
+    return `Every day at ${clock}`
+  if (sameWeekdays(cadence.weekdays, [1, 2, 3, 4, 5]))
+    return `Weekdays at ${clock}`
+  if (sameWeekdays(cadence.weekdays, [0, 6])) return `Weekends at ${clock}`
+  const order = weekdayOrder(locale)
+  const days = [...cadence.weekdays]
+    .sort((left, right) => order.indexOf(left) - order.indexOf(right))
+    .map((day) => WEEKDAY_LABELS[day]!.slice(0, 3))
+    .join(", ")
+  return `${days} at ${clock}`
 }
 
 export function formatRunInstant(

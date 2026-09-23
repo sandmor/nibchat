@@ -52,6 +52,9 @@ export function UserTurnEditor({
   contextParentId = null,
   onTextChange,
   onSend,
+  onSchedule,
+  scheduleAvailable,
+  scheduleFromAnchor = false,
   onCancel,
   onFiles,
   onRemoveAttachment,
@@ -78,6 +81,10 @@ export function UserTurnEditor({
   contextParentId?: string | null
   onTextChange: (text: string) => void
   onSend: () => void
+  onSchedule?: () => void
+  scheduleAvailable?: boolean
+  /** Empty draft schedules a generation from this user message. */
+  scheduleFromAnchor?: boolean
   onCancel?: () => void
   onFiles: (files: File[] | FileList) => void
   onRemoveAttachment: (part: ComposerAttachment) => void
@@ -232,6 +239,15 @@ export function UserTurnEditor({
         </>
       }
       sendLabel={sendLabel}
+      onSchedule={onSchedule}
+      scheduleAvailable={Boolean(scheduleAvailable)}
+      scheduleDisabled={
+        !(
+          Boolean(draft.text.trim() || draft.attachments.length) ||
+          scheduleFromAnchor
+        )
+      }
+      scheduleLabel="Generate later…"
       sendDisabled={sendDisabled}
       onSend={send}
       onCancel={onCancel}

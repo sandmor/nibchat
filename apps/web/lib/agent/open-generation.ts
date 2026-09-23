@@ -112,7 +112,10 @@ export async function continueChatGeneration(input: {
   timeZone: string
   requestSignal: AbortSignal
   attachSelection?: boolean
+  /** Resolved generation settings captured by a delayed chat action. */
+  settingsJson?: string
   afterFinalize?: GenerationSetup["afterFinalize"]
+  onStarted?: (assistantId: string) => Promise<void>
 }) {
   const chat = await db
     .selectFrom("chats")
@@ -121,12 +124,14 @@ export async function continueChatGeneration(input: {
     .where("user_id", "=", input.userId)
     .executeTakeFirst()
   if (!chat) throw new Error("Chat not found")
+  if (input.settingsJson) chat.settings_json = input.settingsJson
   const stored = parseSettingValues(chat.settings_json)
   const storedModel = stored.model
   const normalizedModel = storedModel
     ? await resolveModelConfig(input.userId, storedModel)
     : storedModel
   if (
+    !input.settingsJson &&
     storedModel &&
     normalizedModel &&
     !valuesEqual(storedModel, normalizedModel)
@@ -159,6 +164,7 @@ export async function continueChatGeneration(input: {
     assistantMetadata: assistantMeta,
     attachSelection: input.attachSelection,
   })
+  await input.onStarted?.(assistant.id)
   return openGenerationResponse({
     userId: input.userId,
     chat,

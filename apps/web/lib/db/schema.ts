@@ -43,10 +43,10 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create table if not exists chat_templates (id text primary key, user_id text not null references "user"(id) on delete cascade, name text not null, document_json text not null, revision integer not null default 0, source_json text not null default '{}', created_at text not null, updated_at text not null)`.execute(
     db
   )
-  await sql`create table if not exists scheduled_generations (id text primary key, user_id text not null references "user"(id) on delete cascade, template_id text not null references chat_templates(id) on delete cascade, space_id text references spaces(id) on delete set null, name text not null, cadence_json text not null, enabled boolean not null default true, next_run_at text not null, last_run_at text, last_status text, last_error text, last_chat_id text references chats(id) on delete set null, created_at text not null, updated_at text not null)`.execute(
+  await sql`create table if not exists scheduled_jobs (id text primary key, user_id text not null references "user"(id) on delete cascade, name text not null, action_json text not null, cadence_json text not null, enabled boolean not null default true, next_run_at text, last_run_at text, last_status text, last_error text, last_chat_id text references chats(id) on delete set null, created_at text not null, updated_at text not null)`.execute(
     db
   )
-  await sql`create index if not exists scheduled_generations_due_idx on scheduled_generations(enabled, next_run_at)`.execute(
+  await sql`create index if not exists scheduled_jobs_due_idx on scheduled_jobs(enabled, next_run_at)`.execute(
     db
   )
   await sql`create table if not exists draft_materializations (user_id text not null references "user"(id) on delete cascade, draft_id text not null, chat_id text not null references chats(id) on delete cascade, created_at text not null, primary key(user_id, draft_id))`.execute(
@@ -67,6 +67,18 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   const attachmentDataType =
     kind === "postgres" ? sql.raw("bytea") : sql.raw("blob")
   await sql`create table if not exists attachments (id text primary key, user_id text not null references "user"(id) on delete cascade, filename text not null, media_type text not null, byte_size integer not null, sha256 text not null, storage_backend text not null, storage_key text, data ${attachmentDataType}, claimed_at text, created_at text not null)`.execute(
+    db
+  )
+  await sql`create table if not exists scheduled_job_attachments (schedule_id text not null references scheduled_jobs(id) on delete cascade, attachment_id text not null references attachments(id) on delete cascade, primary key(schedule_id, attachment_id))`.execute(
+    db
+  )
+  await sql`create index if not exists scheduled_job_attachments_attachment_idx on scheduled_job_attachments(attachment_id)`.execute(
+    db
+  )
+  await sql`create table if not exists scheduled_job_runs (id text primary key, schedule_id text not null references scheduled_jobs(id) on delete cascade, scheduled_for text not null, started_at text not null, finished_at text, status text not null, error text, chat_id text references chats(id) on delete set null, message_id text references message_nodes(id) on delete set null, unique(schedule_id, scheduled_for))`.execute(
+    db
+  )
+  await sql`create index if not exists scheduled_job_runs_schedule_idx on scheduled_job_runs(schedule_id, started_at)`.execute(
     db
   )
   await sql`create table if not exists message_attachments (message_node_id text not null references message_nodes(id) on delete cascade, attachment_id text not null references attachments(id) on delete cascade, primary key(message_node_id, attachment_id))`.execute(

@@ -178,7 +178,7 @@ export function AppearanceMagicChrome() {
           height: pads.height,
         }}
       >
-        <div className="pointer-events-auto relative size-full">
+        <div className="pointer-events-none relative size-full [&>button]:pointer-events-auto">
           <AnimatePresence>
             {open && (
               <motion.button

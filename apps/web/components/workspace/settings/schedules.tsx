@@ -25,12 +25,16 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { formatCadence, formatRunInstant } from "@/lib/schedules/cadence"
 import { useTRPC } from "@/lib/trpc-react"
+import { displayChatTitle } from "@/lib/chat-title"
 import { ScheduleDialog, type ScheduleDialogSchedule } from "../schedule-dialog"
 
 type ScheduleRow = ScheduleDialogSchedule & {
-  templateName: string
+  templateName: string | null
+  action:
+    | { kind: "template"; templateId: string; spaceId: string | null }
+    | { kind: "chat_generate"; chatId: string }
   enabled: boolean
-  nextRunAt: string
+  nextRunAt: string | null
   lastStatus:
     | "running"
     | "complete"
@@ -63,7 +67,15 @@ function statusLine(schedule: ScheduleRow, now: Date) {
       text: schedule.lastError ?? "The last run failed",
       tone: "danger" as const,
     }
-  if (!schedule.enabled) return { text: "Paused", tone: "muted" as const }
+  if (!schedule.enabled)
+    return {
+      text:
+        schedule.cadence.kind === "once" && schedule.lastStatus
+          ? "Finished"
+          : "Paused",
+      tone: "muted" as const,
+    }
+  if (!schedule.nextRunAt) return { text: "Finished", tone: "muted" as const }
   if (new Date(schedule.nextRunAt).getTime() <= now.getTime())
     return { text: "Due now", tone: "attention" as const }
   return {
@@ -72,11 +84,26 @@ function statusLine(schedule: ScheduleRow, now: Date) {
   }
 }
 
-function scheduleMeta(schedule: ScheduleRow, spaceName: string, here: string) {
+function onceSettled(schedule: ScheduleRow) {
+  return (
+    schedule.cadence.kind === "once" &&
+    (!schedule.nextRunAt || (!schedule.enabled && schedule.lastStatus != null))
+  )
+}
+
+function scheduleMeta(
+  schedule: ScheduleRow,
+  spaceName: string,
+  here: string,
+  chatLabel: string
+) {
   const parts: string[] = []
-  if (schedule.templateName.trim() !== schedule.name.trim())
+  if (
+    schedule.templateName &&
+    schedule.templateName.trim() !== schedule.name.trim()
+  )
     parts.push(schedule.templateName)
-  parts.push(spaceName)
+  parts.push(schedule.action.kind === "template" ? spaceName : chatLabel)
   parts.push(formatCadence(schedule.cadence))
   if (schedule.cadence.timeZone !== here) parts.push(schedule.cadence.timeZone)
   return parts.join(" · ")
@@ -91,10 +118,12 @@ export function ScheduleSettings() {
   const [deleteTarget, setDeleteTarget] = useState<{
     id: string
     name: string
+    kind: ScheduleRow["action"]["kind"]
   } | null>(null)
   const available = schedules.data?.available ?? true
   const rows = (schedules.data?.schedules ?? []) as ScheduleRow[]
   const spaces = workspace.data?.spaces ?? []
+  const chats = workspace.data?.chats ?? []
   const here = browserTimeZone()
 
   async function refresh() {
@@ -123,7 +152,7 @@ export function ScheduleSettings() {
     trpc.workspace.runScheduleNow.mutationOptions({
       onSuccess: async (schedule) => {
         await refresh()
-        if (schedule.lastStatus === "error")
+        if (schedule?.lastStatus === "error")
           toast.error(schedule.lastError ?? "The run failed")
         else toast.success("Run started")
       },
@@ -136,7 +165,8 @@ export function ScheduleSettings() {
       <CardHeader>
         <CardTitle>Schedules</CardTitle>
         <CardDescription>
-          Each run starts a new chat from a template.
+          Run templates repeatedly, or generate from a message in an existing
+          chat later.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-2">
@@ -147,10 +177,26 @@ export function ScheduleSettings() {
           </p>
         ) : null}
         {rows.map((schedule) => {
+          const openChatId =
+            schedule.lastChatId ??
+            (schedule.action.kind === "template"
+              ? null
+              : schedule.action.chatId)
           const status = statusLine(schedule, new Date())
           const spaceName =
             spaces.find((space) => space.id === schedule.spaceId)?.name ??
             "Ungrouped"
+          const scheduledChatId =
+            schedule.action.kind === "template" ? null : schedule.action.chatId
+          const scheduledChat = scheduledChatId
+            ? chats.find((chat) => chat.id === scheduledChatId)
+            : undefined
+          const chatLabel =
+            scheduledChatId && workspace.isSuccess && !scheduledChat
+              ? "Deleted chat"
+              : displayChatTitle(scheduledChat?.title)
+          const settled = onceSettled(schedule)
+          const cancelChat = schedule.action.kind !== "template"
           const statusText =
             schedule.lastStatus === "skipped" && schedule.enabled
               ? `${status.text} · the previous run was still going`
@@ -172,42 +218,47 @@ export function ScheduleSettings() {
                   className="line-clamp-2 text-xs text-muted-foreground"
                   suppressHydrationWarning
                 >
-                  {scheduleMeta(schedule, spaceName, here)}
+                  {scheduleMeta(schedule, spaceName, here, chatLabel)}
                   <span className={statusClass}> · {statusText}</span>
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-1">
-                <Switch
-                  size="sm"
-                  checked={schedule.enabled}
-                  disabled={
-                    setEnabled.isPending || (!available && !schedule.enabled)
-                  }
-                  aria-label={`${schedule.enabled ? "Pause" : "Resume"} ${schedule.name}`}
-                  onCheckedChange={(checked) => {
-                    setEnabled.mutate({ id: schedule.id, enabled: checked })
-                  }}
-                />
-                {schedule.lastChatId ? (
+                {!settled ? (
+                  <Switch
+                    size="sm"
+                    checked={schedule.enabled}
+                    disabled={
+                      setEnabled.isPending || (!available && !schedule.enabled)
+                    }
+                    aria-label={`${schedule.enabled ? "Pause" : "Resume"} ${schedule.name}`}
+                    onCheckedChange={(checked) => {
+                      setEnabled.mutate({ id: schedule.id, enabled: checked })
+                    }}
+                  />
+                ) : null}
+                {openChatId ? (
                   <Link
-                    href={`/chat/${schedule.lastChatId}`}
+                    href={`/chat/${openChatId}`}
                     className={buttonVariants({
                       variant: "outline",
                       size: "sm",
                     })}
                   >
-                    Open last chat
+                    Open{" "}
+                    {schedule.action.kind === "template" ? "last chat" : "chat"}
                   </Link>
                 ) : null}
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  disabled={!available || runNow.isPending}
-                  onClick={() => runNow.mutate({ id: schedule.id })}
-                >
-                  Run now
-                </Button>
+                {!settled ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={!available || runNow.isPending}
+                    onClick={() => runNow.mutate({ id: schedule.id })}
+                  >
+                    Run now
+                  </Button>
+                ) : null}
                 <Button
                   type="button"
                   size="sm"
@@ -218,6 +269,7 @@ export function ScheduleSettings() {
                       name: schedule.name,
                       spaceId: schedule.spaceId,
                       cadence: schedule.cadence,
+                      actionKind: schedule.action.kind,
                     })
                   }
                 >
@@ -228,12 +280,16 @@ export function ScheduleSettings() {
                   size="sm"
                   variant="ghost"
                   className="text-destructive"
-                  aria-label={`Delete ${schedule.name}`}
+                  aria-label={`${cancelChat ? "Cancel" : "Delete"} ${schedule.name}`}
                   onClick={() =>
-                    setDeleteTarget({ id: schedule.id, name: schedule.name })
+                    setDeleteTarget({
+                      id: schedule.id,
+                      name: schedule.name,
+                      kind: schedule.action.kind,
+                    })
                   }
                 >
-                  Delete
+                  {cancelChat ? "Cancel" : "Delete"}
                 </Button>
               </div>
             </div>
@@ -241,8 +297,8 @@ export function ScheduleSettings() {
         })}
         {schedules.isSuccess && rows.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            Open a chat that ends with your message, choose Save as template,
-            and turn on Run on a schedule.
+            Open a chat that ends with your message and save it as a template to
+            run on a schedule, or choose Generate later on a message.
           </p>
         ) : null}
       </CardContent>
@@ -261,15 +317,23 @@ export function ScheduleSettings() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete schedule?</AlertDialogTitle>
+            <AlertDialogTitle>
+              {deleteTarget?.kind === "template"
+                ? "Delete schedule?"
+                : "Cancel schedule?"}
+            </AlertDialogTitle>
             <AlertDialogDescription>
               {deleteTarget
-                ? `${deleteTarget.name} will stop running. The template and chats it already created stay.`
+                ? deleteTarget.kind === "template"
+                  ? `${deleteTarget.name} will stop running. The template and chats it already created stay.`
+                  : `${deleteTarget.name} will not run. The chat and its messages stay.`
                 : null}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>
+              {deleteTarget?.kind === "template" ? "Cancel" : "Keep it"}
+            </AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               disabled={!deleteTarget || remove.isPending}
@@ -278,7 +342,7 @@ export function ScheduleSettings() {
                 remove.mutate({ id: deleteTarget.id })
               }}
             >
-              Delete
+              {deleteTarget?.kind === "template" ? "Delete" : "Cancel"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

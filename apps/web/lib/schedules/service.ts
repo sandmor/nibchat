@@ -1,6 +1,13 @@
 import "server-only"
+import type { Transaction } from "kysely"
+import { z } from "zod"
 import type { GenerationSetup } from "@/lib/agent/run-generation"
-import { reconcileChatGenerationRuns } from "@/lib/chat-service"
+import { continueChatGeneration } from "@/lib/agent/open-generation"
+import {
+  createMessage,
+  reconcileChatGenerationRuns,
+  resolveSettingsForChat,
+} from "@/lib/chat-service"
 import {
   createChatFromTemplate,
   saveChatTemplateFromChat,
@@ -10,9 +17,17 @@ import {
   templateActiveLeaf,
 } from "@/lib/chat-template"
 import { db, fromDbBool, migrate, toDbBool } from "@/lib/db"
+import { parseSettingValues, type SettingValues } from "@/lib/chat-settings"
 import { id, now, resolveActivePath } from "@/lib/domain"
-import { MAX_NAME } from "@/lib/limits"
-import type { ScheduleRunStatus, ScheduledGenerationRow } from "@/lib/types"
+import { MAX_DESCRIPTION, MAX_NAME } from "@/lib/limits"
+import type {
+  AttachmentReference,
+  DB,
+  NodeRow,
+  Parts,
+  ScheduleRunStatus,
+  ScheduledJobsTable,
+} from "@/lib/types"
 import {
   cadenceInputSchema,
   cadenceToJson,
@@ -24,21 +39,165 @@ import {
 } from "@/lib/schedules/cadence"
 
 const USER_LEAF = "The saved template branch must end on a user message."
+const USER_PARENT = "A generation can only be scheduled from a user message."
 const STATELESS = "Scheduled generations run only on a stateful server."
 const INTERRUPTED = "The scheduled generation was interrupted."
+
+const templateActionSchema = z.object({
+  kind: z.literal("template"),
+  templateId: z.string(),
+  spaceId: z.string().nullable(),
+  chatOverridesJson: z.string().optional(),
+})
+const chatGenerateActionSchema = z.object({
+  kind: z.literal("chat_generate"),
+  chatId: z.string(),
+  parentId: z.string().nullable(),
+  settingsJson: z.string(),
+})
+export const scheduleActionSchema = z.discriminatedUnion("kind", [
+  templateActionSchema,
+  chatGenerateActionSchema,
+])
+export type ScheduleAction = z.infer<typeof scheduleActionSchema>
 
 export function schedulesAvailable() {
   return process.env.GENERATION_RUNTIME_MODE !== "stateless"
 }
-
 function assertSchedulesAvailable() {
   if (!schedulesAvailable()) throw new Error(STATELESS)
 }
-
+function parseAction(value: string) {
+  return scheduleActionSchema.parse(JSON.parse(value))
+}
 function assertUserLeaf(
   document: ReturnType<typeof parseChatTemplateDocument>
 ) {
   if (templateActiveLeaf(document)?.role !== "user") throw new Error(USER_LEAF)
+}
+function errorText(error: unknown) {
+  return (
+    error instanceof Error && error.message
+      ? error.message
+      : "The scheduled generation failed."
+  ).slice(0, MAX_DESCRIPTION)
+}
+function statusForOutcome(
+  outcome: "complete" | "awaiting_input" | "aborted" | "error"
+): ScheduleRunStatus {
+  if (outcome === "complete") return "complete"
+  if (outcome === "awaiting_input") return "awaiting_input"
+  return "error"
+}
+function nextAfter(cadence: Cadence, at: Date) {
+  return cadence.kind === "once"
+    ? null
+    : followingRunAt(cadence, at).toISOString()
+}
+function isOnceCadence(cadenceJson: string) {
+  try {
+    return parseCadence(cadenceJson).kind === "once"
+  } catch {
+    return false
+  }
+}
+
+export type ScheduleView = {
+  id: string
+  name: string
+  action: ScheduleAction
+  templateId: string | null
+  templateName: string | null
+  spaceId: string | null
+  cadence: Cadence
+  enabled: boolean
+  nextRunAt: string | null
+  lastRunAt: string | null
+  lastStatus: ScheduleRunStatus | null
+  lastError: string | null
+  lastChatId: string | null
+}
+async function toView(row: ScheduledJobsTable): Promise<ScheduleView> {
+  const action = parseAction(row.action_json)
+  let templateName: string | null = null
+  if (action.kind === "template")
+    templateName =
+      (
+        await db
+          .selectFrom("chat_templates")
+          .select("name")
+          .where("id", "=", action.templateId)
+          .executeTakeFirst()
+      )?.name ?? "Deleted template"
+  return {
+    id: row.id,
+    name: row.name,
+    action,
+    templateId: action.kind === "template" ? action.templateId : null,
+    templateName,
+    spaceId: action.kind === "template" ? action.spaceId : null,
+    cadence: parseCadence(row.cadence_json),
+    enabled: fromDbBool(row.enabled),
+    nextRunAt: row.next_run_at,
+    lastRunAt: row.last_run_at,
+    lastStatus: row.last_status,
+    lastError: row.last_error,
+    lastChatId: row.last_chat_id,
+  }
+}
+export type PendingChatGeneration = {
+  id: string
+  parentId: string
+  nextRunAt: string
+  timeZone: string
+}
+
+/** Pending generations for one chat, included with the workspace payload. */
+export async function pendingGenerationsForChat(
+  userId: string,
+  chatId: string
+): Promise<PendingChatGeneration[]> {
+  const rows = await db
+    .selectFrom("scheduled_jobs")
+    .selectAll()
+    .where("user_id", "=", userId)
+    .execute()
+  const pending: PendingChatGeneration[] = []
+  for (const row of rows) {
+    if (!fromDbBool(row.enabled) || !row.next_run_at) continue
+    let action: ScheduleAction
+    try {
+      action = parseAction(row.action_json)
+    } catch {
+      continue
+    }
+    if (
+      action.kind !== "chat_generate" ||
+      action.chatId !== chatId ||
+      !action.parentId
+    )
+      continue
+    pending.push({
+      id: row.id,
+      parentId: action.parentId,
+      nextRunAt: row.next_run_at,
+      timeZone: parseCadence(row.cadence_json).timeZone,
+    })
+  }
+  return pending
+}
+
+export async function listSchedules(userId: string) {
+  const rows = await db
+    .selectFrom("scheduled_jobs")
+    .selectAll()
+    .where("user_id", "=", userId)
+    .orderBy("created_at")
+    .execute()
+  return {
+    available: schedulesAvailable(),
+    schedules: await Promise.all(rows.map(toView)),
+  }
 }
 
 async function ownedTemplate(userId: string, templateId: string) {
@@ -51,132 +210,202 @@ async function ownedTemplate(userId: string, templateId: string) {
   if (!row) throw new Error("Chat template not found")
   return row
 }
-
 async function assertSpaceOwner(userId: string, spaceId: string | null) {
   if (!spaceId) return
-  const space = await db
-    .selectFrom("spaces")
-    .select("id")
-    .where("id", "=", spaceId)
-    .where("user_id", "=", userId)
-    .executeTakeFirst()
-  if (!space) throw new Error("Space not found")
+  if (
+    !(await db
+      .selectFrom("spaces")
+      .select("id")
+      .where("id", "=", spaceId)
+      .where("user_id", "=", userId)
+      .executeTakeFirst())
+  )
+    throw new Error("Space not found")
 }
+type ScheduleExecutor = typeof db | Transaction<DB>
 
-function chatTitle(templateName: string, at: Date) {
-  const stamp = at.toISOString().slice(0, 16).replace("T", " ")
-  const title = `${templateName} · ${stamp} UTC`
-  return title.length <= MAX_NAME ? title : title.slice(0, MAX_NAME)
-}
-
-function errorText(error: unknown) {
-  const message =
-    error instanceof Error && error.message
-      ? error.message
-      : "The scheduled generation failed."
-  return message.slice(0, 500)
-}
-
-function statusForOutcome(
-  outcome: "complete" | "awaiting_input" | "aborted" | "error"
-): ScheduleRunStatus {
-  if (outcome === "complete") return "complete"
-  if (outcome === "awaiting_input") return "awaiting_input"
-  return "error"
-}
-
-export type ScheduleView = {
-  id: string
-  name: string
-  templateId: string
-  templateName: string
-  spaceId: string | null
-  cadence: Cadence
-  enabled: boolean
-  nextRunAt: string
-  lastRunAt: string | null
-  lastStatus: ScheduleRunStatus | null
-  lastError: string | null
-  lastChatId: string | null
-}
-
-function toView(
-  row: ScheduledGenerationRow & { template_name: string }
-): ScheduleView {
-  return {
-    id: row.id,
-    name: row.name,
-    templateId: row.template_id,
-    templateName: row.template_name,
-    spaceId: row.space_id,
-    cadence: parseCadence(row.cadence_json),
-    enabled: fromDbBool(row.enabled),
-    nextRunAt: row.next_run_at,
-    lastRunAt: row.last_run_at,
-    lastStatus: row.last_status,
-    lastError: row.last_error,
-    lastChatId: row.last_chat_id,
+async function insertScheduleRow(
+  executor: ScheduleExecutor,
+  input: {
+    userId: string
+    name: string
+    action: ScheduleAction
+    cadence: Cadence
+    created: Date
   }
-}
-
-export async function listSchedules(userId: string) {
-  const rows = await db
-    .selectFrom("scheduled_generations")
-    .innerJoin(
-      "chat_templates",
-      "chat_templates.id",
-      "scheduled_generations.template_id"
-    )
-    .selectAll("scheduled_generations")
-    .select("chat_templates.name as template_name")
-    .where("scheduled_generations.user_id", "=", userId)
-    .orderBy("scheduled_generations.created_at")
+) {
+  assertSchedulesAvailable()
+  const name = input.name.trim()
+  if (!name || name.length > MAX_NAME) throw new Error("Name is required")
+  const timestamp = input.created.toISOString()
+  const scheduleId = id()
+  await executor
+    .insertInto("scheduled_jobs")
+    .values({
+      id: scheduleId,
+      user_id: input.userId,
+      name,
+      action_json: JSON.stringify(input.action),
+      cadence_json: cadenceToJson(input.cadence),
+      enabled: toDbBool(true),
+      next_run_at: followingRunAt(input.cadence, input.created).toISOString(),
+      last_run_at: null,
+      last_status: null,
+      last_error: null,
+      last_chat_id: null,
+      created_at: timestamp,
+      updated_at: timestamp,
+    })
     .execute()
-  return {
-    available: schedulesAvailable(),
-    schedules: rows.map((row) => toView(row)),
-  }
+  return scheduleId
 }
 
+async function insertSchedule(input: {
+  userId: string
+  name: string
+  action: ScheduleAction
+  cadence: CadenceInput
+}) {
+  const created = new Date()
+  const cadence = storeCadence(cadenceInputSchema.parse(input.cadence), created)
+  const scheduleId = await insertScheduleRow(db, {
+    userId: input.userId,
+    name: input.name,
+    action: input.action,
+    cadence,
+    created,
+  })
+  return (await listSchedules(input.userId)).schedules.find(
+    (item) => item.id === scheduleId
+  )!
+}
+
+/**
+ * Insert a user message and the once-generation that replies to it.
+ * A rejected time inserts neither. Called by the createMessage procedure.
+ */
+export async function createScheduledUserMessage(input: {
+  userId: string
+  chatId: string
+  parentId: string | null
+  beforeNodeId?: string
+  parts: Parts
+  attachments?: AttachmentReference[]
+  attachSelection?: boolean
+  name: string
+  at: string
+  timeZone: string
+}): Promise<NodeRow> {
+  assertSchedulesAvailable()
+  const name = input.name.trim()
+  if (!name || name.length > MAX_NAME) throw new Error("Name is required")
+  const created = new Date()
+  const cadence = storeCadence(
+    { kind: "once", at: input.at, timeZone: input.timeZone },
+    created
+  )
+  followingRunAt(cadence, created)
+  const chat = await db
+    .selectFrom("chats")
+    .selectAll()
+    .where("id", "=", input.chatId)
+    .where("user_id", "=", input.userId)
+    .executeTakeFirst()
+  if (!chat) throw new Error("Chat not found")
+  const settings = await resolveSettingsForChat(chat, input.userId)
+  return db.transaction().execute(async (trx) => {
+    const message = await createMessage({
+      userId: input.userId,
+      chatId: input.chatId,
+      parentId: input.parentId,
+      beforeNodeId: input.beforeNodeId,
+      role: "user",
+      parts: input.parts,
+      attachments: input.attachments,
+      attachSelection: input.attachSelection,
+      trx,
+    })
+    await insertScheduleRow(trx, {
+      userId: input.userId,
+      name,
+      action: {
+        kind: "chat_generate",
+        chatId: chat.id,
+        parentId: message.id,
+        settingsJson: JSON.stringify(settings.effective.values),
+      },
+      cadence,
+      created,
+    })
+    return message
+  })
+}
 export async function createSchedule(input: {
   userId: string
   name: string
   templateId: string
   spaceId?: string | null
   cadence: CadenceInput
+  chatOverrides?: SettingValues
 }) {
-  assertSchedulesAvailable()
-  const name = input.name.trim()
-  if (!name || name.length > MAX_NAME) throw new Error("Name is required")
-  const cadenceInput = cadenceInputSchema.parse(input.cadence)
   const template = await ownedTemplate(input.userId, input.templateId)
-  const document = parseChatTemplateDocument(template.document_json)
-  assertUserLeaf(document)
+  assertUserLeaf(parseChatTemplateDocument(template.document_json))
   const spaceId = input.spaceId ?? null
   await assertSpaceOwner(input.userId, spaceId)
-  const created = new Date()
-  const cadence = storeCadence(cadenceInput, created)
-  const timestamp = created.toISOString()
-  const row = {
-    id: id(),
-    user_id: input.userId,
-    template_id: template.id,
-    space_id: spaceId,
-    name,
-    cadence_json: cadenceToJson(cadence),
-    enabled: toDbBool(true),
-    next_run_at: followingRunAt(cadence, created).toISOString(),
-    last_run_at: null,
-    last_status: null,
-    last_error: null,
-    last_chat_id: null,
-    created_at: timestamp,
-    updated_at: timestamp,
+  return insertSchedule({
+    userId: input.userId,
+    name: input.name,
+    action: {
+      kind: "template",
+      templateId: template.id,
+      spaceId,
+      ...(input.chatOverrides
+        ? { chatOverridesJson: JSON.stringify(input.chatOverrides) }
+        : {}),
+    },
+    cadence: input.cadence,
+  })
+}
+export async function createChatSchedule(input: {
+  userId: string
+  name: string
+  chatId: string
+  parentId: string
+  timeZone: string
+  at: string
+}) {
+  const chat = await db
+    .selectFrom("chats")
+    .selectAll()
+    .where("id", "=", input.chatId)
+    .where("user_id", "=", input.userId)
+    .executeTakeFirst()
+  if (!chat) throw new Error("Chat not found")
+  const parent = await db
+    .selectFrom("message_nodes")
+    .select(["id", "role"])
+    .where("id", "=", input.parentId)
+    .where("chat_id", "=", chat.id)
+    .executeTakeFirst()
+  if (!parent) throw new Error("Parent node not found in chat")
+  if (parent.role !== "user") throw new Error(USER_PARENT)
+  const settings = await resolveSettingsForChat(chat, input.userId)
+  const cadence = {
+    kind: "once" as const,
+    at: input.at,
+    timeZone: input.timeZone,
   }
-  await db.insertInto("scheduled_generations").values(row).execute()
-  return (await listSchedules(input.userId)).schedules.find(
-    (schedule) => schedule.id === row.id
-  )!
+  return insertSchedule({
+    userId: input.userId,
+    name: input.name,
+    action: {
+      kind: "chat_generate",
+      chatId: chat.id,
+      parentId: parent.id,
+      settingsJson: JSON.stringify(settings.effective.values),
+    },
+    cadence,
+  })
 }
 
 export async function updateSchedule(input: {
@@ -186,63 +415,55 @@ export async function updateSchedule(input: {
   spaceId?: string | null
   cadence?: CadenceInput
   enabled?: boolean
+  chatOverrides?: SettingValues
 }) {
-  const existing = await db
-    .selectFrom("scheduled_generations")
+  const row = await db
+    .selectFrom("scheduled_jobs")
     .selectAll()
     .where("id", "=", input.id)
     .where("user_id", "=", input.userId)
     .executeTakeFirst()
-  if (!existing) throw new Error("Schedule not found")
-  if (input.enabled === true && !fromDbBool(existing.enabled))
-    assertSchedulesAvailable()
-  const template = await ownedTemplate(input.userId, existing.template_id)
-  const document = parseChatTemplateDocument(template.document_json)
-  assertUserLeaf(document)
-  const spaceId =
-    input.spaceId === undefined ? existing.space_id : input.spaceId
-  await assertSpaceOwner(input.userId, spaceId)
-  const name = input.name === undefined ? existing.name : input.name.trim()
-  if (!name || name.length > MAX_NAME) throw new Error("Name is required")
-  const current = parseCadence(existing.cadence_json)
-  let cadence = current
-  if (input.cadence) {
-    const next = cadenceInputSchema.parse(input.cadence)
-    const anchor =
-      next.kind === "interval" && current.kind === "interval"
-        ? new Date(current.anchor)
-        : new Date()
-    cadence = storeCadence(next, anchor)
+  if (!row) throw new Error("Schedule not found")
+  if (input.enabled === true) assertSchedulesAvailable()
+  const action = parseAction(row.action_json)
+  if (action.kind === "template" && input.chatOverrides)
+    action.chatOverridesJson = JSON.stringify(input.chatOverrides)
+  if (input.spaceId !== undefined && action.kind === "template") {
+    await assertSpaceOwner(input.userId, input.spaceId)
+    action.spaceId = input.spaceId
   }
-  const cadenceChanged = cadenceToJson(cadence) !== existing.cadence_json
-  const timestamp = now()
+  const name = input.name?.trim() ?? row.name
+  if (!name || name.length > MAX_NAME) throw new Error("Name is required")
+  let cadence = parseCadence(row.cadence_json)
+  if (input.cadence) cadence = storeCadence(input.cadence, new Date())
+  if (action.kind !== "template" && cadence.kind !== "once")
+    throw new Error("Chat actions can only run once")
+  const cadenceChanged = cadenceToJson(cadence) !== row.cadence_json
   await db
-    .updateTable("scheduled_generations")
+    .updateTable("scheduled_jobs")
     .set({
       name,
-      template_id: template.id,
-      space_id: spaceId,
+      action_json: JSON.stringify(action),
       cadence_json: cadenceToJson(cadence),
-      enabled: toDbBool(
-        input.enabled === undefined
-          ? fromDbBool(existing.enabled)
-          : input.enabled
-      ),
+      enabled: toDbBool(input.enabled ?? fromDbBool(row.enabled)),
       ...(cadenceChanged
-        ? { next_run_at: followingRunAt(cadence, new Date()).toISOString() }
+        ? {
+            next_run_at: followingRunAt(cadence, new Date()).toISOString(),
+            last_status: null,
+            last_error: null,
+          }
         : {}),
-      updated_at: timestamp,
+      updated_at: now(),
     })
-    .where("id", "=", existing.id)
+    .where("id", "=", row.id)
     .execute()
   return (await listSchedules(input.userId)).schedules.find(
-    (schedule) => schedule.id === existing.id
+    (item) => item.id === row.id
   )!
 }
-
 export async function deleteSchedule(userId: string, scheduleId: string) {
   const result = await db
-    .deleteFrom("scheduled_generations")
+    .deleteFrom("scheduled_jobs")
     .where("id", "=", scheduleId)
     .where("user_id", "=", userId)
     .executeTakeFirst()
@@ -251,154 +472,303 @@ export async function deleteSchedule(userId: string, scheduleId: string) {
   return { ok: true as const }
 }
 
+export async function deleteChatSchedulesFor(input: {
+  userId: string
+  nodeIds?: readonly string[]
+  chatIds?: readonly string[]
+  trx?: Transaction<DB>
+}) {
+  const nodeIds = new Set(input.nodeIds ?? [])
+  const chatIds = new Set(input.chatIds ?? [])
+  if (!nodeIds.size && !chatIds.size) return
+  const executor = input.trx ?? db
+  const rows = await executor
+    .selectFrom("scheduled_jobs")
+    .select(["id", "action_json"])
+    .where("user_id", "=", input.userId)
+    .execute()
+  const drop: string[] = []
+  for (const row of rows) {
+    let action: ScheduleAction
+    try {
+      action = parseAction(row.action_json)
+    } catch {
+      continue
+    }
+    if (action.kind === "template") continue
+    if (
+      chatIds.has(action.chatId) ||
+      (action.parentId != null && nodeIds.has(action.parentId))
+    )
+      drop.push(row.id)
+  }
+  if (!drop.length) return
+  await executor
+    .deleteFrom("scheduled_jobs")
+    .where("user_id", "=", input.userId)
+    .where("id", "in", drop)
+    .execute()
+}
+export async function deleteTemplateSchedulesFor(input: {
+  userId: string
+  templateId: string
+  trx: Transaction<DB>
+}) {
+  const rows = await input.trx
+    .selectFrom("scheduled_jobs")
+    .select(["id", "action_json"])
+    .where("user_id", "=", input.userId)
+    .execute()
+  const ids = rows.flatMap((row) => {
+    try {
+      const action = parseAction(row.action_json)
+      return action.kind === "template" &&
+        action.templateId === input.templateId
+        ? [row.id]
+        : []
+    } catch {
+      return []
+    }
+  })
+  if (ids.length)
+    await input.trx
+      .deleteFrom("scheduled_jobs")
+      .where("user_id", "=", input.userId)
+      .where("id", "in", ids)
+      .execute()
+}
 async function liveGeneration(chatId: string | null) {
   if (!chatId) return false
   await reconcileChatGenerationRuns(chatId)
-  const run = await db
-    .selectFrom("generation_runs")
-    .select("id")
-    .where("chat_id", "=", chatId)
-    .executeTakeFirst()
-  return Boolean(run)
-}
-
-export async function reconcileInterruptedSchedules() {
-  const running = await db
-    .selectFrom("scheduled_generations")
-    .selectAll()
-    .where("last_status", "=", "running")
-    .execute()
-  for (const row of running) {
-    if (await liveGeneration(row.last_chat_id)) continue
+  return Boolean(
     await db
-      .updateTable("scheduled_generations")
-      .set({
-        last_status: "error",
-        last_error: INTERRUPTED,
-        updated_at: now(),
-      })
-      .where("id", "=", row.id)
-      .where("last_status", "=", "running")
-      .execute()
+      .selectFrom("generation_runs")
+      .select("id")
+      .where("chat_id", "=", chatId)
+      .executeTakeFirst()
+  )
+}
+export async function reconcileInterruptedSchedules() {
+  const rows = await db
+    .selectFrom("scheduled_job_runs")
+    .selectAll()
+    .where("status", "=", "running")
+    .execute()
+  for (const row of rows) {
+    if (row.chat_id) await reconcileChatGenerationRuns(row.chat_id)
+    const ownGeneration = row.message_id
+      ? await db
+          .selectFrom("generation_runs")
+          .select("id")
+          .where("node_id", "=", row.message_id)
+          .executeTakeFirst()
+      : null
+    if (ownGeneration) continue
+    // Claimed before the assistant row exists. Leave it while that chat is
+    // still generating.
+    if (!row.message_id && (await liveGeneration(row.chat_id))) continue
+    await recordFinish(row.id, "error", INTERRUPTED)
   }
 }
-
 export async function claimSchedule(
-  row: Pick<ScheduledGenerationRow, "id" | "cadence_json" | "next_run_at">,
+  row: Pick<ScheduledJobsTable, "id" | "cadence_json" | "next_run_at">,
   at = new Date()
 ) {
+  if (!row.next_run_at) return false
   const cadence = parseCadence(row.cadence_json)
-  const result = await db
-    .updateTable("scheduled_generations")
-    .set({
-      next_run_at: followingRunAt(cadence, at).toISOString(),
-      last_status: "running",
-      last_run_at: at.toISOString(),
-      last_error: null,
-      updated_at: at.toISOString(),
-    })
-    .where("id", "=", row.id)
-    .where("enabled", "=", toDbBool(true))
-    .where("next_run_at", "=", row.next_run_at)
-    .executeTakeFirst()
-  return Number(result.numUpdatedRows ?? 0) === 1
+  return db.transaction().execute(async (trx) => {
+    const result = await trx
+      .updateTable("scheduled_jobs")
+      .set({
+        next_run_at: nextAfter(cadence, at),
+        enabled: toDbBool(cadence.kind !== "once"),
+        last_status: "running",
+        last_run_at: at.toISOString(),
+        last_error: null,
+        updated_at: at.toISOString(),
+      })
+      .where("id", "=", row.id)
+      .where("enabled", "=", toDbBool(true))
+      .where("next_run_at", "=", row.next_run_at)
+      .executeTakeFirst()
+    if (Number(result.numUpdatedRows ?? 0) !== 1) return false
+    await trx
+      .insertInto("scheduled_job_runs")
+      .values({
+        id: id(),
+        schedule_id: row.id,
+        scheduled_for: row.next_run_at!,
+        started_at: at.toISOString(),
+        finished_at: null,
+        status: "running",
+        error: null,
+        chat_id: null,
+        message_id: null,
+      })
+      .execute()
+    return true
+  })
 }
-
 async function recordFinish(
-  scheduleId: string,
+  runId: string,
   status: ScheduleRunStatus,
-  lastError: string | null,
-  chatId?: string
+  error: string | null,
+  chatId?: string,
+  messageId?: string
 ) {
-  await db
-    .updateTable("scheduled_generations")
-    .set({
-      last_status: status,
-      last_error: lastError,
-      ...(chatId ? { last_chat_id: chatId } : {}),
-      updated_at: now(),
-    })
-    .where("id", "=", scheduleId)
-    .execute()
+  const finishedAt = now()
+  await db.transaction().execute(async (trx) => {
+    const run = await trx
+      .selectFrom("scheduled_job_runs")
+      .selectAll()
+      .where("id", "=", runId)
+      .executeTakeFirst()
+    if (!run || run.status !== "running") return
+    const job = await trx
+      .selectFrom("scheduled_jobs")
+      .select("cadence_json")
+      .where("id", "=", run.schedule_id)
+      .executeTakeFirst()
+    if (!job) return
+    await trx
+      .updateTable("scheduled_job_runs")
+      .set({
+        status,
+        error,
+        finished_at: status === "running" ? null : finishedAt,
+        ...(chatId ? { chat_id: chatId } : {}),
+        ...(messageId ? { message_id: messageId } : {}),
+      })
+      .where("id", "=", runId)
+      .where("status", "=", "running")
+      .execute()
+    const active = await trx
+      .selectFrom("scheduled_job_runs")
+      .select("id")
+      .where("schedule_id", "=", run.schedule_id)
+      .where("status", "=", "running")
+      .executeTakeFirst()
+    if (status !== "running" && !active && isOnceCadence(job.cadence_json)) {
+      const completed = await trx
+        .selectFrom("scheduled_job_runs")
+        .select("id")
+        .where("schedule_id", "=", run.schedule_id)
+        .where("status", "=", "complete")
+        .executeTakeFirst()
+      if (completed) {
+        await trx
+          .deleteFrom("scheduled_jobs")
+          .where("id", "=", run.schedule_id)
+          .execute()
+        return
+      }
+    }
+    const latest = await trx
+      .selectFrom("scheduled_job_runs")
+      .select("id")
+      .where("schedule_id", "=", run.schedule_id)
+      .orderBy("started_at", "desc")
+      .orderBy("id", "desc")
+      .executeTakeFirst()
+    if (latest?.id === runId)
+      await trx
+        .updateTable("scheduled_jobs")
+        .set({
+          last_status: status,
+          last_error: error,
+          ...(chatId ? { last_chat_id: chatId } : {}),
+          updated_at: finishedAt,
+        })
+        .where("id", "=", run.schedule_id)
+        .execute()
+  })
 }
 
 export type ScheduleContinuation = (input: {
   userId: string
   chatId: string
-  parentId: string
+  parentId: string | null
   timeZone: string
   requestSignal: AbortSignal
   attachSelection: boolean
+  settingsJson?: string
   afterFinalize?: GenerationSetup["afterFinalize"]
+  onStarted?: (assistantId: string) => Promise<void>
 }) => Promise<Response>
-
-async function defaultContinuation(input: Parameters<ScheduleContinuation>[0]) {
-  const { continueChatGeneration } = await import("@/lib/agent/open-generation")
-  return continueChatGeneration(input)
-}
+const defaultContinuation: ScheduleContinuation = (input) =>
+  continueChatGeneration(input)
 
 export async function fireSchedule(
   scheduleId: string,
-  continueGeneration: ScheduleContinuation = defaultContinuation
+  runId: string,
+  continuation: ScheduleContinuation = defaultContinuation
 ) {
   const row = await db
-    .selectFrom("scheduled_generations")
+    .selectFrom("scheduled_jobs")
     .selectAll()
     .where("id", "=", scheduleId)
     .executeTakeFirst()
   if (!row) return
   try {
-    const template = await db
-      .selectFrom("chat_templates")
-      .selectAll()
-      .where("id", "=", row.template_id)
-      .where("user_id", "=", row.user_id)
-      .executeTakeFirst()
-    if (!template) throw new Error("Chat template not found")
-    const document = parseChatTemplateDocument(template.document_json)
-    const firedAt = new Date()
-    const created = await createChatFromTemplate({
-      userId: row.user_id,
-      templateId: template.id,
-      document,
-      title: chatTitle(template.name, firedAt),
-      settings: {},
-      spaceId: row.space_id,
-    })
-    await recordFinish(row.id, "running", null, created.chat.id)
-    const leaf = resolveActivePath(
-      created.nodes,
-      created.chat.selected_root_node_id
-    ).at(-1)
-    if (leaf?.role !== "user") {
-      await recordFinish(row.id, "error", USER_LEAF, created.chat.id)
-      return
-    }
+    const action = parseAction(row.action_json)
     const cadence = parseCadence(row.cadence_json)
-    const response = await continueGeneration({
+    let chatId: string
+    let parentId: string | null
+    let settingsJson: string | undefined
+    if (action.kind === "template") {
+      const template = await ownedTemplate(row.user_id, action.templateId)
+      const document = parseChatTemplateDocument(template.document_json)
+      const created = await createChatFromTemplate({
+        userId: row.user_id,
+        templateId: template.id,
+        document,
+        settings: parseSettingValues(action.chatOverridesJson),
+        spaceId: action.spaceId,
+      })
+      const leaf = resolveActivePath(
+        created.nodes,
+        created.chat.selected_root_node_id
+      ).at(-1)
+      if (!leaf || leaf.role !== "user") throw new Error(USER_LEAF)
+      chatId = created.chat.id
+      parentId = leaf.id
+    } else if (action.kind === "chat_generate" && action.parentId) {
+      chatId = action.chatId
+      parentId = action.parentId
+      settingsJson = action.settingsJson
+    } else {
+      throw new Error(USER_PARENT)
+    }
+    await recordFinish(runId, "running", null, chatId)
+    const response = await continuation({
       userId: row.user_id,
-      chatId: created.chat.id,
-      parentId: leaf.id,
+      chatId,
+      parentId,
       timeZone: cadence.timeZone,
       requestSignal: new AbortController().signal,
-      attachSelection: true,
+      attachSelection: false,
+      settingsJson,
+      onStarted: async (assistantId) => {
+        await db
+          .updateTable("scheduled_job_runs")
+          .set({ message_id: assistantId })
+          .where("id", "=", runId)
+          .where("status", "=", "running")
+          .execute()
+      },
       afterFinalize: async ({ outcome }) => {
         const status = statusForOutcome(outcome)
         await recordFinish(
-          row.id,
+          runId,
           status,
-          status === "error"
-            ? outcome === "aborted"
-              ? "The generation stopped."
-              : "The generation failed."
-            : null,
-          created.chat.id
+          status === "error" ? "The generation failed." : null,
+          chatId
         )
       },
     })
     await response.body?.cancel()
   } catch (error) {
-    await recordFinish(row.id, "error", errorText(error))
+    await recordFinish(runId, "error", errorText(error))
   }
 }
 
@@ -411,103 +781,132 @@ export async function scheduleFromChat(input: {
   spaceId?: string | null
   cadence: CadenceInput
 }) {
-  const saved = await saveChatTemplateFromChat({
-    userId: input.userId,
-    chatId: input.chatId,
-    name: input.name,
-    templateId: input.templateId,
-    expectedRevision: input.expectedRevision,
-  })
+  const saved = await saveChatTemplateFromChat(input)
+  const chat = await db
+    .selectFrom("chats")
+    .selectAll()
+    .where("id", "=", input.chatId)
+    .where("user_id", "=", input.userId)
+    .executeTakeFirstOrThrow()
+  const chatOverrides = parseSettingValues(chat.settings_json)
   if (input.templateId) {
     const existing = (await listSchedules(input.userId)).schedules.filter(
-      (schedule) => schedule.templateId === saved.id
+      (item) => item.templateId === saved.id
     )
-    if (existing.length > 0) {
-      const schedules = []
-      for (const schedule of existing) {
-        schedules.push(
-          await updateSchedule({
-            userId: input.userId,
-            id: schedule.id,
-            name: input.name,
-            spaceId: input.spaceId,
-            cadence: input.cadence,
-          })
-        )
+    if (existing.length)
+      return {
+        templateId: saved.id,
+        schedules: await Promise.all(
+          existing.map((item) =>
+            updateSchedule({
+              userId: input.userId,
+              id: item.id,
+              name: input.name,
+              spaceId: input.spaceId,
+              cadence: input.cadence,
+              chatOverrides,
+            })
+          )
+        ),
       }
-      return { templateId: saved.id, schedules }
-    }
   }
-  const created = await createSchedule({
-    userId: input.userId,
-    name: input.name,
+  return {
     templateId: saved.id,
-    spaceId: input.spaceId,
-    cadence: input.cadence,
-  })
-  return { templateId: saved.id, schedules: [created] }
+    schedules: [
+      await createSchedule({
+        userId: input.userId,
+        name: input.name,
+        templateId: saved.id,
+        spaceId: input.spaceId,
+        cadence: input.cadence,
+        chatOverrides,
+      }),
+    ],
+  }
 }
-
-/** Start one run immediately. The cadence's next slot stays where it is. */
 export async function runScheduleNow(
   userId: string,
   scheduleId: string,
-  continueGeneration?: ScheduleContinuation
+  continuation?: ScheduleContinuation
 ) {
   assertSchedulesAvailable()
   const row = await db
-    .selectFrom("scheduled_generations")
+    .selectFrom("scheduled_jobs")
     .selectAll()
     .where("id", "=", scheduleId)
     .where("user_id", "=", userId)
     .executeTakeFirst()
   if (!row) throw new Error("Schedule not found")
-  if (await liveGeneration(row.last_chat_id))
-    throw new Error("A run is already in progress")
-  const at = new Date()
-  await db
-    .updateTable("scheduled_generations")
-    .set({
-      last_status: "running",
-      last_run_at: at.toISOString(),
-      last_error: null,
-      updated_at: at.toISOString(),
-    })
-    .where("id", "=", row.id)
-    .execute()
-  await fireSchedule(row.id, continueGeneration)
-  return (await listSchedules(userId)).schedules.find(
-    (schedule) => schedule.id === row.id
-  )!
+  const cadence = parseCadence(row.cadence_json)
+  const runId = id()
+  await db.transaction().execute(async (trx) => {
+    const previous = await trx
+      .selectFrom("scheduled_job_runs")
+      .select("scheduled_for")
+      .where("schedule_id", "=", row.id)
+      .orderBy("scheduled_for", "desc")
+      .executeTakeFirst()
+    const current = Date.now()
+    const previousAt = previous ? Date.parse(previous.scheduled_for) : 0
+    const timestamp = new Date(Math.max(current, previousAt + 1)).toISOString()
+    await trx
+      .updateTable("scheduled_jobs")
+      .set({
+        ...(cadence.kind === "once"
+          ? { enabled: toDbBool(false), next_run_at: null }
+          : {}),
+        last_status: "running",
+        last_run_at: timestamp,
+        last_error: null,
+        updated_at: timestamp,
+      })
+      .where("id", "=", row.id)
+      .execute()
+    await trx
+      .insertInto("scheduled_job_runs")
+      .values({
+        id: runId,
+        schedule_id: row.id,
+        scheduled_for: timestamp,
+        started_at: timestamp,
+        finished_at: null,
+        status: "running",
+        error: null,
+        chat_id: null,
+        message_id: null,
+      })
+      .execute()
+  })
+  await fireSchedule(row.id, runId, continuation)
+  return (
+    (await listSchedules(userId)).schedules.find(
+      (item) => item.id === row.id
+    ) ?? null
+  )
 }
-
-/** Claim at most one due schedule and start its generation. */
 export async function runScheduleTick(
   at = new Date(),
-  continueGeneration?: ScheduleContinuation
+  continuation?: ScheduleContinuation
 ) {
   await migrate()
   await reconcileInterruptedSchedules()
   const due = await db
-    .selectFrom("scheduled_generations")
+    .selectFrom("scheduled_jobs")
     .selectAll()
     .where("enabled", "=", toDbBool(true))
+    .where("next_run_at", "is not", null)
     .where("next_run_at", "<=", at.toISOString())
     .orderBy("next_run_at")
     .execute()
   for (const row of due) {
-    if (await liveGeneration(row.last_chat_id)) {
-      await db
-        .updateTable("scheduled_generations")
-        .set({ last_status: "skipped", updated_at: now() })
-        .where("id", "=", row.id)
-        .where("last_status", "=", "running")
-        .execute()
-      continue
-    }
-    const claimed = await claimSchedule(row, at)
-    if (!claimed) continue
-    await fireSchedule(row.id, continueGeneration)
+    if (!(await claimSchedule(row, at))) continue
+    const run = await db
+      .selectFrom("scheduled_job_runs")
+      .select("id")
+      .where("schedule_id", "=", row.id)
+      .where("scheduled_for", "=", row.next_run_at!)
+      .executeTakeFirstOrThrow()
+    await fireSchedule(row.id, run.id, continuation)
     return
   }
 }

@@ -72,6 +72,14 @@ export function ChatDraggable({
     data: { type: "chat", chatId },
     disabled,
   })
+  // The chat link is the keyboard target. dnd-kit's default role="button"
+  // and tabIndex={0} would focus this wrapper and paint the UA outline,
+  // which doesn't follow the rounded entry.
+  const {
+    role: _role,
+    tabIndex: _tabIndex,
+    ...dragAttributes
+  } = attributes
   return (
     <div
       ref={setNodeRef}
@@ -81,7 +89,7 @@ export function ChatDraggable({
         isDragging && "opacity-50"
       )}
       {...(disabled ? {} : listeners)}
-      {...(disabled ? {} : attributes)}
+      {...(disabled ? {} : dragAttributes)}
     >
       {children}
     </div>

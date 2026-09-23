@@ -36,8 +36,9 @@ function nodeCountLabel(count: number) {
 function templateScheduleLabel(rows: { enabled: boolean; cadence: Cadence }[]) {
   if (rows.length === 0) return null
   if (rows.length === 1) {
-    const cadence = formatCadence(rows[0].cadence)
-    return rows[0].enabled ? cadence : `${cadence} · paused`
+    const row = rows[0]!
+    const cadence = formatCadence(row.cadence)
+    return row.enabled ? cadence : `${cadence} · paused`
   }
   const count = `${rows.length} schedules`
   return rows.every((row) => !row.enabled) ? `${count} · paused` : count

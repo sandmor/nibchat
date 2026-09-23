@@ -103,9 +103,15 @@ import { ContextBookPicker } from "./context-book-picker"
 import { ChatVariablesPicker } from "./chat-variables-picker"
 import { ChatHeaderMore } from "./chat-header-more"
 import {
+  ScheduledGenerationDialog,
+  ScheduledGenerationProvider,
+  type PendingGeneration,
+} from "./scheduled-generation"
+import {
   ScheduleClockFields,
   cadenceFromClock,
   defaultScheduleClock,
+  scheduleClockError,
   type ScheduleClock,
 } from "./schedule-dialog"
 import {
@@ -187,6 +193,7 @@ import {
   durableAuthoredParts,
   isEmptyParts,
   messagePartsSchema,
+  textFromParts,
 } from "@/lib/agent/parts"
 import { applyContextEntryOverrides } from "@/lib/context-books"
 
@@ -198,6 +205,35 @@ type Props = {
   selectNodeId?: string | null
   draftSpaceId?: string | null
   draftTemplateId?: string | null
+}
+
+function generationScheduleName(text: string) {
+  const trimmed = text.trim().slice(0, MAX_NAME)
+  return trimmed || "Generation"
+}
+
+function generationScheduleNameFromParts(partsJson: string) {
+  try {
+    const parts = JSON.parse(partsJson) as Parts
+    if (!Array.isArray(parts)) return "Generation"
+    return generationScheduleName(textFromParts(parts))
+  } catch {
+    return "Generation"
+  }
+}
+
+function messagePreviewFromParts(partsJson: string) {
+  try {
+    const parts = JSON.parse(partsJson) as Parts
+    if (!Array.isArray(parts)) return ""
+    return textFromParts(parts).trim()
+  } catch {
+    return ""
+  }
+}
+
+function attachmentCountLabel(count: number) {
+  return `${count} attachment${count === 1 ? "" : "s"}`
 }
 
 const EMPTY_DRAFT_TEMPLATE: ChatTemplateDocument = {
@@ -305,6 +341,22 @@ export function ChatView({
   const [scheduleEnabled, setScheduleEnabled] = useState(false)
   const [scheduleClock, setScheduleClock] = useState<ScheduleClock>(() =>
     defaultScheduleClock()
+  )
+  const [scheduleSendOpen, setScheduleSendOpen] = useState(false)
+  const [scheduleToCancel, setScheduleToCancel] = useState<string | null>(null)
+  const [editingScheduleId, setEditingScheduleId] = useState<string | null>(
+    null
+  )
+  const [scheduleSource, setScheduleSource] = useState<{
+    slot: string | null
+    parentId: string | null
+    draft: ReturnType<typeof readComposerDraft>
+  } | null>(null)
+  const [scheduleSendClock, setScheduleSendClock] = useState<ScheduleClock>(
+    () => ({
+      ...defaultScheduleClock(),
+      kind: "once",
+    })
   )
   const [templateOpen, setTemplateOpen] = useState(false)
   const [pendingTemplateId, setPendingTemplateId] = useState<
@@ -595,10 +647,7 @@ export function ChatView({
   const templatesQuery = useQuery(
     trpc.workspace.listChatTemplates.queryOptions()
   )
-  const schedulesQuery = useQuery({
-    ...trpc.workspace.listSchedules.queryOptions(),
-    enabled: saveTemplateOpen,
-  })
+  const schedulesQuery = useQuery(trpc.workspace.listSchedules.queryOptions())
   const templateOptions = (templatesQuery.data ?? []).map((template) => ({
     id: template.id,
     name: template.name,
@@ -860,7 +909,10 @@ export function ChatView({
   ])
 
   const invalidateWorkspace = async () => {
-    await queryClient.invalidateQueries(trpc.workspace.get.queryFilter())
+    await Promise.all([
+      queryClient.invalidateQueries(trpc.workspace.get.queryFilter()),
+      queryClient.invalidateQueries(trpc.workspace.listSchedules.queryFilter()),
+    ])
   }
 
   const materializeTemplateMutation = useMutation(
@@ -893,6 +945,22 @@ export function ChatView({
           input.templateId ? "Template and schedule updated" : "Schedule saved"
         )
         setSaveTemplateOpen(false)
+      },
+      onError: (error) => toast.error(error.message),
+    })
+  )
+  const createChatScheduleMutation = useMutation(
+    trpc.workspace.createChatSchedule.mutationOptions()
+  )
+  const cancelScheduleMutation = useMutation(
+    trpc.workspace.deleteSchedule.mutationOptions({
+      onSuccess: async () => {
+        await Promise.all([
+          queryClient.invalidateQueries(
+            trpc.workspace.listSchedules.queryFilter()
+          ),
+          queryClient.invalidateQueries(trpc.workspace.get.queryFilter()),
+        ])
       },
       onError: (error) => toast.error(error.message),
     })
@@ -1626,6 +1694,85 @@ export function ChatView({
     }
   }
 
+  function openScheduleComposer(slot: string, parentId: string | null) {
+    setScheduleSource({ slot, parentId, draft: readComposerDraft(slot) })
+    setScheduleSendClock({ ...defaultScheduleClock(), kind: "once" })
+    setScheduleSendOpen(true)
+  }
+
+  async function scheduleComposer() {
+    if (!scheduleSource) return
+    const { draft, slot, parentId: sourceParentId } = scheduleSource
+    if (draft.attachments.some((attachment) => attachment.uploading)) return
+    const cadence = cadenceFromClock(scheduleSendClock)
+    if (!cadence || cadence.kind !== "once") {
+      toast.error("Choose a future date and time")
+      return
+    }
+    const hasDraft = Boolean(draft.text.trim() || draft.attachments.length)
+    try {
+      const ensured = await ensureChatId()
+      const parentId =
+        ensured.created && sourceParentId
+          ? (draftNodeIdMap.current[sourceParentId] ?? null)
+          : sourceParentId
+      if (hasDraft) {
+        await createMessageMutation.mutateAsync({
+          chatId: ensured.chatId,
+          parentId,
+          role: "user",
+          parts: draft.text.trim()
+            ? [{ type: "text", text: draft.text.trim() }]
+            : [],
+          attachments: draft.attachments.map((item) => item.reference),
+          attachSelection: true,
+          schedule: {
+            name: generationScheduleName(draft.text),
+            at: cadence.at,
+            timeZone: cadence.timeZone,
+          },
+        })
+        if (slot)
+          updateSessionDraft(
+            slot,
+            clearSubmittedComposerDraft(
+              readComposerDraft(slot),
+              draft.text,
+              draft.attachments
+            )
+          )
+      } else {
+        if (!parentId) {
+          toast.error("A generation can only be scheduled from a user message.")
+          return
+        }
+        const anchor = renderNodes.find((node) => node.id === parentId)
+        await createChatScheduleMutation.mutateAsync({
+          name: anchor
+            ? generationScheduleNameFromParts(anchor.parts_json)
+            : "Generation",
+          chatId: ensured.chatId,
+          parentId,
+          at: cadence.at,
+          timeZone: cadence.timeZone,
+        })
+      }
+      await Promise.all([
+        queryClient.invalidateQueries(
+          trpc.workspace.listSchedules.queryFilter()
+        ),
+        queryClient.invalidateQueries(trpc.workspace.get.queryFilter()),
+      ])
+      setScheduleSendOpen(false)
+      toast.success("Generation scheduled")
+      if (ensured.created) router.replace(`/chat/${ensured.chatId}`)
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not schedule message"
+      )
+    }
+  }
+
   async function uploadFiles(slot: string, files: FileList | File[]) {
     const read = () => readComposerDraft(slot)
     const writeAttachments = (next: ComposerAttachment[]) => {
@@ -2232,6 +2379,62 @@ export function ChatView({
   }
 
   const leafIsUser = activePath.at(-1)?.role === "user"
+  const pendingGenerations = useMemo(() => {
+    const rows: PendingGeneration[] = []
+    for (const parent of renderNodes) {
+      if (parent.role !== "user" || !parent.schedules?.length) continue
+      for (const schedule of parent.schedules) {
+        rows.push({
+          id: schedule.id,
+          parentId: parent.id,
+          nextRunAt: schedule.nextRunAt,
+          timeZone: schedule.timeZone,
+        })
+      }
+    }
+    return rows
+  }, [renderNodes])
+  const openPendingGeneration = useCallback((scheduleId: string) => {
+    setEditingScheduleId(scheduleId)
+  }, [])
+  const cancelPendingGeneration = useCallback((scheduleId: string) => {
+    setScheduleToCancel(scheduleId)
+  }, [])
+  const editingSchedule = useMemo(() => {
+    if (!editingScheduleId) return null
+    for (const node of renderNodes) {
+      const schedule = node.schedules?.find(
+        (item) => item.id === editingScheduleId
+      )
+      if (schedule) return schedule
+    }
+    return null
+  }, [editingScheduleId, renderNodes])
+  const openGenerationForNode = useCallback((nodeId: string) => {
+    setScheduleSource({
+      slot: null,
+      parentId: nodeId,
+      draft: { text: "", attachments: [] },
+    })
+    setScheduleSendClock({ ...defaultScheduleClock(), kind: "once" })
+    setScheduleSendOpen(true)
+  }, [])
+  const scheduledGeneration = useMemo(
+    () => ({
+      available: schedulesQuery.data?.available === true,
+      pending: pendingGenerations,
+      openForNode: openGenerationForNode,
+      openPending: openPendingGeneration,
+      cancel: cancelPendingGeneration,
+    }),
+    [
+      cancelPendingGeneration,
+      openGenerationForNode,
+      openPendingGeneration,
+      pendingGenerations,
+      schedulesQuery.data?.available,
+    ]
+  )
   const canSchedule =
     leafIsUser && schedulesQuery.data?.available === true && inFlightCount === 0
 
@@ -2252,6 +2455,11 @@ export function ChatView({
     )
     const name = saveTemplateName.trim()
     if (scheduleEnabled && canSchedule) {
+      const clockError = scheduleClockError(scheduleClock)
+      if (clockError) {
+        toast.error(clockError)
+        return
+      }
       const cadence = cadenceFromClock(scheduleClock)
       if (!cadence) {
         toast.error("Enter a time")
@@ -2282,6 +2490,17 @@ export function ChatView({
         : {}),
     })
   }
+
+  const schedulePreview = scheduleSource?.draft.text.trim()
+    ? scheduleSource.draft.text
+    : scheduleSource &&
+        scheduleSource.draft.attachments.length === 0 &&
+        scheduleSource.parentId
+      ? messagePreviewFromParts(
+          renderNodes.find((node) => node.id === scheduleSource.parentId)
+            ?.parts_json ?? ""
+        )
+      : ""
 
   return (
     <ContextPreviewProvider
@@ -2610,184 +2829,200 @@ export function ChatView({
           }}
         />
 
-        <MessageLayer
-          value={find.layerValue}
-          resolveOperation={resolveDraftMessageOperation}
-        >
-          {view === "linear" ? (
-            <ChatTranscript
-              chatKey={chatKey}
-              density={density}
-              activePath={activePath}
-              nodes={renderNodes}
-              providers={providers}
-              streamIdByNodeId={streamIdByNodeId}
-              afterTipStreams={afterTipStreams}
-              showEmpty={showEmpty}
-              emptyHint={
-                showTemplatePicker
-                  ? "Or choose a chat template to start from a saved conversation."
-                  : undefined
-              }
-              ariaBusy={ariaBusy}
-              animate={animate}
-              transition={transition}
-              messageActionCaptions={appearance.messageActions.captions}
-              editingNodeIds={editingNodeIds}
-              scrollTargetId={scrollTargetId}
-              onScrollTargetConsumed={consumeScrollTarget}
-              findLocateKey={find.locateKey}
-              onSelect={(parentId, childId) => {
-                if (!data.chat) {
-                  if (parentId)
-                    setDraftTemplateNodes((current) =>
-                      current.map((node) =>
-                        node.id === parentId
-                          ? { ...node, selected_child_id: childId }
-                          : node
-                      )
-                    )
-                  else setDraftTemplateRootId(childId)
-                } else if (parentId)
-                  selectChildMutation.mutate({
-                    nodeId: parentId,
-                    childId,
-                  })
-                else
-                  selectRootMutation.mutate({
-                    chatId: data.chat.id,
-                    nodeId: childId,
-                  })
-                // User-driven branch navigation — bring the selected tip into view.
-                setScrollTargetId(childId)
-              }}
-              onChanged={() => invalidateWorkspace()}
-              onRegenerate={streamRegenerate}
-              onAnswerTools={streamResume}
-              editor={messageEditor}
-            />
-          ) : (
-            <ChatTree
-              key={chatIdentity}
-              nodes={renderNodes}
-              activePath={activePath}
-              draftAnchors={treeDraftAnchors}
-              editingNodeIds={editingNodeIds}
-              providers={providers}
-              streamIdByNodeId={streamIdByNodeId}
-              animate={animate}
-              transition={transition}
-              messageActionCaptions={appearance.messageActions.captions}
-              messageLayoutIds={composeMorphs}
-              focusTargetId={scrollTargetId}
-              onFocusTargetConsumed={consumeScrollTarget}
-              findQuery={find.findOpen ? find.findNeedle : ""}
-              searchHitIds={find.searchHitIds}
-              findLocate={find.findOpen ? find.findLocate : null}
-              onLocateHit={find.locateNode}
-              onHandoffComplete={finishComposeHandoff}
-              onSendDraft={streamTreeSend}
-              renderComposer={(anchor, options) => {
-                const slot = treeSlot(anchor)
-                const role = treeComposerRoles[anchor ?? "root"] ?? "user"
-                return (
-                  <div>
-                    <ComposerRoleToggle
-                      className="mb-1"
-                      value={role}
-                      onChange={(candidate) =>
-                        setTreeComposerRoles((current) => ({
-                          ...current,
-                          [anchor ?? "root"]: candidate,
-                        }))
-                      }
-                    />
-                    <SessionMessageEditor
-                      slot={slot}
-                      variant="inline"
-                      autoFocus={options.autoFocus}
-                      submitting={options.submitting}
-                      animate={animate && transition.duration > 0}
-                      placeholder={
-                        role === "user"
-                          ? anchor
-                            ? "Take this conversation somewhere new…"
-                            : "Start a new root…"
-                          : "Write an assistant message…"
-                      }
-                      mcpAvailable={
-                        role === "user" && mcpAvailableForGeneration
-                      }
-                      allowAttachments={role === "user"}
-                      streaming={options.submitting}
-                      showContextPreview
-                      contextParentId={anchor}
-                      sendLabel={role === "user" ? "Send" : "Save"}
-                      allowEmptySend={role === "user"}
-                      onSend={options.onSend}
-                      onCancel={() => closeTreeDraft(anchor)}
-                      onFiles={(files) => void uploadFiles(slot, files)}
-                      onRemoveAttachment={(part) =>
-                        removeAttachment(slot, part)
-                      }
-                      onPreview={(src, name) => setViewer({ src, name })}
-                      onOpenResources={() => {
-                        setPickerSlot(slot)
-                        setResourcePickerOpen(true)
-                      }}
-                      onOpenPrompts={() => {
-                        setPickerSlot(slot)
-                        setPromptPickerOpen(true)
-                      }}
-                      onStop={() =>
-                        streamsForActiveChat.forEach(([id]) => stopStream(id))
-                      }
-                      onRevealContextMessage={setScrollTargetId}
-                    />
-                  </div>
-                )
-              }}
-              onOpenDraft={openTreeDraft}
-              onChanged={invalidateWorkspace}
-              onRegenerate={streamTreeRegenerate}
-              onAnswerTools={streamTreeResume}
-              editor={messageEditor}
-              onStop={() =>
-                streamsForActiveChat.forEach(([id]) => stopStream(id))
-              }
-              initialCamera={renderedViewState.camera}
-              onCameraChange={(camera) => {
-                if (data.chat) persistTreeCamera(data.chat.id, camera)
-              }}
-            />
-          )}
-          <AnimatePresence>
-            {find.findOpen ? (
-              <ConversationFindBar
-                view={view}
-                query={find.findQuery}
-                onQueryChange={find.onQueryChange}
-                focusNonce={find.focusNonce}
-                current={find.current}
-                total={find.total}
-                onPrev={() => find.stepFind(-1)}
-                onNext={() => find.stepFind(1)}
-                onClose={find.closeFind}
-                pathCount={find.pathCount}
-                offPathCount={find.offPathCount}
-                onShowInTree={find.showOffPathInTree}
-                onJump={find.jumpToFirstOffPath}
-                showUseThisPath={find.showUseThisPath}
-                onUseThisPath={find.useThisPath}
-                results={find.results}
-                activeNodeId={find.activeNodeId}
-                onSelectResult={find.locateNode}
+        <ScheduledGenerationProvider value={scheduledGeneration}>
+          <MessageLayer
+            value={find.layerValue}
+            resolveOperation={resolveDraftMessageOperation}
+          >
+            {view === "linear" ? (
+              <ChatTranscript
+                chatKey={chatKey}
+                density={density}
+                activePath={activePath}
+                nodes={renderNodes}
+                providers={providers}
+                streamIdByNodeId={streamIdByNodeId}
+                afterTipStreams={afterTipStreams}
+                showEmpty={showEmpty}
+                emptyHint={
+                  showTemplatePicker
+                    ? "Or choose a chat template to start from a saved conversation."
+                    : undefined
+                }
+                ariaBusy={ariaBusy}
                 animate={animate}
                 transition={transition}
+                messageActionCaptions={appearance.messageActions.captions}
+                editingNodeIds={editingNodeIds}
+                scrollTargetId={scrollTargetId}
+                onScrollTargetConsumed={consumeScrollTarget}
+                findLocateKey={find.locateKey}
+                onSelect={(parentId, childId) => {
+                  if (!data.chat) {
+                    if (parentId)
+                      setDraftTemplateNodes((current) =>
+                        current.map((node) =>
+                          node.id === parentId
+                            ? { ...node, selected_child_id: childId }
+                            : node
+                        )
+                      )
+                    else setDraftTemplateRootId(childId)
+                  } else if (parentId)
+                    selectChildMutation.mutate({
+                      nodeId: parentId,
+                      childId,
+                    })
+                  else
+                    selectRootMutation.mutate({
+                      chatId: data.chat.id,
+                      nodeId: childId,
+                    })
+                  // User-driven branch navigation — bring the selected tip into view.
+                  setScrollTargetId(childId)
+                }}
+                onChanged={() => invalidateWorkspace()}
+                onRegenerate={streamRegenerate}
+                onAnswerTools={streamResume}
+                editor={messageEditor}
               />
-            ) : null}
-          </AnimatePresence>
-        </MessageLayer>
+            ) : (
+              <ChatTree
+                key={chatIdentity}
+                nodes={renderNodes}
+                activePath={activePath}
+                draftAnchors={treeDraftAnchors}
+                editingNodeIds={editingNodeIds}
+                providers={providers}
+                streamIdByNodeId={streamIdByNodeId}
+                animate={animate}
+                transition={transition}
+                messageActionCaptions={appearance.messageActions.captions}
+                messageLayoutIds={composeMorphs}
+                focusTargetId={scrollTargetId}
+                onFocusTargetConsumed={consumeScrollTarget}
+                findQuery={find.findOpen ? find.findNeedle : ""}
+                searchHitIds={find.searchHitIds}
+                findLocate={find.findOpen ? find.findLocate : null}
+                onLocateHit={find.locateNode}
+                onHandoffComplete={finishComposeHandoff}
+                onSendDraft={streamTreeSend}
+                renderComposer={(anchor, options) => {
+                  const slot = treeSlot(anchor)
+                  const role = treeComposerRoles[anchor ?? "root"] ?? "user"
+                  return (
+                    <div>
+                      <ComposerRoleToggle
+                        className="mb-1"
+                        value={role}
+                        onChange={(candidate) =>
+                          setTreeComposerRoles((current) => ({
+                            ...current,
+                            [anchor ?? "root"]: candidate,
+                          }))
+                        }
+                      />
+                      <SessionMessageEditor
+                        slot={slot}
+                        variant="inline"
+                        autoFocus={options.autoFocus}
+                        submitting={options.submitting}
+                        animate={animate && transition.duration > 0}
+                        placeholder={
+                          role === "user"
+                            ? anchor
+                              ? "Take this conversation somewhere new…"
+                              : "Start a new root…"
+                            : "Write an assistant message…"
+                        }
+                        mcpAvailable={
+                          role === "user" && mcpAvailableForGeneration
+                        }
+                        allowAttachments={role === "user"}
+                        streaming={options.submitting}
+                        showContextPreview
+                        contextParentId={anchor}
+                        sendLabel={role === "user" ? "Send" : "Save"}
+                        allowEmptySend={role === "user"}
+                        onSend={options.onSend}
+                        onSchedule={
+                          role === "user"
+                            ? () => openScheduleComposer(slot, anchor)
+                            : undefined
+                        }
+                        scheduleAvailable={
+                          schedulesQuery.data?.available === true
+                        }
+                        scheduleFromAnchor={
+                          Boolean(anchor) &&
+                          renderNodes.some(
+                            (node) => node.id === anchor && node.role === "user"
+                          )
+                        }
+                        onCancel={() => closeTreeDraft(anchor)}
+                        onFiles={(files) => void uploadFiles(slot, files)}
+                        onRemoveAttachment={(part) =>
+                          removeAttachment(slot, part)
+                        }
+                        onPreview={(src, name) => setViewer({ src, name })}
+                        onOpenResources={() => {
+                          setPickerSlot(slot)
+                          setResourcePickerOpen(true)
+                        }}
+                        onOpenPrompts={() => {
+                          setPickerSlot(slot)
+                          setPromptPickerOpen(true)
+                        }}
+                        onStop={() =>
+                          streamsForActiveChat.forEach(([id]) => stopStream(id))
+                        }
+                        onRevealContextMessage={setScrollTargetId}
+                      />
+                    </div>
+                  )
+                }}
+                onOpenDraft={openTreeDraft}
+                onChanged={invalidateWorkspace}
+                onRegenerate={streamTreeRegenerate}
+                onAnswerTools={streamTreeResume}
+                editor={messageEditor}
+                onStop={() =>
+                  streamsForActiveChat.forEach(([id]) => stopStream(id))
+                }
+                initialCamera={renderedViewState.camera}
+                onCameraChange={(camera) => {
+                  if (data.chat) persistTreeCamera(data.chat.id, camera)
+                }}
+              />
+            )}
+            <AnimatePresence>
+              {find.findOpen ? (
+                <ConversationFindBar
+                  view={view}
+                  query={find.findQuery}
+                  onQueryChange={find.onQueryChange}
+                  focusNonce={find.focusNonce}
+                  current={find.current}
+                  total={find.total}
+                  onPrev={() => find.stepFind(-1)}
+                  onNext={() => find.stepFind(1)}
+                  onClose={find.closeFind}
+                  pathCount={find.pathCount}
+                  offPathCount={find.offPathCount}
+                  onShowInTree={find.showOffPathInTree}
+                  onJump={find.jumpToFirstOffPath}
+                  showUseThisPath={find.showUseThisPath}
+                  onUseThisPath={find.useThisPath}
+                  results={find.results}
+                  activeNodeId={find.activeNodeId}
+                  onSelectResult={find.locateNode}
+                  animate={animate}
+                  transition={transition}
+                />
+              ) : null}
+            </AnimatePresence>
+          </MessageLayer>
+        </ScheduledGenerationProvider>
 
         {view === "linear" ? (
           <div className="shrink-0 border-t border-border bg-background p-3 sm:px-6 sm:py-4">
@@ -2806,6 +3041,11 @@ export function ChatView({
                 contextParentId={composerParentId}
                 sendLabel="Send"
                 onSend={() => void streamSubmit()}
+                onSchedule={() =>
+                  openScheduleComposer(linearComposerSlot, composerParentId)
+                }
+                scheduleAvailable={schedulesQuery.data?.available === true}
+                scheduleFromAnchor={leafIsUser}
                 onFiles={(files) => void uploadFiles(linearComposerSlot, files)}
                 onRemoveAttachment={(part) =>
                   removeAttachment(linearComposerSlot, part)
@@ -2827,6 +3067,133 @@ export function ChatView({
             </div>
           </div>
         ) : null}
+
+        <AlertDialog
+          open={scheduleToCancel != null}
+          onOpenChange={(open) => {
+            if (!open) setScheduleToCancel(null)
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Cancel scheduled generation?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This pending reply will not run. The message stays.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Keep it</AlertDialogCancel>
+              <AlertDialogAction
+                variant="destructive"
+                disabled={cancelScheduleMutation.isPending}
+                onClick={() => {
+                  if (!scheduleToCancel) return
+                  cancelScheduleMutation.mutate({ id: scheduleToCancel })
+                  setScheduleToCancel(null)
+                }}
+              >
+                Cancel schedule
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+        <ScheduledGenerationDialog
+          schedule={editingSchedule}
+          onOpenChange={(open) => {
+            if (!open) setEditingScheduleId(null)
+          }}
+        />
+        <Dialog open={scheduleSendOpen} onOpenChange={setScheduleSendOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Generate later</DialogTitle>
+              <DialogDescription>
+                {scheduleSource?.draft.text.trim() ||
+                scheduleSource?.draft.attachments.length
+                  ? "Save this message now and run the reply at the chosen time."
+                  : "Run the reply from this message at the chosen time."}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-3">
+              {schedulePreview ? (
+                <p className="line-clamp-3 rounded-xl bg-muted p-3 text-sm whitespace-pre-wrap">
+                  {schedulePreview}
+                </p>
+              ) : null}
+              {scheduleSource?.draft.attachments.length ? (
+                <p className="text-xs text-muted-foreground">
+                  {attachmentCountLabel(
+                    scheduleSource.draft.attachments.length
+                  )}
+                </p>
+              ) : null}
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    const date = new Date(Date.now() + 60 * 60 * 1000)
+                    setScheduleSendClock({
+                      ...defaultScheduleClock(),
+                      kind: "once",
+                      date: `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`,
+                      time: `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`,
+                    })
+                  }}
+                >
+                  In 1 hour
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    setScheduleSendClock({
+                      ...defaultScheduleClock(),
+                      kind: "once",
+                    })
+                  }
+                >
+                  Tomorrow morning
+                </Button>
+              </div>
+              <ScheduleClockFields
+                clock={scheduleSendClock}
+                spaces={workspace.spaces}
+                onceOnly
+                showSpace={false}
+                onChange={(patch) =>
+                  setScheduleSendClock((current) => ({
+                    ...current,
+                    ...patch,
+                    kind: "once",
+                  }))
+                }
+              />
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setScheduleSendOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                disabled={
+                  createMessageMutation.isPending ||
+                  createChatScheduleMutation.isPending ||
+                  Boolean(scheduleClockError(scheduleSendClock))
+                }
+                onClick={() => void scheduleComposer()}
+              >
+                Schedule generation
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         <ImageViewer image={viewer} onClose={() => setViewer(null)} />
 
@@ -3047,7 +3414,10 @@ export function ChatView({
               <DialogDescription>
                 Saves this conversation&apos;s complete message tree, including
                 branches. New chats can start from it, and a space can use it as
-                the default.
+                the default. The template does not save chat settings.
+                {scheduleEnabled && canSchedule
+                  ? " This schedule keeps this chat’s own settings. Each run also uses your current user and selected space defaults."
+                  : null}
               </DialogDescription>
             </DialogHeader>
             <div className="grid gap-3">
@@ -3162,7 +3532,10 @@ export function ChatView({
                   !saveTemplateName.trim() ||
                   saveTemplateMutation.isPending ||
                   scheduleFromChatMutation.isPending ||
-                  inFlightCount > 0
+                  inFlightCount > 0 ||
+                  (scheduleEnabled &&
+                    canSchedule &&
+                    Boolean(scheduleClockError(scheduleClock)))
                 }
                 onClick={submitSaveTemplate}
               >

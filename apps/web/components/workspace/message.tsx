@@ -12,13 +12,11 @@ import {
   type MouseEvent,
 } from "react"
 import { toast } from "sonner"
-import {
-  expandPromptMacros,
-  type MacroContext,
-} from "@/lib/prompt-macros"
+import { expandPromptMacros, type MacroContext } from "@/lib/prompt-macros"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
   ArrowMoveUpRightIcon,
+  Clock01Icon,
   GitBranchIcon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons"
@@ -107,6 +105,10 @@ import {
   useMessageMutationController,
   type MessageMutationOperation,
 } from "./message-mutations"
+import {
+  scheduledGenerationMenuLabel,
+  useScheduledGeneration,
+} from "./scheduled-generation"
 
 type MessageDialog = "details" | "delete" | "move" | "replace"
 type MountedMessageDialogs = Record<MessageDialog, boolean>
@@ -593,10 +595,7 @@ export const Message = memo(function Message({
   }
   const beginEdit = () => {
     if (hasEditorSession(editSlot)) return
-    const latest = overlayFor(
-      literalParts ?? parts,
-      streamId
-    )
+    const latest = overlayFor(literalParts ?? parts, streamId)
     const editParts =
       node.status === "streaming" || streamId
         ? durableAuthoredParts(latest)
@@ -658,6 +657,21 @@ export const Message = memo(function Message({
       }
     )
   }
+
+  const scheduledGeneration = useScheduledGeneration()
+  const scheduleMenu =
+    scheduledGeneration?.available && node.role === "user"
+      ? (() => {
+          const hasAssistantChild = nodes.some(
+            (candidate) =>
+              candidate.parent_id === node.id && candidate.role === "assistant"
+          )
+          return {
+            label: scheduledGenerationMenuLabel(hasAssistantChild),
+            onOpen: () => scheduledGeneration.openForNode(node.id),
+          }
+        })()
+      : null
 
   const footerHtml = prepareMessageFooterHtml({
     captions: messageActionCaptions,
@@ -929,6 +943,17 @@ export const Message = memo(function Message({
               side="top"
               className="max-w-[min(20rem,calc(100vw-1.5rem))]"
             >
+              {scheduleMenu ? (
+                <DropdownMenuItem onClick={scheduleMenu.onOpen}>
+                  <HugeiconsIcon
+                    icon={Clock01Icon}
+                    strokeWidth={2}
+                    className="size-3.5 text-muted-foreground"
+                    aria-hidden
+                  />
+                  {scheduleMenu.label}
+                </DropdownMenuItem>
+              ) : null}
               <DropdownMenuItem onClick={() => void copyMarkdown("path")}>
                 <HugeiconsIcon
                   icon={GitBranchIcon}

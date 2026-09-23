@@ -28,7 +28,18 @@ import type { ChatViewCamera } from "@/lib/chat-view-state"
 import type { ProviderSummary } from "./types"
 import { ComposeSlot, TreeHandoff, TreePlaque } from "./tree-card"
 import { Message, type MessageEditorBindings } from "./message"
+import {
+  ScheduledGenerationCard,
+  scheduledGenerationVerb,
+  useScheduledGeneration,
+} from "./scheduled-generation"
 import { collectHandoffs, uniqueHandoffAnchors } from "./tree-handoff"
+import {
+  reconcileScheduleDepartures,
+  sameScheduleDepartures,
+  type ScheduleDeparture,
+  type ScheduleSnapshot,
+} from "./schedule-handoff"
 import {
   ROOT_ADD_ID,
   addAnchor,
@@ -36,7 +47,10 @@ import {
   cardMaxHeight,
   composeLayoutId,
   isAddId,
+  isScheduleId,
   layoutChatTree,
+  scheduleLayoutAnchor,
+  scheduleLayoutId,
   treeConnectorPath,
   type TreeLayout,
   type TreeRect,
@@ -93,6 +107,46 @@ function readTreeCardSizes(
     }
   }
   return changed ? next : current
+}
+
+function ScheduleFade({
+  rect,
+  transition,
+  onDone,
+  children,
+}: {
+  rect: TreeRect
+  transition: { duration: number }
+  onDone: () => void
+  children: ReactNode
+}) {
+  const onDoneRef = useRef(onDone)
+  onDoneRef.current = onDone
+  const transitionRef = useRef(transition)
+  useEffect(() => {
+    const ms = Math.max(
+      0,
+      Math.ceil(transitionRef.current.duration * 1000) + 32
+    )
+    const timer = window.setTimeout(() => onDoneRef.current(), ms)
+    return () => window.clearTimeout(timer)
+  }, [])
+  return (
+    <motion.div
+      className="pointer-events-none absolute"
+      style={{
+        left: rect.x,
+        top: rect.y,
+        width: rect.width,
+        height: rect.height,
+      }}
+      initial={{ opacity: 1 }}
+      animate={{ opacity: 0 }}
+      transition={transitionRef.current}
+    >
+      {children}
+    </motion.div>
+  )
 }
 
 export function ChatTree({
@@ -222,9 +276,17 @@ export function ChatTree({
   morphsRef.current = messageLayoutIds
   const onHandoffCompleteRef = useRef(onHandoffComplete)
   onHandoffCompleteRef.current = onHandoffComplete
+  const scheduledGeneration = useScheduledGeneration()
+  const pendingGenerations = scheduledGeneration?.pending
   const layout = useMemo(
-    () => layoutChatTree(nodes, { draftAnchors, editingNodeIds, sizes }),
-    [nodes, draftAnchors, editingNodeIds, sizes]
+    () =>
+      layoutChatTree(nodes, {
+        draftAnchors,
+        editingNodeIds,
+        sizes,
+        schedules: pendingGenerations,
+      }),
+    [nodes, draftAnchors, editingNodeIds, sizes, pendingGenerations]
   )
   const forestTransition =
     animate && forestMotion ? transition : { ...transition, duration: 0 }
@@ -275,6 +337,62 @@ export function ChatTree({
     }
     return lit
   }, [pathIds, focusedId, nodesById])
+  const pendingList = pendingGenerations ?? []
+  const assistantSnapshots = useMemo(
+    () =>
+      nodes.flatMap((node) =>
+        node.role === "assistant" && node.parent_id
+          ? [{ id: node.id, parentId: node.parent_id }]
+          : []
+      ),
+    [nodes]
+  )
+  const scheduleMemoryRef = useRef<{
+    schedules: ScheduleSnapshot[]
+    assistants: { id: string; parentId: string }[]
+  }>({ schedules: [], assistants: [] })
+  const [departures, setDepartures] = useState<ScheduleDeparture[]>([])
+  const departureKey = `${pendingList.map((item) => item.id).join("\0")}|${assistantSnapshots.map((item) => item.id).join("\0")}`
+  const [seenDepartureKey, setSeenDepartureKey] = useState(departureKey)
+  if (departureKey !== seenDepartureKey) {
+    const nextDepartures = reconcileScheduleDepartures({
+      current: departures,
+      previous: scheduleMemoryRef.current.schedules,
+      pendingIds: new Set(pendingList.map((item) => item.id)),
+      previousAssistants: scheduleMemoryRef.current.assistants,
+      assistants: assistantSnapshots,
+    })
+    setSeenDepartureKey(departureKey)
+    if (!sameScheduleDepartures(departures, nextDepartures))
+      setDepartures(nextDepartures)
+  } else {
+    scheduleMemoryRef.current = {
+      schedules: pendingList.flatMap((item) => {
+        const rect = layout.rects.get(scheduleLayoutId(item.id))
+        if (!rect) return []
+        return [
+          {
+            id: item.id,
+            parentId: item.parentId,
+            nextRunAt: item.nextRunAt,
+            timeZone: item.timeZone,
+            rect: { ...rect },
+          },
+        ]
+      }),
+      assistants: assistantSnapshots,
+    }
+  }
+  const morphNodeIds = useMemo(
+    () =>
+      new Set(departures.flatMap((item) => (item.nodeId ? [item.nodeId] : []))),
+    [departures]
+  )
+  const dismissDeparture = useCallback((scheduleId: string) => {
+    setDepartures((current) =>
+      current.filter((item) => item.scheduleId !== scheduleId)
+    )
+  }, [])
 
   useEffect(() => {
     focusedIdRef.current = focusedId
@@ -851,7 +969,9 @@ export function ChatTree({
             const to = layout.rects.get(edge.to)
             if (!from || !to) return null
             const d = treeConnectorPath(from, to)
-            const lit = litIds.has(edge.from) && litIds.has(edge.to)
+            const lit =
+              litIds.has(edge.from) &&
+              (litIds.has(edge.to) || isScheduleId(edge.to))
             const className = lit
               ? "stroke-[var(--tree-active-color)]"
               : "stroke-[var(--tree-edge-color)]"
@@ -877,7 +997,8 @@ export function ChatTree({
           })}
         </svg>
         {nodes.map((node) => {
-          if (handoffNodeIds.has(node.id)) return null
+          if (handoffNodeIds.has(node.id) || morphNodeIds.has(node.id))
+            return null
           const rect = layout.rects.get(node.id)
           if (!rect) return null
           const streamId = streamIdByNodeId.get(node.id)
@@ -973,6 +1094,117 @@ export function ChatTree({
                 />
               )}
             </motion.div>
+          )
+        })}
+        {[...layout.rects.entries()]
+          .filter(([id]) => isScheduleId(id))
+          .map(([id, rect]) => {
+            const schedule = pendingGenerations?.find(
+              (item) => item.id === scheduleLayoutAnchor(id)
+            )
+            if (!schedule) return null
+            const parentOnPath = pathIds.has(schedule.parentId)
+            const parentHit = hitIds.has(schedule.parentId)
+            return (
+              <motion.div
+                key={id}
+                className={cn(
+                  "absolute",
+                  searching && !parentHit && "opacity-50",
+                  !searching && !parentOnPath && "opacity-55"
+                )}
+                initial={false}
+                animate={{
+                  left: rect.x,
+                  top: rect.y,
+                  width: rect.width,
+                  height: rect.height,
+                }}
+                transition={forestTransition}
+              >
+                <ScheduledGenerationCard
+                  nextRunAt={schedule.nextRunAt}
+                  timeZone={schedule.timeZone}
+                  verb={scheduledGenerationVerb(
+                    nodes.some(
+                      (node) =>
+                        node.parent_id === schedule.parentId &&
+                        node.role === "assistant"
+                    )
+                  )}
+                  onOpen={() => scheduledGeneration?.openPending(schedule.id)}
+                  onCancel={() => scheduledGeneration?.cancel(schedule.id)}
+                />
+              </motion.div>
+            )
+          })}
+        {departures.map((departure) => {
+          const verb = scheduledGenerationVerb(
+            nodes.some(
+              (node) =>
+                node.parent_id === departure.parentId &&
+                node.role === "assistant" &&
+                node.id !== departure.nodeId
+            )
+          )
+          const face = (
+            <ScheduledGenerationCard
+              nextRunAt={departure.nextRunAt}
+              timeZone={departure.timeZone}
+              verb={verb}
+              onOpen={() =>
+                scheduledGeneration?.openPending(departure.scheduleId)
+              }
+              onCancel={() => scheduledGeneration?.cancel(departure.scheduleId)}
+            />
+          )
+          if (!departure.nodeId) {
+            return (
+              <ScheduleFade
+                key={`schedule-fade:${departure.scheduleId}`}
+                rect={departure.fromRect}
+                transition={forestTransition}
+                onDone={() => {
+                  setDepartures((current) =>
+                    current.filter(
+                      (item) =>
+                        item.scheduleId !== departure.scheduleId ||
+                        item.nodeId != null
+                    )
+                  )
+                }}
+              >
+                {face}
+              </ScheduleFade>
+            )
+          }
+          const toRect = layout.rects.get(departure.nodeId)
+          const node = nodesById.get(departure.nodeId)
+          if (!toRect || !node) return null
+          return (
+            <TreeHandoff
+              key={`schedule-morph:${departure.scheduleId}`}
+              fromRect={departure.fromRect}
+              toRect={toRect}
+              animate={animate}
+              transition={transition}
+              hitId={departure.nodeId}
+              composer={face}
+              message={
+                <TreeMessage
+                  node={node}
+                  nodes={nodes}
+                  providers={providers}
+                  messageActionCaptions={messageActionCaptions}
+                  onChanged={onChanged}
+                  onRegenerate={onRegenerate}
+                  onAnswerTools={onAnswerTools}
+                  editor={editor}
+                  streamId={streamIdByNodeId.get(node.id)}
+                />
+              }
+              onComplete={() => dismissDeparture(departure.scheduleId)}
+            />
           )
         })}
         {[...layout.rects.entries()]

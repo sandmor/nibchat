@@ -7,6 +7,7 @@ import {
   chatReaderDisposalTarget,
   chatRouteIdentity,
   pathSlotKey,
+  transcriptItemKey,
   transcriptGeometryChanged,
   transcriptEstimatedRowHeight,
   transcriptMeasurementLayoutKey,
@@ -183,6 +184,86 @@ describe("chat route identity", () => {
 })
 
 describe("buildTranscriptRows dual identity", () => {
+  it("shows a scheduled generation after its user message on the path", () => {
+    const user = node("u1", "user", null, {
+      schedules: [
+        {
+          id: "job",
+          nextRunAt: "2099-01-01T12:00:00.000Z",
+          timeZone: "UTC",
+        },
+      ],
+    })
+    const assistant = node("a1", "assistant", "u1")
+    const atTip = buildTranscriptRows({
+      activePath: [user],
+      ...noStreams,
+      showEmpty: false,
+    })
+    const continued = buildTranscriptRows({
+      activePath: [user, assistant],
+      ...noStreams,
+      showEmpty: false,
+      assistantParentIds: new Set(["u1"]),
+    })
+    const offPath = buildTranscriptRows({
+      activePath: [user],
+      ...noStreams,
+      showEmpty: false,
+      assistantParentIds: new Set(["u1"]),
+    })
+    expect(atTip.map((row) => row.kind)).toEqual(["path", "scheduled"])
+    expect(continued.map((row) => row.kind)).toEqual([
+      "path",
+      "scheduled",
+      "path",
+    ])
+    expect(atTip[1]?.kind === "scheduled" && atTip[1].verb).toBe("Generates")
+    expect(continued[1]?.kind === "scheduled" && continued[1].verb).toBe(
+      "Regenerates"
+    )
+    expect(offPath[1]?.kind === "scheduled" && offPath[1].verb).toBe(
+      "Regenerates"
+    )
+    expect(transcriptItemKey(continued, 0)).toBe("slot:0")
+    expect(transcriptItemKey(continued, 1)).toBe("schedules:u1")
+    expect(transcriptItemKey(continued, 2)).toBe("slot:1")
+    const several = node("u1", "user", null, {
+      schedules: [
+        {
+          id: "job-later",
+          nextRunAt: "2099-06-01T15:00:00.000Z",
+          timeZone: "UTC",
+        },
+        {
+          id: "job-b",
+          nextRunAt: "2099-01-01T12:00:00.000Z",
+          timeZone: "UTC",
+        },
+        {
+          id: "job",
+          nextRunAt: "2099-01-01T12:00:00.000Z",
+          timeZone: "UTC",
+        },
+      ],
+    })
+    const both = buildTranscriptRows({
+      activePath: [several, assistant],
+      ...noStreams,
+      showEmpty: false,
+    })
+    expect(both.map((row) => row.kind)).toEqual(["path", "scheduled", "path"])
+    expect(transcriptItemKey(both, 1)).toBe("schedules:u1")
+    expect(transcriptItemKey(both, 2)).toBe("slot:1")
+    expect(
+      both[1]?.kind === "scheduled" &&
+        both[1].items.map((item) => item.scheduleId)
+    ).toEqual(["job", "job-b", "job-later"])
+    expect(transcriptRowContentKey(atTip[1]!)).toBe(
+      "schedules:u1:job:2099-01-01T12:00:00.000Z"
+    )
+  })
+
   it("sibling swap keeps slot indexes and changes messageIds", () => {
     const base = [node("u1"), node("a1", "assistant", "u1")]
     const swapped = [node("u1"), node("a2", "assistant", "u1")]
@@ -302,6 +383,26 @@ describe("buildTranscriptRows dual identity", () => {
       "stream:s-pending",
       "stream:s-known",
     ])
+    expect(transcriptItemKey(rows, 1)).toBe("slot:1")
+    expect(transcriptItemKey(rows, 2)).toBe("slot:2")
+    const withSchedule = buildTranscriptRows({
+      activePath: [
+        node("u1", "user", null, {
+          schedules: [
+            {
+              id: "job",
+              nextRunAt: "2099-01-01T12:00:00.000Z",
+              timeZone: "UTC",
+            },
+          ],
+        }),
+        node("a1", "assistant", "u1"),
+      ],
+      streamIdByNodeId: new Map(),
+      afterTipStreams: [{ streamId: "s-known", nodeId: "asst-new" }],
+      showEmpty: false,
+    })
+    expect(transcriptItemKey(withSchedule, 3)).toBe("slot:2")
     expect(afterTipMessageId("s1", { nodeId: "pending" })).toBe("s1")
     expect(afterTipMessageId("s1", { nodeId: "n1" })).toBe("n1")
   })

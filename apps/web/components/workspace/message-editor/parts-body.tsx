@@ -146,16 +146,19 @@ export function PartsEditor({
   const pendingUploads = attachments.filter(
     (item) =>
       !parts.some(
-        (part) => part.type === "attachment" && attachmentMatchesPart(item, part)
+        (part) =>
+          part.type === "attachment" && attachmentMatchesPart(item, part)
       )
   )
   const empty = parts.length === 0
-  const ids = keys.length === parts.length ? keys : parts.map((_, i) => String(i))
+  const ids =
+    keys.length === parts.length ? keys : parts.map((_, i) => String(i))
   const sendDisabled =
     submitting ||
     attachments.some((item) => item.uploading) ||
     ids.some(
-      (id, index) => parts[index]?.type === "tool-invocation" && invalidTools[id]
+      (id, index) =>
+        parts[index]?.type === "tool-invocation" && invalidTools[id]
     ) ||
     (isEmptyParts(parts) && pendingUploads.length === 0)
   const commitToolDrafts = () => {
@@ -465,9 +468,7 @@ function SortablePartBlock({
   onInsert: (index: number, type: EditorPartType) => void
   onConvert: (type: EditorPartType) => void
   onToolValidity: (valid: boolean) => void
-  onRegisterToolCommit: (
-    commit: () => ToolDraftCommit
-  ) => void | (() => void)
+  onRegisterToolCommit: (commit: () => ToolDraftCommit) => void | (() => void)
 }) {
   const {
     attributes,
@@ -542,7 +543,11 @@ function SortablePartBlock({
           disabled={disabled}
           onClick={onRemove}
         >
-          <HugeiconsIcon icon={Delete02Icon} strokeWidth={2} className="size-3.5" />
+          <HugeiconsIcon
+            icon={Delete02Icon}
+            strokeWidth={2}
+            className="size-3.5"
+          />
         </Button>
       </div>
       <PartBlockBody
@@ -570,9 +575,7 @@ function PartBlockBody({
   autoFocus: boolean
   onChange: (part: Part) => void
   onToolValidity: (valid: boolean) => void
-  onRegisterToolCommit: (
-    commit: () => ToolDraftCommit
-  ) => void | (() => void)
+  onRegisterToolCommit: (commit: () => ToolDraftCommit) => void | (() => void)
 }) {
   if (part.type === "text" || part.type === "reasoning") {
     return (
@@ -585,7 +588,10 @@ function PartBlockBody({
           onChange({ type: part.type, text: event.target.value })
         }
         rows={part.type === "reasoning" ? 3 : 4}
-        className={cn(sourceEditorClass, part.type === "reasoning" && "text-xs")}
+        className={cn(
+          sourceEditorClass,
+          part.type === "reasoning" && "text-xs"
+        )}
       />
     )
   }

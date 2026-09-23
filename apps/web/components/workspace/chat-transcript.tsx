@@ -20,13 +20,17 @@ import { cn } from "@/lib/utils"
 import type { NodeRow } from "@/lib/types"
 import type { ProviderSummary } from "./types"
 import { Message, type MessageEditorBindings } from "./message"
+import {
+  ScheduledGenerationLane,
+  useScheduledGeneration,
+} from "./scheduled-generation"
 import { useWorkspaceChrome } from "./shell"
 import { Empty } from "./empty"
 import { PathSlot } from "./path-slot"
 import { StreamingBubble } from "./streaming-bubble"
 import {
   buildTranscriptRows,
-  pathSlotKey,
+  transcriptItemKey,
   TRANSCRIPT_COLUMN_MAX_WIDTH,
   TRANSCRIPT_SCROLL_TO_END_INSET,
   transcriptEstimatedRowHeight,
@@ -149,16 +153,21 @@ function VirtualChatTranscript({
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null)
   const [atEnd, setAtEnd] = useState(true)
 
-  const rows = useMemo(
-    () =>
-      buildTranscriptRows({
-        activePath,
-        streamIdByNodeId,
-        afterTipStreams,
-        showEmpty,
-      }),
-    [activePath, afterTipStreams, showEmpty, streamIdByNodeId]
-  )
+  const scheduledGeneration = useScheduledGeneration()
+  const rows = useMemo(() => {
+    const assistantParentIds = new Set(
+      nodes.flatMap((node) =>
+        node.role === "assistant" && node.parent_id ? [node.parent_id] : []
+      )
+    )
+    return buildTranscriptRows({
+      activePath,
+      streamIdByNodeId,
+      afterTipStreams,
+      showEmpty,
+      assistantParentIds,
+    })
+  }, [activePath, afterTipStreams, nodes, showEmpty, streamIdByNodeId])
   const rowIndexByMessageId = useMemo(
     () => new Map(rows.map((row, index) => [row.messageId, index])),
     [rows]
@@ -251,9 +260,9 @@ function VirtualChatTranscript({
       }
       return size
     },
-    // A transcript item is a path depth. This stays stable through sibling
-    // rewrites and after-tip stream promotion; Nibchat does not prepend history.
-    getItemKey: pathSlotKey,
+    // A path row stays keyed by depth when a scheduled sibling is inserted
+    // above it. An after-tip stream keeps the slot it joins once promoted.
+    getItemKey: (index) => transcriptItemKey(rowsRef.current, index),
     anchorTo: "end",
     followOnAppend: true,
     scrollPaddingStart: transcriptPeekPx(density),
@@ -515,6 +524,15 @@ function VirtualChatTranscript({
                   >
                     <Empty providers={providers} hint={emptyHint} />
                   </motion.div>
+                ) : row.kind === "scheduled" ? (
+                  <ScheduledGenerationLane
+                    items={row.items}
+                    verb={row.verb}
+                    captions={messageActionCaptions}
+                    onOpen={(scheduleId) =>
+                      scheduledGeneration?.openPending(scheduleId)
+                    }
+                  />
                 ) : row.kind === "after-tip" ? (
                   <AfterTipSlot
                     row={row}

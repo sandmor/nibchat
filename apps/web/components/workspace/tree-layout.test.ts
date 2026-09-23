@@ -10,7 +10,9 @@ import {
   composeLayoutAnchor,
   composeLayoutId,
   isAddId,
+  isScheduleId,
   layoutChatTree,
+  scheduleLayoutId,
   layoutNodeIds,
 } from "./tree-layout"
 
@@ -59,6 +61,26 @@ describe("layoutChatTree", () => {
     expect(a.x + a.width / 2 + (b.x + b.width / 2)).toBeCloseTo(
       (layout.rects.get("root")!.x + layout.rects.get("root")!.width / 2) * 2
     )
+  })
+
+  it("places a pending generation beside the plus without recentering the parent", () => {
+    const alone = layoutChatTree([node("root", null)])
+    const layout = layoutChatTree([node("root", null)], {
+      schedules: [{ id: "job", parentId: "root" }],
+    })
+    const root = layout.rects.get("root")!
+    const card = layout.rects.get(scheduleLayoutId("job"))!
+    const plus = layout.rects.get(addId("root"))!
+    expect(isScheduleId(scheduleLayoutId("job"))).toBe(true)
+    expect(root.x).toBe(alone.rects.get("root")!.x)
+    expect(card.x).toBe(root.x)
+    expect(card.x + card.width).toBeLessThanOrEqual(plus.x)
+    expect(layout.depths.get(scheduleLayoutId("job"))).toBe(1)
+    expect(
+      layout.edges.some(
+        (edge) => edge.from === "root" && edge.to === scheduleLayoutId("job")
+      )
+    ).toBe(true)
   })
 
   it("centers a leaf add control below its parent", () => {

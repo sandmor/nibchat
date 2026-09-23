@@ -165,21 +165,35 @@ export type ScheduleRunStatus =
   | "awaiting_input"
   | "error"
   | "skipped"
-export interface ScheduledGenerationsTable {
+export interface ScheduledJobsTable {
   id: string
   user_id: string
-  template_id: string
-  space_id: string | null
   name: string
+  action_json: string
   cadence_json: string
   enabled: boolean
-  next_run_at: string
+  next_run_at: string | null
   last_run_at: string | null
   last_status: ScheduleRunStatus | null
   last_error: string | null
   last_chat_id: string | null
   created_at: string
   updated_at: string
+}
+export interface ScheduledJobAttachmentsTable {
+  schedule_id: string
+  attachment_id: string
+}
+export interface ScheduledJobRunsTable {
+  id: string
+  schedule_id: string
+  scheduled_for: string
+  started_at: string
+  finished_at: string | null
+  status: ScheduleRunStatus
+  error: string | null
+  chat_id: string | null
+  message_id: string | null
 }
 export interface ChatTemplatesTable {
   id: string
@@ -382,7 +396,9 @@ export interface McpServerProfilesTable {
 export interface DB {
   chats: ChatsTable
   chat_templates: ChatTemplatesTable
-  scheduled_generations: ScheduledGenerationsTable
+  scheduled_jobs: ScheduledJobsTable
+  scheduled_job_attachments: ScheduledJobAttachmentsTable
+  scheduled_job_runs: ScheduledJobRunsTable
   template_attachments: TemplateAttachmentsTable
   draft_materializations: DraftMaterializationsTable
   spaces: SpacesTable
@@ -465,9 +481,16 @@ export interface DB {
   }
 }
 export type ChatRow = Selectable<ChatsTable>
-export type NodeRow = Selectable<MessageNodesTable>
+/** A pending reply scheduled from this node. Absent on rows that did not come from the workspace. */
+export type NodeSchedule = {
+  id: string
+  nextRunAt: string
+  timeZone: string
+}
+export type NodeRow = Selectable<MessageNodesTable> & {
+  schedules?: NodeSchedule[]
+}
 export type ChatTemplateRow = Selectable<ChatTemplatesTable>
-export type ScheduledGenerationRow = Selectable<ScheduledGenerationsTable>
 export type PromptStackRow = Selectable<PromptStacksTable>
 export type SpaceRow = Selectable<SpacesTable>
 export type ThemeRow = Selectable<ThemesTable>

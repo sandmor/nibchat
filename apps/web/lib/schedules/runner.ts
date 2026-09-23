@@ -11,10 +11,17 @@ const globalForSchedules = globalThis as typeof globalThis & {
 export function startScheduleRunner() {
   if (!schedulesAvailable()) return
   globalForSchedules.nibchatScheduleRunner?.stop()
+  let running = false
   const tick = () => {
-    void runScheduleTick().catch((error) => {
-      console.error("[nibchat/schedules]", error)
-    })
+    if (running) return
+    running = true
+    void runScheduleTick()
+      .catch((error) => {
+        console.error("[nibchat/schedules]", error)
+      })
+      .finally(() => {
+        running = false
+      })
   }
   tick()
   const timer = setInterval(tick, TICK_MS)

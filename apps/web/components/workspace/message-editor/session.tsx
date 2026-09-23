@@ -29,6 +29,9 @@ export type SessionMessageEditorProps = {
   contextParentId?: string | null
   sendLabel?: string
   onSend: () => void
+  onSchedule?: () => void
+  scheduleAvailable?: boolean
+  scheduleFromAnchor?: boolean
   onCancel?: () => void
   onFiles?: (files: File[] | FileList) => void
   onRemoveAttachment?: (part: ComposerAttachment) => void
@@ -71,6 +74,9 @@ export function SessionMessageEditor(props: SessionMessageEditorProps) {
       overlayNodeId={props.overlayNodeId}
       allowEmptySend={props.allowEmptySend}
       canReplace={Boolean(props.onReplace)}
+      canSchedule={Boolean(props.onSchedule)}
+      scheduleAvailable={props.scheduleAvailable}
+      scheduleFromAnchor={props.scheduleFromAnchor}
       latestRef={latestRef}
     />
   )
@@ -94,6 +100,9 @@ const SessionMessageEditorLeaf = memo(function SessionMessageEditorLeaf({
   overlayNodeId,
   allowEmptySend,
   canReplace,
+  canSchedule,
+  scheduleAvailable,
+  scheduleFromAnchor,
   latestRef,
 }: {
   slot: string
@@ -113,6 +122,9 @@ const SessionMessageEditorLeaf = memo(function SessionMessageEditorLeaf({
   overlayNodeId?: string
   allowEmptySend?: boolean
   canReplace?: boolean
+  canSchedule?: boolean
+  scheduleAvailable?: boolean
+  scheduleFromAnchor?: boolean
   latestRef: { current: SessionMessageEditorProps }
 }) {
   const session = useEditorSession(slot)
@@ -131,6 +143,7 @@ const SessionMessageEditorLeaf = memo(function SessionMessageEditorLeaf({
   const actions = useMemo(
     () => ({
       onSend: () => latestRef.current.onSend(),
+      onSchedule: () => latestRef.current.onSchedule?.(),
       onCancel: () => latestRef.current.onCancel?.(),
       onReplace: () => latestRef.current.onReplace?.(),
       onFiles: (files: File[] | FileList) => latestRef.current.onFiles?.(files),
@@ -144,8 +157,7 @@ const SessionMessageEditorLeaf = memo(function SessionMessageEditorLeaf({
       onRevealContextMessage: (nodeId: string) =>
         latestRef.current.onRevealContextMessage?.(nodeId),
       onConvertRole: (role: "user" | "assistant") => {
-        const current =
-          useConversationSessionStore.getState().sessions[slot]
+        const current = useConversationSessionStore.getState().sessions[slot]
         const dropped =
           role === "assistant" && current
             ? current.attachments.filter((item) => !item.claimed)
@@ -214,6 +226,9 @@ const SessionMessageEditorLeaf = memo(function SessionMessageEditorLeaf({
       sendLabel={sendLabel}
       allowEmptySend={allowEmptySend}
       onTextChange={onTextChange}
+      onSchedule={canSchedule ? actions.onSchedule : undefined}
+      scheduleAvailable={scheduleAvailable}
+      scheduleFromAnchor={scheduleFromAnchor}
       onSend={actions.onSend}
       onCancel={actions.onCancel}
       onFiles={actions.onFiles}

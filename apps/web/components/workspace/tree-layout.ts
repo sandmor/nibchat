@@ -14,6 +14,12 @@ export const ROOT_ADD_ID = "tree:add-root"
 export const addId = (parentId: string) => `tree:add:${parentId}`
 export const isAddId = (id: string) =>
   id === ROOT_ADD_ID || id.startsWith("tree:add:")
+export const scheduleLayoutId = (scheduleId: string) =>
+  `tree:schedule:${scheduleId}`
+export const isScheduleId = (id: string) => id.startsWith("tree:schedule:")
+export const scheduleLayoutAnchor = (id: string) =>
+  id.slice("tree:schedule:".length)
+const SCHEDULE_HEIGHT = 76
 
 /** Cubic drop from a parent's bottom-center to a child's top-center. */
 export function treeConnectorPath(from: TreeRect, to: TreeRect) {
@@ -63,6 +69,11 @@ type LayoutOptions = {
   editingNodeIds?: ReadonlySet<string>
   /** Painted border-box heights, keyed by layout id. */
   sizes?: ReadonlyMap<string, number>
+  /**
+   * Pending generations. They reserve a card beside the plus and are not
+   * structural children, so they do not move the parent.
+   */
+  schedules?: readonly { id: string; parentId: string }[]
 }
 
 /** Same sibling grouping layoutChatTree uses: durable order, then stable ties. */
@@ -106,6 +117,12 @@ export function layoutChatTree(
   options: LayoutOptions = {}
 ): TreeLayout {
   const children = groupedTreeChildren(nodes)
+  const schedulesByParent = new Map<string, { id: string }[]>()
+  for (const schedule of options.schedules ?? []) {
+    const list = schedulesByParent.get(schedule.parentId) ?? []
+    list.push(schedule)
+    schedulesByParent.set(schedule.parentId, list)
+  }
 
   const rects = new Map<string, TreeRect>()
   const depths = new Map<string, number>()
@@ -123,12 +140,13 @@ export function layoutChatTree(
       const max = cardMaxHeight(node)
       return usable != null ? Math.min(usable, max) : max
     }
+    if (isScheduleId(id)) return usable ?? SCHEDULE_HEIGHT
     if (draftOpen(id))
       return usable != null && usable > ADD_SIZE ? usable : ADD_SIZE
     return ADD_SIZE
   }
   const itemWidth = (id: string, node?: NodeRow) =>
-    node || draftOpen(id) ? CARD_WIDTH : ADD_SIZE
+    node || draftOpen(id) || isScheduleId(id) ? CARD_WIDTH : ADD_SIZE
 
   let cursor = 0
   const place = (id: string, depth: number, x: number, node?: NodeRow) => {
@@ -147,13 +165,29 @@ export function layoutChatTree(
     return center
   }
 
+  function placeSchedules(parentId: string, depth: number, left: number) {
+    let next = left
+    for (const schedule of schedulesByParent.get(parentId) ?? []) {
+      const id = scheduleLayoutId(schedule.id)
+      place(id, depth, next)
+      edges.push({ from: parentId, to: id })
+      next += itemWidth(id) + GAP_X
+    }
+    return next
+  }
+
   function visit(node: NodeRow, depth: number): number {
     const directChildren = children.get(node.id) ?? []
     if (directChildren.length === 0) {
       const center = placeLeaf(node.id, depth, node)
       const plus = addId(node.id)
-      place(plus, depth + 1, center - itemWidth(plus) / 2)
+      const plusLeft = schedulesByParent.has(node.id)
+        ? placeSchedules(node.id, depth + 1, center - CARD_WIDTH / 2)
+        : center - itemWidth(plus) / 2
+      place(plus, depth + 1, plusLeft)
       edges.push({ from: node.id, to: plus })
+      if (schedulesByParent.has(node.id))
+        cursor = Math.max(cursor, plusLeft + itemWidth(plus) + GAP_X)
       return center
     }
 
@@ -185,7 +219,7 @@ export function layoutChatTree(
       })
     )
     const plus = addId(node.id)
-    const plusLeft = rightmostChild + GAP_X
+    const plusLeft = placeSchedules(node.id, depth + 1, rightmostChild + GAP_X)
     place(plus, depth + 1, plusLeft)
     edges.push({ from: node.id, to: plus })
     cursor = Math.max(

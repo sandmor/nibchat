@@ -13,7 +13,7 @@ const daily = parseCadence({
 })
 const weekly = parseCadence({
   kind: "weekly",
-  weekday: 1,
+  weekdays: [1],
   hour: 9,
   minute: 0,
   timeZone: "UTC",
@@ -50,6 +50,31 @@ describe("followingRunAt", () => {
     expect(at("2026-09-21T09:30:00.000Z", weekly)).toBe(
       "2026-09-28T09:00:00.000Z"
     )
+  })
+
+  it("runs on any selected weekday", () => {
+    const workdays = parseCadence({
+      kind: "weekly",
+      weekdays: [1, 3, 5],
+      hour: 9,
+      minute: 0,
+      timeZone: "UTC",
+    })
+    expect(at("2026-09-21T10:00:00.000Z", workdays)).toBe(
+      "2026-09-23T09:00:00.000Z"
+    )
+  })
+
+  it("returns a future one-time instant and rejects an elapsed one", () => {
+    const once = parseCadence({
+      kind: "once",
+      at: "2026-09-22T12:00:00.000Z",
+      timeZone: "UTC",
+    })
+    expect(at("2026-09-22T11:00:00.000Z", once)).toBe(
+      "2026-09-22T12:00:00.000Z"
+    )
+    expect(() => at("2026-09-22T12:00:00.000Z", once)).toThrow(/future/)
   })
 
   it("steps an interval from its anchor", () => {
@@ -92,7 +117,7 @@ describe("followingRunAt", () => {
   it("uses the weekday in the schedule time zone", () => {
     const monday = parseCadence({
       kind: "weekly",
-      weekday: 1,
+      weekdays: [1],
       hour: 9,
       minute: 0,
       timeZone: "America/Chicago",

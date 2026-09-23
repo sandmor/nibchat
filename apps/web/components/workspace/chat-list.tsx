@@ -178,7 +178,6 @@ export function ChatListItem({
       prefetch={false}
       className={cn(
         "min-w-0 flex-1 rounded-lg py-2 text-left outline-none",
-        "focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset",
         compact ? "px-2" : selecting ? "px-2" : "px-3"
       )}
       aria-label={compact ? title : undefined}
@@ -314,7 +313,8 @@ export function ChatListItem({
         "group/row flex min-w-0 items-center rounded-lg",
         "hover:bg-sidebar-accent",
         (active || selected) && "bg-sidebar-accent",
-        selected && "ring-1 ring-sidebar-ring"
+        selected && "ring-1 ring-sidebar-ring",
+        "has-[a:focus-visible]:ring-2 has-[a:focus-visible]:ring-ring/50 has-[a:focus-visible]:ring-inset"
       )}
     >
       {compact ? (

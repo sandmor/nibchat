@@ -133,7 +133,8 @@ function SpaceRowView({
           className={cn(
             "group/row flex min-w-0 items-center rounded-lg",
             "hover:bg-sidebar-accent",
-            active && "bg-sidebar-accent"
+            active && "bg-sidebar-accent",
+            "has-[a:focus-visible]:ring-2 has-[a:focus-visible]:ring-ring/50 has-[a:focus-visible]:ring-inset"
           )}
           style={{
             paddingInlineStart: compact ? undefined : `${depth * 12}px`,
@@ -164,7 +165,6 @@ function SpaceRowView({
             prefetch={false}
             className={cn(
               "flex min-w-0 flex-1 items-center gap-2 rounded-lg py-2 text-left outline-none",
-              "focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset",
               compact ? "justify-center px-2" : "px-1"
             )}
             aria-current={active ? "page" : undefined}

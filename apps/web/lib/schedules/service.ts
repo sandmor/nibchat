@@ -6,6 +6,7 @@ import { continueChatGeneration } from "@/lib/agent/open-generation"
 import {
   createMessage,
   prepareAuthoredParts,
+  prepareChatRow,
   reconcileChatGenerationRuns,
   resolveSettingsForChat,
   selectPathInTransaction,
@@ -14,6 +15,7 @@ import {
   createChatFromTemplate,
   saveChatTemplateFromChat,
   saveChatTemplateDocument,
+  snapshotChatTemplate,
 } from "@/lib/chat-template-service"
 import {
   parseChatTemplateDocument,
@@ -37,6 +39,7 @@ import type {
   ScheduleRunStatus,
   ScheduledJobsTable,
 } from "@/lib/types"
+
 import {
   cadenceInputSchema,
   cadenceToJson,
@@ -46,6 +49,15 @@ import {
   type Cadence,
   type CadenceInput,
 } from "@/lib/schedules/cadence"
+
+async function assertSchedulableChat(chatId: string) {
+  const linked = await db
+    .selectFrom("template_chats")
+    .select("template_id")
+    .where("chat_id", "=", chatId)
+    .executeTakeFirst()
+  if (linked) throw new Error("Schedule this template from Chat templates")
+}
 
 const USER_LEAF = "The saved template branch must end on a user message."
 const USER_PARENT = "A generation can only be scheduled from a user message."
@@ -321,6 +333,7 @@ export async function createScheduledUserMessage(input: {
     .where("user_id", "=", input.userId)
     .executeTakeFirst()
   if (!chat) throw new Error("Chat not found")
+  await assertSchedulableChat(chat.id)
   const settings = await resolveSettingsForChat(chat, input.userId)
   return db.transaction().execute(async (trx) => {
     const message = await createMessage({
@@ -358,7 +371,7 @@ export async function createSchedule(input: {
   chatOverrides?: SettingValues
 }) {
   const template = await ownedTemplate(input.userId, input.templateId)
-  assertUserLeaf(parseChatTemplateDocument(template.document_json))
+  assertUserLeaf(await snapshotChatTemplate(input.userId, template.id))
   const spaceId = input.spaceId ?? null
   await assertSpaceOwner(input.userId, spaceId)
   return insertSchedule({
@@ -390,6 +403,7 @@ export async function createChatSchedule(input: {
     .where("user_id", "=", input.userId)
     .executeTakeFirst()
   if (!chat) throw new Error("Chat not found")
+  await assertSchedulableChat(chat.id)
   const parent = await db
     .selectFrom("message_nodes")
     .select(["id", "role"])
@@ -726,7 +740,7 @@ export async function fireSchedule(
     let settingsJson: string | undefined
     if (action.kind === "template") {
       const template = await ownedTemplate(row.user_id, action.templateId)
-      const document = parseChatTemplateDocument(template.document_json)
+      const document = await snapshotChatTemplate(row.user_id, template.id)
       const created = await createChatFromTemplate({
         userId: row.user_id,
         templateId: template.id,
@@ -786,7 +800,7 @@ export async function scheduleFromChat(input: {
   chatId: string
   name: string
   templateId?: string
-  expectedRevision?: number
+  expectedFingerprint?: string
   spaceId?: string | null
   cadence: CadenceInput
 }) {
@@ -880,8 +894,8 @@ export async function sendAndScheduleTemplate(input: {
           .where("user_id", "=", input.userId)
           .executeTakeFirst()
       : null
-  if (source.kind === "chat" && !sourceChat)
-    throw new Error("Chat not found")
+  if (source.kind === "chat" && !sourceChat) throw new Error("Chat not found")
+  if (sourceChat) await assertSchedulableChat(sourceChat.id)
   const expandMessageMacros = sourceChat
     ? (await resolveSettingsForChat(sourceChat, input.userId)).effective.model
         .expandMessageMacros
@@ -892,6 +906,18 @@ export async function sendAndScheduleTemplate(input: {
     parts: input.parts,
     attachments: input.attachments,
   })
+  const preparedTemplateChat = await prepareChatRow(
+    input.userId,
+    null,
+    (
+      source.kind === "draft"
+        ? parseChatTemplateDocument(source.document).expandMessageMacros
+        : expandMessageMacros
+    )
+      ? { expandMessageMacros: true }
+      : {},
+    null
+  )
   return db.transaction().execute(async (trx) => {
     let templateId: string
     let messageId: string | null = null
@@ -919,6 +945,7 @@ export async function sendAndScheduleTemplate(input: {
         chatId: source.chatId,
         name: input.name,
         expandMessageMacros,
+        preparedChat: preparedTemplateChat,
         trx,
       })
       templateId = template.id
@@ -962,6 +989,7 @@ export async function sendAndScheduleTemplate(input: {
         userId: input.userId,
         name: input.name,
         document: selected,
+        preparedChat: preparedTemplateChat,
         trx,
       })
       templateId = template.id

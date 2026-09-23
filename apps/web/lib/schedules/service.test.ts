@@ -10,7 +10,12 @@ import {
   resolveSettingsForChat,
 } from "@/lib/chat-service"
 import { parseBackup } from "@/lib/backup"
-import { deleteChatTemplate } from "@/lib/chat-template-service"
+import {
+  createChatFromTemplate,
+  deleteChatTemplate,
+  listChatTemplates,
+  saveChatTemplateDocument,
+} from "@/lib/chat-template-service"
 import { db, migrate, toDbBool } from "@/lib/db"
 import { resolveActivePath } from "@/lib/domain"
 import { generationStreamStore } from "@/lib/generation-streams/default-port"
@@ -125,17 +130,25 @@ async function insertTemplate(
   name = id
 ) {
   const timestamp = new Date().toISOString()
+  const hidden = await createChatFromTemplate({ userId, document })
   await db
     .insertInto("chat_templates")
     .values({
       id,
       user_id: userId,
       name,
-      document_json: JSON.stringify(document),
+      document_json: "{}",
       revision: 0,
       source_json: "{}",
       created_at: timestamp,
       updated_at: timestamp,
+    })
+    .execute()
+  await db
+    .insertInto("template_chats")
+    .values({
+      template_id: id,
+      chat_id: hidden.chat.id,
     })
     .execute()
 }
@@ -769,11 +782,12 @@ describe("scheduled generations", () => {
       templateId: "stale-template",
       nextRunAt: "2026-01-01T09:00:00.000Z",
     })
-    await db
-      .updateTable("chat_templates")
-      .set({ document_json: JSON.stringify(assistantOnly) })
-      .where("id", "=", "stale-template")
-      .execute()
+    await saveChatTemplateDocument({
+      userId,
+      templateId: "stale-template",
+      name: "stale-template",
+      document: assistantOnly,
+    })
     let called = false
     await runScheduleTick(new Date("2026-01-01T10:00:00.000Z"), async () => {
       called = true
@@ -1124,7 +1138,9 @@ describe("scheduled generations", () => {
       chatId: chat.id,
       name: "Digest",
       templateId: created.templateId,
-      expectedRevision: 0,
+      expectedFingerprint: (await listChatTemplates(userId)).find(
+        (template) => template.id === created.templateId
+      )!.fingerprint,
       cadence: { ...cadence, hour: 8 },
     })
     expect(replaced.schedules).toHaveLength(1)

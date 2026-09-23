@@ -62,8 +62,8 @@ import {
   deleteChatTemplate,
   materializeChatTemplate,
   saveChatTemplateFromChat,
+  snapshotChatTemplate,
 } from "@/lib/chat-template-service"
-import { parseChatTemplateDocument } from "@/lib/chat-template"
 
 const userId = "test-owner"
 afterEach(() => {
@@ -117,19 +117,25 @@ describe("SQLite chat repository", () => {
       chatId: source.id,
       name: "Branching template",
     })
+    const document = await snapshotChatTemplate(userId, saved.id)
+    const firstTemplateId = document.nodes.find((node) =>
+      node.parts.some((part) => part.type === "text" && part.text === "First")
+    )!.id
     const input = {
       userId,
       templateId: saved.id,
-      document: parseChatTemplateDocument(saved.document_json),
+      document,
       draftId: crypto.randomUUID(),
-      selectedRootId: first.id,
+      selectedRootId: firstTemplateId,
     }
     await deleteChatTemplate(userId, saved.id)
     const created = await materializeChatTemplate(input)
     const retried = await materializeChatTemplate(input)
     expect(retried.chat.id).toBe(created.chat.id)
     expect(created.nodes).toHaveLength(2)
-    expect(created.chat.selected_root_node_id).toBe(created.nodeIds[first.id])
+    expect(created.chat.selected_root_node_id).toBe(
+      created.nodeIds[firstTemplateId]
+    )
     expect(
       (await listChatTemplates(userId)).some((item) => item.id === saved.id)
     ).toBe(false)
@@ -170,7 +176,7 @@ describe("SQLite chat repository", () => {
         chatTemplate: { mode: "require", value: template.id },
       },
     })
-    const document = parseChatTemplateDocument(template.document_json)
+    const document = await snapshotChatTemplate(userId, template.id)
     await expect(
       materializeChatTemplate({
         userId,

@@ -205,9 +205,9 @@ export interface ChatTemplatesTable {
   created_at: string
   updated_at: string
 }
-export interface TemplateAttachmentsTable {
+export interface TemplateChatsTable {
   template_id: string
-  attachment_id: string
+  chat_id: string
 }
 export interface DraftMaterializationsTable {
   user_id: string
@@ -396,10 +396,10 @@ export interface McpServerProfilesTable {
 export interface DB {
   chats: ChatsTable
   chat_templates: ChatTemplatesTable
+  template_chats: TemplateChatsTable
   scheduled_jobs: ScheduledJobsTable
   scheduled_job_attachments: ScheduledJobAttachmentsTable
   scheduled_job_runs: ScheduledJobRunsTable
-  template_attachments: TemplateAttachmentsTable
   draft_materializations: DraftMaterializationsTable
   spaces: SpacesTable
   message_nodes: MessageNodesTable

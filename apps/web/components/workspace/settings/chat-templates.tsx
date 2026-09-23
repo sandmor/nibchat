@@ -158,13 +158,20 @@ export function ChatTemplateSettings() {
     })
   )
   const rows = templates.data ?? []
+  useEffect(() => {
+    if (window.location.hash !== "#chat-templates") return
+    document
+      .getElementById("chat-templates")
+      ?.scrollIntoView({ block: "start" })
+  }, [])
   return (
-    <Card>
+    <Card id="chat-templates" className="scroll-mt-4">
       <CardHeader>
         <CardTitle>Chat templates</CardTitle>
         <CardDescription>
-          Save a conversation from its menu. New chats can start from it, and a
-          space can set one as the default.
+          Edit a template to change its message tree. New chats can start from
+          it, and a space can set one as the default. Templates do not include
+          chat settings.
         </CardDescription>
       </CardHeader>
       <CardContent className="grid gap-2">
@@ -197,6 +204,12 @@ export function ChatTemplateSettings() {
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-1">
+                <Link
+                  href={`/template/${encodeURIComponent(template.id)}`}
+                  className={buttonVariants({ variant: "outline", size: "sm" })}
+                >
+                  Edit
+                </Link>
                 <Link
                   href={`/chat/new?template=${encodeURIComponent(template.id)}`}
                   className={buttonVariants({ variant: "outline", size: "sm" })}

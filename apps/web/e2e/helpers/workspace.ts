@@ -146,7 +146,7 @@ export async function openChatByTitle(page: Page, title: string) {
 }
 
 export async function openChatHeaderMore(page: Page) {
-  await page.getByRole("button", { name: "More" }).click()
+  await page.locator("header").getByRole("button", { name: "More" }).click()
 }
 
 export async function openChatParameters(page: Page) {
@@ -163,7 +163,7 @@ export async function openChatReasoning(page: Page, name: string) {
 export async function sendMessage(page: Page, content: string) {
   const composer = page.getByPlaceholder("Message Nibchat…")
   await composer.fill(content)
-  await page.getByRole("button", { name: "Send" }).click()
+  await page.getByRole("button", { name: "Send", exact: true }).click()
 }
 
 export async function expectAssistantText(

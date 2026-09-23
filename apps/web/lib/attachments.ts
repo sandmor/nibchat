@@ -298,12 +298,6 @@ export async function deletePendingAttachment(userId: string, id: string) {
     .where("attachment_id", "=", id)
     .executeTakeFirst()
   if (reference) throw new Error("Attachment is already in a message")
-  const templateReference = await db
-    .selectFrom("template_attachments")
-    .select("attachment_id")
-    .where("attachment_id", "=", id)
-    .executeTakeFirst()
-  if (templateReference) throw new Error("Attachment is already in a template")
   const scheduleReference = await db
     .selectFrom("scheduled_job_attachments")
     .select("attachment_id")
@@ -329,12 +323,6 @@ export async function cleanupDetachedAttachments() {
       .where("attachment_id", "=", row.id)
       .executeTakeFirst()
     if (reference) continue
-    const templateReference = await db
-      .selectFrom("template_attachments")
-      .select("attachment_id")
-      .where("attachment_id", "=", row.id)
-      .executeTakeFirst()
-    if (templateReference) continue
     const scheduleReference = await db
       .selectFrom("scheduled_job_attachments")
       .select("attachment_id")
@@ -370,8 +358,33 @@ export async function cleanupExpiredPendingAttachments() {
   for (const row of rows) {
     // Resumable imports own their pending files until the import session expires.
     if (stagedIds.has(row.id)) continue
-    await db.deleteFrom("attachments").where("id", "=", row.id).execute()
-    if (row.storage_key) await removeFileIfUnreferenced(row.storage_key)
+    const messageReference = await db
+      .selectFrom("message_attachments")
+      .select("attachment_id")
+      .where("attachment_id", "=", row.id)
+      .executeTakeFirst()
+    const scheduleReference = await db
+      .selectFrom("scheduled_job_attachments")
+      .select("attachment_id")
+      .where("attachment_id", "=", row.id)
+      .executeTakeFirst()
+    if (messageReference || scheduleReference) {
+      await db
+        .updateTable("attachments")
+        .set({ claimed_at: new Date().toISOString() })
+        .where("id", "=", row.id)
+        .where("claimed_at", "is", null)
+        .execute()
+      continue
+    }
+    const deleted = await db
+      .deleteFrom("attachments")
+      .where("id", "=", row.id)
+      .where("claimed_at", "is", null)
+      .where("created_at", "<", expiredBefore)
+      .executeTakeFirst()
+    if (Number(deleted.numDeletedRows ?? 0) && row.storage_key)
+      await removeFileIfUnreferenced(row.storage_key)
   }
 }
 

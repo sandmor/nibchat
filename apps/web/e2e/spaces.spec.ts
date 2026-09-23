@@ -162,7 +162,7 @@ test.describe("spaces", () => {
     await chatsSection
       .getByRole("button", { name: "Select", exact: true })
       .click()
-    const bar = page.getByTestId("chat-selection-bar")
+    const bar = page.locator('[data-testid="chat-selection-bar"]:visible')
     await expect(bar.getByText("Tap chats to select them")).toBeVisible()
     await chatsSection.getByRole("link", { name: /bulk one/i }).click()
     await chatsSection.getByRole("link", { name: /bulk two/i }).click()

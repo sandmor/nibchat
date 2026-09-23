@@ -1,9 +1,14 @@
 import "server-only"
+import { createHash } from "node:crypto"
 import type { Transaction } from "kysely"
-import { db, toDbBool } from "@/lib/db"
+import { databaseKind, db, toDbBool } from "@/lib/db"
 import { id, now, parseJson } from "@/lib/domain"
 import { searchTextFromParts } from "@/lib/agent/parts"
-import { prepareChatRow, resolveSettingsForChat } from "@/lib/chat-service"
+import {
+  finishChatDeletion,
+  prepareChatRow,
+  resolveSettingsForChat,
+} from "@/lib/chat-service"
 import { resolveSettings, type SettingValues } from "@/lib/chat-settings"
 import {
   parseSpaceSettings,
@@ -13,11 +18,13 @@ import {
 import {
   chatTemplateFromNodes,
   chatTemplateNameSchema,
+  orderedTemplateNodes,
   parseChatTemplateDocument,
   templateAttachmentIds,
   type ChatTemplateDocument,
 } from "@/lib/chat-template"
 import { rewriteSillyTavernMacros } from "@/lib/imports/silly-tavern-macros"
+import { cleanupDetachedAttachments } from "@/lib/attachments"
 import type { DB } from "@/lib/types"
 
 async function assertTemplateOwner(userId: string, templateId: string) {
@@ -31,6 +38,24 @@ async function assertTemplateOwner(userId: string, templateId: string) {
   return row
 }
 
+export async function getTemplateChat(userId: string, templateId: string) {
+  return db
+    .selectFrom("chat_templates")
+    .innerJoin(
+      "template_chats",
+      "template_chats.template_id",
+      "chat_templates.id"
+    )
+    .select([
+      "chat_templates.id",
+      "chat_templates.name",
+      "template_chats.chat_id",
+    ])
+    .where("chat_templates.id", "=", templateId)
+    .where("chat_templates.user_id", "=", userId)
+    .executeTakeFirst()
+}
+
 export async function listChatTemplates(userId: string) {
   const rows = await db
     .selectFrom("chat_templates")
@@ -38,10 +63,114 @@ export async function listChatTemplates(userId: string) {
     .where("user_id", "=", userId)
     .orderBy("updated_at", "desc")
     .execute()
-  return rows.map((row) => ({
-    ...row,
-    document: parseChatTemplateDocument(row.document_json),
+  return Promise.all(
+    rows.map(async (row) => {
+      const document = await snapshotChatTemplate(userId, row.id)
+      return {
+        ...row,
+        document,
+        fingerprint: templateFingerprint(row.name, document),
+      }
+    })
+  )
+}
+
+function templateFingerprint(name: string, document: ChatTemplateDocument) {
+  return createHash("sha256")
+    .update(JSON.stringify({ name, document }))
+    .digest("hex")
+}
+
+/** A stable, portable view of the live template graph. */
+export async function snapshotChatTemplate(
+  userId: string,
+  templateId: string,
+  executor?: Transaction<DB>
+): Promise<ChatTemplateDocument> {
+  if (!executor) {
+    const transaction = db.transaction()
+    return (
+      databaseKind === "postgres"
+        ? transaction.setIsolationLevel("repeatable read")
+        : transaction
+    ).execute((trx) => snapshotChatTemplate(userId, templateId, trx))
+  }
+  const link = await executor
+    .selectFrom("template_chats")
+    .innerJoin(
+      "chat_templates",
+      "chat_templates.id",
+      "template_chats.template_id"
+    )
+    .innerJoin("chats", "chats.id", "template_chats.chat_id")
+    .select(["chats.id", "chats.selected_root_node_id", "chats.settings_json"])
+    .where("template_chats.template_id", "=", templateId)
+    .where("chat_templates.user_id", "=", userId)
+    .executeTakeFirst()
+  if (!link) throw new Error("Chat template not found")
+  const nodes = await executor
+    .selectFrom("message_nodes")
+    .selectAll()
+    .where("chat_id", "=", link.id)
+    .orderBy("id")
+    .execute()
+  const activeIds = new Set(
+    (
+      await executor
+        .selectFrom("generation_runs")
+        .select("node_id")
+        .where("chat_id", "=", link.id)
+        .execute()
+    ).map((run) => run.node_id)
+  )
+  const eligible = new Map(
+    nodes
+      .filter(
+        (node) =>
+          !activeIds.has(node.id) &&
+          node.status !== "streaming" &&
+          node.status !== "awaiting_input" &&
+          !parseJson<import("@/lib/types").Parts>(node.parts_json, []).some(
+            (part) =>
+              part.type === "tool-invocation" &&
+              (part.state === "input-streaming" ||
+                part.state === "input-available")
+          )
+      )
+      .map((node) => [node.id, node])
+  )
+  // A transient node and all its descendants are absent from copies.
+  for (const node of nodes) {
+    if (!eligible.has(node.id)) continue
+    let parentId = node.parent_id
+    while (parentId) {
+      if (!eligible.has(parentId)) {
+        eligible.delete(node.id)
+        break
+      }
+      parentId = eligible.get(parentId)?.parent_id ?? null
+    }
+  }
+  const surviving = [...eligible.values()]
+  const selected = (parentId: string | null, requested: string | null) => {
+    if (requested === null) return null
+    if (requested && eligible.has(requested)) return requested
+    return (
+      surviving
+        .filter((node) => node.parent_id === parentId)
+        .sort((a, b) => b.sort_key - a.sort_key)[0]?.id ?? null
+    )
+  }
+  const normalized = surviving.map((node) => ({
+    ...node,
+    selected_child_id: selected(node.id, node.selected_child_id),
   }))
+  const settings = parseJson<Record<string, unknown>>(link.settings_json, {})
+  return chatTemplateFromNodes(
+    normalized,
+    selected(null, link.selected_root_node_id),
+    settings.expandMessageMacros === true
+  )
 }
 
 export async function saveChatTemplateFromChat(input: {
@@ -49,10 +178,11 @@ export async function saveChatTemplateFromChat(input: {
   chatId: string
   name: string
   templateId?: string
-  expectedRevision?: number
+  expectedFingerprint?: string
   trx?: Transaction<DB>
   /** Resolve before opening trx; settings lookup starts its own transaction. */
   expandMessageMacros?: boolean
+  preparedChat?: Awaited<ReturnType<typeof prepareChatRow>>
 }) {
   if (input.trx && input.expandMessageMacros === undefined)
     throw new Error("Template settings must be resolved before the transaction")
@@ -112,50 +242,69 @@ export async function saveChatTemplateDocument(input: {
   name: string
   document: ChatTemplateDocument
   templateId?: string
-  expectedRevision?: number
+  expectedFingerprint?: string
   source?: Record<string, unknown>
   trx?: Transaction<DB>
+  preparedChat?: Awaited<ReturnType<typeof prepareChatRow>>
 }) {
   const name = chatTemplateNameSchema.parse(input.name)
   const document = parseChatTemplateDocument(input.document)
-  const attachmentIds = templateAttachmentIds(document)
   const timestamp = now()
+  const preparedChat =
+    input.preparedChat ??
+    (await prepareChatRow(
+      input.userId,
+      null,
+      document.expandMessageMacros ? { expandMessageMacros: true } : {},
+      null
+    ))
   const persist = async (trx: Transaction<DB>) => {
-    if (attachmentIds.length) {
-      const owned = await trx
-        .selectFrom("attachments")
-        .select("id")
-        .where("user_id", "=", input.userId)
-        .where("id", "in", attachmentIds)
-        .execute()
-      if (owned.length !== attachmentIds.length)
-        throw new Error("A template attachment is unavailable")
-      await trx
-        .updateTable("attachments")
-        .set({ claimed_at: timestamp })
-        .where("user_id", "=", input.userId)
-        .where("id", "in", attachmentIds)
-        .execute()
-    }
     const templateId = input.templateId ?? id()
+    let previousChatId: string | null = null
     if (input.templateId) {
       const existing = await trx
         .selectFrom("chat_templates")
+        .innerJoin(
+          "template_chats",
+          "template_chats.template_id",
+          "chat_templates.id"
+        )
         .selectAll()
-        .where("id", "=", templateId)
-        .where("user_id", "=", input.userId)
+        .where("chat_templates.id", "=", templateId)
+        .where("chat_templates.user_id", "=", input.userId)
         .executeTakeFirst()
       if (!existing) throw new Error("Chat template not found")
-      if (
-        input.expectedRevision !== undefined &&
-        existing.revision !== input.expectedRevision
-      )
-        throw new Error("Chat template changed; reload before replacing it")
+      if (input.expectedFingerprint) {
+        const current = await snapshotChatTemplate(
+          input.userId,
+          templateId,
+          trx
+        )
+        if (
+          templateFingerprint(existing.name, current) !==
+          input.expectedFingerprint
+        )
+          throw new Error("Chat template changed; reload before replacing it")
+      }
+      previousChatId = existing.chat_id
+      const active = await trx
+        .selectFrom("generation_runs")
+        .select("id")
+        .where("chat_id", "=", previousChatId)
+        .executeTakeFirst()
+      if (active) throw new Error("Wait for template generation to finish")
+      const incomplete = await trx
+        .selectFrom("message_nodes")
+        .select("id")
+        .where("chat_id", "=", previousChatId)
+        .where("status", "in", ["streaming", "awaiting_input"])
+        .executeTakeFirst()
+      if (incomplete)
+        throw new Error("Finish incomplete template messages before replacing")
       await trx
         .updateTable("chat_templates")
         .set({
           name,
-          document_json: JSON.stringify(document),
           revision: existing.revision + 1,
           source_json: JSON.stringify(
             input.source ?? parseJson(existing.source_json, {})
@@ -165,7 +314,7 @@ export async function saveChatTemplateDocument(input: {
         .where("id", "=", templateId)
         .execute()
       await trx
-        .deleteFrom("template_attachments")
+        .deleteFrom("template_chats")
         .where("template_id", "=", templateId)
         .execute()
     } else {
@@ -175,7 +324,7 @@ export async function saveChatTemplateDocument(input: {
           id: templateId,
           user_id: input.userId,
           name,
-          document_json: JSON.stringify(document),
+          document_json: "{}",
           revision: 0,
           source_json: JSON.stringify(input.source ?? {}),
           created_at: timestamp,
@@ -183,29 +332,58 @@ export async function saveChatTemplateDocument(input: {
         })
         .execute()
     }
-    if (attachmentIds.length)
-      await trx
-        .insertInto("template_attachments")
-        .values(
-          attachmentIds.map((attachment_id) => ({
-            template_id: templateId,
-            attachment_id,
-          }))
-        )
-        .execute()
+    const created = await createChatFromTemplate({
+      userId: input.userId,
+      document,
+      trx,
+      preparedChat,
+      expandMessageMacros: document.expandMessageMacros,
+    })
+    await trx
+      .insertInto("template_chats")
+      .values({
+        template_id: templateId,
+        chat_id: created.chat.id,
+      })
+      .execute()
+    if (previousChatId)
+      await trx.deleteFrom("chats").where("id", "=", previousChatId).execute()
     return trx
       .selectFrom("chat_templates")
       .selectAll()
       .where("id", "=", templateId)
       .executeTakeFirstOrThrow()
   }
-  return input.trx ? persist(input.trx) : db.transaction().execute(persist)
+  const saved = input.trx
+    ? await persist(input.trx)
+    : await db.transaction().execute(persist)
+  if (!input.trx) await cleanupDetachedAttachments()
+  return saved
 }
 
 export async function deleteChatTemplate(userId: string, templateId: string) {
   await assertTemplateOwner(userId, templateId)
   const { deleteTemplateSchedulesFor } = await import("@/lib/schedules/service")
-  await db.transaction().execute(async (trx) => {
+  const deletion = await db.transaction().execute(async (trx) => {
+    const linked = await trx
+      .selectFrom("template_chats")
+      .select("chat_id")
+      .where("template_id", "=", templateId)
+      .executeTakeFirstOrThrow()
+    const nodeIds = (
+      await trx
+        .selectFrom("message_nodes")
+        .select("id")
+        .where("chat_id", "=", linked.chat_id)
+        .execute()
+    ).map((row) => row.id)
+    const generationRunIds = (
+      await trx
+        .selectFrom("generation_runs")
+        .select("id")
+        .where("chat_id", "=", linked.chat_id)
+        .execute()
+    ).map((row) => row.id)
     await deleteTemplateSchedulesFor({ userId, templateId, trx })
     const spaces = await trx
       .selectFrom("spaces")
@@ -230,7 +408,10 @@ export async function deleteChatTemplate(userId: string, templateId: string) {
       .where("id", "=", templateId)
       .where("user_id", "=", userId)
       .execute()
+    await trx.deleteFrom("chats").where("id", "=", linked.chat_id).execute()
+    return { nodeIds, generationRunIds }
   })
+  await finishChatDeletion(deletion)
 }
 
 export async function renameChatTemplate(
@@ -310,11 +491,13 @@ type TemplateChatInput = {
   spaceId?: string | null
   contextBookIds?: string[]
   expandMessageMacros?: boolean
+  trx?: Transaction<DB>
+  preparedChat?: Awaited<ReturnType<typeof prepareChatRow>>
 }
 
 /** Copy a template document into a new chat. A draft id records the preview once. */
 export async function createChatFromTemplate(input: TemplateChatInput) {
-  const spaces = await db
+  const spaces = await (input.trx ?? db)
     .selectFrom("spaces")
     .selectAll()
     .where("user_id", "=", input.userId)
@@ -349,12 +532,14 @@ export async function createChatFromTemplate(input: TemplateChatInput) {
     input.expandMessageMacros ?? document.expandMessageMacros
   )
   if (expandMacros) settings.expandMessageMacros = true
-  const prepared = await prepareChatRow(
-    input.userId,
-    input.title ?? null,
-    settings,
-    input.spaceId
-  )
+  const prepared =
+    input.preparedChat ??
+    (await prepareChatRow(
+      input.userId,
+      input.title ?? null,
+      settings,
+      input.spaceId
+    ))
   const ids = new Map(document.nodes.map((node) => [node.id, id()]))
   const selectedChildren = input.selectedChildren ?? {}
   for (const [parentId, childId] of Object.entries(selectedChildren)) {
@@ -370,7 +555,7 @@ export async function createChatFromTemplate(input: TemplateChatInput) {
   }
   const bookIds = [...new Set(input.contextBookIds ?? [])]
   const attachmentIds = templateAttachmentIds(document)
-  return db.transaction().execute(async (trx) => {
+  const persist = async (trx: Transaction<DB>) => {
     if (attachmentIds.length) {
       const owned = await trx
         .selectFrom("attachments")
@@ -380,6 +565,13 @@ export async function createChatFromTemplate(input: TemplateChatInput) {
         .execute()
       if (owned.length !== attachmentIds.length)
         throw new Error("Template attachment not found")
+      await trx
+        .updateTable("attachments")
+        .set({ claimed_at: chat.created_at })
+        .where("user_id", "=", input.userId)
+        .where("id", "in", attachmentIds)
+        .where("claimed_at", "is", null)
+        .execute()
     }
     await trx.insertInto("chats").values(chat).execute()
     if (bookIds.length) {
@@ -402,7 +594,7 @@ export async function createChatFromTemplate(input: TemplateChatInput) {
         )
         .execute()
     }
-    for (const node of document.nodes) {
+    for (const node of orderedTemplateNodes(document)) {
       const parts = node.parts
       const nodeId = ids.get(node.id)!
       const selectedChildId = Object.hasOwn(selectedChildren, node.id)
@@ -467,7 +659,8 @@ export async function createChatFromTemplate(input: TemplateChatInput) {
         .execute(),
       nodeIds: Object.fromEntries(ids),
     }
-  })
+  }
+  return input.trx ? persist(input.trx) : db.transaction().execute(persist)
 }
 
 export async function materializeChatTemplate(

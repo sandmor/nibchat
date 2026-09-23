@@ -459,13 +459,19 @@ export async function getWorkspace(
     .selectFrom("chats")
     .selectAll()
     .where("user_id", "=", userId)
+    .where("id", "not in", db.selectFrom("template_chats").select("chat_id"))
     .orderBy("updated_at", "desc")
     .execute()
   const spaces = await listSpaceRows(userId)
   let selected = input?.draft
     ? undefined
     : input?.chatId
-      ? chats.find((chat) => chat.id === input.chatId)
+      ? await db
+          .selectFrom("chats")
+          .selectAll()
+          .where("id", "=", input.chatId)
+          .where("user_id", "=", userId)
+          .executeTakeFirst()
       : chats[0]
   // Explicit chatId miss falls back to none, not a different conversation
   if (input?.chatId && !selected) selected = undefined
@@ -696,7 +702,7 @@ async function deleteOwnedChats(
   return { nodeIds, generationRunIds }
 }
 
-async function finishChatDeletion(deletion: {
+export async function finishChatDeletion(deletion: {
   nodeIds: string[]
   generationRunIds: string[]
 }) {
@@ -712,6 +718,12 @@ export async function deleteChat(userId: string, chatId: string) {
 export async function deleteChats(userId: string, chatIds: readonly string[]) {
   const unique = uniqueChatIds(chatIds)
   if (unique.length === 0) return { ok: true as const, count: 0 }
+  const templateChat = await db
+    .selectFrom("template_chats")
+    .select("chat_id")
+    .where("chat_id", "in", unique)
+    .executeTakeFirst()
+  if (templateChat) throw new Error("Delete this chat from Chat templates")
   const { deleteChatSchedulesFor } = await import("@/lib/schedules/service")
   const deletion = await db.transaction().execute(async (trx) => {
     await lockOwnedChats(trx, userId, unique)
@@ -1200,6 +1212,11 @@ export async function searchChats(userId: string, query: string) {
       "chats.title",
     ])
     .where("chats.user_id", "=", userId)
+    .where(
+      "chats.id",
+      "not in",
+      db.selectFrom("template_chats").select("chat_id")
+    )
     .where(sql<boolean>`message_nodes.search_text like ${pattern} escape '\\'`)
     .limit(50)
     .execute()
@@ -3091,6 +3108,12 @@ export async function setChatsSpace(
 ) {
   const unique = uniqueChatIds(chatIds)
   if (unique.length === 0) return { ok: true as const, count: 0 }
+  const templateChat = await db
+    .selectFrom("template_chats")
+    .select("chat_id")
+    .where("chat_id", "in", unique)
+    .executeTakeFirst()
+  if (templateChat) throw new Error("Templates cannot be moved into spaces")
   if (spaceId) await assertSpaceOwner(spaceId, userId)
   const owned = await db
     .selectFrom("chats")
@@ -3332,6 +3355,8 @@ async function restoreOwnerBackup(
         user_id: userId,
       })
       .execute()
+  for (const link of backup.templateChats)
+    await trx.insertInto("template_chats").values(link).execute()
   for (const schedule of backup.scheduledGenerations)
     await trx
       .insertInto("scheduled_jobs")
@@ -3369,8 +3394,6 @@ async function restoreOwnerBackup(
       })
       .execute()
   }
-  for (const link of backup.templateAttachments)
-    await trx.insertInto("template_attachments").values(link).execute()
   for (const provider of backup.providerProfiles) {
     await trx
       .insertInto("provider_profiles")
@@ -3592,6 +3615,12 @@ function validateMultiUserBackup(
         `Backup template ${template.id} references an unknown user`
       )
   }
+  for (const link of backup.templateChats) {
+    const template = templates.get(link.template_id)
+    const chatOwner = chatOwners.get(link.chat_id)
+    if (!template || chatOwner !== template.user_id)
+      throw new Error("Backup contains an invalid template chat")
+  }
   for (const schedule of backup.scheduledGenerations) {
     const action = parseJson<{
       kind: "template" | "chat_generate"
@@ -3641,14 +3670,6 @@ function validateMultiUserBackup(
       (run.message_id && !nodes.has(run.message_id))
     )
       throw new Error(`Backup schedule run ${run.id} is invalid`)
-  }
-  for (const link of backup.templateAttachments) {
-    const template = templates.get(link.template_id)
-    const attachment = backup.attachments.find(
-      (item) => item.id === link.attachment_id
-    )
-    if (!template || !attachment || template.user_id !== attachment.user_id)
-      throw new Error("Backup contains an invalid template attachment")
   }
   for (const link of backup.messageAttachments) {
     if (
@@ -3788,7 +3809,7 @@ async function restoreMultiUserBackup(
     chatTemplates: backup.chatTemplates
       .filter((template) => template.user_id === sourceOwner.id)
       .map((template) => ({ ...template, user_id: ownerId })),
-    templateAttachments: backup.templateAttachments.filter((link) =>
+    templateChats: backup.templateChats.filter((link) =>
       backup.chatTemplates.some(
         (template) =>
           template.id === link.template_id &&
@@ -4021,6 +4042,10 @@ async function restoreMultiUserBackup(
       }
       for (const template of userTemplates)
         await trx.insertInto("chat_templates").values(template).execute()
+      for (const link of backup.templateChats.filter((link) =>
+        userTemplateIds.has(link.template_id)
+      ))
+        await trx.insertInto("template_chats").values(link).execute()
       for (const schedule of backup.scheduledGenerations.filter(
         (row) => row.user_id === sourceUser.id
       ))
@@ -4050,10 +4075,6 @@ async function restoreMultiUserBackup(
             .execute()
       for (const link of userLinks)
         await trx.insertInto("message_attachments").values(link).execute()
-      for (const link of backup.templateAttachments.filter((link) =>
-        userTemplateIds.has(link.template_id)
-      ))
-        await trx.insertInto("template_attachments").values(link).execute()
       for (const receipt of backup.importReceipts.filter(
         (row) => row.user_id === sourceUser.id
       ))
@@ -4146,6 +4167,10 @@ export async function createBackup() {
     .selectFrom("chat_templates")
     .selectAll()
     .execute()
+  const templateChats = await db
+    .selectFrom("template_chats")
+    .selectAll()
+    .execute()
   const scheduledGenerationRows = await db
     .selectFrom("scheduled_jobs")
     .selectAll()
@@ -4156,10 +4181,6 @@ export async function createBackup() {
   }))
   const scheduledRuns = await db
     .selectFrom("scheduled_job_runs")
-    .selectAll()
-    .execute()
-  const templateAttachments = await db
-    .selectFrom("template_attachments")
     .selectAll()
     .execute()
   const normalizedStacks = promptStacks.map((row) => ({
@@ -4219,7 +4240,7 @@ export async function createBackup() {
     attachments,
     messageAttachments,
     chatTemplates,
-    templateAttachments,
+    templateChats,
     scheduledGenerations,
     scheduledRuns,
     providerProfiles,

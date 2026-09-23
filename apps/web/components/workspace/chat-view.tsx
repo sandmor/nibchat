@@ -12,6 +12,7 @@ import {
 } from "react"
 import { useShallow } from "zustand/react/shallow"
 import { AnimatePresence } from "motion/react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
@@ -206,11 +207,20 @@ type Props = {
   selectNodeId?: string | null
   draftSpaceId?: string | null
   draftTemplateId?: string | null
+  template?: { id: string; name: string }
 }
 
 function generationScheduleName(text: string) {
   const trimmed = text.trim().slice(0, MAX_NAME)
   return trimmed || "Generation"
+}
+
+function templateSpaceDefaultLabel(names: readonly string[]) {
+  if (names.length === 0) return null
+  if (names.length === 1) return `Default in ${names[0]}`
+  if (names.length === 2) return `Default in ${names[0]} and ${names[1]}`
+  const extra = names.length - 1
+  return `Default in ${names[0]} and ${extra} other spaces`
 }
 
 function generationScheduleNameFromParts(partsJson: string) {
@@ -310,6 +320,7 @@ export function ChatView({
   selectNodeId,
   draftSpaceId: initialDraftSpaceId = null,
   draftTemplateId: initialDraftTemplateId = null,
+  template,
 }: Props) {
   const { appearance, providers: chromeProviders } = useWorkspaceChrome()
   const trpc = useTRPC()
@@ -336,6 +347,12 @@ export function ChatView({
   const [promptPickerOpen, setPromptPickerOpen] = useState(false)
   const [renameOpen, setRenameOpen] = useState(false)
   const [renameTitle, setRenameTitle] = useState("")
+  const [templateName, setTemplateName] = useState(template?.name ?? "")
+  const templateId = template?.id
+  const seededTemplateName = template?.name
+  useEffect(() => {
+    if (seededTemplateName !== undefined) setTemplateName(seededTemplateName)
+  }, [templateId, seededTemplateName])
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false)
   const [saveTemplateName, setSaveTemplateName] = useState("")
   const [replaceTemplateId, setReplaceTemplateId] = useState(SAVE_TEMPLATE_NEW)
@@ -734,6 +751,29 @@ export function ChatView({
   }, [data.chat, mode, pendingChatId])
   const providers = providersQuery.data ?? chromeProviders
   const knownChats = data.chats
+  const templateUsageLabel = useMemo(() => {
+    if (!template) return null
+    const schedules = (schedulesQuery.data?.schedules ?? []).filter(
+      (schedule) => schedule.templateId === template.id
+    )
+    const scheduleLabel =
+      schedules.length === 0
+        ? null
+        : schedules.some((schedule) => schedule.enabled)
+          ? "Scheduled"
+          : "Schedule paused"
+    const spaceNames = (data.spaces ?? [])
+      .map(spaceFromRow)
+      .filter((space) => {
+        const policy = space.settings.chatTemplate
+        return policy?.value === template.id && policy.mode !== "release"
+      })
+      .map((space) => space.name)
+    const parts = [scheduleLabel, templateSpaceDefaultLabel(spaceNames)].filter(
+      (part): part is string => Boolean(part)
+    )
+    return parts.length ? `${parts.join(". ")}.` : null
+  }, [data.spaces, schedulesQuery.data?.schedules, template])
 
   // Reload/navigation discovery only: a currently-open peer is intentionally
   // not notified until its normal workspace query is refreshed.
@@ -924,6 +964,13 @@ export function ChatView({
     await Promise.all([
       queryClient.invalidateQueries(trpc.workspace.get.queryFilter()),
       queryClient.invalidateQueries(trpc.workspace.listSchedules.queryFilter()),
+      ...(template
+        ? [
+            queryClient.invalidateQueries(
+              trpc.workspace.listChatTemplates.queryFilter()
+            ),
+          ]
+        : []),
     ])
   }
 
@@ -1020,6 +1067,15 @@ export function ChatView({
         }
         toast.error("Could not update conversation")
       },
+      onSettled: async () => {
+        await invalidateWorkspace()
+      },
+    })
+  )
+  const renameTemplateMutation = useMutation(
+    trpc.workspace.renameChatTemplate.mutationOptions({
+      onError: (error) =>
+        toast.error(error.message || "Could not rename template"),
       onSettled: async () => {
         await invalidateWorkspace()
       },
@@ -2539,7 +2595,10 @@ export function ChatView({
     ]
   )
   const canSchedule =
-    leafIsUser && schedulesQuery.data?.available === true && inFlightCount === 0
+    !template &&
+    leafIsUser &&
+    schedulesQuery.data?.available === true &&
+    inFlightCount === 0
 
   function submitSaveTemplate() {
     if (
@@ -2576,7 +2635,7 @@ export function ChatView({
         ...(existing
           ? {
               templateId: existing.id,
-              expectedRevision: existing.revision,
+              expectedFingerprint: existing.fingerprint,
             }
           : {}),
       })
@@ -2588,7 +2647,7 @@ export function ChatView({
       ...(existing
         ? {
             templateId: existing.id,
-            expectedRevision: existing.revision,
+            expectedFingerprint: existing.fingerprint,
           }
         : {}),
     })
@@ -2604,6 +2663,31 @@ export function ChatView({
             ?.parts_json ?? ""
         )
       : ""
+
+  async function submitRename() {
+    const next = renameTitle.trim()
+    if (!next) return
+    if (template) {
+      const previous = templateName
+      setTemplateName(next)
+      try {
+        await renameTemplateMutation.mutateAsync({
+          templateId: template.id,
+          name: next,
+        })
+        setRenameOpen(false)
+      } catch {
+        setTemplateName(previous)
+      }
+      return
+    }
+    if (!data.chat) return
+    await updateChatMutation.mutateAsync({
+      chatId: data.chat.id,
+      title: next,
+    })
+    setRenameOpen(false)
+  }
 
   return (
     <ContextPreviewProvider
@@ -2628,18 +2712,28 @@ export function ChatView({
         data-theme-target="chat"
         className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-chat"
       >
-        <DocumentTitle title={displayChatTitle(data.chat?.title)} />
+        <DocumentTitle
+          title={template ? templateName : displayChatTitle(data.chat?.title)}
+        />
         <header
           className={cn(
             "flex shrink-0 flex-col gap-1.5 border-b sm:flex-row sm:items-center sm:gap-2",
-            density === "compact"
-              ? "px-3 py-2 sm:h-12 sm:py-0"
-              : "px-3 py-2.5 sm:h-14 sm:px-5 sm:py-0"
+            density === "compact" ? "px-3 py-2" : "px-3 py-2.5 sm:px-5",
+            template
+              ? "sm:h-auto"
+              : density === "compact"
+                ? "sm:h-12 sm:py-0"
+                : "sm:h-14 sm:py-0"
           )}
         >
           <div className="min-w-0 flex-1">
             <h1
               onDoubleClick={() => {
+                if (template) {
+                  setRenameTitle(templateName)
+                  setRenameOpen(true)
+                  return
+                }
                 if (!data.chat) return
                 setRenameTitle(data.chat.title ?? "")
                 setRenameOpen(true)
@@ -2647,16 +2741,34 @@ export function ChatView({
               className={cn("truncate font-medium", data.chat && "cursor-text")}
               title={data.chat ? "Double-click to rename" : undefined}
             >
-              {displayChatTitle(data.chat?.title)}
+              {template ? templateName : displayChatTitle(data.chat?.title)}
             </h1>
-            <p className="hidden truncate text-xs text-muted-foreground sm:block">
-              {!data.chat &&
-              templateOptions.some(
-                (template) => template.id === draftTemplateId
-              )
-                ? `Starting from ${templatePickerLabel}. Send to create the chat.`
-                : "Each reply can become its own direction."}
-            </p>
+            {template ? (
+              <div className="text-xs text-muted-foreground">
+                <p>
+                  This is a chat template. The message tree saves as you edit.
+                  Chat settings are not included.{" "}
+                  <Link
+                    href="/settings#chat-templates"
+                    className="font-medium text-foreground underline-offset-2 hover:underline"
+                  >
+                    Chat templates
+                  </Link>
+                </p>
+                {templateUsageLabel ? (
+                  <p className="truncate">{templateUsageLabel}</p>
+                ) : null}
+              </div>
+            ) : (
+              <p className="hidden truncate text-xs text-muted-foreground sm:block">
+                {!data.chat &&
+                templateOptions.some(
+                  (template) => template.id === draftTemplateId
+                )
+                  ? `Starting from ${templatePickerLabel}. Send to create the chat.`
+                  : "Each reply can become its own direction."}
+              </p>
+            )}
           </div>
           <div className="flex min-w-0 flex-nowrap items-center gap-0.5 overflow-hidden sm:max-w-[min(44rem,78%)] sm:shrink-0 sm:gap-1">
             {showTemplatePicker ? (
@@ -2754,7 +2866,7 @@ export function ChatView({
               onEditParameters={() => setParametersOpen(true)}
               lockedBy={settingLocks.reasoning}
             />
-            <div className="hidden min-w-0 md:contents">
+            <div className={template ? "hidden" : "hidden min-w-0 md:contents"}>
               <SpacePicker
                 spaces={data.spaces ?? []}
                 value={spaceId}
@@ -2807,16 +2919,21 @@ export function ChatView({
                   label: "Variables",
                   onSelect: () => setVariablesOpen(true),
                 },
-                {
-                  label: `Space · ${
-                    (data.spaces ?? []).find((space) => space.id === spaceId)
-                      ?.name ?? "Ungrouped"
-                  }`,
-                  onSelect: () => setSpaceOpen(true),
-                },
+                ...(!template
+                  ? [
+                      {
+                        label: `Space · ${
+                          (data.spaces ?? []).find(
+                            (space) => space.id === spaceId
+                          )?.name ?? "Ungrouped"
+                        }`,
+                        onSelect: () => setSpaceOpen(true),
+                      },
+                    ]
+                  : []),
               ]}
               items={[
-                ...(data.chat
+                ...(data.chat && !template
                   ? [
                       {
                         label: "Save as template",
@@ -2932,7 +3049,13 @@ export function ChatView({
           }}
         />
 
-        <ScheduledGenerationProvider value={scheduledGeneration}>
+        <ScheduledGenerationProvider
+          value={
+            template
+              ? { ...scheduledGeneration, available: false, pending: [] }
+              : scheduledGeneration
+          }
+        >
           <MessageLayer
             value={find.layerValue}
             resolveOperation={resolveDraftMessageOperation}
@@ -3049,17 +3172,17 @@ export function ChatView({
                         allowEmptySend={role === "user"}
                         onSend={options.onSend}
                         onSchedule={
-                          role === "user"
+                          role === "user" && !template
                             ? () => openScheduleComposer(slot, anchor)
                             : undefined
                         }
                         onScheduleTemplate={
-                          role === "user"
+                          role === "user" && !template
                             ? () => openTemplateSchedule(slot, anchor)
                             : undefined
                         }
                         scheduleAvailable={
-                          schedulesQuery.data?.available === true
+                          !template && schedulesQuery.data?.available === true
                         }
                         scheduleFromAnchor={
                           Boolean(anchor) &&
@@ -3149,13 +3272,27 @@ export function ChatView({
                 contextParentId={composerParentId}
                 sendLabel="Send"
                 onSend={() => void streamSubmit()}
-                onSchedule={() =>
-                  openScheduleComposer(linearComposerSlot, composerParentId)
+                onSchedule={
+                  template
+                    ? undefined
+                    : () =>
+                        openScheduleComposer(
+                          linearComposerSlot,
+                          composerParentId
+                        )
                 }
-                onScheduleTemplate={() =>
-                  openTemplateSchedule(linearComposerSlot, composerParentId)
+                onScheduleTemplate={
+                  template
+                    ? undefined
+                    : () =>
+                        openTemplateSchedule(
+                          linearComposerSlot,
+                          composerParentId
+                        )
                 }
-                scheduleAvailable={schedulesQuery.data?.available === true}
+                scheduleAvailable={
+                  !template && schedulesQuery.data?.available === true
+                }
                 scheduleFromAnchor={leafIsUser}
                 onFiles={(files) => void uploadFiles(linearComposerSlot, files)}
                 onRemoveAttachment={(part) =>
@@ -3539,7 +3676,9 @@ export function ChatView({
         <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Rename conversation</DialogTitle>
+              <DialogTitle>
+                {template ? "Rename template" : "Rename conversation"}
+              </DialogTitle>
             </DialogHeader>
             <Input
               value={renameTitle}
@@ -3547,14 +3686,7 @@ export function ChatView({
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault()
-                  void (async () => {
-                    if (!data.chat || !renameTitle.trim()) return
-                    await updateChatMutation.mutateAsync({
-                      chatId: data.chat.id,
-                      title: renameTitle.trim(),
-                    })
-                    setRenameOpen(false)
-                  })()
+                  void submitRename()
                 }
               }}
             />
@@ -3562,18 +3694,7 @@ export function ChatView({
               <Button variant="outline" onClick={() => setRenameOpen(false)}>
                 Cancel
               </Button>
-              <Button
-                onClick={async () => {
-                  if (!data.chat || !renameTitle.trim()) return
-                  await updateChatMutation.mutateAsync({
-                    chatId: data.chat.id,
-                    title: renameTitle.trim(),
-                  })
-                  setRenameOpen(false)
-                }}
-              >
-                Save
-              </Button>
+              <Button onClick={() => void submitRename()}>Save</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

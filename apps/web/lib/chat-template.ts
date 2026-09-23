@@ -73,6 +73,21 @@ export const chatTemplateDocumentSchema = z
 export type ChatTemplateDocument = z.infer<typeof chatTemplateDocumentSchema>
 export type ChatTemplateNode = ChatTemplateDocument["nodes"][number]
 
+/** Parent-first order for inserting a template graph with foreign keys enabled. */
+export function orderedTemplateNodes(document: ChatTemplateDocument) {
+  const byId = new Map(document.nodes.map((node) => [node.id, node]))
+  const result: ChatTemplateNode[] = []
+  const visited = new Set<string>()
+  const visit = (node: ChatTemplateNode) => {
+    if (visited.has(node.id)) return
+    if (node.parentId) visit(byId.get(node.parentId)!)
+    visited.add(node.id)
+    result.push(node)
+  }
+  document.nodes.forEach(visit)
+  return result
+}
+
 export function templateActiveLeaf(document: {
   selectedRootId: string | null
   nodes: ReadonlyArray<{

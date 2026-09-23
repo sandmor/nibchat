@@ -43,6 +43,9 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create table if not exists chat_templates (id text primary key, user_id text not null references "user"(id) on delete cascade, name text not null, document_json text not null, revision integer not null default 0, source_json text not null default '{}', created_at text not null, updated_at text not null)`.execute(
     db
   )
+  await sql`create table if not exists template_chats (template_id text primary key references chat_templates(id) on delete cascade, chat_id text not null unique references chats(id) on delete cascade)`.execute(
+    db
+  )
   await sql`create table if not exists scheduled_jobs (id text primary key, user_id text not null references "user"(id) on delete cascade, name text not null, action_json text not null, cadence_json text not null, enabled boolean not null default true, next_run_at text, last_run_at text, last_status text, last_error text, last_chat_id text references chats(id) on delete set null, created_at text not null, updated_at text not null)`.execute(
     db
   )
@@ -84,9 +87,6 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create table if not exists message_attachments (message_node_id text not null references message_nodes(id) on delete cascade, attachment_id text not null references attachments(id) on delete cascade, primary key(message_node_id, attachment_id))`.execute(
     db
   )
-  await sql`create table if not exists template_attachments (template_id text not null references chat_templates(id) on delete cascade, attachment_id text not null references attachments(id) on delete cascade, primary key(template_id, attachment_id))`.execute(
-    db
-  )
   await sql`create table if not exists attachment_derivations (attachment_id text primary key references attachments(id) on delete cascade, kind text not null, data_json text not null, created_at text not null, updated_at text not null)`.execute(
     db
   )
@@ -121,9 +121,6 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
     db
   )
   await sql`create index if not exists chat_templates_user_idx on chat_templates(user_id, updated_at)`.execute(
-    db
-  )
-  await sql`create index if not exists template_attachments_attachment_idx on template_attachments(attachment_id)`.execute(
     db
   )
   await sql`create table if not exists provider_profiles (id text primary key, user_id text not null references "user"(id) on delete cascade, name text not null, kind text not null, config_json text not null, models_json text not null, created_at text not null, updated_at text not null)`.execute(

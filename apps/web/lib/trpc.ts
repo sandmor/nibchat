@@ -922,7 +922,10 @@ export const appRouter = t.router({
           chatId: z.string().min(1).max(MAX_ID),
           name: z.string().trim().min(1).max(MAX_NAME),
           templateId: z.string().min(1).max(MAX_ID).optional(),
-          expectedRevision: z.number().int().min(0).optional(),
+          expectedFingerprint: z
+            .string()
+            .regex(/^[a-f0-9]{64}$/)
+            .optional(),
         })
       )
       .mutation(({ ctx, input }) =>
@@ -1001,7 +1004,10 @@ export const appRouter = t.router({
           chatId: z.string().min(1).max(MAX_ID),
           name: z.string().trim().min(1).max(MAX_NAME),
           templateId: z.string().min(1).max(MAX_ID).optional(),
-          expectedRevision: z.number().int().min(0).optional(),
+          expectedFingerprint: z
+            .string()
+            .regex(/^[a-f0-9]{64}$/)
+            .optional(),
           spaceId: z.string().min(1).max(MAX_ID).nullable().optional(),
           cadence: cadenceInputSchema,
         })

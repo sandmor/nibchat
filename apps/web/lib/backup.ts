@@ -222,9 +222,9 @@ const chatTemplateSchema = z.object({
   created_at: z.string(),
   updated_at: z.string(),
 })
-const templateAttachmentSchema = z.object({
+const templateChatSchema = z.object({
   template_id: z.string(),
-  attachment_id: z.string(),
+  chat_id: z.string(),
 })
 const scheduledGenerationSchema = z.object({
   id: z.string(),
@@ -280,7 +280,7 @@ export const backupSchema = z.object({
     .optional()
     .default([]),
   chatTemplates: z.array(chatTemplateSchema).optional().default([]),
-  templateAttachments: z.array(templateAttachmentSchema).optional().default([]),
+  templateChats: z.array(templateChatSchema).optional().default([]),
   scheduledGenerations: z
     .array(scheduledGenerationSchema)
     .optional()

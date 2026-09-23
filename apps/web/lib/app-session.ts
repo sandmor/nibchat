@@ -36,6 +36,7 @@ export async function workspaceHomePath(userId: string) {
     .selectFrom("chats")
     .select("id")
     .where("user_id", "=", userId)
+    .where("id", "not in", db.selectFrom("template_chats").select("chat_id"))
     .orderBy("updated_at", "desc")
     .executeTakeFirst()
   return chat ? `/chat/${chat.id}` : "/chat/new"
@@ -66,7 +67,10 @@ export async function requireOwner(requestHeaders: Headers) {
 
 /** API/RSC gate for any signed-in workspace user. */
 export async function requireUser(requestHeaders: Headers) {
-  const gate = await resolveAppUserWithPorts(defaultIdentityPorts, requestHeaders)
+  const gate = await resolveAppUserWithPorts(
+    defaultIdentityPorts,
+    requestHeaders
+  )
   if (gate.status === "ok" || gate.status === "onboarding") return gate.user
   throw new Error(UNAUTHORIZED_MESSAGE)
 }

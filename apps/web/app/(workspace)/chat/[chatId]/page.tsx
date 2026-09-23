@@ -36,6 +36,13 @@ export default async function ChatPage({
   const { chatId } = await params
   const { node } = await searchParams
   const user = await requireWorkspaceUser()
+  const template = await db.selectFrom("template_chats")
+    .innerJoin("chat_templates", "chat_templates.id", "template_chats.template_id")
+    .select("chat_templates.id")
+    .where("template_chats.chat_id", "=", chatId)
+    .where("chat_templates.user_id", "=", user.id)
+    .executeTakeFirst()
+  if (template) redirect(`/template/${template.id}`)
   const workspace = await getWorkspace(user.id, { chatId })
 
   if (!workspace.chat) {

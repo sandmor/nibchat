@@ -167,6 +167,7 @@ export type ScheduledTranscriptItem = {
   scheduleId: string
   nextRunAt: string
   timeZone: string
+  replyCount?: number
 }
 
 export type ScheduledTranscriptRow = {
@@ -175,8 +176,7 @@ export type ScheduledTranscriptRow = {
   parentId: string
   /** Chronological, then schedule id. The same instant stays a separate step. */
   items: readonly ScheduledTranscriptItem[]
-  /** Regenerates when this user message already continues on the path. */
-  verb: "Generates" | "Regenerates"
+  verb: "Generates"
 }
 
 export type TranscriptRow =
@@ -344,8 +344,6 @@ export function buildTranscriptRows(input: {
   streamIdByNodeId: ReadonlyMap<string, string>
   afterTipStreams: Array<{ streamId: string; nodeId: string }>
   showEmpty: boolean
-  /** User messages that already have an assistant child, on or off the path. */
-  assistantParentIds?: ReadonlySet<string>
 }): TranscriptRow[] {
   const rows: TranscriptRow[] = []
 
@@ -370,9 +368,7 @@ export function buildTranscriptRows(input: {
       kind: "scheduled",
       messageId: `schedules:${node.id}`,
       parentId: node.id,
-      verb: scheduledGenerationVerb(
-        input.assistantParentIds?.has(node.id) ?? false
-      ),
+      verb: scheduledGenerationVerb(),
       items: [...scheduled]
         .sort((left, right) => {
           if (left.nextRunAt !== right.nextRunAt)
@@ -383,6 +379,7 @@ export function buildTranscriptRows(input: {
           scheduleId: item.id,
           nextRunAt: item.nextRunAt,
           timeZone: item.timeZone,
+          replyCount: item.replyCount,
         })),
     })
   })

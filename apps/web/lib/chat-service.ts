@@ -26,6 +26,10 @@ import {
   restoreGenerationRunState,
 } from "@/lib/generation-runs"
 import { generationStreamStore } from "@/lib/generation-streams/default-port"
+import {
+  completeGenerationActionForRun,
+  recordGenerationAction,
+} from "@/lib/generation-actions"
 import { reduceGenerationPayload } from "@/lib/generation-streams/events"
 import {
   FOLLOWABLE_RUN_STATES,
@@ -110,7 +114,11 @@ import {
   getUserSettings,
   setUserThemeSlots,
 } from "@/lib/user-settings"
-import { MAX_SPACE_DEPTH, MAX_SPACES } from "@/lib/limits"
+import {
+  assertGenerationCount,
+  MAX_SPACE_DEPTH,
+  MAX_SPACES,
+} from "@/lib/limits"
 import {
   bindVariableLocksToStack,
   generationOverrides,
@@ -520,6 +528,7 @@ export async function getWorkspace(
       id: schedule.id,
       nextRunAt: schedule.nextRunAt,
       timeZone: schedule.timeZone,
+      replyCount: schedule.replyCount,
     })
     schedulesByParent.set(schedule.parentId, list)
   }
@@ -922,16 +931,18 @@ export async function startGeneration(input: {
   return { assistant, contextLeafId: input.parentId }
 }
 
-/** User message + streaming assistant in one transaction. */
-export async function submitUserTurn(input: {
+/** Persist one authored turn and all of its assistant siblings atomically. */
+export async function submitUserTurnBatch(input: {
   userId: string
   chatId: string
   parentId: string | null
   parts: Parts
-  generationId: string
+  generationIds: string[]
   assistantMetadata?: Record<string, unknown>
   attachSelection?: boolean
+  action?: { id: string; requestHash: string; intent: string }
 }) {
+  assertGenerationCount(input.generationIds.length)
   return db.transaction().execute(async (trx) => {
     const user = await createMessage({
       userId: input.userId,
@@ -942,16 +953,83 @@ export async function submitUserTurn(input: {
       attachSelection: input.attachSelection,
       trx,
     })
-    const generation = await startGeneration({
-      userId: input.userId,
-      chatId: input.chatId,
-      parentId: user.id,
-      generationId: input.generationId,
-      assistantMetadata: input.assistantMetadata,
-      attachSelection: input.attachSelection,
-      trx,
-    })
-    return { user, assistant: generation.assistant, contextLeafId: user.id }
+    const assistants: NodeRow[] = []
+    for (const [index, generationId] of input.generationIds.entries()) {
+      const result = await startGeneration({
+        userId: input.userId,
+        chatId: input.chatId,
+        parentId: user.id,
+        generationId,
+        assistantMetadata: {
+          ...input.assistantMetadata,
+          batchIndex: index,
+          batchSize: input.generationIds.length,
+        },
+        attachSelection: input.attachSelection && index === 0,
+        trx,
+      })
+      assistants.push(result.assistant)
+    }
+    if (input.action)
+      await recordGenerationAction(trx, {
+        actionId: input.action.id,
+        userId: input.userId,
+        chatId: input.chatId,
+        intent: input.action.intent,
+        requestHash: input.action.requestHash,
+        userNodeId: user.id,
+        generations: assistants.map((assistant, index) => ({
+          generationId: input.generationIds[index]!,
+          assistantNodeId: assistant.id,
+          parentNodeId: assistant.parent_id,
+        })),
+      })
+    return { user, assistants, contextLeafId: user.id }
+  })
+}
+
+/** Persist assistant siblings against one context without changing branches repeatedly. */
+export async function startGenerationBatch(input: {
+  userId: string
+  chatId: string
+  parentId: string | null
+  generationIds: string[]
+  assistantMetadata?: Record<string, unknown>
+  attachSelection?: boolean
+  action?: { id: string; requestHash: string; intent: string }
+}) {
+  assertGenerationCount(input.generationIds.length)
+  return db.transaction().execute(async (trx) => {
+    const assistants: NodeRow[] = []
+    for (const [index, generationId] of input.generationIds.entries()) {
+      const result = await startGeneration({
+        ...input,
+        generationId,
+        assistantMetadata: {
+          ...input.assistantMetadata,
+          batchIndex: index,
+          batchSize: input.generationIds.length,
+        },
+        attachSelection: input.attachSelection && index === 0,
+        trx,
+      })
+      assistants.push(result.assistant)
+    }
+    if (input.action)
+      await recordGenerationAction(trx, {
+        actionId: input.action.id,
+        userId: input.userId,
+        chatId: input.chatId,
+        intent: input.action.intent,
+        requestHash: input.action.requestHash,
+        userNodeId: null,
+        generations: assistants.map((assistant, index) => ({
+          generationId: input.generationIds[index]!,
+          assistantNodeId: assistant.id,
+          parentNodeId: assistant.parent_id,
+        })),
+      })
+    return { assistants, contextLeafId: input.parentId }
   })
 }
 
@@ -1392,37 +1470,6 @@ async function persistForkedMessage(input: {
   })
 }
 
-/** New streaming assistant as a sibling of an existing assistant (any parent role). */
-export async function startRegenerate(
-  userId: string,
-  assistantNodeId: string,
-  generationId?: string,
-  assistantMetadata: Record<string, unknown> = {}
-) {
-  const target = await assertNodeOwner(assistantNodeId, userId)
-  return db.transaction().execute(async (trx) => {
-    await lockChatMutation(trx, target.chat_id, userId)
-    const original = await assertNodeOwner(assistantNodeId, userId, trx)
-    if (original.role !== "assistant")
-      throw new Error("Only assistant messages can be regenerated.")
-    const assistant = await insertNode({
-      chatId: original.chat_id,
-      parentId: original.parent_id,
-      role: "assistant",
-      parts: [],
-      status: "streaming",
-      metadata: assistantMetadata,
-      generationId,
-      attachSelection: false,
-      trx,
-    })
-    return {
-      assistant,
-      contextLeafId: original.parent_id as string | null,
-    }
-  })
-}
-
 export type StreamFinalizeOutcome =
   | "complete"
   | "awaiting_input"
@@ -1519,7 +1566,10 @@ export async function finalizeStreamingAssistant(
     if (!run || run.node_id !== input.nodeId) return "superseded"
   }
   const finishRun = async (result: StreamFinalizeResult) => {
-    if (input.generationId) await removeGenerationRun(db, input.generationId)
+    if (input.generationId) {
+      await removeGenerationRun(db, input.generationId)
+      await completeGenerationActionForRun(input.generationId)
+    }
     return result
   }
   const row = await db
@@ -1735,7 +1785,13 @@ export async function reconcileChatGenerationRuns(chatId: string) {
 export async function beginResumeAssistant(
   nodeId: string,
   parts: Parts,
-  generationId?: string
+  generationId?: string,
+  action?: {
+    id: string
+    userId: string
+    chatId: string
+    requestHash: string
+  }
 ): Promise<"streaming" | "missing" | "superseded"> {
   const row = await db
     .selectFrom("message_nodes")
@@ -1759,7 +1815,7 @@ export async function beginResumeAssistant(
     if (Number(result.numUpdatedRows ?? 0) === 0) return "superseded"
     const current = await trx
       .selectFrom("message_nodes")
-      .select("chat_id")
+      .select(["chat_id", "parent_id"])
       .where("id", "=", nodeId)
       .executeTakeFirstOrThrow()
     if (generationId)
@@ -1767,6 +1823,22 @@ export async function beginResumeAssistant(
         id: generationId,
         nodeId,
         chatId: current.chat_id,
+      })
+    if (action && generationId)
+      await recordGenerationAction(trx, {
+        actionId: action.id,
+        userId: action.userId,
+        chatId: action.chatId,
+        intent: "resume",
+        requestHash: action.requestHash,
+        userNodeId: null,
+        generations: [
+          {
+            generationId,
+            assistantNodeId: nodeId,
+            parentNodeId: current.parent_id,
+          },
+        ],
       })
     return "streaming"
   })
@@ -1779,7 +1851,8 @@ export async function beginResumeAssistant(
 export async function restoreAwaitingInput(
   nodeId: string,
   originalParts: Parts,
-  generationId?: string
+  generationId?: string,
+  actionId?: string
 ): Promise<"awaiting_input" | "missing" | "superseded"> {
   const row = await db
     .selectFrom("message_nodes")
@@ -1802,6 +1875,11 @@ export async function restoreAwaitingInput(
       .executeTakeFirst()
     if (Number(result.numUpdatedRows ?? 0) === 0) return "superseded"
     if (generationId) await removeGenerationRun(trx, generationId)
+    if (actionId)
+      await trx
+        .deleteFrom("generation_actions")
+        .where("id", "=", actionId)
+        .execute()
     return "awaiting_input"
   })
 }

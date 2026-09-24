@@ -23,7 +23,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { MAX_NAME } from "@/lib/limits"
+import { MAX_COLLECTION, MAX_NAME, generationCountInRange } from "@/lib/limits"
+import { GenerationCountField } from "./generation-count"
 import {
   WEEKDAY_LABELS,
   followingRunAt,
@@ -54,6 +55,7 @@ export type ScheduleDialogSchedule = {
   name: string
   spaceId: string | null
   cadence: Cadence
+  replyCount: number
   actionKind?: "template" | "chat_generate"
 }
 
@@ -81,6 +83,7 @@ export type ScheduleClock = {
 
 type ScheduleForm = ScheduleClock & {
   name: string
+  replyCount: number
 }
 
 function browserTimeZone() {
@@ -155,6 +158,7 @@ export function defaultScheduleClock(
 function emptyForm(partial: Partial<ScheduleForm> = {}): ScheduleForm {
   return {
     name: "",
+    replyCount: 1,
     ...defaultScheduleClock(),
     ...partial,
   }
@@ -165,6 +169,7 @@ export function formForSource(source: ScheduleDialogSource): ScheduleForm {
     const cadence = source.schedule.cadence
     return emptyForm({
       name: source.schedule.name,
+      replyCount: source.schedule.replyCount,
       spaceId: source.schedule.spaceId,
       kind: cadence.kind,
       time: clockFromCadence(cadence),
@@ -494,6 +499,12 @@ export function ScheduleDialog({
       setFormError("Name is required")
       return
     }
+    if (!generationCountInRange(form.replyCount)) {
+      setFormError(
+        `Choose 1 to ${MAX_COLLECTION} replies`
+      )
+      return
+    }
     if (!next) {
       setFormError("Enter a time")
       return
@@ -505,6 +516,7 @@ export function ScheduleDialog({
         templateId: active.templateId,
         spaceId: form.spaceId,
         cadence: next,
+        replyCount: form.replyCount,
       })
       return
     }
@@ -513,6 +525,7 @@ export function ScheduleDialog({
       name,
       spaceId: form.spaceId,
       cadence: next,
+      replyCount: form.replyCount,
     })
   }
 
@@ -581,6 +594,13 @@ export function ScheduleDialog({
                 setForm((current) => ({ ...current, ...patch }))
               }
             />
+            <GenerationCountField
+              id="schedule-reply-count"
+              value={form.replyCount}
+              onChange={(replyCount) =>
+                setForm((current) => ({ ...current, replyCount }))
+              }
+            />
             {formError ? (
               <p className="text-sm text-destructive">{formError}</p>
             ) : null}
@@ -594,7 +614,12 @@ export function ScheduleDialog({
               </Button>
               <Button
                 type="submit"
-                disabled={pending || !form.name.trim() || Boolean(clockError)}
+                disabled={
+                  pending ||
+                  !form.name.trim() ||
+                  Boolean(clockError) ||
+                  !generationCountInRange(form.replyCount)
+                }
               >
                 {active.kind === "edit" ? "Save" : "Schedule"}
               </Button>

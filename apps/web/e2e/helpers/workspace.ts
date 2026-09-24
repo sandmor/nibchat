@@ -202,7 +202,6 @@ export async function openBranchNext(page: Page) {
     .locator('[data-slot-layer="present"]')
     .getByRole("button", { name: "Next branch", disabled: false })
   await expect(button).toBeEnabled()
-  await button.scrollIntoViewIfNeeded()
   await button.click()
 }
 
@@ -211,7 +210,6 @@ export async function openBranchPrev(page: Page) {
     .locator('[data-slot-layer="present"]')
     .getByRole("button", { name: "Previous branch", disabled: false })
   await expect(button).toBeEnabled()
-  await button.scrollIntoViewIfNeeded()
   await button.click()
 }
 
@@ -229,11 +227,11 @@ export async function editUserAsBranch(page: Page, nextText: string) {
   await page.getByRole("button", { name: "Save & generate" }).click()
 }
 
-export async function regenerateAssistant(page: Page) {
-  const assistant = page.locator(
-    '[data-slot-layer="present"] article[data-theme-target="message-assistant"]'
+export async function generateFromUserMessage(page: Page) {
+  const user = page.locator(
+    '[data-slot-layer="present"] article[data-theme-target="message-user"]'
   )
-  await assistant.last().getByRole("button", { name: "Regenerate" }).click()
+  await user.last().getByRole("button", { name: "Another answer" }).click()
 }
 
 export async function deleteActiveUserSubtree(page: Page) {

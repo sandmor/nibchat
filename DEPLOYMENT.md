@@ -54,6 +54,8 @@ long-lived Node process. For serverless or multiple replicas, set
 `REDIS_URL`. Redis retains active token events so another invocation can replay
 them. It does not exceed the hosting platform's hard function duration: an
 interrupted provider connection is finalized as an interrupted response.
+Scheduled and recurrent sends use an in-process runner and are unavailable in
+`stateless` mode; they require a long-lived Node process.
 
 `REDIS_URL` selects the Redis transport: `redis://` or `rediss://` opens one
 shared TCP connection; `http://` or `https://` POSTs each command as a JSON

@@ -171,7 +171,7 @@ export function ChatTree({
   findLocate = null,
   onLocateHit,
   onChanged,
-  onRegenerate,
+  onGenerateReplies,
   onAnswerTools,
   onStop,
   initialCamera = null,
@@ -193,10 +193,11 @@ export function ChatTree({
       autoFocus: boolean
       submitting: boolean
       onSend: () => void
+      onSendMultiple: (count: number) => void
     }
   ) => ReactNode
   onOpenDraft: (anchor: string | null) => void
-  onSendDraft: (anchor: string | null) => Promise<boolean>
+  onSendDraft: (anchor: string | null, count?: number) => Promise<boolean>
   messageLayoutIds?: Readonly<Record<string, string>>
   focusTargetId?: string | null
   onFocusTargetConsumed?: () => void
@@ -206,7 +207,7 @@ export function ChatTree({
   onLocateHit?: (nodeId: string) => void
   onHandoffComplete?: (anchor: string | null) => void
   onChanged: () => void | Promise<void>
-  onRegenerate: (id: string) => void
+  onGenerateReplies: (id: string, count?: number) => void
   onAnswerTools: (
     id: string,
     results: Array<{ toolCallId: string; output: unknown }>
@@ -412,7 +413,11 @@ export function ChatTree({
     })
   }
 
-  const beginSend = (anchor: string | null, rect: TreeRect) => {
+  const beginSend = (
+    anchor: string | null,
+    rect: TreeRect,
+    count = 1
+  ) => {
     const layoutId = composeLayoutId(anchor)
     if (submittingLayoutsRef.current.has(layoutId)) return
     submittingLayoutsRef.current.add(layoutId)
@@ -422,7 +427,7 @@ export function ChatTree({
       return next
     })
     setSubmittingLayouts((current) => new Set(current).add(layoutId))
-    void onSendDraft(anchor)
+    void onSendDraft(anchor, count)
       .then((started) => {
         if (!started) releaseCompose(layoutId)
       })
@@ -1087,7 +1092,7 @@ export function ChatTree({
                   providers={providers}
                   messageActionCaptions={messageActionCaptions}
                   onChanged={onChanged}
-                  onRegenerate={onRegenerate}
+                  onGenerateReplies={onGenerateReplies}
                   onAnswerTools={onAnswerTools}
                   editor={editor}
                   streamId={streamId}
@@ -1125,13 +1130,8 @@ export function ChatTree({
                 <ScheduledGenerationCard
                   nextRunAt={schedule.nextRunAt}
                   timeZone={schedule.timeZone}
-                  verb={scheduledGenerationVerb(
-                    nodes.some(
-                      (node) =>
-                        node.parent_id === schedule.parentId &&
-                        node.role === "assistant"
-                    )
-                  )}
+                  replyCount={schedule.replyCount}
+                  verb={scheduledGenerationVerb()}
                   onOpen={() => scheduledGeneration?.openPending(schedule.id)}
                   onCancel={() => scheduledGeneration?.cancel(schedule.id)}
                 />
@@ -1139,14 +1139,7 @@ export function ChatTree({
             )
           })}
         {departures.map((departure) => {
-          const verb = scheduledGenerationVerb(
-            nodes.some(
-              (node) =>
-                node.parent_id === departure.parentId &&
-                node.role === "assistant" &&
-                node.id !== departure.nodeId
-            )
-          )
+          const verb = scheduledGenerationVerb()
           const face = (
             <ScheduledGenerationCard
               nextRunAt={departure.nextRunAt}
@@ -1197,7 +1190,7 @@ export function ChatTree({
                   providers={providers}
                   messageActionCaptions={messageActionCaptions}
                   onChanged={onChanged}
-                  onRegenerate={onRegenerate}
+                  onGenerateReplies={onGenerateReplies}
                   onAnswerTools={onAnswerTools}
                   editor={editor}
                   streamId={streamIdByNodeId.get(node.id)}
@@ -1236,6 +1229,8 @@ export function ChatTree({
                         autoFocus: true,
                         submitting,
                         onSend: () => beginSend(anchor, rect),
+                        onSendMultiple: (count) =>
+                          beginSend(anchor, rect, count),
                       })
                     : null
                 }
@@ -1258,6 +1253,7 @@ export function ChatTree({
                 autoFocus: false,
                 submitting: true,
                 onSend: () => {},
+                onSendMultiple: () => {},
               })}
               message={
                 <TreeMessage
@@ -1266,7 +1262,7 @@ export function ChatTree({
                   providers={providers}
                   messageActionCaptions={messageActionCaptions}
                   onChanged={onChanged}
-                  onRegenerate={onRegenerate}
+                  onGenerateReplies={onGenerateReplies}
                   onAnswerTools={onAnswerTools}
                   editor={editor}
                 />
@@ -1542,7 +1538,7 @@ const TreeMessage = memo(function TreeMessage({
   providers,
   messageActionCaptions,
   onChanged,
-  onRegenerate,
+  onGenerateReplies,
   onAnswerTools,
   editor,
   streamId,
@@ -1552,7 +1548,7 @@ const TreeMessage = memo(function TreeMessage({
   providers: ProviderSummary[]
   messageActionCaptions: boolean
   onChanged: () => void | Promise<void>
-  onRegenerate: (id: string) => void
+  onGenerateReplies: (id: string, count?: number) => void
   onAnswerTools: (
     id: string,
     results: Array<{ toolCallId: string; output: unknown }>
@@ -1560,9 +1556,9 @@ const TreeMessage = memo(function TreeMessage({
   editor?: MessageEditorBindings
   streamId?: string
 }) {
-  const handleRegenerate = useCallback(
-    () => onRegenerate(node.id),
-    [node.id, onRegenerate]
+  const handleGenerateReplies = useCallback(
+    (count?: number) => onGenerateReplies(node.id, count),
+    [node.id, onGenerateReplies]
   )
   return (
     <Message
@@ -1573,7 +1569,7 @@ const TreeMessage = memo(function TreeMessage({
       presentation="tree"
       attachSelectionOnEdit={false}
       onChanged={onChanged}
-      onRegenerate={node.role === "assistant" ? handleRegenerate : undefined}
+      onGenerateReplies={handleGenerateReplies}
       onAnswerTools={onAnswerTools}
       editor={editor}
       streamId={streamId}

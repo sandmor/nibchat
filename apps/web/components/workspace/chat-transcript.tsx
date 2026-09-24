@@ -93,7 +93,7 @@ export type ChatTranscriptProps = {
   findLocateKey?: number
   onSelect: (parentId: string, childId: string) => void
   onChanged: () => void | Promise<void>
-  onRegenerate: (assistantNodeId: string) => void
+  onGenerateReplies: (nodeId: string, count?: number) => void
   onAnswerTools?: (
     assistantNodeId: string,
     toolResults: Array<{ toolCallId: string; output: unknown }>
@@ -124,7 +124,7 @@ function VirtualChatTranscript({
   findLocateKey = 0,
   onSelect,
   onChanged,
-  onRegenerate,
+  onGenerateReplies,
   onAnswerTools,
   editor,
 }: ChatTranscriptProps) {
@@ -155,19 +155,13 @@ function VirtualChatTranscript({
 
   const scheduledGeneration = useScheduledGeneration()
   const rows = useMemo(() => {
-    const assistantParentIds = new Set(
-      nodes.flatMap((node) =>
-        node.role === "assistant" && node.parent_id ? [node.parent_id] : []
-      )
-    )
     return buildTranscriptRows({
       activePath,
       streamIdByNodeId,
       afterTipStreams,
       showEmpty,
-      assistantParentIds,
     })
-  }, [activePath, afterTipStreams, nodes, showEmpty, streamIdByNodeId])
+  }, [activePath, afterTipStreams, showEmpty, streamIdByNodeId])
   const rowIndexByMessageId = useMemo(
     () => new Map(rows.map((row, index) => [row.messageId, index])),
     [rows]
@@ -544,7 +538,7 @@ function VirtualChatTranscript({
                     messageActionCaptions={messageActionCaptions}
                     onSelect={onSelect}
                     onChanged={onChanged}
-                    onRegenerate={onRegenerate}
+                    onGenerateReplies={onGenerateReplies}
                     onAnswerTools={onAnswerTools}
                     editor={editor}
                   />
@@ -559,7 +553,7 @@ function VirtualChatTranscript({
                     messageActionCaptions={messageActionCaptions}
                     onSelect={onSelect}
                     onChanged={onChanged}
-                    onRegenerate={onRegenerate}
+                    onGenerateReplies={onGenerateReplies}
                     onAnswerTools={onAnswerTools}
                     editor={editor}
                   />
@@ -600,7 +594,7 @@ function AfterTipSlot({
   messageActionCaptions,
   onSelect,
   onChanged,
-  onRegenerate,
+  onGenerateReplies,
   onAnswerTools,
   editor,
 }: {
@@ -613,16 +607,16 @@ function AfterTipSlot({
   messageActionCaptions: boolean
   onSelect: (parentId: string, childId: string) => void
   onChanged: () => void | Promise<void>
-  onRegenerate: (assistantNodeId: string) => void
+  onGenerateReplies: (nodeId: string, count?: number) => void
   onAnswerTools?: (
     assistantNodeId: string,
     toolResults: Array<{ toolCallId: string; output: unknown }>
   ) => void | Promise<void>
   editor?: MessageEditorBindings
 }) {
-  const handleRegenerate = useCallback(
-    () => onRegenerate(row.messageId),
-    [onRegenerate, row.messageId]
+  const handleGenerateReplies = useCallback(
+    (count?: number) => onGenerateReplies(row.messageId, count),
+    [onGenerateReplies, row.messageId]
   )
   const node = nodes.find((candidate) => candidate.id === row.messageId)
   if (!node) {
@@ -643,7 +637,7 @@ function AfterTipSlot({
       messageActionCaptions={messageActionCaptions}
       onSelect={onSelect}
       onChanged={onChanged}
-      onRegenerate={node.role === "assistant" ? handleRegenerate : undefined}
+      onGenerateReplies={handleGenerateReplies}
       onAnswerTools={onAnswerTools}
       editor={editor}
       streamId={row.streamId}

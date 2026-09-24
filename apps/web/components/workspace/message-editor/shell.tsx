@@ -1,6 +1,6 @@
 "use client"
 
-import type { DragEventHandler, ReactNode } from "react"
+import { useState, type DragEventHandler, type ReactNode } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
   ArrowExpand01Icon,
@@ -10,6 +10,7 @@ import {
   StopIcon,
   ArrowDown01Icon,
   Clock01Icon,
+  GitBranchIcon,
 } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
 import {
@@ -20,6 +21,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { TooltipProvider, WithTooltip } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
+import { MultipleGenerationsDialog } from "../generation-count"
 
 export function EditorShell({
   variant = "docked",
@@ -36,6 +38,7 @@ export function EditorShell({
   sendLabel = "Send",
   sendDisabled,
   onSend,
+  onSendMultiple,
   onSchedule,
   onScheduleTemplate,
   scheduleAvailable = true,
@@ -67,6 +70,7 @@ export function EditorShell({
   sendLabel?: string
   sendDisabled: boolean
   onSend: () => void
+  onSendMultiple?: (count: number) => void
   onSchedule?: () => void
   onScheduleTemplate?: () => void
   scheduleAvailable?: boolean
@@ -85,9 +89,12 @@ export function EditorShell({
   replaceLabel?: string
   replaceDisabled?: boolean
 }) {
+  const [multipleOpen, setMultipleOpen] = useState(false)
+  const [multipleMounted, setMultipleMounted] = useState(false)
   const inline = variant === "inline"
-  const showSchedule =
-    Boolean(onSchedule || onScheduleTemplate) && scheduleAvailable
+  const showSendMenu =
+    Boolean(onSendMultiple) ||
+    (Boolean(onSchedule || onScheduleTemplate) && scheduleAvailable)
   return (
     <div
       data-theme-group="composer"
@@ -184,7 +191,7 @@ export function EditorShell({
           <div
             className={cn(
               "flex items-center",
-              showSchedule &&
+              showSendMenu &&
                 "isolate rounded-4xl bg-primary transition-colors duration-150 has-[[aria-expanded=true]]:bg-button-hover has-[button:enabled:hover]:bg-button-hover has-[button:focus-visible]:ring-2 has-[button:focus-visible]:ring-ring/50 has-[button:focus-visible]:ring-offset-2 has-[button:focus-visible]:ring-offset-composer"
             )}
           >
@@ -192,7 +199,7 @@ export function EditorShell({
               size={inline ? "xs" : "sm"}
               className={cn(
                 "gap-1.5",
-                showSchedule &&
+                showSendMenu &&
                   "relative rounded-r-none border-0 bg-transparent pr-2 hover:bg-transparent focus-visible:ring-0 active:translate-y-0"
               )}
               onClick={onSend}
@@ -216,7 +223,7 @@ export function EditorShell({
               )}
               {sendLabel}
             </Button>
-            {showSchedule ? (
+            {showSendMenu ? (
               <DropdownMenu>
                 <DropdownMenuTrigger
                   render={
@@ -226,8 +233,11 @@ export function EditorShell({
                       className="relative rounded-l-none border-0 bg-transparent before:pointer-events-none before:absolute before:inset-y-2 before:left-0 before:w-px before:rounded-full before:bg-primary-foreground/15 hover:bg-transparent focus-visible:ring-0"
                       disabled={
                         sendDisabled ||
-                        ((!onSchedule || scheduleDisabled) &&
-                          (!onScheduleTemplate || templateScheduleDisabled))
+                        !(
+                          onSendMultiple ||
+                          (onSchedule && !scheduleDisabled) ||
+                          (onScheduleTemplate && !templateScheduleDisabled)
+                        )
                       }
                       aria-label="Send options"
                     />
@@ -244,7 +254,22 @@ export function EditorShell({
                   side="top"
                   className="w-max whitespace-nowrap"
                 >
-                  {onSchedule ? (
+                  {onSendMultiple ? (
+                    <DropdownMenuItem
+                      onClick={() => {
+                        setMultipleMounted(true)
+                        setMultipleOpen(true)
+                      }}
+                    >
+                      <HugeiconsIcon
+                        icon={GitBranchIcon}
+                        className="size-4"
+                        strokeWidth={2}
+                      />
+                      Generate multiple replies…
+                    </DropdownMenuItem>
+                  ) : null}
+                  {scheduleAvailable && onSchedule ? (
                     <DropdownMenuItem
                       disabled={scheduleDisabled}
                       onClick={onSchedule}
@@ -257,7 +282,7 @@ export function EditorShell({
                       {scheduleLabel}
                     </DropdownMenuItem>
                   ) : null}
-                  {onScheduleTemplate ? (
+                  {scheduleAvailable && onScheduleTemplate ? (
                     <DropdownMenuItem
                       disabled={templateScheduleDisabled}
                       onClick={onScheduleTemplate}
@@ -276,6 +301,13 @@ export function EditorShell({
           </div>
         </div>
       </div>
+      {multipleMounted ? (
+        <MultipleGenerationsDialog
+          open={multipleOpen}
+          onOpenChange={setMultipleOpen}
+          onConfirm={(count) => onSendMultiple?.(count)}
+        />
+      ) : null}
     </div>
   )
 }

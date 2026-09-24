@@ -223,6 +223,24 @@ export interface GenerationRunsTable {
   started_at: string
   state: "starting" | "active" | "recovering" | "cancel_requested"
 }
+/** Short-lived action receipt; the live generation_runs rows are removed at completion. */
+export interface GenerationActionsTable {
+  id: string
+  user_id: string
+  chat_id: string
+  intent: string
+  request_hash: string
+  user_node_id: string | null
+  created_at: string
+  completed_at: string | null
+}
+export interface GenerationActionItemsTable {
+  action_id: string
+  position: number
+  generation_id: string
+  assistant_node_id: string
+  parent_node_id: string | null
+}
 export interface AttachmentsTable {
   id: string
   user_id: string
@@ -404,6 +422,8 @@ export interface DB {
   spaces: SpacesTable
   message_nodes: MessageNodesTable
   generation_runs: GenerationRunsTable
+  generation_actions: GenerationActionsTable
+  generation_action_items: GenerationActionItemsTable
   attachments: AttachmentsTable
   message_attachments: MessageAttachmentsTable
   attachment_derivations: AttachmentDerivationsTable
@@ -487,6 +507,7 @@ export type NodeSchedule = {
   id: string
   nextRunAt: string
   timeZone: string
+  replyCount?: number
 }
 export type NodeRow = Selectable<MessageNodesTable> & {
   schedules?: NodeSchedule[]

@@ -28,8 +28,7 @@ const nextConfig: NextConfig = {
     "@napi-rs/canvas",
   ],
   outputFileTracingIncludes: {
-    "/api/chat/stream": pdfRuntimeFiles,
-    "/api/chat/stream/\\[generationId\\]": pdfRuntimeFiles,
+    "/api/chat/generations": pdfRuntimeFiles,
   },
 }
 

@@ -29,6 +29,18 @@ describe("reasoning configuration", () => {
     expect(
       reasoningSupport(nativeReasoningKind("openai"), "gpt-5.4")
     ).toMatchObject({ format: "effort" })
+    expect(reasoningSupport("openai", "gpt-6-sol")).toEqual({
+      format: "effort",
+      levels: ["none", "low", "medium", "high", "xhigh", "max"],
+    })
+    expect(reasoningSupport("openai", "gpt-6-luna-2026-09-01")).toEqual({
+      format: "effort",
+      levels: ["none", "low", "medium", "high", "xhigh", "max"],
+    })
+    expect(reasoningSupport("anthropic", "claude-opus-5-5")).toEqual({
+      format: "adaptive",
+      levels: ["low", "medium", "high", "xhigh", "max"],
+    })
   })
 
   it("round-trips disabled model overrides through sparse storage and catalog refresh", () => {

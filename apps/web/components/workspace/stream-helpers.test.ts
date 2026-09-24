@@ -8,8 +8,8 @@ import {
   shouldFollowGeneration,
   shouldSoftFollow,
   streamPlacement,
-  type StreamRequestBody,
 } from "./stream-helpers"
+import type { GenerationStartBody } from "@/lib/generation-start"
 import type { NodeRow, ToolInvocationPart } from "@/lib/types"
 import type { StreamMeta } from "@/lib/stream-store"
 import type { WorkspaceData } from "@/lib/workspace-cache"
@@ -69,8 +69,10 @@ describe("isViewingChat", () => {
 })
 
 describe("shouldSoftFollow", () => {
+  const actionId = "00000000-0000-4000-8000-000000000001"
   it("soft-follows continue from empty tip when still on that chat", () => {
-    const body: StreamRequestBody = {
+    const body: GenerationStartBody = {
+      actionId,
       chatId: "c1",
       timeZone: "America/Bogota",
       intent: "submit",
@@ -81,7 +83,8 @@ describe("shouldSoftFollow", () => {
   })
 
   it("does not soft-follow after navigating to another chat", () => {
-    const body: StreamRequestBody = {
+    const body: GenerationStartBody = {
+      actionId,
       chatId: "c1",
       timeZone: "America/Bogota",
       intent: "submit",
@@ -92,7 +95,8 @@ describe("shouldSoftFollow", () => {
   })
 
   it("soft-follows continue when tip is still the parent", () => {
-    const body: StreamRequestBody = {
+    const body: GenerationStartBody = {
+      actionId,
       chatId: "c1",
       timeZone: "America/Bogota",
       intent: "submit",
@@ -106,7 +110,8 @@ describe("shouldSoftFollow", () => {
   })
 
   it("soft-follows generate when tip is still the parent", () => {
-    const body: StreamRequestBody = {
+    const body: GenerationStartBody = {
+      actionId,
       chatId: "c1",
       timeZone: "America/Bogota",
       intent: "generate",
@@ -119,7 +124,8 @@ describe("shouldSoftFollow", () => {
   })
 
   it("soft-follows resume when the assistant is still on the path", () => {
-    const body: StreamRequestBody = {
+    const body: GenerationStartBody = {
+      actionId,
       chatId: "c1",
       timeZone: "America/Bogota",
       intent: "resume",

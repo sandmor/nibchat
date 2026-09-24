@@ -27,7 +27,7 @@ export function PathSlot({
   messageActionCaptions,
   onSelect,
   onChanged,
-  onRegenerate,
+  onGenerateReplies,
   onAnswerTools,
   editor,
 }: {
@@ -40,7 +40,7 @@ export function PathSlot({
   messageActionCaptions: boolean
   onSelect: (parentId: string, childId: string) => void
   onChanged: () => void | Promise<void>
-  onRegenerate: (assistantNodeId: string) => void
+  onGenerateReplies: (nodeId: string, count?: number) => void
   onAnswerTools?: (
     assistantNodeId: string,
     toolResults: Array<{ toolCallId: string; output: unknown }>
@@ -48,9 +48,9 @@ export function PathSlot({
   editor?: MessageEditorBindings
 }) {
   const nodeId = row.node.id
-  const handleRegenerate = useCallback(
-    () => onRegenerate(nodeId),
-    [nodeId, onRegenerate]
+  const handleGenerateReplies = useCallback(
+    (count?: number) => onGenerateReplies(nodeId, count),
+    [nodeId, onGenerateReplies]
   )
 
   return (
@@ -67,9 +67,7 @@ export function PathSlot({
         messageActionCaptions={messageActionCaptions}
         onSelect={onSelect}
         onChanged={onChanged}
-        onRegenerate={
-          row.node.role === "assistant" ? handleRegenerate : undefined
-        }
+        onGenerateReplies={handleGenerateReplies}
         onAnswerTools={onAnswerTools}
         editor={editor}
         streamId={row.liveStreamId}

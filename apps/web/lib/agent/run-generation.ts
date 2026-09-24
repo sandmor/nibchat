@@ -1,7 +1,6 @@
 import { stepCountIs, streamText, type LanguageModel } from "ai"
 import { generationStreamStore } from "@/lib/generation-streams/default-port"
 import { generationExecutor } from "@/lib/generation-streams/default-port"
-import { generationSseResponse } from "@/lib/generation-streams/http"
 import {
   reduceGenerationPayload,
   type GenerationPayload,
@@ -98,7 +97,6 @@ export type GenerationSetup = {
   spaceRulesText?: string
   /** Browser IANA time zone supplied for prompt macro expansion. */
   timeZone: string
-  requestSignal: AbortSignal
   allNodes: NodeRow[]
   previousMetadata?: Record<string, unknown>
   /**
@@ -108,6 +106,12 @@ export type GenerationSetup = {
    */
   resumeClaim?: {
     originalParts: Parts
+    action?: {
+      id: string
+      userId: string
+      chatId: string
+      requestHash: string
+    }
   }
   /**
    * Started after the assistant row is persisted. Not awaited, so extra work
@@ -124,10 +128,9 @@ export type GenerationSetup = {
  * Run streamText with nibchat tools, stream UI events to the client, and persist
  * terminal parts (complete | awaiting_input | stopped | error).
  */
-export async function createGenerationResponse(
-  setup: GenerationSetup,
-  headers: Record<string, string>
-): Promise<Response> {
+export async function startGenerationProducer(
+  setup: GenerationSetup
+): Promise<void> {
   const {
     userId,
     assistant,
@@ -142,7 +145,6 @@ export async function createGenerationResponse(
     variableOverrides,
     spaceRulesText,
     timeZone,
-    requestSignal,
     allNodes,
     previousMetadata,
     resumeClaim,
@@ -182,25 +184,13 @@ export async function createGenerationResponse(
     terminalPublished = true
   }
 
-  const respond = (body: Response) => {
-    const withHeaders = new Headers(body.headers)
-    for (const [k, v] of Object.entries(headers)) withHeaders.set(k, v)
-    withHeaders.set("X-Accel-Buffering", "no")
-    withHeaders.set("X-Nibchat-Assistant-Node", assistant.id)
-    withHeaders.set("X-Nibchat-Generation-Id", generationId)
-    return new Response(body.body, {
-      status: body.status,
-      statusText: body.statusText,
-      headers: withHeaders,
-    })
-  }
-
   try {
     if (resumeClaim) {
       const claim = await beginResumeAssistant(
         assistant.id,
         seedParts,
-        generationId
+        generationId,
+        resumeClaim.action
       )
       if (claim === "missing")
         throw new ResumeClaimError("missing", "Node not found")
@@ -248,11 +238,7 @@ export async function createGenerationResponse(
       producerGuards = null
       if (!terminalPublished) await generationStreamStore.close(producerHandle)
       dropRegistration()
-      return respond(
-        generationSseResponse(
-          generationStreamStore.subscribe(generationId, null, requestSignal)
-        )
-      )
+      return
     }
 
     // Prefer post-claim node parts for resume context leaf rebuild.
@@ -693,18 +679,15 @@ export async function createGenerationResponse(
       },
     })
 
-    return respond(
-      generationSseResponse(
-        generationStreamStore.subscribe(generationId, null, requestSignal)
-      )
-    )
+    return
   } catch (error) {
     if (claimSucceeded && resumeClaim) {
       try {
         await restoreAwaitingInput(
           assistant.id,
           resumeClaim.originalParts,
-          generationId
+          generationId,
+          resumeClaim.action?.id
         )
       } catch (restoreError) {
         console.error("[nibchat/stream] restoreAwaitingInput", restoreError)

@@ -4,12 +4,18 @@ import { z } from "zod"
 import type { GenerationSetup } from "@/lib/agent/run-generation"
 import { continueChatGeneration } from "@/lib/agent/open-generation"
 import {
+  generationActionRequestHash,
+  pruneGenerationActions,
+} from "@/lib/generation-actions"
+import {
   createMessage,
   prepareAuthoredParts,
   prepareChatRow,
   reconcileChatGenerationRuns,
   resolveSettingsForChat,
   selectPathInTransaction,
+  startGenerationBatch,
+  finalizeStreamingAssistantWithSnapshot,
 } from "@/lib/chat-service"
 import {
   createChatFromTemplate,
@@ -30,7 +36,12 @@ import {
 } from "@/lib/chat-settings"
 import { spaceFromRow } from "@/lib/spaces"
 import { id, now, resolveActivePath } from "@/lib/domain"
-import { MAX_DESCRIPTION, MAX_NAME } from "@/lib/limits"
+import { GENERATION_STARTING_HANDOFF_MS } from "@/lib/generation-streams/policy"
+import {
+  MAX_DESCRIPTION,
+  MAX_COLLECTION,
+  MAX_NAME,
+} from "@/lib/limits"
 import type {
   AttachmentReference,
   DB,
@@ -69,12 +80,24 @@ const templateActionSchema = z.object({
   templateId: z.string(),
   spaceId: z.string().nullable(),
   chatOverridesJson: z.string().optional(),
+  replyCount: z
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_COLLECTION)
+    .optional(),
 })
 const chatGenerateActionSchema = z.object({
   kind: z.literal("chat_generate"),
   chatId: z.string(),
   parentId: z.string().nullable(),
   settingsJson: z.string(),
+  replyCount: z
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_COLLECTION)
+    .optional(),
 })
 export const scheduleActionSchema = z.discriminatedUnion("kind", [
   templateActionSchema,
@@ -103,13 +126,6 @@ function errorText(error: unknown) {
       : "The scheduled generation failed."
   ).slice(0, MAX_DESCRIPTION)
 }
-function statusForOutcome(
-  outcome: "complete" | "awaiting_input" | "aborted" | "error"
-): ScheduleRunStatus {
-  if (outcome === "complete") return "complete"
-  if (outcome === "awaiting_input") return "awaiting_input"
-  return "error"
-}
 function nextAfter(cadence: Cadence, at: Date) {
   return cadence.kind === "once"
     ? null
@@ -127,6 +143,7 @@ export type ScheduleView = {
   id: string
   name: string
   action: ScheduleAction
+  replyCount: number
   templateId: string | null
   templateName: string | null
   spaceId: string | null
@@ -154,6 +171,7 @@ async function toView(row: ScheduledJobsTable): Promise<ScheduleView> {
     id: row.id,
     name: row.name,
     action,
+    replyCount: action.replyCount ?? 1,
     templateId: action.kind === "template" ? action.templateId : null,
     templateName,
     spaceId: action.kind === "template" ? action.spaceId : null,
@@ -171,6 +189,7 @@ export type PendingChatGeneration = {
   parentId: string
   nextRunAt: string
   timeZone: string
+  replyCount: number
 }
 
 /** Pending generations for one chat, included with the workspace payload. */
@@ -203,6 +222,7 @@ export async function pendingGenerationsForChat(
       parentId: action.parentId,
       nextRunAt: row.next_run_at,
       timeZone: parseCadence(row.cadence_json).timeZone,
+      replyCount: action.replyCount ?? 1,
     })
   }
   return pending
@@ -266,7 +286,7 @@ async function insertScheduleRow(
       id: scheduleId,
       user_id: input.userId,
       name,
-      action_json: JSON.stringify(input.action),
+      action_json: JSON.stringify(scheduleActionSchema.parse(input.action)),
       cadence_json: cadenceToJson(input.cadence),
       enabled: toDbBool(true),
       next_run_at: followingRunAt(input.cadence, input.created).toISOString(),
@@ -316,6 +336,7 @@ export async function createScheduledUserMessage(input: {
   name: string
   at: string
   timeZone: string
+  replyCount?: number
 }): Promise<NodeRow> {
   assertSchedulesAvailable()
   const name = input.name.trim()
@@ -355,6 +376,7 @@ export async function createScheduledUserMessage(input: {
         chatId: chat.id,
         parentId: message.id,
         settingsJson: JSON.stringify(settings.effective.values),
+        replyCount: input.replyCount ?? 1,
       },
       cadence,
       created,
@@ -369,6 +391,7 @@ export async function createSchedule(input: {
   spaceId?: string | null
   cadence: CadenceInput
   chatOverrides?: SettingValues
+  replyCount?: number
 }) {
   const template = await ownedTemplate(input.userId, input.templateId)
   assertUserLeaf(await snapshotChatTemplate(input.userId, template.id))
@@ -381,6 +404,7 @@ export async function createSchedule(input: {
       kind: "template",
       templateId: template.id,
       spaceId,
+      replyCount: input.replyCount ?? 1,
       ...(input.chatOverrides
         ? { chatOverridesJson: JSON.stringify(input.chatOverrides) }
         : {}),
@@ -395,6 +419,7 @@ export async function createChatSchedule(input: {
   parentId: string
   timeZone: string
   at: string
+  replyCount?: number
 }) {
   const chat = await db
     .selectFrom("chats")
@@ -426,6 +451,7 @@ export async function createChatSchedule(input: {
       chatId: chat.id,
       parentId: parent.id,
       settingsJson: JSON.stringify(settings.effective.values),
+      replyCount: input.replyCount ?? 1,
     },
     cadence,
   })
@@ -438,6 +464,7 @@ export async function updateSchedule(input: {
   spaceId?: string | null
   cadence?: CadenceInput
   enabled?: boolean
+  replyCount?: number
   chatOverrides?: SettingValues
 }) {
   const row = await db
@@ -449,6 +476,13 @@ export async function updateSchedule(input: {
   if (!row) throw new Error("Schedule not found")
   if (input.enabled === true) assertSchedulesAvailable()
   const action = parseAction(row.action_json)
+  if (input.replyCount !== undefined)
+    action.replyCount = z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_COLLECTION)
+      .parse(input.replyCount)
   if (action.kind === "template" && input.chatOverrides)
     action.chatOverridesJson = JSON.stringify(input.chatOverrides)
   if (input.spaceId !== undefined && action.kind === "template") {
@@ -571,6 +605,72 @@ async function liveGeneration(chatId: string | null) {
       .executeTakeFirst()
   )
 }
+/** Complete a scheduled run from its durable sibling set, including after restart. */
+async function settleScheduledAction(run: {
+  id: string
+  message_id: string | null
+  chat_id: string | null
+}) {
+  let actionId = (
+    await db
+      .selectFrom("generation_actions")
+      .select("id")
+      .where("id", "=", run.id)
+      .where("intent", "=", "scheduled")
+      .executeTakeFirst()
+  )?.id
+  // Runs created before action IDs matched run IDs can still be recovered.
+  if (!actionId && run.message_id)
+    actionId = (
+      await db
+        .selectFrom("generation_action_items")
+        .innerJoin(
+          "generation_actions",
+          "generation_actions.id",
+          "generation_action_items.action_id"
+        )
+        .select("generation_action_items.action_id")
+        .where("generation_action_items.assistant_node_id", "=", run.message_id)
+        .where("generation_actions.intent", "=", "scheduled")
+        .executeTakeFirst()
+    )?.action_id
+  if (!actionId) return false
+  const items = await db
+    .selectFrom("generation_action_items")
+    .leftJoin(
+      "message_nodes",
+      "message_nodes.id",
+      "generation_action_items.assistant_node_id"
+    )
+    .leftJoin(
+      "generation_runs",
+      "generation_runs.id",
+      "generation_action_items.generation_id"
+    )
+    .select(["message_nodes.status", "generation_runs.id as activeRunId"])
+    .where("generation_action_items.action_id", "=", actionId)
+    .execute()
+  if (!items.length) {
+    await recordFinish(run.id, "error", INTERRUPTED, run.chat_id ?? undefined)
+    return true
+  }
+  if (items.some((item) => item.activeRunId)) return true
+  const failed = items.some(
+    (item) =>
+      !item.status ||
+      item.status === "error" ||
+      item.status === "stopped" ||
+      item.status === "streaming"
+  )
+  const waiting = items.some((item) => item.status === "awaiting_input")
+  await recordFinish(
+    run.id,
+    failed ? "error" : waiting ? "awaiting_input" : "complete",
+    failed ? "One or more replies failed." : null,
+    run.chat_id ?? undefined
+  )
+  return true
+}
 export async function reconcileInterruptedSchedules() {
   const rows = await db
     .selectFrom("scheduled_job_runs")
@@ -579,6 +679,7 @@ export async function reconcileInterruptedSchedules() {
     .execute()
   for (const row of rows) {
     if (row.chat_id) await reconcileChatGenerationRuns(row.chat_id)
+    if (await settleScheduledAction(row)) continue
     const ownGeneration = row.message_id
       ? await db
           .selectFrom("generation_runs")
@@ -590,6 +691,11 @@ export async function reconcileInterruptedSchedules() {
     // Claimed before the assistant row exists. Leave it while that chat is
     // still generating.
     if (!row.message_id && (await liveGeneration(row.chat_id))) continue
+    if (
+      !row.message_id &&
+      Date.now() - Date.parse(row.started_at) < GENERATION_STARTING_HANDOFF_MS
+    )
+      continue
     await recordFinish(row.id, "error", INTERRUPTED)
   }
 }
@@ -712,12 +818,13 @@ export type ScheduleContinuation = (input: {
   chatId: string
   parentId: string | null
   timeZone: string
-  requestSignal: AbortSignal
   attachSelection: boolean
   settingsJson?: string
   afterFinalize?: GenerationSetup["afterFinalize"]
   onStarted?: (assistantId: string) => Promise<void>
-}) => Promise<Response>
+  batch?: { id: string; index: number; size: number }
+  existing?: { assistant: NodeRow; generationId: string }
+}) => Promise<void>
 const defaultContinuation: ScheduleContinuation = (input) =>
   continueChatGeneration(input)
 
@@ -763,33 +870,75 @@ export async function fireSchedule(
       throw new Error(USER_PARENT)
     }
     await recordFinish(runId, "running", null, chatId)
-    const response = await continuation({
+    const replyCount = action.replyCount ?? 1
+    // The run ID links recovery directly to every sibling in this action.
+    const batchId = runId
+    const generationIds = Array.from({ length: replyCount }, () =>
+      crypto.randomUUID()
+    )
+    const { assistants } = await startGenerationBatch({
       userId: row.user_id,
       chatId,
       parentId,
-      timeZone: cadence.timeZone,
-      requestSignal: new AbortController().signal,
+      generationIds,
       attachSelection: false,
-      settingsJson,
-      onStarted: async (assistantId) => {
-        await db
-          .updateTable("scheduled_job_runs")
-          .set({ message_id: assistantId })
-          .where("id", "=", runId)
-          .where("status", "=", "running")
-          .execute()
-      },
-      afterFinalize: async ({ outcome }) => {
-        const status = statusForOutcome(outcome)
-        await recordFinish(
-          runId,
-          status,
-          status === "error" ? "The generation failed." : null,
-          chatId
-        )
+      assistantMetadata: { batchId },
+      action: {
+        id: batchId,
+        intent: "scheduled",
+        requestHash: generationActionRequestHash({ scheduledJobRunId: runId }),
       },
     })
-    await response.body?.cancel()
+    await Promise.all(
+      Array.from({ length: replyCount }, async (_, index) => {
+        try {
+          await continuation({
+            userId: row.user_id,
+            chatId,
+            parentId,
+            timeZone: cadence.timeZone,
+            attachSelection: false,
+            settingsJson,
+            batch: { id: batchId, index, size: replyCount },
+            existing: {
+              assistant: assistants[index]!,
+              generationId: generationIds[index]!,
+            },
+            onStarted: async (assistantId) => {
+              await db
+                .updateTable("scheduled_job_runs")
+                .set({ message_id: assistantId })
+                .where("id", "=", runId)
+                .where("status", "=", "running")
+                .where("message_id", "is", null)
+                .execute()
+            },
+            afterFinalize: async () => {
+              await settleScheduledAction({
+                id: runId,
+                message_id: null,
+                chat_id: chatId,
+              })
+            },
+          })
+        } catch (error) {
+          await finalizeStreamingAssistantWithSnapshot({
+            nodeId: assistants[index]!.id,
+            generationId: generationIds[index]!,
+            outcome: "error",
+            parts: [],
+            error: errorText(error),
+          }).catch((finalizeError) =>
+            console.error("[nibchat/schedule-finalize]", finalizeError)
+          )
+          await settleScheduledAction({
+            id: runId,
+            message_id: null,
+            chat_id: chatId,
+          })
+        }
+      })
+    )
   } catch (error) {
     await recordFinish(runId, "error", errorText(error))
   }
@@ -803,6 +952,7 @@ export async function scheduleFromChat(input: {
   expectedFingerprint?: string
   spaceId?: string | null
   cadence: CadenceInput
+  replyCount?: number
 }) {
   const saved = await saveChatTemplateFromChat(input)
   const chat = await db
@@ -827,6 +977,7 @@ export async function scheduleFromChat(input: {
               name: input.name,
               spaceId: input.spaceId,
               cadence: input.cadence,
+              replyCount: input.replyCount,
               chatOverrides,
             })
           )
@@ -842,6 +993,7 @@ export async function scheduleFromChat(input: {
         templateId: saved.id,
         spaceId: input.spaceId,
         cadence: input.cadence,
+        replyCount: input.replyCount,
         chatOverrides,
       }),
     ],
@@ -864,6 +1016,7 @@ export async function sendAndScheduleTemplate(input: {
   name: string
   spaceId?: string | null
   cadence: CadenceInput
+  replyCount?: number
 }) {
   assertSchedulesAvailable()
   const created = new Date()
@@ -1003,6 +1156,7 @@ export async function sendAndScheduleTemplate(input: {
         templateId,
         spaceId: input.spaceId ?? null,
         chatOverridesJson: JSON.stringify(chatOverrides),
+        replyCount: input.replyCount ?? 1,
       },
       cadence,
       created,
@@ -1075,6 +1229,7 @@ export async function runScheduleTick(
   continuation?: ScheduleContinuation
 ) {
   await migrate()
+  await pruneGenerationActions()
   await reconcileInterruptedSchedules()
   const due = await db
     .selectFrom("scheduled_jobs")

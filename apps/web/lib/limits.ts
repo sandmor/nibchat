@@ -13,6 +13,16 @@ export const MAX_NAME = 200
 /** Opaque identifiers and source keys, not display names. */
 export const MAX_ID = 256
 export const MAX_COLLECTION = 100
+
+/** Sibling replies in one send, generation, or scheduled run. */
+export function generationCountInRange(count: number, min = 1): boolean {
+  return Number.isInteger(count) && count >= min && count <= MAX_COLLECTION
+}
+
+export function assertGenerationCount(count: number): void {
+  if (!generationCountInRange(count))
+    throw new Error(`Choose 1 to ${MAX_COLLECTION} replies`)
+}
 /** Nested chat groupings; folders run out faster than stack modules. */
 export const MAX_SPACES = 500
 export const MAX_SPACE_DEPTH = 8

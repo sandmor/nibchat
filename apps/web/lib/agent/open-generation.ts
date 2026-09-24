@@ -1,6 +1,6 @@
 import "server-only"
 import {
-  createGenerationResponse,
+  startGenerationProducer,
   type GenerationSetup,
 } from "@/lib/agent/run-generation"
 import type { Parts } from "@/lib/agent/parts"
@@ -44,7 +44,7 @@ export function generationAssistantMeta(
   }
 }
 
-export async function openGenerationResponse(input: {
+export async function startChatGeneration(input: {
   userId: string
   chat: Pick<ChatRow, "id" | "settings_json" | "space_id">
   settings: ResolvedSettings
@@ -54,9 +54,7 @@ export async function openGenerationResponse(input: {
   assistant: NodeRow
   contextLeafId: string | null
   seedParts?: Parts
-  headers?: Record<string, string>
   timeZone: string
-  requestSignal: AbortSignal
   generationId: string
   afterFinalize?: GenerationSetup["afterFinalize"]
   previousMetadata?: Record<string, unknown>
@@ -70,38 +68,34 @@ export async function openGenerationResponse(input: {
     .orderBy("created_at")
     .execute()
   const config = input.config
-  return createGenerationResponse(
-    {
-      userId: input.userId,
-      assistant: input.assistant,
-      contextLeafId: input.contextLeafId,
-      seedParts: input.seedParts,
-      config,
-      languageModel: input.languageModel,
-      responsesReplay: input.responsesReplay,
-      selectedProtocol: () => selectedProtocolFor(input.languageModel),
-      rememberProtocol:
-        config.providerId && config.model
-          ? (protocol) =>
-              rememberCatalogProtocol(
-                config.providerId!,
-                config.model!,
-                protocol as "responses" | "chat"
-              )
-          : undefined,
-      promptStack: resolved.stack,
-      variableOverrides: input.settings.effective.variables,
-      spaceRulesText: formatSpaceRules(input.settings.effective.rules),
-      timeZone: input.timeZone,
-      requestSignal: input.requestSignal,
-      allNodes,
-      previousMetadata: input.previousMetadata,
-      resumeClaim: input.resumeClaim,
-      afterFinalize: input.afterFinalize,
-      generationId: input.generationId,
-    },
-    input.headers ?? {}
-  )
+  return startGenerationProducer({
+    userId: input.userId,
+    assistant: input.assistant,
+    contextLeafId: input.contextLeafId,
+    seedParts: input.seedParts,
+    config,
+    languageModel: input.languageModel,
+    responsesReplay: input.responsesReplay,
+    selectedProtocol: () => selectedProtocolFor(input.languageModel),
+    rememberProtocol:
+      config.providerId && config.model
+        ? (protocol) =>
+            rememberCatalogProtocol(
+              config.providerId!,
+              config.model!,
+              protocol as "responses" | "chat"
+            )
+        : undefined,
+    promptStack: resolved.stack,
+    variableOverrides: input.settings.effective.variables,
+    spaceRulesText: formatSpaceRules(input.settings.effective.rules),
+    timeZone: input.timeZone,
+    allNodes,
+    previousMetadata: input.previousMetadata,
+    resumeClaim: input.resumeClaim,
+    afterFinalize: input.afterFinalize,
+    generationId: input.generationId,
+  })
 }
 
 /** Continue an existing chat from a parent node and retain the producer. */
@@ -110,12 +104,13 @@ export async function continueChatGeneration(input: {
   chatId: string
   parentId: string | null
   timeZone: string
-  requestSignal: AbortSignal
   attachSelection?: boolean
   /** Resolved generation settings captured by a delayed chat action. */
   settingsJson?: string
   afterFinalize?: GenerationSetup["afterFinalize"]
   onStarted?: (assistantId: string) => Promise<void>
+  batch?: { id: string; index: number; size: number }
+  existing?: { assistant: NodeRow; generationId: string }
 }) {
   const chat = await db
     .selectFrom("chats")
@@ -154,18 +149,29 @@ export async function continueChatGeneration(input: {
     timeZone: input.timeZone,
   })
   const responsesReplay = await responsesReplayTargetFor(input.userId, config)
-  const generationId = crypto.randomUUID()
-  const assistantMeta = generationAssistantMeta(config, responsesReplay)
-  const { assistant, contextLeafId } = await startGeneration({
-    userId: input.userId,
-    chatId: chat.id,
-    parentId: input.parentId,
-    generationId,
-    assistantMetadata: assistantMeta,
-    attachSelection: input.attachSelection,
-  })
+  const generationId = input.existing?.generationId ?? crypto.randomUUID()
+  const assistantMeta = {
+    ...generationAssistantMeta(config, responsesReplay),
+    ...(input.batch
+      ? {
+          batchId: input.batch.id,
+          batchIndex: input.batch.index,
+          batchSize: input.batch.size,
+        }
+      : {}),
+  }
+  const { assistant, contextLeafId } = input.existing
+    ? { assistant: input.existing.assistant, contextLeafId: input.parentId }
+    : await startGeneration({
+        userId: input.userId,
+        chatId: chat.id,
+        parentId: input.parentId,
+        generationId,
+        assistantMetadata: assistantMeta,
+        attachSelection: input.attachSelection,
+      })
   await input.onStarted?.(assistant.id)
-  return openGenerationResponse({
+  return startChatGeneration({
     userId: input.userId,
     chat,
     settings,
@@ -174,11 +180,7 @@ export async function continueChatGeneration(input: {
     responsesReplay,
     assistant,
     contextLeafId,
-    headers: assistant.parent_id
-      ? { "X-Nibchat-Parent-Node": assistant.parent_id }
-      : {},
     timeZone: input.timeZone,
-    requestSignal: input.requestSignal,
     generationId,
     afterFinalize: input.afterFinalize,
     previousMetadata: assistantMeta,

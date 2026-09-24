@@ -24,9 +24,8 @@ import {
   restoreAwaitingInput,
   restoreBackup,
   setNodeContextExcluded,
-  startRegenerate,
   startGeneration,
-  submitUserTurn,
+  submitUserTurnBatch,
   setChatViewState,
   setChatPromptStack,
   setChatSpace,
@@ -35,6 +34,11 @@ import {
 } from "@/lib/chat-service"
 import { getGenerationRun } from "@/lib/generation-runs"
 import { generationStreamStore } from "@/lib/generation-streams/default-port"
+import {
+  generationActionRequestHash,
+  getGenerationAction,
+} from "@/lib/generation-actions"
+import { GENERATION_STARTING_HANDOFF_MS } from "@/lib/generation-streams/policy"
 import {
   isGenerationActive,
   registerGeneration,
@@ -836,26 +840,6 @@ describe("SQLite chat repository", () => {
     ).rejects.toThrow("still in progress")
   })
 
-  it("submits the user and assistant rows through one transaction", async () => {
-    const chat = await createChat(userId, "Atomic turn")
-    const result = await submitUserTurn({
-      userId,
-      chatId: chat.id,
-      parentId: null,
-      parts: [{ type: "text", text: "hello" }],
-      generationId: crypto.randomUUID(),
-      attachSelection: true,
-    })
-    expect(result.assistant.parent_id).toBe(result.user.id)
-    expect(
-      await db
-        .selectFrom("generation_runs")
-        .select("node_id")
-        .where("node_id", "=", result.assistant.id)
-        .executeTakeFirst()
-    ).toEqual({ node_id: result.assistant.id })
-  })
-
   it("can fork an edit without rewriting the selected linear branch", async () => {
     const chat = await createChat(userId, "Tree edit selection")
     const root = await insertNode({
@@ -1480,56 +1464,64 @@ describe("SQLite chat repository", () => {
 })
 
 describe("branch stream helpers", () => {
-  it("startRegenerate creates sibling without forcing selection onto new assistant", async () => {
-    const chat = await createChat(userId, "Regen test")
-    const firstAssistant = await insertNode({
+  it("stores a durable action receipt with the whole sibling set atomically", async () => {
+    const chat = await createChat(userId, "Action receipt")
+    const actionId = crypto.randomUUID()
+    const generationIds = [crypto.randomUUID(), crypto.randomUUID()]
+    const input = {
+      userId,
       chatId: chat.id,
       parentId: null,
-      role: "assistant",
-      parts: [{ type: "text", text: "root asst" }],
-    })
-    const second = await insertNode({
-      chatId: chat.id,
-      parentId: firstAssistant.id,
-      role: "assistant",
-      parts: [{ type: "text", text: "child asst" }],
-    })
-    const { assistant, contextLeafId } = await startRegenerate(
-      userId,
-      second.id
+      parts: [{ type: "text" as const, text: "Two replies" }],
+      generationIds,
+      action: {
+        id: actionId,
+        intent: "submit",
+        requestHash: generationActionRequestHash({ content: "Two replies" }),
+      },
+    }
+    const result = await submitUserTurnBatch(input)
+    const receipt = await getGenerationAction(actionId, userId)
+    expect(receipt?.userNodeId).toBe(result.user.id)
+    expect(receipt?.generations.map((item) => item.generationId)).toEqual(
+      generationIds
     )
-    expect(assistant.role).toBe("assistant")
-    expect(assistant.parent_id).toBe(firstAssistant.id)
-    expect(assistant.status).toBe("streaming")
-    expect(contextLeafId).toBe(firstAssistant.id)
-    expect(assistant.id).not.toBe(second.id)
-
-    const workspace = await getWorkspace(userId, { chatId: chat.id })
-    // Selection still follows insertNode order: second was selected under first
-    const path = resolveActivePath(
-      workspace.nodes,
-      workspace.chat?.selected_root_node_id ?? null
-    )
-    expect(path.map((n) => n.id)).toEqual([firstAssistant.id, second.id])
-    const parent = workspace.nodes.find((n) => n.id === firstAssistant.id)
-    expect(parent?.selected_child_id).toBe(second.id)
-
-    const ctx = ancestorPath(workspace.nodes, contextLeafId!)
-    expect(ctx.map((n) => n.id)).toEqual([firstAssistant.id])
-    expect(ctx.every((n) => n.role === "assistant")).toBe(true)
+    await expect(submitUserTurnBatch(input)).rejects.toThrow()
+    const nodes = (await getWorkspace(userId, { chatId: chat.id })).nodes
+    expect(nodes.filter((node) => node.role === "user")).toHaveLength(1)
+    expect(nodes.filter((node) => node.role === "assistant")).toHaveLength(2)
   })
 
-  it("startRegenerate rejects non-assistant targets", async () => {
-    const chat = await createChat(userId, "Regen reject")
-    const userMsg = await insertNode({
+  it("persists a submitted turn and its assistant batch in one transaction", async () => {
+    const chat = await createChat(userId, "Batch test")
+    const generationIds = Array.from({ length: 3 }, () => crypto.randomUUID())
+    const result = await submitUserTurnBatch({
+      userId,
       chatId: chat.id,
       parentId: null,
-      role: "user",
-      parts: [{ type: "text", text: "nope" }],
+      parts: [{ type: "text", text: "Compare" }],
+      generationIds,
+      assistantMetadata: { batchId: "batch-1" },
+      attachSelection: true,
     })
-    await expect(startRegenerate(userId, userMsg.id)).rejects.toThrow(
-      /assistant/i
+    expect(result.assistants).toHaveLength(3)
+    expect(
+      result.assistants.every((node) => node.parent_id === result.user.id)
+    ).toBe(true)
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    expect(workspace.nodes.filter((node) => node.role === "user")).toHaveLength(
+      1
     )
+    expect(
+      workspace.nodes.filter((node) => node.role === "assistant")
+    ).toHaveLength(3)
+    expect(
+      workspace.nodes.find((node) => node.id === result.user.id)
+        ?.selected_child_id
+    ).toBe(result.assistants[0]?.id)
+    expect(
+      result.assistants.map((node) => JSON.parse(node.metadata_json).batchIndex)
+    ).toEqual([0, 1, 2])
   })
 })
 
@@ -2493,7 +2485,11 @@ describe("generation run reconciliation", () => {
     })
     await db
       .updateTable("generation_runs")
-      .set({ started_at: new Date(Date.now() - 60_000).toISOString() })
+      .set({
+        started_at: new Date(
+          Date.now() - GENERATION_STARTING_HANDOFF_MS - 1
+        ).toISOString(),
+      })
       .where("id", "=", generationId)
       .execute()
 

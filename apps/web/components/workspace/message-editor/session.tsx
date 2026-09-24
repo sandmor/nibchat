@@ -29,6 +29,7 @@ export type SessionMessageEditorProps = {
   contextParentId?: string | null
   sendLabel?: string
   onSend: () => void
+  onSendMultiple?: (count: number) => void
   onSchedule?: () => void
   onScheduleTemplate?: () => void
   scheduleAvailable?: boolean
@@ -75,6 +76,7 @@ export function SessionMessageEditor(props: SessionMessageEditorProps) {
       overlayNodeId={props.overlayNodeId}
       allowEmptySend={props.allowEmptySend}
       canReplace={Boolean(props.onReplace)}
+      canSendMultiple={Boolean(props.onSendMultiple)}
       canSchedule={Boolean(props.onSchedule)}
       canScheduleTemplate={Boolean(props.onScheduleTemplate)}
       scheduleAvailable={props.scheduleAvailable}
@@ -102,6 +104,7 @@ const SessionMessageEditorLeaf = memo(function SessionMessageEditorLeaf({
   overlayNodeId,
   allowEmptySend,
   canReplace,
+  canSendMultiple,
   canSchedule,
   canScheduleTemplate,
   scheduleAvailable,
@@ -125,6 +128,7 @@ const SessionMessageEditorLeaf = memo(function SessionMessageEditorLeaf({
   overlayNodeId?: string
   allowEmptySend?: boolean
   canReplace?: boolean
+  canSendMultiple?: boolean
   canSchedule?: boolean
   canScheduleTemplate?: boolean
   scheduleAvailable?: boolean
@@ -149,6 +153,8 @@ const SessionMessageEditorLeaf = memo(function SessionMessageEditorLeaf({
       onSend: () => latestRef.current.onSend(),
       onSchedule: () => latestRef.current.onSchedule?.(),
       onScheduleTemplate: () => latestRef.current.onScheduleTemplate?.(),
+      onSendMultiple: (count: number) =>
+        latestRef.current.onSendMultiple?.(count),
       onCancel: () => latestRef.current.onCancel?.(),
       onReplace: () => latestRef.current.onReplace?.(),
       onFiles: (files: File[] | FileList) => latestRef.current.onFiles?.(files),
@@ -235,6 +241,7 @@ const SessionMessageEditorLeaf = memo(function SessionMessageEditorLeaf({
       onScheduleTemplate={
         canScheduleTemplate ? actions.onScheduleTemplate : undefined
       }
+      onSendMultiple={canSendMultiple ? actions.onSendMultiple : undefined}
       scheduleAvailable={scheduleAvailable}
       scheduleFromAnchor={scheduleFromAnchor}
       onSend={actions.onSend}

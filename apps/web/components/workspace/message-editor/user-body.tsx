@@ -52,6 +52,7 @@ export function UserTurnEditor({
   contextParentId = null,
   onTextChange,
   onSend,
+  onSendMultiple,
   onSchedule,
   onScheduleTemplate,
   scheduleAvailable,
@@ -82,6 +83,7 @@ export function UserTurnEditor({
   contextParentId?: string | null
   onTextChange: (text: string) => void
   onSend: () => void
+  onSendMultiple?: (count: number) => void
   onSchedule?: () => void
   onScheduleTemplate?: () => void
   scheduleAvailable?: boolean
@@ -256,6 +258,7 @@ export function UserTurnEditor({
       scheduleLabel="Generate later…"
       sendDisabled={sendDisabled}
       onSend={send}
+      onSendMultiple={onSendMultiple}
       onCancel={onCancel}
       onStop={onStop}
       streaming={streaming}

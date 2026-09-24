@@ -204,13 +204,11 @@ describe("buildTranscriptRows dual identity", () => {
       activePath: [user, assistant],
       ...noStreams,
       showEmpty: false,
-      assistantParentIds: new Set(["u1"]),
     })
     const offPath = buildTranscriptRows({
       activePath: [user],
       ...noStreams,
       showEmpty: false,
-      assistantParentIds: new Set(["u1"]),
     })
     expect(atTip.map((row) => row.kind)).toEqual(["path", "scheduled"])
     expect(continued.map((row) => row.kind)).toEqual([
@@ -220,10 +218,10 @@ describe("buildTranscriptRows dual identity", () => {
     ])
     expect(atTip[1]?.kind === "scheduled" && atTip[1].verb).toBe("Generates")
     expect(continued[1]?.kind === "scheduled" && continued[1].verb).toBe(
-      "Regenerates"
+      "Generates"
     )
     expect(offPath[1]?.kind === "scheduled" && offPath[1].verb).toBe(
-      "Regenerates"
+      "Generates"
     )
     expect(transcriptItemKey(continued, 0)).toBe("slot:0")
     expect(transcriptItemKey(continued, 1)).toBe("schedules:u1")

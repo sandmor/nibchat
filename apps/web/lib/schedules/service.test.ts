@@ -5,6 +5,7 @@ import {
   createSpace,
   deleteChats,
   deleteNode,
+  finalizeStreamingAssistantWithSnapshot,
   getWorkspace,
   insertNode,
   resolveSettingsForChat,
@@ -36,6 +37,22 @@ import {
 } from "@/lib/schedules/service"
 
 const userId = "schedule-owner"
+
+async function finishMockGeneration(
+  input: Parameters<ScheduleContinuation>[0],
+  result: Parameters<
+    NonNullable<Parameters<ScheduleContinuation>[0]["afterFinalize"]>
+  >[0]
+) {
+  if (input.existing)
+    await finalizeStreamingAssistantWithSnapshot({
+      nodeId: input.existing.assistant.id,
+      generationId: input.existing.generationId,
+      outcome: result.outcome,
+      parts: result.parts,
+    })
+  await input.afterFinalize?.(result)
+}
 
 const userBranch = {
   version: 1 as const,
@@ -271,8 +288,8 @@ describe("scheduled generations", () => {
     let called = false
     await runScheduleNow(userId, schedule.id, async (input) => {
       called = true
-      await input.afterFinalize?.({ outcome: "complete", parts: [] })
-      return new Response(null)
+      await finishMockGeneration(input, { outcome: "complete", parts: [] })
+      return
     })
     expect(called).toBe(true)
     expect(
@@ -313,8 +330,8 @@ describe("scheduled generations", () => {
       NonNullable<Parameters<ScheduleContinuation>[0]["afterFinalize"]>
     > = []
     const continuation: ScheduleContinuation = async (input) => {
-      finishes.push(input.afterFinalize!)
-      return new Response(null)
+      finishes.push((result) => finishMockGeneration(input, result))
+      return
     }
     await runScheduleNow(userId, schedule.id, continuation)
     await runScheduleNow(userId, schedule.id, continuation)
@@ -363,8 +380,8 @@ describe("scheduled generations", () => {
     let generatedFrom: string | null = null
     const result = await runScheduleNow(userId, schedule.id, async (input) => {
       generatedFrom = input.parentId
-      await input.afterFinalize?.({ outcome: "complete", parts: [] })
-      return new Response(null)
+      await finishMockGeneration(input, { outcome: "complete", parts: [] })
+      return
     })
     expect(generatedFrom).toBe(message.id)
     expect(
@@ -449,6 +466,62 @@ describe("scheduled generations", () => {
     await db.deleteFrom("scheduled_jobs").where("id", "=", stored.id).execute()
   })
 
+  it("starts the requested sibling replies and records a partial failure", async () => {
+    const chat = await createChat(userId, "Several replies")
+    const message = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "Compare answers" }],
+      attachSelection: false,
+    })
+    const schedule = await createChatSchedule({
+      userId,
+      name: "Three replies",
+      chatId: chat.id,
+      parentId: message.id,
+      at: "2099-01-01T12:00:00.000Z",
+      timeZone: "UTC",
+      replyCount: 3,
+    })
+    let started = 0
+    const batches: Array<
+      { id: string; index: number; size: number } | undefined
+    > = []
+    await runScheduleNow(userId, schedule.id, async (input) => {
+      started += 1
+      batches.push(input.batch)
+      expect(input.parentId).toBe(message.id)
+      expect(input.attachSelection).toBe(false)
+      await finishMockGeneration(input, {
+        outcome: started === 2 ? "error" : "complete",
+        parts: [],
+      })
+      return
+    })
+    expect(started).toBe(3)
+    expect(batches.map((batch) => batch?.index)).toEqual([0, 1, 2])
+    expect(new Set(batches.map((batch) => batch?.id)).size).toBe(1)
+    const actionItems = await db
+      .selectFrom("generation_action_items")
+      .select(["generation_id", "assistant_node_id"])
+      .where("action_id", "=", batches[0]!.id)
+      .orderBy("position")
+      .execute()
+    expect(actionItems).toHaveLength(3)
+    expect(
+      new Set(actionItems.map((item) => item.assistant_node_id)).size
+    ).toBe(3)
+    const stored = await db
+      .selectFrom("scheduled_jobs")
+      .select(["last_status", "last_error", "action_json"])
+      .where("id", "=", schedule.id)
+      .executeTakeFirstOrThrow()
+    expect(stored.last_status).toBe("error")
+    expect(stored.last_error).toMatch(/replies failed/)
+    expect(JSON.parse(stored.action_json).replyCount).toBe(3)
+  })
+
   it("keeps a once generation when the run fails or waits for input", async () => {
     const chat = await createChat(userId, "Needs attention")
     const message = await insertNode({
@@ -478,16 +551,19 @@ describe("scheduled generations", () => {
       userId,
       failed.id,
       async (input) => {
-        await input.afterFinalize?.({ outcome: "error", parts: [] })
-        return new Response(null)
+        await finishMockGeneration(input, { outcome: "error", parts: [] })
+        return
       }
     )
     const waitingResult = await runScheduleNow(
       userId,
       waiting.id,
       async (input) => {
-        await input.afterFinalize?.({ outcome: "awaiting_input", parts: [] })
-        return new Response(null)
+        await finishMockGeneration(input, {
+          outcome: "awaiting_input",
+          parts: [],
+        })
+        return
       }
     )
     expect(failedResult?.lastStatus).toBe("error")
@@ -599,8 +675,8 @@ describe("scheduled generations", () => {
     let generatedFrom: string | null = null
     await runScheduleNow(userId, schedule.id, async (input) => {
       generatedFrom = input.parentId
-      await input.afterFinalize?.({ outcome: "complete", parts: [] })
-      return new Response(null)
+      await finishMockGeneration(input, { outcome: "complete", parts: [] })
+      return
     })
     expect(generatedFrom).toBe(message.id)
   })
@@ -686,8 +762,8 @@ describe("scheduled generations", () => {
         parentId: input.parentId,
         timeZone: input.timeZone,
       })
-      await input.afterFinalize?.({ outcome: "complete", parts: [] })
-      return new Response(null)
+      await finishMockGeneration(input, { outcome: "complete", parts: [] })
+      return
     }
     await runScheduleTick(
       new Date("2026-01-01T10:00:00.000Z"),
@@ -706,9 +782,14 @@ describe("scheduled generations", () => {
       .where("chat_id", "=", chat.id)
       .execute()
     const path = resolveActivePath(nodes, chat.selected_root_node_id)
-    expect(path.map((node) => node.role)).toEqual(["user", "assistant", "user"])
-    expect(path.at(-1)?.id).toBe(calls[0]?.parentId)
-    expect(nodes).toHaveLength(4)
+    expect(path.map((node) => node.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ])
+    expect(path.at(-2)?.id).toBe(calls[0]?.parentId)
+    expect(nodes).toHaveLength(5)
     const schedule = await db
       .selectFrom("scheduled_jobs")
       .selectAll()
@@ -754,8 +835,8 @@ describe("scheduled generations", () => {
       new Date("2026-01-01T10:00:00.000Z"),
       async (input) => {
         chatId = input.chatId
-        await input.afterFinalize?.({ outcome: "complete", parts: [] })
-        return new Response(null)
+        await finishMockGeneration(input, { outcome: "complete", parts: [] })
+        return
       }
     )
     expect(chatId).toBeTruthy()
@@ -791,7 +872,7 @@ describe("scheduled generations", () => {
     let called = false
     await runScheduleTick(new Date("2026-01-01T10:00:00.000Z"), async () => {
       called = true
-      return new Response(null)
+      return
     })
     expect(called).toBe(false)
     const schedule = await db
@@ -838,8 +919,8 @@ describe("scheduled generations", () => {
       await runScheduleTick(
         new Date("2026-01-01T10:00:00.000Z"),
         async (input) => {
-          await input.afterFinalize?.({ outcome: "complete", parts: [] })
-          return new Response(null)
+          await finishMockGeneration(input, { outcome: "complete", parts: [] })
+          return
         }
       )
     } finally {
@@ -905,8 +986,8 @@ describe("scheduled generations", () => {
       new Date("2026-01-01T10:00:00.000Z"),
       async (input) => {
         called = true
-        await input.afterFinalize?.({ outcome: "complete", parts: [] })
-        return new Response(null)
+        await finishMockGeneration(input, { outcome: "complete", parts: [] })
+        return
       }
     )
 
@@ -1198,8 +1279,8 @@ describe("scheduled generations", () => {
           .effective.values
         temperatures.push(effective.temperature!)
         topPs.push(effective.topP!)
-        await input.afterFinalize?.({ outcome: "complete", parts: [] })
-        return new Response(null)
+        await finishMockGeneration(input, { outcome: "complete", parts: [] })
+        return
       })
       if (run === 0) {
         await db
@@ -1235,8 +1316,8 @@ describe("scheduled generations", () => {
       "now-schedule",
       async (input) => {
         calls.push(input.timeZone)
-        await input.afterFinalize?.({ outcome: "complete", parts: [] })
-        return new Response(null)
+        await finishMockGeneration(input, { outcome: "complete", parts: [] })
+        return
       }
     )
     expect(calls).toEqual(["UTC"])

@@ -14,7 +14,7 @@ import {
   openChatByTitle,
   openNewChat,
   openNewChatSoft,
-  regenerateAssistant,
+  generateFromUserMessage,
   sendMessage,
   streamingMarkers,
 } from "./helpers/workspace"
@@ -110,14 +110,14 @@ test.describe("chat tree invariants", () => {
     await expectNoAssistantText(page, "HELD_ON_B")
   })
 
-  test("regenerate sibling stays after completion and is independently selectable", async () => {
+  test("another child reply stays after completion and is independently selectable", async () => {
     await openNewChat(page)
     llm.enqueue({ text: "REGEN_FIRST" }, { text: "REGEN_SECOND" })
 
     await sendMessage(page, "regen root")
     await expectAssistantText(page, "REGEN_FIRST")
 
-    await regenerateAssistant(page)
+    await generateFromUserMessage(page)
     await expectAssistantText(page, "REGEN_SECOND")
     await expect(streamingMarkers(page)).toHaveCount(0)
 
@@ -125,6 +125,100 @@ test.describe("chat tree invariants", () => {
     await expectAssistantText(page, "REGEN_FIRST")
     await openBranchNext(page)
     await expectAssistantText(page, "REGEN_SECOND")
+  })
+
+  test("one send creates several selectable assistant siblings", async () => {
+    await openNewChat(page)
+    llm.enqueue(
+      { text: "BATCH_REPLY_A" },
+      { text: "BATCH_REPLY_B" },
+      { text: "BATCH_REPLY_C" }
+    )
+    await page
+      .getByPlaceholder("Message Nibchat…")
+      .fill("compare three replies")
+    await page.getByRole("button", { name: "Send options" }).click()
+    await page
+      .getByRole("menuitem", { name: "Generate multiple replies…" })
+      .click()
+    const dialog = page.getByRole("dialog", { name: "How many replies?" })
+    await dialog.getByRole("slider").focus()
+    await dialog.getByRole("slider").press("ArrowRight")
+    await dialog.getByRole("button", { name: "Generate 3 replies" }).click()
+    await expect(page.getByText("compare three replies")).toHaveCount(1)
+    await expect(page.getByText("1/3", { exact: true })).toBeVisible({
+      timeout: 15_000,
+    })
+    await expect(streamingMarkers(page)).toHaveCount(0, { timeout: 15_000 })
+    await page.getByRole("button", { name: "Tree", exact: true }).click()
+    for (const reply of ["BATCH_REPLY_A", "BATCH_REPLY_B", "BATCH_REPLY_C"])
+      await expect(
+        page.getByRole("paragraph").filter({ hasText: reply })
+      ).toBeVisible()
+  })
+
+  test("a user message can request more sibling replies", async () => {
+    await openNewChat(page)
+    llm.enqueue(
+      { text: "USER_REPLY_ORIGINAL" },
+      { text: "USER_REPLY_A" },
+      { text: "USER_REPLY_B" }
+    )
+    await sendMessage(page, "reply to this user turn")
+    await expectAssistantText(page, "USER_REPLY_ORIGINAL")
+    await expect(page).toHaveURL(/\/chat\/[a-f0-9-]+/i)
+    const userMessage = page.locator(
+      '[data-slot-layer="present"] article[data-theme-target="message-user"]'
+    )
+    await userMessage.last().getByRole("button", { name: "More" }).click()
+    await page
+      .getByRole("menuitem", { name: "Generate multiple replies…" })
+      .click()
+    const dialog = page.getByRole("dialog", { name: "How many replies?" })
+    await dialog.getByRole("button", { name: "Generate 2 replies" }).click()
+    await expect(page.getByText("2/3", { exact: true })).toBeVisible({
+      timeout: 15_000,
+    })
+    await expect(streamingMarkers(page)).toHaveCount(0, { timeout: 15_000 })
+    await page.getByRole("button", { name: "Tree", exact: true }).click()
+    for (const reply of ["USER_REPLY_ORIGINAL", "USER_REPLY_A", "USER_REPLY_B"])
+      await expect(
+        page.getByRole("paragraph").filter({ hasText: reply })
+      ).toBeVisible()
+  })
+
+  test("an assistant message can generate two child continuations", async () => {
+    await openNewChat(page)
+    llm.enqueue(
+      { text: "MULTI_CONTINUE_ORIGINAL" },
+      { text: "MULTI_CONTINUE_A" },
+      { text: "MULTI_CONTINUE_B" }
+    )
+    await sendMessage(page, "continue twice")
+    await expectAssistantText(page, "MULTI_CONTINUE_ORIGINAL")
+    await expect(page).toHaveURL(/\/chat\/[a-f0-9-]+/i)
+    const assistant = page.locator(
+      '[data-slot-layer="present"] article[data-theme-target="message-assistant"]'
+    )
+    await assistant.last().getByRole("button", { name: "More" }).click()
+    await page
+      .getByRole("menuitem", { name: "Generate multiple replies…" })
+      .click()
+    const dialog = page.getByRole("dialog", { name: "How many replies?" })
+    await dialog.getByRole("button", { name: "Generate 2 replies" }).click()
+    await expect(page.getByText("1/2", { exact: true })).toBeVisible({
+      timeout: 15_000,
+    })
+    await expect(streamingMarkers(page)).toHaveCount(0, { timeout: 15_000 })
+    await page.getByRole("button", { name: "Tree", exact: true }).click()
+    for (const reply of [
+      "MULTI_CONTINUE_ORIGINAL",
+      "MULTI_CONTINUE_A",
+      "MULTI_CONTINUE_B",
+    ])
+      await expect(
+        page.getByRole("paragraph").filter({ hasText: reply })
+      ).toBeVisible()
   })
 
   test("delete subtree cancels an in-flight generation under it", async () => {
@@ -170,7 +264,7 @@ test.describe("chat tree invariants", () => {
     await expectAssistantText(page, "CONCURRENT_SEED_A")
     await expectStreamingCount(page, 0)
 
-    await regenerateAssistant(page)
+    await generateFromUserMessage(page)
     await expect(streamingMarkers(page)).toBeVisible({ timeout: 15_000 })
     await expectStreamingCount(page, 1)
     await expectNoAssistantText(page, "BRANCH_B_HELD")
@@ -206,6 +300,7 @@ test.describe("chat tree invariants", () => {
     )
     await sendMessage(page, "alpha seed")
     await expectAssistantText(page, "ALPHA_SEED_OK")
+    await expect(page).toHaveURL(/\/chat\/(?!new)[^/]+$/, { timeout: 30_000 })
     await sendMessage(page, "alpha held")
     await expect(streamingMarkers(page)).toBeVisible({ timeout: 15_000 })
 
@@ -216,6 +311,7 @@ test.describe("chat tree invariants", () => {
     )
     await sendMessage(page, "beta seed")
     await expectAssistantText(page, "BETA_SEED_OK")
+    await expect(page).toHaveURL(/\/chat\/(?!new)[^/]+$/, { timeout: 30_000 })
     await sendMessage(page, "beta held")
     await expect(streamingMarkers(page)).toBeVisible({ timeout: 15_000 })
 

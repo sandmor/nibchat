@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest"
-import { streamBodySchema } from "@/lib/stream-body"
+import { generationStartSchema } from "@/lib/generation-start"
 
-describe("streamBodySchema", () => {
+describe("generationStartSchema", () => {
+  const actionId = "00000000-0000-4000-8000-000000000001"
   it("accepts retained MCP snapshot references", () => {
     expect(
-      streamBodySchema.parse({
+      generationStartSchema.parse({
         intent: "submit",
+        actionId,
         chatId: "chat-1",
         timeZone: "America/Bogota",
         content: "",
@@ -24,8 +26,9 @@ describe("streamBodySchema", () => {
 
   it("rejects client-supplied attachment snapshots", () => {
     expect(
-      streamBodySchema.safeParse({
+      generationStartSchema.safeParse({
         intent: "submit",
+        actionId,
         chatId: "chat-1",
         timeZone: "America/Bogota",
         content: "",
@@ -45,18 +48,18 @@ describe("streamBodySchema", () => {
 
   it("accepts an optional browser time zone on every stream intent", () => {
     for (const input of [
-      { intent: "submit", chatId: "chat-1", content: "Hi" },
-      { intent: "generate", chatId: "chat-1", parentNodeId: "u1" },
-      { intent: "regenerate", chatId: "chat-1", assistantNodeId: "a1" },
+      { intent: "submit", actionId, chatId: "chat-1", content: "Hi" },
+      { intent: "generate", actionId, chatId: "chat-1", parentNodeId: "u1" },
       {
         intent: "resume",
+        actionId,
         chatId: "chat-1",
         assistantNodeId: "a1",
         toolResults: [{ toolCallId: "tool-1", output: {} }],
       },
     ] as const) {
       expect(
-        streamBodySchema.parse({ ...input, timeZone: "America/Bogota" })
+        generationStartSchema.parse({ ...input, timeZone: "America/Bogota" })
       ).toMatchObject({
         timeZone: "America/Bogota",
       })
@@ -65,15 +68,17 @@ describe("streamBodySchema", () => {
 
   it("requires a supported browser time zone", () => {
     expect(
-      streamBodySchema.safeParse({
+      generationStartSchema.safeParse({
         intent: "submit",
+        actionId,
         chatId: "chat-1",
         content: "Hi",
       }).success
     ).toBe(false)
     expect(
-      streamBodySchema.safeParse({
+      generationStartSchema.safeParse({
         intent: "submit",
+        actionId,
         chatId: "chat-1",
         content: "Hi",
         timeZone: "Mars/Olympus",

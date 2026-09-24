@@ -248,6 +248,7 @@ test.describe("question tool", () => {
     await expect(page.getByText("waiting for input")).toBeVisible()
 
     // Durable checkpoint: nothing is streaming; tab may disconnect.
+    await expect(page).toHaveURL(/\/chat\/[a-f0-9-]+/i)
     const chatUrl = page.url()
     expect(chatUrl).toMatch(/\/chat\/[a-f0-9-]+/i)
 

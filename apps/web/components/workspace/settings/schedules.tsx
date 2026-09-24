@@ -269,6 +269,7 @@ export function ScheduleSettings() {
                       name: schedule.name,
                       spaceId: schedule.spaceId,
                       cadence: schedule.cadence,
+                      replyCount: schedule.replyCount,
                       actionKind: schedule.action.kind,
                     })
                   }

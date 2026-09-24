@@ -67,6 +67,18 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create index if not exists generation_runs_chat_idx on generation_runs(chat_id)`.execute(
     db
   )
+  await sql`create table if not exists generation_actions (id text primary key, user_id text not null references "user"(id) on delete cascade, chat_id text not null references chats(id) on delete cascade, intent text not null, request_hash text not null, user_node_id text, created_at text not null, completed_at text)`.execute(
+    db
+  )
+  await sql`create index if not exists generation_actions_chat_idx on generation_actions(chat_id, created_at)`.execute(
+    db
+  )
+  await sql`create index if not exists generation_actions_completed_idx on generation_actions(completed_at)`.execute(
+    db
+  )
+  await sql`create table if not exists generation_action_items (action_id text not null references generation_actions(id) on delete cascade, position integer not null, generation_id text not null unique, assistant_node_id text not null, parent_node_id text, primary key(action_id, position))`.execute(
+    db
+  )
   const attachmentDataType =
     kind === "postgres" ? sql.raw("bytea") : sql.raw("blob")
   await sql`create table if not exists attachments (id text primary key, user_id text not null references "user"(id) on delete cascade, filename text not null, media_type text not null, byte_size integer not null, sha256 text not null, storage_backend text not null, storage_key text, data ${attachmentDataType}, claimed_at text, created_at text not null)`.execute(

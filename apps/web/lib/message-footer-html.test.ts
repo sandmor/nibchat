@@ -22,7 +22,7 @@ function footerModel(
     },
     showDetailsAction: false,
     showEdit: true,
-    showRegenerate: true,
+    generate: "answer",
     siblingCount: 2,
     siblingIndex: 0,
     ...overrides,
@@ -45,7 +45,7 @@ describe("message footer HTML cache", () => {
     )
     expect(actions).toContain('data-static-tooltip="Copy"')
     expect(actions).toContain("1/2")
-    expect(actions).toContain('aria-label="Regenerate"')
+    expect(actions).toContain('aria-label="Another answer"')
   })
 
   it("escapes metadata and reflects disabled action state", () => {

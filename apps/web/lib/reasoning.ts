@@ -122,6 +122,7 @@ export function reasoningSupport(
     [
       "anthropic",
       [
+        "claude-opus-5-5",
         "claude-fable-5",
         "claude-mythos-5",
         "claude-fable-5.1",
@@ -144,7 +145,14 @@ export function reasoningSupport(
     ],
     [
       "openai",
-      ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+      [
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "gpt-5.6",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+      ],
       {
         format: "effort",
         levels: ["none", "low", "medium", "high", "xhigh", "max"],

@@ -683,6 +683,12 @@ export const appRouter = t.router({
               at: z.string().datetime(),
               timeZone: timeZoneSchema,
               name: z.string().trim().min(1).max(MAX_NAME),
+              replyCount: z
+                .number()
+                .int()
+                .min(1)
+                .max(MAX_COLLECTION)
+                .optional(),
             })
             .optional(),
         })
@@ -705,6 +711,7 @@ export const appRouter = t.router({
               name: input.schedule.name,
               at: input.schedule.at,
               timeZone: input.schedule.timeZone,
+              replyCount: input.schedule.replyCount,
             })
           }
           return await createMessage({
@@ -945,6 +952,12 @@ export const appRouter = t.router({
           templateId: z.string().min(1).max(MAX_ID),
           spaceId: z.string().min(1).max(MAX_ID).nullable().optional(),
           cadence: cadenceInputSchema,
+          replyCount: z
+            .number()
+            .int()
+            .min(1)
+            .max(MAX_COLLECTION)
+            .optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -962,6 +975,12 @@ export const appRouter = t.router({
           parentId: z.string().min(1).max(MAX_ID),
           at: z.string().datetime(),
           timeZone: timeZoneSchema,
+          replyCount: z
+            .number()
+            .int()
+            .min(1)
+            .max(MAX_COLLECTION)
+            .optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -979,6 +998,12 @@ export const appRouter = t.router({
           spaceId: z.string().min(1).max(MAX_ID).nullable().optional(),
           cadence: cadenceInputSchema.optional(),
           enabled: z.boolean().optional(),
+          replyCount: z
+            .number()
+            .int()
+            .min(1)
+            .max(MAX_COLLECTION)
+            .optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -1010,6 +1035,12 @@ export const appRouter = t.router({
             .optional(),
           spaceId: z.string().min(1).max(MAX_ID).nullable().optional(),
           cadence: cadenceInputSchema,
+          replyCount: z
+            .number()
+            .int()
+            .min(1)
+            .max(MAX_COLLECTION)
+            .optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -1043,6 +1074,12 @@ export const appRouter = t.router({
           name: z.string().trim().min(1).max(MAX_NAME),
           spaceId: z.string().min(1).max(MAX_ID).nullable().optional(),
           cadence: cadenceInputSchema,
+          replyCount: z
+            .number()
+            .int()
+            .min(1)
+            .max(MAX_COLLECTION)
+            .optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {

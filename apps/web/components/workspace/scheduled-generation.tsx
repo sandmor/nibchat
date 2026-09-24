@@ -31,12 +31,15 @@ import {
   type ScheduleClock,
 } from "./schedule-dialog"
 import type { NodeSchedule } from "@/lib/types"
+import { GenerationCountField } from "./generation-count"
+import { generationCountInRange } from "@/lib/limits"
 
 export type PendingGeneration = {
   id: string
   parentId: string
   nextRunAt: string
   timeZone: string
+  replyCount: number
 }
 
 type ScheduledGenerationContextValue = {
@@ -68,26 +71,24 @@ export function useScheduledGeneration() {
   return useContext(ScheduledGenerationContext)
 }
 
-export type ScheduledGenerationVerb = "Generates" | "Regenerates"
+export type ScheduledGenerationVerb = "Generates"
 
-export function scheduledGenerationVerb(
-  hasAssistantChild: boolean
-): ScheduledGenerationVerb {
-  return hasAssistantChild ? "Regenerates" : "Generates"
+export function scheduledGenerationVerb(): ScheduledGenerationVerb {
+  return "Generates"
 }
 
-export function scheduledGenerationMenuLabel(hasAssistantChild: boolean) {
-  return scheduledGenerationVerb(hasAssistantChild) === "Regenerates"
-    ? "Regenerate later…"
-    : "Generate later…"
+export function scheduledGenerationMenuLabel() {
+  return "Generate later…"
 }
 
 export function scheduledGenerationLabel(
   nextRunAt: string,
   timeZone: string,
-  verb: ScheduledGenerationVerb = "Generates"
+  verb: ScheduledGenerationVerb = "Generates",
+  replyCount = 1
 ) {
-  return `${verb} ${formatRunInstant(nextRunAt, timeZone)}`
+  const when = formatRunInstant(nextRunAt, timeZone)
+  return replyCount > 1 ? `${verb} ${replyCount} replies · ${when}` : `${verb} ${when}`
 }
 
 function scheduleActionClass(captions: boolean, destructive = false) {
@@ -109,6 +110,7 @@ export function ScheduledGenerationLane({
     scheduleId: string
     nextRunAt: string
     timeZone: string
+    replyCount?: number
   }[]
   verb?: ScheduledGenerationVerb
   captions: boolean
@@ -123,7 +125,8 @@ export function ScheduledGenerationLane({
   const label = scheduledGenerationLabel(
     current.nextRunAt,
     current.timeZone,
-    verb
+    verb,
+    current.replyCount ?? 1
   )
   return (
     <article
@@ -222,6 +225,7 @@ export function ScheduledGenerationLane({
 export function ScheduledGenerationCard({
   nextRunAt,
   timeZone,
+  replyCount = 1,
   onOpen,
   onCancel,
   verb = "Generates",
@@ -229,12 +233,13 @@ export function ScheduledGenerationCard({
 }: {
   nextRunAt: string
   timeZone: string
+  replyCount?: number
   onOpen: () => void
   onCancel?: () => void
   verb?: ScheduledGenerationVerb
   className?: string
 }) {
-  const label = scheduledGenerationLabel(nextRunAt, timeZone, verb)
+  const label = scheduledGenerationLabel(nextRunAt, timeZone, verb, replyCount)
   return (
     <div className={cn("relative h-full min-h-0 w-full", className)}>
       <button
@@ -283,12 +288,17 @@ export function ScheduledGenerationDialog({
   const client = useQueryClient()
   const [clock, setClock] = useState<ScheduleClock | null>(null)
   const [editedId, setEditedId] = useState<string | null>(null)
+  const [replyCount, setReplyCount] = useState<number | null>(null)
   const displayed =
     schedule && editedId === schedule.id && clock
       ? clock
       : schedule
         ? onceScheduleClock(schedule.nextRunAt, schedule.timeZone)
         : null
+  const displayedReplyCount =
+    schedule && editedId === schedule.id && replyCount !== null
+      ? replyCount
+      : (schedule?.replyCount ?? 1)
   async function refresh() {
     await Promise.all([
       client.invalidateQueries(trpc.workspace.listSchedules.queryFilter()),
@@ -345,22 +355,46 @@ export function ScheduledGenerationDialog({
             }}
           />
         ) : null}
+        {schedule ? (
+          <GenerationCountField
+            id="scheduled-generation-replies"
+            value={displayedReplyCount}
+            onChange={(count) => {
+              setEditedId(schedule.id)
+              setReplyCount(count)
+            }}
+          />
+        ) : null}
         <DialogFooter className="flex-col sm:flex-row sm:justify-end">
           <Button
             type="button"
             variant="outline"
-            disabled={busy || clockDirty || Boolean(clockError)}
+            disabled={
+              busy ||
+              clockDirty ||
+              Boolean(clockError) ||
+              displayedReplyCount !== (schedule?.replyCount ?? 1)
+            }
             onClick={() => schedule && run.mutate({ id: schedule.id })}
           >
             Run now
           </Button>
           <Button
             type="button"
-            disabled={busy || Boolean(clockError)}
+            disabled={
+              busy ||
+              Boolean(clockError) ||
+              !generationCountInRange(displayedReplyCount)
+            }
             onClick={() => {
               const cadence = displayed && cadenceFromClock(displayed)
               if (schedule && cadence)
-                update.mutate({ id: schedule.id, cadence, enabled: true })
+                update.mutate({
+                  id: schedule.id,
+                  cadence,
+                  replyCount: displayedReplyCount,
+                  enabled: true,
+                })
             }}
           >
             Save changes

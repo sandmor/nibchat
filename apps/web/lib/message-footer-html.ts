@@ -5,8 +5,8 @@ import {
   Copy01Icon,
   Delete02Icon,
   Edit02Icon,
+  GitBranchIcon,
   InformationCircleIcon,
-  RefreshIcon,
   ViewIcon,
   ViewOffIcon,
 } from "@hugeicons/core-free-icons"
@@ -20,7 +20,7 @@ export const MESSAGE_FOOTER_ACTION = {
   edit: "edit",
   nextSibling: "next-sibling",
   previousSibling: "previous-sibling",
-  regenerate: "regenerate",
+  generate: "generate",
   toggleContext: "toggle-context",
 } as const
 
@@ -43,7 +43,8 @@ export type MessageFooterHtmlModel = {
   identity: FooterIdentity
   showDetailsAction: boolean
   showEdit: boolean
-  showRegenerate: boolean
+  /** Another answer under a user message. Continuing an assistant is an empty send. */
+  generate: "answer" | null
   siblingCount: number
   siblingIndex: number
 }
@@ -192,12 +193,12 @@ function renderActions(model: MessageFooterHtmlModel) {
     icon: Copy01Icon,
     label: "Copy",
   })
-  if (model.showRegenerate)
+  if (model.generate === "answer")
     add({
-      action: MESSAGE_FOOTER_ACTION.regenerate,
+      action: MESSAGE_FOOTER_ACTION.generate,
       captions: model.captions,
-      icon: RefreshIcon,
-      label: "Regenerate",
+      icon: GitBranchIcon,
+      label: "Another answer",
     })
   if (model.showEdit)
     add({

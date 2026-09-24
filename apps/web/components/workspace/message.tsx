@@ -17,6 +17,7 @@ import { HugeiconsIcon } from "@hugeicons/react"
 import {
   ArrowMoveUpRightIcon,
   Clock01Icon,
+  Copy01Icon,
   GitBranchIcon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons"
@@ -87,6 +88,7 @@ import { SessionMessageEditor } from "./message-editor"
 import { useStreamBuffer, useStreamStore } from "@/lib/stream-store"
 import { overlayStreamParts } from "./stream-helpers"
 import { siblingSort } from "@/lib/sort-key"
+import { MultipleGenerationsDialog } from "./generation-count"
 import {
   effectiveMessageStatus,
   formatGenerationDuration,
@@ -110,7 +112,7 @@ import {
   useScheduledGeneration,
 } from "./scheduled-generation"
 
-type MessageDialog = "details" | "delete" | "move" | "replace"
+type MessageDialog = "details" | "delete" | "move" | "replace" | "multiple"
 type MountedMessageDialogs = Record<MessageDialog, boolean>
 
 const NO_MOUNTED_MESSAGE_DIALOGS: MountedMessageDialogs = {
@@ -118,6 +120,7 @@ const NO_MOUNTED_MESSAGE_DIALOGS: MountedMessageDialogs = {
   delete: false,
   move: false,
   replace: false,
+  multiple: false,
 }
 const NO_PENDING_TOOL_IDS: string[] = []
 
@@ -294,7 +297,7 @@ type MessageProps = {
   messageActionCaptions: boolean
   onSelect?: (parentId: string, childId: string) => void
   onChanged?: () => void | Promise<void>
-  onRegenerate?: () => void
+  onGenerateReplies?: (count?: number) => void
   onAnswerTools?: (
     assistantNodeId: string,
     toolResults: Array<{ toolCallId: string; output: unknown }>
@@ -332,7 +335,7 @@ export const Message = memo(function Message({
   messageActionCaptions,
   onSelect,
   onChanged,
-  onRegenerate,
+  onGenerateReplies,
   onAnswerTools,
   presentation = "linear",
   attachSelectionOnEdit = true,
@@ -416,8 +419,15 @@ export const Message = memo(function Message({
         .sort(siblingSort),
     [node.parent_id, node.role, nodes, siblingNodes]
   )
+  const generatingChildren = nodes.filter(
+    (candidate) =>
+      candidate.parent_id === node.id &&
+      candidate.role === "assistant" &&
+      candidate.status === "streaming"
+  ).length
   const index = siblings.findIndex((candidate) => candidate.id === node.id)
   const [detailsOpen, setDetailsOpen] = useState(false)
+  const [multipleOpen, setMultipleOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [teleportOpen, setTeleportOpen] = useState(false)
   const teleportTargets = useMemo(() => {
@@ -662,16 +672,19 @@ export const Message = memo(function Message({
   const scheduleMenu =
     scheduledGeneration?.available && node.role === "user"
       ? (() => {
-          const hasAssistantChild = nodes.some(
-            (candidate) =>
-              candidate.parent_id === node.id && candidate.role === "assistant"
-          )
           return {
-            label: scheduledGenerationMenuLabel(hasAssistantChild),
+            label: scheduledGenerationMenuLabel(),
             onOpen: () => scheduledGeneration.openForNode(node.id),
           }
         })()
       : null
+
+  const canGenerateReplies =
+    Boolean(onGenerateReplies) &&
+    (node.role === "user" || node.role === "assistant") &&
+    node.status !== "streaming" &&
+    node.status !== "awaiting_input" &&
+    !streamId
 
   const footerHtml = prepareMessageFooterHtml({
     captions: messageActionCaptions,
@@ -689,11 +702,7 @@ export const Message = memo(function Message({
     },
     showDetailsAction: hasDetails && !identityLabel,
     showEdit: canEditAsBranch,
-    showRegenerate:
-      node.role === "assistant" &&
-      Boolean(onRegenerate) &&
-      node.status !== "streaming" &&
-      !streamId,
+    generate: canGenerateReplies && node.role === "user" ? "answer" : null,
     siblingCount: presentation === "linear" ? siblings.length : 0,
     siblingIndex: index,
   })
@@ -710,8 +719,8 @@ export const Message = memo(function Message({
 
     if (action === MESSAGE_FOOTER_ACTION.copy) {
       void copyMarkdown("message")
-    } else if (action === MESSAGE_FOOTER_ACTION.regenerate) {
-      onRegenerate?.()
+    } else if (action === MESSAGE_FOOTER_ACTION.generate) {
+      onGenerateReplies?.()
     } else if (action === MESSAGE_FOOTER_ACTION.edit) {
       beginEdit()
     } else if (action === MESSAGE_FOOTER_ACTION.toggleContext) {
@@ -930,6 +939,11 @@ export const Message = memo(function Message({
           data-message-footer-html="identity"
           dangerouslySetInnerHTML={footerHtml.identity}
         />
+        {generatingChildren > 1 ? (
+          <span className="text-[11px] text-muted-foreground">
+            {generatingChildren} replies generating
+          </span>
+        ) : null}
         <span className="flex flex-wrap items-center gap-0.5">
           <span
             className="contents"
@@ -943,6 +957,19 @@ export const Message = memo(function Message({
               side="top"
               className="max-w-[min(20rem,calc(100vw-1.5rem))]"
             >
+              {canGenerateReplies ? (
+                <DropdownMenuItem
+                  onClick={() => openDialog("multiple", setMultipleOpen)}
+                >
+                  <HugeiconsIcon
+                    icon={GitBranchIcon}
+                    strokeWidth={2}
+                    className="size-3.5 text-muted-foreground"
+                    aria-hidden
+                  />
+                  Generate multiple replies…
+                </DropdownMenuItem>
+              ) : null}
               {scheduleMenu ? (
                 <DropdownMenuItem onClick={scheduleMenu.onOpen}>
                   <HugeiconsIcon
@@ -956,7 +983,7 @@ export const Message = memo(function Message({
               ) : null}
               <DropdownMenuItem onClick={() => void copyMarkdown("path")}>
                 <HugeiconsIcon
-                  icon={GitBranchIcon}
+                  icon={Copy01Icon}
                   strokeWidth={2}
                   className="size-3.5 text-muted-foreground"
                   aria-hidden
@@ -978,6 +1005,13 @@ export const Message = memo(function Message({
           </DropdownMenu>
         </span>
       </div>
+      {mountedDialogs.multiple ? (
+        <MultipleGenerationsDialog
+          open={multipleOpen}
+          onOpenChange={setMultipleOpen}
+          onConfirm={(count) => onGenerateReplies?.(count)}
+        />
+      ) : null}
       {!tree && node.status === "error" && (
         <p className="mt-3 text-xs break-words text-destructive">
           {typeof metadata.error === "string" && metadata.error

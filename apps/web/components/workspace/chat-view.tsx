@@ -115,6 +115,7 @@ import {
   scheduleClockError,
   type ScheduleClock,
 } from "./schedule-dialog"
+import { GenerationCountField } from "./generation-count"
 import {
   ChatTemplatePicker,
   chatTemplatePickerLabel,
@@ -170,23 +171,31 @@ import {
   chatTemplateDocumentSchema,
   type ChatTemplateDocument,
 } from "@/lib/chat-template"
-import { MAX_NAME } from "@/lib/limits"
+import {
+  assertGenerationCount,
+  generationCountInRange,
+  MAX_NAME,
+} from "@/lib/limits"
 import { analyzePdf } from "@/lib/pdf-analysis-client"
 import type { PdfAnalysis } from "@/lib/pdf-analysis"
 import {
   applyStoppingStreamPatches,
   durablePartsForNode,
   followGenerationStream,
+  generationRetryDelay,
+  readActionEvents,
   planStreamEnd,
-  readStreamEvents,
   shouldFollowGeneration,
   shouldSoftFollow,
   streamPlacement,
   viewPathFromCache,
   type StreamEndReason,
-  type StreamRequestInput,
-  type StreamRequestBody,
 } from "./stream-helpers"
+import {
+  generationBatchResponseSchema,
+  type GenerationStartBody,
+  type GenerationStartInput,
+} from "@/lib/generation-start"
 import type { GenerationTerminalPayload } from "@/lib/generation-streams/events"
 import { prepareStaticMarkdown } from "@/lib/static-markdown"
 import { normalizeLatexDelimiters } from "@/lib/normalize-latex-delimiters"
@@ -360,11 +369,14 @@ export function ChatView({
   const [scheduleClock, setScheduleClock] = useState<ScheduleClock>(() =>
     defaultScheduleClock()
   )
+  const [scheduleReplyCount, setScheduleReplyCount] = useState(1)
   const [scheduleSendOpen, setScheduleSendOpen] = useState(false)
   const [templateScheduleOpen, setTemplateScheduleOpen] = useState(false)
   const [templateScheduleName, setTemplateScheduleName] = useState("")
   const [templateScheduleClock, setTemplateScheduleClock] =
     useState<ScheduleClock>(() => defaultScheduleClock())
+  const [templateScheduleReplyCount, setTemplateScheduleReplyCount] =
+    useState(1)
   const [templateScheduleSource, setTemplateScheduleSource] = useState<{
     slot: string
     parentId: string | null
@@ -387,6 +399,7 @@ export function ChatView({
       kind: "once",
     })
   )
+  const [scheduleSendReplyCount, setScheduleSendReplyCount] = useState(1)
   const [templateOpen, setTemplateOpen] = useState(false)
   const [pendingTemplateId, setPendingTemplateId] = useState<
     string | null | undefined
@@ -1375,108 +1388,46 @@ export function ChatView({
     return false
   }
 
-  async function runStream(
-    body: StreamRequestInput,
+  async function runGenerationAction(
+    body: GenerationStartInput,
     options?: {
       modelConfig?: ModelConfigLocal
-      /** Called after the stream is registered (response ok + startStream). */
       onStreamStarted?: (info: {
         userNodeId: string | null
         assistantNodeId: string
       }) => void
-      /** After the first workspace refresh that includes the new rows. */
       onWorkspaceReady?: (info: {
         userNodeId: string | null
         assistantNodeId: string
       }) => void | Promise<void>
-      /** Tree actions must not rewrite the persisted linear-path selection. */
       suppressSelectionFollow?: boolean
     }
   ) {
     const modelConfig = options?.modelConfig ?? activeModelConfig
     if (!ensureModelReady(modelConfig)) return false
-    let streamId: string | undefined
-    if (aliveRef.current) setInFlightCount((n) => n + 1)
+    const expectedCount = body.intent === "resume" ? 1 : (body.replyCount ?? 1)
+    if (aliveRef.current) setInFlightCount((n) => n + expectedCount)
     let failed = false
-    let endReason: StreamEndReason = "gone"
-    let terminalHandled = false
+    const started = new Map<string, AbortController>()
+    const actionId = crypto.randomUUID()
     const controller = new AbortController()
+    let actionCursor: string | null = null
+    let manifestSeen = false
+    let reconcile: Promise<void> | null = null
+    const terminalTasks: Promise<void>[] = []
     try {
-      streamId = crypto.randomUUID()
-      const requestBody: StreamRequestBody = {
+      const requestBody: GenerationStartBody = {
         ...body,
+        actionId,
         timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       }
-      const response = await fetch("/api/chat/stream", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal,
-      })
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as {
-          error?: string
-        }
-        throw new Error(payload.error || `Stream failed (${response.status})`)
-      }
-      const nodeId =
-        response.headers.get("X-Nibchat-Assistant-Node") ?? "pending"
-      streamId = response.headers.get("X-Nibchat-Generation-Id") ?? streamId
-      attachController(streamId, controller)
-      const parentHeader = response.headers.get("X-Nibchat-Parent-Node")
-      const userNodeId = response.headers.get("X-Nibchat-Submitted-Node")
-      // Prefer structural parent from the server; fall back to request body.
-      const parentNodeId =
-        parentHeader ?? (body.intent === "submit" ? userNodeId : null)
-      const cached = queryClient.getQueryData<WorkspaceData>(
-        trpc.workspace.get.queryKey({ chatId: body.chatId })
-      )
-      startStream(streamId, {
-        nodeId,
-        chatId: body.chatId,
-        parentNodeId,
-        parts: durablePartsForNode(cached?.nodes, nodeId),
-      })
-      options?.onStreamStarted?.({
-        userNodeId,
-        assistantNodeId: nodeId,
-      })
-
-      // Reading the response stream is an independent real-time boundary.
-      // Start it before any query refetch or selection mutation so unrelated
-      // cache latency can never delay first-token rendering.
-      const liveStreamId = streamId
-      const read = (body: ReadableStream<Uint8Array>) =>
-        readStreamEvents(body, {
-          onEvent: (event) => applyStreamEvent(liveStreamId, event),
-          onCursor: (cursor) => setStreamCursor(liveStreamId, cursor),
-        })
-      const streamRead = (async () => {
-        if (response.body) {
-          try {
-            const terminal = await read(response.body)
-            if (terminal) return { type: "terminal", terminal } as const
-          } catch {
-            if (controller.signal.aborted) return "aborted" as const
-          }
-        }
-        if (controller.signal.aborted) return "aborted" as const
-        return followGenerationStream({
-          streamId: liveStreamId,
-          signal: controller.signal,
-          cursor: useStreamStore.getState().cursors[liveStreamId] ?? null,
-          onEvent: (event) => applyStreamEvent(liveStreamId, event),
-          onCursor: (cursor) => setStreamCursor(liveStreamId, cursor),
-        })
-      })()
-
-      const reconcileWorkspace = async () => {
-        // Tree needs the durable user/assistant rows while SSE continues; all
-        // surfaces benefit from the refresh, but none wait on it to read tokens.
+      const reconcileWorkspace = async (
+        batch: ReturnType<typeof generationBatchResponseSchema.parse>
+      ) => {
+        const first = batch.generations[0]!
         await queryClient.invalidateQueries({
           queryKey: trpc.workspace.get.queryKey({ chatId: body.chatId }),
         })
-
         const pathFromCache = () =>
           viewPathFromCache(
             queryClient,
@@ -1484,7 +1435,6 @@ export function ChatView({
             body.chatId
           )
         const trySoftFollow = (path: NodeRow[]) =>
-          nodeId !== "pending" &&
           shouldSoftFollow(body, path, selectedChatIdRef.current)
         let didSoftFollow = options?.suppressSelectionFollow
           ? false
@@ -1501,55 +1451,185 @@ export function ChatView({
         if (didSoftFollow) {
           await selectPathMutation.mutateAsync({
             chatId: body.chatId,
-            nodeId,
+            nodeId: first.assistantNodeId,
           })
         }
         await queryClient.invalidateQueries({
           queryKey: trpc.workspace.get.queryKey({ draft: true }),
         })
         await options?.onWorkspaceReady?.({
-          userNodeId,
-          assistantNodeId: nodeId,
+          userNodeId: batch.userNodeId,
+          assistantNodeId: first.assistantNodeId,
         })
       }
-
-      const reconcile = reconcileWorkspace()
-      const readerResult = await streamRead
-      if (typeof readerResult === "object") {
-        await applyTerminalHandoff(
-          liveStreamId,
-          readerResult.terminal,
-          controller
-        )
-        terminalHandled = true
-      } else endReason = readerResult === "aborted" ? "aborted" : "gone"
-      await reconcile
-    } catch (error) {
-      const stopping = streamId
-        ? Boolean(useStreamStore.getState().streams[streamId]?.stopping)
-        : false
-      if (controller.signal.aborted) {
-        endReason = "aborted"
-      } else {
-        endReason = "failed"
-        if (!stopping) {
-          failed = true
-          if (aliveRef.current) {
-            toast.error(
-              error instanceof Error ? error.message : "Stream failed"
-            )
+      const onEvent = (
+        event: import("@/lib/generation-start").ActionStreamEvent
+      ) => {
+        if (event.type === "action-started") {
+          const batch = generationBatchResponseSchema.parse(event)
+          if (
+            batch.actionId !== actionId ||
+            batch.generations.length !== expectedCount
+          )
+            throw new Error("Generation action returned unexpected replies")
+          if (manifestSeen) return
+          manifestSeen = true
+          const cached = queryClient.getQueryData<WorkspaceData>(
+            trpc.workspace.get.queryKey({ chatId: body.chatId })
+          )
+          for (const {
+            generationId,
+            assistantNodeId,
+            parentNodeId,
+          } of batch.generations) {
+            started.set(generationId, controller)
+            attachController(generationId, controller)
+            startStream(generationId, {
+              nodeId: assistantNodeId,
+              chatId: body.chatId,
+              parentNodeId,
+              parts: durablePartsForNode(cached?.nodes, assistantNodeId),
+            })
           }
-          await queryClient.invalidateQueries({
-            queryKey: trpc.workspace.get.queryKey({ chatId: body.chatId }),
+          options?.onStreamStarted?.({
+            userNodeId: batch.userNodeId,
+            assistantNodeId: batch.generations[0]!.assistantNodeId,
           })
+          reconcile = reconcileWorkspace(batch)
+          void reconcile.catch(() => {})
+        } else if (event.type === "generation-event") {
+          if (!started.has(event.generationId)) return
+          if (event.event.type === "terminal") {
+            const task = applyTerminalHandoff(
+              event.generationId,
+              event.event,
+              controller
+            )
+            void task.catch(() => {})
+            terminalTasks.push(task)
+          } else applyStreamEvent(event.generationId, event.event)
         }
       }
+      let firstConnection = true
+      let postAttempts = 0
+      let disconnects = 0
+      let receiptExpired = false
+      while (!controller.signal.aborted) {
+        const isPost = firstConnection
+        let response: Response
+        try {
+          response = await fetch(
+            isPost
+              ? "/api/chat/generations"
+              : `/api/chat/generations/${encodeURIComponent(actionId)}/events${actionCursor ? `?cursor=${encodeURIComponent(actionCursor)}` : ""}`,
+            isPost
+              ? {
+                  method: "POST",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify(requestBody),
+                  signal: controller.signal,
+                }
+              : { signal: controller.signal }
+          )
+        } catch (error) {
+          if (controller.signal.aborted) break
+          if (isPost && ++postAttempts <= 2) continue
+          throw error
+        }
+        if (
+          isPost &&
+          response.status >= 500 &&
+          ++postAttempts <= 2
+        ) {
+          await response.body?.cancel()
+          continue
+        }
+        firstConnection = false
+        // Completed replies outlive the action receipt and are in the workspace.
+        if (!isPost && response.status === 404 && manifestSeen) {
+          await response.body?.cancel()
+          receiptExpired = true
+          break
+        }
+        if (!response.ok || !response.body) {
+          const payload = (await response.json().catch(() => ({}))) as {
+            error?: string
+          }
+          throw new Error(
+            payload.error || `Generation action failed (${response.status})`
+          )
+        }
+        const finished = await readActionEvents(response.body, {
+          onEvent,
+          onCursor: (cursor) => {
+            actionCursor = cursor
+          },
+        }).catch((error) => {
+          if (error instanceof TypeError) return false
+          throw error
+        })
+        if (finished) break
+        await new Promise((resolve) =>
+          setTimeout(resolve, generationRetryDelay(disconnects++))
+        )
+      }
+      if (controller.signal.aborted) return false
+      if (!manifestSeen) throw new Error("Generation action did not start")
+      await Promise.allSettled(terminalTasks)
+      if (receiptExpired) {
+        await queryClient.invalidateQueries({
+          queryKey: trpc.workspace.get.queryKey({ chatId: body.chatId }),
+        })
+        const workspace = await queryClient.fetchQuery(
+          trpc.workspace.get.queryOptions({ chatId: body.chatId })
+        )
+        for (const [generationId, reader] of started) {
+          const meta = useStreamStore.getState().streams[generationId]
+          if (!meta) continue
+          const node = workspace.nodes.find((item) => item.id === meta.nodeId)
+          if (node?.status === "streaming")
+            throw new Error(
+              "Generation receipt expired while a reply is active"
+            )
+          await applyTerminalHandoff(
+            generationId,
+            {
+              type: "terminal",
+              result: node?.status ?? "deleted",
+              node: node ?? null,
+            },
+            reader
+          )
+        }
+      }
+      if (reconcile) await reconcile
+    } catch (error) {
+      failed = true
+      if (aliveRef.current)
+        toast.error(
+          error instanceof Error ? error.message : "Generation failed"
+        )
+      await queryClient.invalidateQueries({
+        queryKey: trpc.workspace.get.queryKey({ chatId: body.chatId }),
+      })
+      for (const [generationId, controller] of started)
+        if (useStreamStore.getState().streams[generationId])
+          applyStreamEnd(generationId, "failed", controller)
     } finally {
-      if (aliveRef.current) setInFlightCount((n) => Math.max(0, n - 1))
-      if (streamId && !terminalHandled)
-        applyStreamEnd(streamId, endReason, controller)
+      if (aliveRef.current)
+        setInFlightCount((n) => Math.max(0, n - expectedCount))
     }
     return !failed
+  }
+
+  async function runGenerationBatch(
+    body: GenerationStartInput,
+    count: number,
+    options?: Parameters<typeof runGenerationAction>[1]
+  ) {
+    assertGenerationCount(count)
+    if (body.intent === "resume") return runGenerationAction(body, options)
+    return runGenerationAction({ ...body, replyCount: count }, options)
   }
 
   async function ensureChatId(): Promise<{ chatId: string; created: boolean }> {
@@ -1681,7 +1761,7 @@ export function ChatView({
     return tip.id
   }, [activePath])
 
-  async function streamSubmit() {
+  async function streamSubmit(count = 1) {
     const { text, attachments } = readComposerDraft(linearComposerSlot)
     const content = text.trim()
     const generateOnly = !content && attachments.length === 0
@@ -1699,7 +1779,7 @@ export function ChatView({
       ensuredId = ensured.chatId
       created = ensured.created
       // Start the stream before URL replace so remount sees Zustand state.
-      await runStream(
+      await runGenerationBatch(
         generateOnly
           ? {
               chatId: ensuredId,
@@ -1729,6 +1809,7 @@ export function ChatView({
                   }
                 : {}),
             },
+        count,
         {
           modelConfig,
           onStreamStarted: () => {
@@ -1748,7 +1829,8 @@ export function ChatView({
               // Send button and makes Playwright (and real pointer users)
               // retry against a disabled node.
               setTimeout(() => {
-                if (aliveRef.current) router.replace(`/chat/${ensuredId}`)
+                if (!aliveRef.current) return
+                router.replace(`/chat/${ensuredId}`)
               }, 50)
             }
           },
@@ -1768,6 +1850,7 @@ export function ChatView({
   function openScheduleComposer(slot: string, parentId: string | null) {
     setScheduleSource({ slot, parentId, draft: readComposerDraft(slot) })
     setScheduleSendClock({ ...defaultScheduleClock(), kind: "once" })
+    setScheduleSendReplyCount(1)
     setScheduleSendOpen(true)
   }
 
@@ -1792,6 +1875,7 @@ export function ChatView({
       data.chat?.title?.trim() || generationScheduleName(draft.text)
     )
     setTemplateScheduleClock(defaultScheduleClock(spaceId))
+    setTemplateScheduleReplyCount(1)
     setTemplateScheduleOpen(true)
   }
 
@@ -1822,6 +1906,7 @@ export function ChatView({
         name: templateScheduleName.trim(),
         spaceId: templateScheduleClock.spaceId,
         cadence,
+        replyCount: templateScheduleReplyCount,
       })
       if (source.chatId) {
         updateSessionDraft(
@@ -1887,6 +1972,7 @@ export function ChatView({
             name: generationScheduleName(draft.text),
             at: cadence.at,
             timeZone: cadence.timeZone,
+            replyCount: scheduleSendReplyCount,
           },
         })
         if (slot)
@@ -1912,6 +1998,7 @@ export function ChatView({
           parentId,
           at: cadence.at,
           timeZone: cadence.timeZone,
+          replyCount: scheduleSendReplyCount,
         })
       }
       await Promise.all([
@@ -2061,16 +2148,19 @@ export function ChatView({
       void fetch(`/api/attachments/${part.reference.id}`, { method: "DELETE" })
   }
 
-  async function streamRegenerate(assistantNodeId: string) {
+  async function streamRepliesFromNode(nodeId: string, count = 1) {
     const ensured = await ensureChatId()
-    await runStream(
+    const persistedNodeId = ensured.created
+      ? (draftNodeIdMap.current[nodeId] ?? nodeId)
+      : nodeId
+    await runGenerationBatch(
       {
         chatId: ensured.chatId,
-        intent: "regenerate",
-        assistantNodeId: ensured.created
-          ? (draftNodeIdMap.current[assistantNodeId] ?? assistantNodeId)
-          : assistantNodeId,
+        intent: "generate",
+        parentNodeId: persistedNodeId,
+        attachSelection: true,
       },
+      count,
       ensured.created
         ? {
             onStreamStarted: () =>
@@ -2131,7 +2221,7 @@ export function ChatView({
     })
   }
 
-  async function streamTreeSend(parentNodeId: string | null) {
+  async function streamTreeSend(parentNodeId: string | null, count = 1) {
     const slot = treeSlot(parentNodeId)
     const draft = readComposerDraft(slot)
     const content = draft.text.trim()
@@ -2154,12 +2244,13 @@ export function ChatView({
           settled = true
           resolve(ok)
         }
-        void runStream(
+        void runGenerationBatch(
           {
             chatId: treeChatId,
             intent: "generate",
             parentNodeId: persistedParentId,
           },
+          count,
           {
             suppressSelectionFollow: true,
             onStreamStarted: () => {
@@ -2221,7 +2312,7 @@ export function ChatView({
         settled = true
         resolve(ok)
       }
-      void runStream(
+      void runGenerationBatch(
         {
           chatId: treeChatId,
           intent: "submit",
@@ -2233,6 +2324,7 @@ export function ChatView({
               }
             : {}),
         },
+        count,
         {
           suppressSelectionFollow: true,
           onStreamStarted: ({ userNodeId }) => {
@@ -2313,7 +2405,7 @@ export function ChatView({
         return true
       }
       let started = false
-      await runStream(
+      await runGenerationAction(
         {
           chatId: chatId,
           intent: "generate",
@@ -2352,16 +2444,19 @@ export function ChatView({
     }
   }
 
-  async function streamTreeRegenerate(assistantNodeId: string) {
+  async function streamTreeRepliesFromNode(nodeId: string, count = 1) {
     const ensured = await ensureChatId()
-    await runStream(
+    const persistedNodeId = ensured.created
+      ? (draftNodeIdMap.current[nodeId] ?? nodeId)
+      : nodeId
+    await runGenerationBatch(
       {
         chatId: ensured.chatId,
-        intent: "regenerate",
-        assistantNodeId: ensured.created
-          ? (draftNodeIdMap.current[assistantNodeId] ?? assistantNodeId)
-          : assistantNodeId,
+        intent: "generate",
+        parentNodeId: persistedNodeId,
+        attachSelection: false,
       },
+      count,
       {
         suppressSelectionFollow: true,
         ...(ensured.created
@@ -2379,7 +2474,7 @@ export function ChatView({
     toolResults: Array<{ toolCallId: string; output: unknown }>
   ) {
     if (!data.chat) return
-    await runStream({
+    await runGenerationAction({
       chatId: data.chat.id,
       intent: "resume",
       assistantNodeId,
@@ -2392,7 +2487,7 @@ export function ChatView({
     toolResults: Array<{ toolCallId: string; output: unknown }>
   ) {
     if (!data.chat) return
-    await runStream(
+    await runGenerationAction(
       { chatId: data.chat.id, intent: "resume", assistantNodeId, toolResults },
       { suppressSelectionFollow: true }
     )
@@ -2548,6 +2643,7 @@ export function ChatView({
           parentId: parent.id,
           nextRunAt: schedule.nextRunAt,
           timeZone: schedule.timeZone,
+          replyCount: schedule.replyCount ?? 1,
         })
       }
     }
@@ -2576,6 +2672,7 @@ export function ChatView({
       draft: { text: "", attachments: [] },
     })
     setScheduleSendClock({ ...defaultScheduleClock(), kind: "once" })
+    setScheduleSendReplyCount(1)
     setScheduleSendOpen(true)
   }, [])
   const scheduledGeneration = useMemo(
@@ -2632,6 +2729,7 @@ export function ChatView({
         name,
         spaceId: scheduleClock.spaceId,
         cadence,
+        replyCount: scheduleReplyCount,
         ...(existing
           ? {
               templateId: existing.id,
@@ -3108,7 +3206,7 @@ export function ChatView({
                   setScrollTargetId(childId)
                 }}
                 onChanged={() => invalidateWorkspace()}
-                onRegenerate={streamRegenerate}
+                onGenerateReplies={streamRepliesFromNode}
                 onAnswerTools={streamResume}
                 editor={messageEditor}
               />
@@ -3171,6 +3269,9 @@ export function ChatView({
                         sendLabel={role === "user" ? "Send" : "Save"}
                         allowEmptySend={role === "user"}
                         onSend={options.onSend}
+                        onSendMultiple={
+                          role === "user" ? options.onSendMultiple : undefined
+                        }
                         onSchedule={
                           role === "user" && !template
                             ? () => openScheduleComposer(slot, anchor)
@@ -3214,7 +3315,7 @@ export function ChatView({
                 }}
                 onOpenDraft={openTreeDraft}
                 onChanged={invalidateWorkspace}
-                onRegenerate={streamTreeRegenerate}
+                onGenerateReplies={streamTreeRepliesFromNode}
                 onAnswerTools={streamTreeResume}
                 editor={messageEditor}
                 onStop={() =>
@@ -3272,6 +3373,7 @@ export function ChatView({
                 contextParentId={composerParentId}
                 sendLabel="Send"
                 onSend={() => void streamSubmit()}
+                onSendMultiple={(count) => void streamSubmit(count)}
                 onSchedule={
                   template
                     ? undefined
@@ -3419,6 +3521,11 @@ export function ChatView({
                   }))
                 }
               />
+              <GenerationCountField
+                id="chat-schedule-replies"
+                value={scheduleSendReplyCount}
+                onChange={setScheduleSendReplyCount}
+              />
             </div>
             <DialogFooter>
               <Button
@@ -3433,7 +3540,8 @@ export function ChatView({
                 disabled={
                   createMessageMutation.isPending ||
                   createChatScheduleMutation.isPending ||
-                  Boolean(scheduleClockError(scheduleSendClock))
+                  Boolean(scheduleClockError(scheduleSendClock)) ||
+                  !generationCountInRange(scheduleSendReplyCount)
                 }
                 onClick={() => void scheduleComposer()}
               >
@@ -3479,6 +3587,11 @@ export function ChatView({
                   }))
                 }
               />
+              <GenerationCountField
+                id="template-schedule-replies"
+                value={templateScheduleReplyCount}
+                onChange={setTemplateScheduleReplyCount}
+              />
             </div>
             <DialogFooter>
               <Button
@@ -3492,7 +3605,8 @@ export function ChatView({
                   !templateScheduleName.trim() ||
                   sendAndScheduleTemplateMutation.isPending ||
                   inFlightCount > 0 ||
-                  Boolean(scheduleClockError(templateScheduleClock))
+                  Boolean(scheduleClockError(templateScheduleClock)) ||
+                  !generationCountInRange(templateScheduleReplyCount)
                 }
                 onClick={() => void submitTemplateSchedule()}
               >
@@ -3801,13 +3915,20 @@ export function ChatView({
                 />
               </div>
               {canSchedule && scheduleEnabled ? (
-                <ScheduleClockFields
-                  clock={scheduleClock}
-                  spaces={data.spaces ?? []}
-                  onChange={(patch) =>
-                    setScheduleClock((current) => ({ ...current, ...patch }))
-                  }
-                />
+                <div className="grid gap-3">
+                  <ScheduleClockFields
+                    clock={scheduleClock}
+                    spaces={data.spaces ?? []}
+                    onChange={(patch) =>
+                      setScheduleClock((current) => ({ ...current, ...patch }))
+                    }
+                  />
+                  <GenerationCountField
+                    id="save-template-replies"
+                    value={scheduleReplyCount}
+                    onChange={setScheduleReplyCount}
+                  />
+                </div>
               ) : null}
             </div>
             <DialogFooter>
@@ -3826,7 +3947,10 @@ export function ChatView({
                   inFlightCount > 0 ||
                   (scheduleEnabled &&
                     canSchedule &&
-                    Boolean(scheduleClockError(scheduleClock)))
+                    Boolean(scheduleClockError(scheduleClock))) ||
+                  (scheduleEnabled &&
+                    canSchedule &&
+                    !generationCountInRange(scheduleReplyCount))
                 }
                 onClick={submitSaveTemplate}
               >

@@ -9,7 +9,7 @@ export const GENERATION_LEASE_RENEW_MS = 10_000
  * Attach and reconcile treat `starting` + missing store as that hand-off
  * until this grace expires.
  */
-export const GENERATION_STARTING_HANDOFF_MS = 15_000
+export const GENERATION_STARTING_HANDOFF_MS = 60_000
 /** Bounded wait inside one attach GET before returning 425. */
 export const GENERATION_ATTACH_WAIT_MS = 5_000
 export const GENERATION_ATTACH_POLL_MS = 250

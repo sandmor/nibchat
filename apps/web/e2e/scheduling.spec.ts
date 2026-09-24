@@ -19,11 +19,11 @@ test("schedules a generation from a user message in linear and tree", async ({
     exact: true,
   })
   try {
-    await expect(sendOptions).toHaveCount(0)
+    await expect(sendOptions).toBeVisible()
   } finally {
     releaseSchedules()
   }
-  await expect(sendOptions).toHaveCount(0)
+  await expect(sendOptions).toBeVisible()
   await page
     .getByPlaceholder("Message Nibchat…")
     .fill("A delayed linear prompt")
@@ -39,6 +39,7 @@ test("schedules a generation from a user message in linear and tree", async ({
   await expect(dialog).toBeVisible()
   await expect(dialog.getByLabel("Name", { exact: true })).toHaveCount(0)
   await expect(dialog.getByText("A delayed linear prompt")).toBeVisible()
+  await dialog.getByLabel("Replies per run").fill("3")
   await dialog.locator("#schedule-date").click()
   await expect(page.getByRole("grid")).toBeVisible()
   await page.screenshot({
@@ -55,6 +56,7 @@ test("schedules a generation from a user message in linear and tree", async ({
   await expect(page).toHaveURL(/\/chat\/(?!new)[^/]+$/)
   await expect(page.getByText("A delayed linear prompt")).toBeVisible()
   await expect(page.getByTestId("scheduled-generation")).toHaveCount(1)
+  await expect(page.getByTestId("scheduled-generation")).toContainText("Generates 3 replies")
 
   await page.unroute("**/api/trpc/**")
   let releaseList!: () => void
@@ -75,6 +77,7 @@ test("schedules a generation from a user message in linear and tree", async ({
     exact: true,
   })
   await expect(pending).toBeVisible()
+  await expect(pending.getByLabel("Replies per run")).toHaveValue("3")
   await page.keyboard.press("Escape")
   await expect(pending).not.toBeVisible()
   await page
@@ -109,11 +112,11 @@ test("schedules a generation from a user message in linear and tree", async ({
 
   await page.getByRole("button", { name: "Linear", exact: true }).click()
   await expect(page.getByText("A saved reply")).toBeVisible()
-  await expect(page.getByText(/Regenerates /)).toBeVisible()
+  await expect(page.getByText(/Generates /)).toBeVisible()
 
   await page.getByRole("button", { name: "Tree", exact: true }).click()
   await tree.getByRole("button", { name: "More", exact: true }).first().click()
-  await page.getByRole("menuitem", { name: "Regenerate later…" }).click()
+  await page.getByRole("menuitem", { name: "Generate later…" }).click()
   await dialog.getByRole("button", { name: "Tomorrow morning" }).click()
   await dialog
     .getByRole("button", { name: "Schedule generation", exact: true })
@@ -142,7 +145,7 @@ test("schedules a generation from a user message in linear and tree", async ({
   ).toBeVisible()
 
   await page.getByRole("button", { name: "Linear", exact: true }).click()
-  await expect(page.getByText(/Regenerates /)).toBeVisible()
+  await expect(page.getByText(/Generates /)).toBeVisible()
   await expect(page.getByText("A delayed linear prompt")).toBeVisible()
   await expect(page.getByText("A saved reply")).toBeVisible()
 })

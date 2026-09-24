@@ -1,10 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query"
-import type {
-  AttachmentReference,
-  MessageStatus,
-  NodeRow,
-  Parts,
-} from "@/lib/types"
+import type { MessageStatus, NodeRow, Parts } from "@/lib/types"
+import type { GenerationStartInput } from "@/lib/generation-start"
+import type { ActionStreamEvent } from "@/lib/generation-start"
 import type {
   GenerationPayload,
   GenerationTerminalPayload,
@@ -19,37 +16,6 @@ import {
   patchNodeFromStreamParts,
   type WorkspaceData,
 } from "@/lib/workspace-cache"
-
-export type StreamRequestInput =
-  | {
-      chatId: string
-      intent: "submit"
-      parentNodeId?: string | null
-      content: string
-      attachments?: AttachmentReference[]
-      editedFromNodeId?: string
-      attachSelection?: boolean
-    }
-  | {
-      chatId: string
-      intent: "regenerate"
-      assistantNodeId: string
-    }
-  | {
-      chatId: string
-      intent: "generate"
-      parentNodeId?: string | null
-      attachSelection?: boolean
-    }
-  | {
-      chatId: string
-      intent: "resume"
-      assistantNodeId: string
-      toolResults: Array<{ toolCallId: string; output: unknown }>
-    }
-
-/** Complete wire payload sent to the generation route. */
-export type StreamRequestBody = StreamRequestInput & { timeZone: string }
 
 export function viewPathFromCache(
   queryClient: QueryClient,
@@ -102,20 +68,16 @@ export function isViewingChat(
  * Do not call scrollToEnd/scrollToIndex from soft-follow paths.
  */
 export function shouldSoftFollow(
-  body: StreamRequestInput,
+  body: GenerationStartInput,
   path: NodeRow[],
   selectedChatId: string | null,
   pathname?: string | null
 ): boolean {
   if (!isViewingChat(body.chatId, selectedChatId, pathname)) return false
   const tipId = path.at(-1)?.id ?? null
-  if (body.intent === "submit") {
+  if (body.intent === "submit" || body.intent === "generate") {
     return tipId === (body.parentNodeId ?? null)
   }
-  if (body.intent === "generate") {
-    return tipId === (body.parentNodeId ?? null)
-  }
-  // regenerate / resume: original assistant still visible on the active path
   return path.some((node) => node.id === body.assistantNodeId)
 }
 
@@ -302,7 +264,7 @@ export async function followGenerationStream(input: {
     if (input.signal.aborted) return "aborted"
     if (response?.status === 404 || response?.status === 410) return "gone"
     if (!response?.ok || !response.body) {
-      await sleepMs(Math.min(5_000, 250 * 2 ** attempt++), input.signal)
+      await sleepMs(generationRetryDelay(attempt++), input.signal)
       continue
     }
     attempt = 0
@@ -322,6 +284,10 @@ export async function followGenerationStream(input: {
     }
   }
   return "aborted"
+}
+
+export function generationRetryDelay(attempt: number) {
+  return Math.min(5_000, 250 * 2 ** attempt)
 }
 
 export type StreamEventHandlers = {
@@ -367,4 +333,34 @@ export async function readStreamEvents(
       }
   }
   return null
+}
+
+/** Read one action stream; its cursor covers every sibling in the action. */
+export async function readActionEvents(
+  body: ReadableStream<Uint8Array>,
+  handlers: {
+    onEvent: (event: ActionStreamEvent) => void
+    onCursor: (cursor: string) => void
+  }
+): Promise<boolean> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let carry = ""
+  let cursor: string | null = null
+  while (true) {
+    const part = await reader.read()
+    if (part.done) return false
+    carry += decoder.decode(part.value, { stream: true })
+    const lines = carry.split("\n")
+    carry = lines.pop() ?? ""
+    for (const line of lines) {
+      if (line.startsWith("id: ")) cursor = line.slice(4).trim()
+      if (!line.startsWith("data: ")) continue
+      const event = JSON.parse(line.slice(6)) as ActionStreamEvent
+      handlers.onEvent(event)
+      if (cursor) handlers.onCursor(cursor)
+      cursor = null
+      if (event.type === "action-finished") return true
+    }
+  }
 }

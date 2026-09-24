@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react"
 import Link from "next/link"
-import { usePathname, useRouter } from "next/navigation"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { motion } from "motion/react"
 import { toast } from "sonner"
@@ -51,8 +51,13 @@ import {
 import type { PromptStackDocument } from "@/lib/prompt-stack"
 import { SETTING_LABELS } from "@/lib/chat-settings"
 import type { BuiltInToolsPrefs } from "@/lib/agent/tools/catalog"
-import { useAppearanceStore } from "@/lib/appearance-store"
+import {
+  isAppearanceDirty,
+  useAppearanceStore,
+} from "@/lib/appearance-store"
 import { activeThemeId } from "@/lib/theme-slot"
+import { resolveSpaceAppearance } from "@/lib/spaces/appearance"
+import { spaceFromRow } from "@/lib/spaces/tree"
 import { useThemeSlot } from "@/components/theme-provider"
 import { useTRPC } from "@/lib/trpc-react"
 import {
@@ -126,6 +131,8 @@ type InstanceSettings = {
     updated_at: string
   }>
   titleModelConfig: { providerId: string; model: string } | null
+  adminTitleSettings: import("@/lib/chat-settings").TitleSettings
+  userTitleSettings: import("@/lib/chat-settings").TitleSettings
   builtInTools: BuiltInToolsPrefs
   pdfImagePageLimit: number
 }
@@ -150,6 +157,7 @@ export function WorkspaceShell({
   const trpc = useTRPC()
   const queryClient = useQueryClient()
   const pathname = usePathname()
+  const searchParams = useSearchParams()
   const router = useRouter()
   const {
     resolved: resolvedSlot,
@@ -205,6 +213,20 @@ export function WorkspaceShell({
   const lightId =
     settingsQuery.data.lightThemeId || initialSettings.lightThemeId
   const darkId = settingsQuery.data.darkThemeId || initialSettings.darkThemeId
+  const chats = chatsQuery.data?.chats ?? initialChats
+  const spaces = chatsQuery.data?.spaces ?? initialSpaces
+  const routeChatId = pathname.startsWith("/chat/")
+    ? pathname.slice("/chat/".length).split("/")[0]
+    : null
+  const routeSpaceId = pathname.startsWith("/space/")
+    ? pathname.slice("/space/".length).split("/")[0]
+    : null
+  const appearanceSpaceId =
+    routeSpaceId ??
+    (routeChatId === "new"
+      ? searchParams.get("space")
+      : chats.find((chat) => chat.id === routeChatId)?.space_id) ??
+    null
 
   const providersQuery = useQuery({
     ...trpc.workspace.listProviders.queryOptions(),
@@ -228,21 +250,48 @@ export function WorkspaceShell({
     lightThemeId: lightId,
     darkThemeId: darkId,
   })
+  const resolvedAppearance = useMemo(
+    () =>
+      resolveSpaceAppearance({
+        spaceId: appearanceSpaceId,
+        spaces: spaces.map(spaceFromRow),
+        slot: resolvedSlot,
+        userThemeId: currentThemeId,
+        themes,
+      }),
+    [appearanceSpaceId, spaces, resolvedSlot, currentThemeId, themes]
+  )
   const activeTheme =
-    themes.find((theme) => theme.id === currentThemeId) ?? themes[0]
-  const activeAppearance = activeTheme?.document ?? defaultAppearance()
+    themes.find((theme) => theme.id === resolvedAppearance.themeId) ?? themes[0]
+  const activeAppearance = resolvedAppearance.document ?? defaultAppearance()
+  const userThemeDocument =
+    themes.find((theme) => theme.id === currentThemeId)?.document ?? null
+  const appearanceCustomized = Boolean(
+    appearanceSpaceId &&
+      (resolvedAppearance.themeId !== currentThemeId ||
+        isAppearanceDirty(resolvedAppearance.document, userThemeDocument))
+  )
   // Color-only edits retain these nested references, so consumers of chrome do
   // not rerender while the picker is dragged.
   const appearance = useMemo(
     () => ({
       ...activeAppearance,
-      density: draftDensity ?? activeAppearance.density,
-      motion: draftMotion ?? activeAppearance.motion,
-      messageActions: draftMessageActions ?? activeAppearance.messageActions,
-      modelPicker: draftModelPicker ?? activeAppearance.modelPicker,
+      density:
+        (appearanceCustomized ? undefined : draftDensity) ??
+        activeAppearance.density,
+      motion:
+        (appearanceCustomized ? undefined : draftMotion) ??
+        activeAppearance.motion,
+      messageActions:
+        (appearanceCustomized ? undefined : draftMessageActions) ??
+        activeAppearance.messageActions,
+      modelPicker:
+        (appearanceCustomized ? undefined : draftModelPicker) ??
+        activeAppearance.modelPicker,
     }),
     [
       activeAppearance,
+      appearanceCustomized,
       draftDensity,
       draftMessageActions,
       draftModelPicker,
@@ -262,8 +311,6 @@ export function WorkspaceShell({
     enabled: search.trim().length > 0,
   })
 
-  const chats = chatsQuery.data?.chats ?? initialChats
-  const spaces = chatsQuery.data?.spaces ?? initialSpaces
   useEffect(() => {
     try {
       const raw = localStorage.getItem(`nibchat.spaceExpanded.${user.id}`)
@@ -537,8 +584,9 @@ export function WorkspaceShell({
     <ChromeContext.Provider value={chromeValue}>
       <AppearanceRuntime
         themes={themes}
-        activeThemeId={currentThemeId}
+        activeThemeId={resolvedAppearance.themeId}
         fallback={activeAppearance}
+        allowLibraryDraft={!appearanceCustomized}
         userId={user.id}
         ready={themeReady}
       />
@@ -898,7 +946,7 @@ export function WorkspaceShell({
           </AlertDialog>
         </div>
       </WorkspaceSelectionProvider>
-      <AppearanceMagicChrome />
+      {!appearanceCustomized && <AppearanceMagicChrome />}
     </ChromeContext.Provider>
   )
 }

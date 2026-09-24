@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { titleSettingsSchema } from "@/lib/chat-settings/title"
 import { parseAppearance } from "@/lib/appearance"
 import { isProviderModelsJson } from "@/lib/provider-models"
 import { chatViewStateSchema } from "@/lib/chat-view-state"
@@ -288,6 +289,7 @@ export const backupSchema = z.object({
   scheduledRuns: z.array(scheduledRunSchema).optional().default([]),
   instance: z
     .object({
+      titleSettings: titleSettingsSchema.optional(),
       titleModelConfig: z
         .object({
           providerId: z.string().min(1),

@@ -11,6 +11,7 @@ import {
   deleteChats,
   finishSetup,
   getTitleModelConfig,
+  getAdminTitleSettings,
   createMessage,
   deleteChat,
   deleteNode,
@@ -1539,6 +1540,7 @@ describe("SQLite chat repository", () => {
     expect(result.ok).toBe(true)
     const title = await getTitleModelConfig()
     expect(title?.model).toBe("gpt-4o")
+    expect((await getAdminTitleSettings()).titleStrategy).toBe("generate")
     const instance = await db
       .selectFrom("instance")
       .select("onboarding_completed_at")

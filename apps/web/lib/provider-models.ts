@@ -186,6 +186,25 @@ export function resolveModelLabel(models: ProviderModel[], modelId?: string) {
   return models.find((model) => model.id === modelId)?.label ?? modelId
 }
 
+/** Catalog label for a provider/model pair. Display text stays with the caller. */
+export function catalogModelLabel(
+  providers: readonly { id: string; name?: string; models_json: string }[],
+  identity: { providerId?: string; model?: string } | null | undefined
+): { providerName?: string; modelLabel: string } | null {
+  if (!identity?.providerId || !identity.model) return null
+  const provider = providers.find((item) => item.id === identity.providerId)
+  const modelLabel = provider
+    ? resolveModelLabel(
+        parseProviderModelsJson(provider.models_json),
+        identity.model
+      )
+    : identity.model
+  return {
+    providerName: provider?.name,
+    modelLabel: modelLabel ?? identity.model,
+  }
+}
+
 export function pickerModels(models: ProviderModel[]): CatalogModel[] {
   return models
     .filter((model) => model.enabled)

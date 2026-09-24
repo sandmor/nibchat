@@ -13,6 +13,32 @@ function space(
 }
 
 describe("resolveSettings", () => {
+  it("inherits title fields independently from admin, user, and spaces", () => {
+    const spaces = [
+      space("work", null, {
+        titleInstructions: { mode: "default", value: "Name by topic" },
+        titleStrategy: { mode: "require", value: "first-message" },
+      }),
+    ]
+    const resolved = resolveSettings({
+      admin: {
+        titleStrategy: "generate",
+        titleModel: { providerId: "p", model: "m" },
+        titleInstructions: "Admin prompt",
+      },
+      user: { titleModel: { providerId: "p", model: "fast" } },
+      chat: { titleStrategy: "generate" },
+      spaceId: "work",
+      spaces,
+    })
+    expect(resolved.effective.title).toEqual({
+      strategy: "first-message",
+      model: { providerId: "p", model: "fast" },
+      instructions: "Name by topic",
+    })
+    expect(resolved.sources.titleStrategy?.layer).toBe("space")
+    expect(resolved.sources.titleModel?.layer).toBe("user")
+  })
   it("uses product defaults when nobody sets a key", () => {
     const resolved = resolveSettings({ spaces: [] })
     expect(resolved.effective.model.contextScanDepth).toBe(
@@ -24,7 +50,11 @@ describe("resolveSettings", () => {
   })
 
   it("lets user defaults win over product and yield to a chat write", () => {
-    const user = { temperature: 0.4, contextScanDepth: 8, promptStack: "user-stack" }
+    const user = {
+      temperature: 0.4,
+      contextScanDepth: 8,
+      promptStack: "user-stack",
+    }
     const inherited = resolveSettings({ user, spaces: [] })
     expect(inherited.effective.model.temperature).toBe(0.4)
     expect(inherited.effective.promptStackId).toBe("user-stack")

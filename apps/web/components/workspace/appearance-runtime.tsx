@@ -14,6 +14,7 @@ export function AppearanceRuntime({
   fallback,
   userId,
   ready,
+  allowLibraryDraft = true,
 }: {
   themes: ThemeRecord[]
   activeThemeId: string
@@ -21,6 +22,7 @@ export function AppearanceRuntime({
   userId: string
   /** Wait for the browser color slot to resolve. */
   ready: boolean
+  allowLibraryDraft?: boolean
 }) {
   const hydrateThemeLibrary = useAppearanceStore((s) => s.hydrateThemeLibrary)
   const draft = useAppearanceStore((s) => s.draft)
@@ -29,7 +31,9 @@ export function AppearanceRuntime({
     null
   )
   const frameRef = useRef<number | null>(null)
-  const document = preview?.document ?? draft ?? fallback
+  const document = allowLibraryDraft
+    ? (preview?.document ?? draft ?? fallback)
+    : fallback
 
   useEffect(() => {
     applierRef.current = createAppearanceApplier()
@@ -54,13 +58,13 @@ export function AppearanceRuntime({
     if (frameRef.current != null) cancelAnimationFrame(frameRef.current)
     frameRef.current = requestAnimationFrame(() => {
       frameRef.current = null
-      if (preview?.kind === "variable") {
+      if (allowLibraryDraft && preview?.kind === "variable") {
         applierRef.current?.applyVariable(preview.name, preview.value)
       } else {
         applierRef.current?.apply(document)
       }
     })
-  }, [document, preview, ready])
+  }, [allowLibraryDraft, document, preview, ready])
 
   return null
 }

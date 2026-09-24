@@ -8,23 +8,38 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { useAppearanceColorPreview } from "@/hooks/use-appearance-color-preview"
 import { formatOklch, oklchToHex } from "@/lib/appearance-color"
+import type { PolicyMode } from "@/lib/chat-settings/policy"
 import { useAppearanceStore } from "@/lib/appearance-store"
+import { cn } from "@/lib/utils"
 
 export function PaletteColorField({
   label,
   value,
   ensureTheme,
   preview,
+  onCommit,
+  onDiscard,
   onRemove,
+  removeLabel = "Remove from palette",
+  marked = false,
+  policy,
+  onPolicy,
   align = "start",
 }: {
   label: string
   value: string
   ensureTheme: () => void
   preview: (literal: string) => void
+  onCommit?: () => void
+  onDiscard?: () => void
   onRemove?: () => void
+  removeLabel?: string
+  marked?: boolean
+  policy?: PolicyMode
+  onPolicy?: (mode: PolicyMode) => void
   align?: "start" | "end"
 }) {
   const [open, setOpen] = useState(false)
@@ -36,8 +51,8 @@ export function PaletteColorField({
       ensureTheme()
       preview(literal)
     },
-    commit: commitPreview,
-    discard: discardPreview,
+    commit: onCommit ?? commitPreview,
+    discard: onDiscard ?? discardPreview,
   })
   const hex = oklchToHex(picker.color).toUpperCase()
   const color = formatOklch(picker.color)
@@ -60,7 +75,10 @@ export function PaletteColorField({
         }
       >
         <span
-          className="row-span-2 size-8 rounded-lg shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--palette-ink)_12%,transparent)] transition-transform group-hover:scale-[1.04]"
+          className={cn(
+            "row-span-2 size-8 rounded-lg shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--palette-ink)_12%,transparent)] transition-transform group-hover:scale-[1.04]",
+            marked && "ring-2 ring-foreground/50"
+          )}
           style={{ background: color }}
           aria-hidden
         />
@@ -90,6 +108,25 @@ export function PaletteColorField({
           onChangeEnd={picker.commit}
           compact
         />
+        {policy && onPolicy ? (
+          <ToggleGroup
+            value={[policy]}
+            onValueChange={(next) => {
+              const mode = next[0]
+              if (mode !== "default" && mode !== "require" && mode !== "release")
+                return
+              onPolicy(mode)
+            }}
+            variant="outline"
+            size="sm"
+            spacing={0}
+            aria-label={`${label} color policy`}
+          >
+            <ToggleGroupItem value="default">Default</ToggleGroupItem>
+            <ToggleGroupItem value="require">Require</ToggleGroupItem>
+            <ToggleGroupItem value="release">Release</ToggleGroupItem>
+          </ToggleGroup>
+        ) : null}
         {onRemove ? (
           <Button
             type="button"
@@ -102,7 +139,7 @@ export function PaletteColorField({
               onRemove()
             }}
           >
-            Remove from palette
+            {removeLabel}
           </Button>
         ) : null}
       </PopoverContent>

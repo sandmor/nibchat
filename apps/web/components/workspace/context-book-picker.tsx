@@ -10,6 +10,7 @@ import {
   Add01Icon,
   ArrowDown01Icon,
   Cancel01Icon,
+  Delete02Icon,
 } from "@hugeicons/core-free-icons"
 import { Badge } from "@/components/ui/badge"
 import { Button, buttonVariants } from "@/components/ui/button"
@@ -330,6 +331,7 @@ export function SpaceContextBooksCard({
   onExclude,
   onReset,
   onEntryChange,
+  onRemove,
 }: {
   books: Array<{
     id: string
@@ -347,6 +349,7 @@ export function SpaceContextBooksCard({
   onEntryChange?: (
     decisions: Record<string, Record<string, "disable" | "restore">>
   ) => void
+  onRemove?: () => void
 }) {
   const bookById = useMemo(
     () => new Map(books.map((book) => [book.id, book])),
@@ -380,12 +383,26 @@ export function SpaceContextBooksCard({
 
   return (
     <div className="grid gap-3 rounded-2xl border bg-background/40 p-3">
-      <div className="min-w-0">
-        <p className="text-sm font-medium">Context books</p>
-        <p className="text-[11px] text-muted-foreground">
-          Attach books for chats here. Inherited books stay unless you exclude
-          them.
-        </p>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">Context books</p>
+          <p className="text-[11px] text-muted-foreground">
+            Attach books for chats here. Inherited books stay unless you exclude
+            them.
+          </p>
+        </div>
+        {onRemove ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="text-muted-foreground hover:text-destructive"
+            aria-label="Remove context books"
+            onClick={onRemove}
+          >
+            <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+          </Button>
+        ) : null}
       </div>
       {onReset ? (
         <label className="flex items-center gap-3 rounded-xl px-3 py-2 text-sm">

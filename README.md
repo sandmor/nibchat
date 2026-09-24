@@ -2,7 +2,7 @@
 
 Nibchat is a self-hosted AI chat client. It exists to give you absolute control over the chat and the interaction: what the model sees, which reply you keep, whether an edit branches a message or replaces it, which tools it may call, and how the interface looks. Every client ships choices you want and choices you don't. Here you choose what works for you.
 
-Chats are trees. Messages have sibling branches. You pick the path you want, return to a previous one, and search across every branch. You can exclude a message from context without deleting it, generate another child reply from any message, or edit and delete when you want the history changed. Spaces hold those chats and pass settings down. A setting in a space can stay a default, or you can require it (model, prompt stack, sampling, context books) so every descendant uses what you set.
+Chats are trees. Messages have sibling branches. You pick the path you want, return to a previous one, and search across every branch. You can exclude a message from context without deleting it, generate another child reply from any message, or edit and delete when you want the history changed. Spaces hold those chats and pass settings down. A setting in a space can stay a default, or you can require it (model, prompt stack, sampling, chat titles, appearance, context books) so every descendant uses what you set.
 
 ## Features
 
@@ -11,7 +11,8 @@ Chats are trees. Messages have sibling branches. You pick the path you want, ret
 - Chat templates save a whole conversation tree. New chats can start from one, and a space can set the default.
 - OpenAI, Anthropic, and Ollama, plus OpenAI-compatible endpoints. You set reasoning effort per model in the chat. Unfamiliar endpoints need an explicit format in provider settings.
 - Built-in tools, and MCP servers. You approve a tool once in settings, before the model can call it.
-- Appearance is a JSON theme that you can visually edit: CSS variables, density, motion, and even an optional remote stylesheet.
+- Appearance is a JSON theme that you can visually edit: CSS variables, density, motion, and even an optional remote stylesheet. Spaces can select base themes and layer shared or light/dark overrides over them.
+- Chat titles can use the first message or an enabled model. Admin, personal, and space settings can choose the title strategy, model, and instructions independently.
 - Import ChatGPT exports, or SillyTavern archives. Character cards become spaces, with their chats and context books.
 - Send or schedule several sibling replies from one prompt, or generate them beneath an existing message. Each reply streams and finishes independently.
 - SQLite by default, PostgreSQL if you set `DATABASE_URL`. Backup and restore omit passwords and sessions. The first signup owns the instance and can add other users.

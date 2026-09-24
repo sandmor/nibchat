@@ -7,7 +7,6 @@ import {
 import {
   applyToolOutputs,
   pendingToolInvocations,
-  textFromParts,
   uniqueAttachmentReferences,
 } from "@/lib/agent/parts"
 import {
@@ -16,7 +15,6 @@ import {
   validateQuestionAnswers,
 } from "@/lib/agent/tools"
 import {
-  getTitleModelConfig,
   finalizeStreamingAssistantWithSnapshot,
   maybeAssignChatTitle,
   nodeParts,
@@ -106,12 +104,6 @@ export async function startGenerationAction(input: {
   let assistants: NodeRow[] = []
   let contextLeafId: string | null
   let seedParts: Parts = []
-  let afterFinalize:
-    | ((input: {
-        outcome: "complete" | "awaiting_input" | "aborted" | "error"
-        parts: Parts
-      }) => Promise<void>)
-    | undefined
 
   if (body.intent === "submit") {
     const message = body.content.trim()
@@ -137,10 +129,9 @@ export async function startGenerationAction(input: {
     if ((await pdfInputModeFor(user.id, config)) === "extracted")
       assertPdfFallbackAvailable(attachments)
     const attachmentNames = attachments.map((part) => part.name)
+    const titleModel = settings.effective.title.model
     const titleModelConfigured =
-      chat.title == null && !body.editedFromNodeId
-        ? Boolean(await getTitleModelConfig())
-        : false
+      settings.effective.title.strategy === "generate"
     const titleAction = firstTurnTitleAction(
       chat.title,
       titleModelConfigured,
@@ -162,25 +153,21 @@ export async function startGenerationAction(input: {
       })
     assistants = generationAssistants
     contextLeafId = userMessage.id
-    if (titleAction === "seed") {
-      await maybeAssignChatTitle({
+    if (titleAction !== "skip") {
+      const titleTask = maybeAssignChatTitle({
         chatId: chat.id,
         userId: user.id,
         userText: message,
         attachmentNames,
-        allowLlm: false,
+        allowLlm: titleAction === "generate",
+        titleModel:
+          titleModel?.providerId && titleModel.model
+            ? { providerId: titleModel.providerId, model: titleModel.model }
+            : null,
+        titleInstructions: settings.effective.title.instructions,
       }).catch((error) => console.warn("[nibchat/title]", error))
-    } else if (titleAction === "generate") {
-      afterFinalize = async ({ outcome, parts }) => {
-        await maybeAssignChatTitle({
-          chatId: chat.id,
-          userId: user.id,
-          userText: message,
-          attachmentNames,
-          assistantText: textFromParts(parts),
-          allowLlm: outcome === "complete",
-        })
-      }
+      if (titleAction === "seed") await titleTask
+      else generationLifetime.retain(titleTask)
     }
   } else if (body.intent === "generate") {
     const result = await startGenerationBatch({
@@ -372,7 +359,6 @@ export async function startGenerationAction(input: {
             batchIndex: index,
             batchSize: replyCount,
           },
-          afterFinalize: index === 0 ? afterFinalize : undefined,
           generationId: generationIds[index]!,
         })
       } catch (error) {

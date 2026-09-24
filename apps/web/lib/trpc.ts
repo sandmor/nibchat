@@ -48,6 +48,8 @@ import {
   setChatSpace,
   setChatsSpace,
   setInstanceTitleModel,
+  setAdminTitleSettings,
+  setPersonalTitleSettings,
   updatePromptStack,
   updateContextBook,
   setChatContextBooks,
@@ -118,7 +120,11 @@ import {
   setPdfImagePageLimit,
   setUserPromptStack,
 } from "@/lib/user-settings"
-import { modelConfigSchema, settingValuesSchema } from "@/lib/chat-settings"
+import {
+  modelConfigSchema,
+  settingValuesSchema,
+  titleSettingsSchema,
+} from "@/lib/chat-settings"
 import { chatViewStateSchema } from "@/lib/chat-view-state"
 import { providerConnectionConfigSchema } from "@/lib/provider-config"
 import { db } from "@/lib/db"
@@ -952,12 +958,7 @@ export const appRouter = t.router({
           templateId: z.string().min(1).max(MAX_ID),
           spaceId: z.string().min(1).max(MAX_ID).nullable().optional(),
           cadence: cadenceInputSchema,
-          replyCount: z
-            .number()
-            .int()
-            .min(1)
-            .max(MAX_COLLECTION)
-            .optional(),
+          replyCount: z.number().int().min(1).max(MAX_COLLECTION).optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -975,12 +976,7 @@ export const appRouter = t.router({
           parentId: z.string().min(1).max(MAX_ID),
           at: z.string().datetime(),
           timeZone: timeZoneSchema,
-          replyCount: z
-            .number()
-            .int()
-            .min(1)
-            .max(MAX_COLLECTION)
-            .optional(),
+          replyCount: z.number().int().min(1).max(MAX_COLLECTION).optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -998,12 +994,7 @@ export const appRouter = t.router({
           spaceId: z.string().min(1).max(MAX_ID).nullable().optional(),
           cadence: cadenceInputSchema.optional(),
           enabled: z.boolean().optional(),
-          replyCount: z
-            .number()
-            .int()
-            .min(1)
-            .max(MAX_COLLECTION)
-            .optional(),
+          replyCount: z.number().int().min(1).max(MAX_COLLECTION).optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -1035,12 +1026,7 @@ export const appRouter = t.router({
             .optional(),
           spaceId: z.string().min(1).max(MAX_ID).nullable().optional(),
           cadence: cadenceInputSchema,
-          replyCount: z
-            .number()
-            .int()
-            .min(1)
-            .max(MAX_COLLECTION)
-            .optional(),
+          replyCount: z.number().int().min(1).max(MAX_COLLECTION).optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -1074,12 +1060,7 @@ export const appRouter = t.router({
           name: z.string().trim().min(1).max(MAX_NAME),
           spaceId: z.string().min(1).max(MAX_ID).nullable().optional(),
           cadence: cadenceInputSchema,
-          replyCount: z
-            .number()
-            .int()
-            .min(1)
-            .max(MAX_COLLECTION)
-            .optional(),
+          replyCount: z.number().int().min(1).max(MAX_COLLECTION).optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -1144,6 +1125,11 @@ export const appRouter = t.router({
         await setChatDefaults(ctx.user.id, input)
         return { ok: true }
       }),
+    setUserTitleSettings: userProcedure
+      .input(titleSettingsSchema)
+      .mutation(({ ctx, input }) =>
+        setPersonalTitleSettings(ctx.user.id, input)
+      ),
     listThemes: userProcedure.query(({ ctx }) => listThemes(ctx.user.id)),
     createTheme: userProcedure
       .input(
@@ -1376,6 +1362,9 @@ export const appRouter = t.router({
           mapError(error)
         }
       }),
+    setAdminTitleSettings: ownerProcedure
+      .input(titleSettingsSchema)
+      .mutation(({ input }) => setAdminTitleSettings(input)),
     setChatPromptStack: userProcedure
       .input(
         z.object({

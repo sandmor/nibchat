@@ -290,6 +290,33 @@ const cssEaseCurves: Record<string, [number, number, number, number]> = {
   "ease-in-out": [0.42, 0, 0.58, 1],
 }
 
+export const NAMED_MOTION_EASES = [
+  "linear",
+  "ease",
+  "ease-in",
+  "ease-out",
+  "ease-in-out",
+] as const
+
+export type NamedMotionEase = (typeof NAMED_MOTION_EASES)[number]
+
+/** Named CSS curve matching this easing, or null when it is a custom cubic. */
+export function namedMotionEase(
+  ease: AppearanceMotion["ease"]
+): NamedMotionEase | null {
+  if (typeof ease === "string") {
+    const key = ease.trim().toLowerCase()
+    return (NAMED_MOTION_EASES as readonly string[]).includes(key)
+      ? (key as NamedMotionEase)
+      : null
+  }
+  for (const name of NAMED_MOTION_EASES) {
+    const curve = cssEaseCurves[name]!
+    if (curve.every((value, index) => value === ease[index])) return name
+  }
+  return null
+}
+
 /** Convert the CSS easing syntax accepted by appearance JSON into Motion. */
 export function motionEase(
   ease: AppearanceMotion["ease"]

@@ -112,6 +112,7 @@ import { parseBuiltInToolsJson } from "@/lib/agent/tools/catalog"
 import {
   ensureUserSettings,
   getUserSettings,
+  setUserTitleSettings,
   setUserThemeSlots,
 } from "@/lib/user-settings"
 import {
@@ -123,6 +124,8 @@ import {
   bindVariableLocksToStack,
   generationOverrides,
   parseSettingValues,
+  parseAdminTitleSettings,
+  titleSettingsSchema,
   parseUserSettingValues,
   replaceGenerationSlice,
   resolveSettings,
@@ -132,6 +135,8 @@ import {
   withoutLockedSettings,
   type ResolvedSettings,
   type SettingValues,
+  type TitleSettings,
+  titleSettingsFromValues,
 } from "@/lib/chat-settings"
 import {
   assertSpaceMoveAllowed,
@@ -150,6 +155,7 @@ import {
   type SpaceRecord,
   type SpaceSettings,
 } from "@/lib/spaces"
+import { resolveSpaceAppearance } from "@/lib/spaces/appearance"
 
 function normalizeNodeRow(node: NodeRow): NodeRow {
   return {
@@ -378,8 +384,39 @@ function nextSpaceSortKey(
 
 async function assertSpaceSettingsStack(
   userId: string,
-  settings: SpaceSettings
+  settings: SpaceSettings,
+  previous?: SpaceSettings
 ) {
+  const titleModel = settings.titleModel
+  if (
+    titleModel &&
+    titleModel.mode !== "release" &&
+    JSON.stringify(titleModel) !== JSON.stringify(previous?.titleModel)
+  ) {
+    const value = titleModel.value
+    if (
+      !value.providerId ||
+      !value.model ||
+      !(await titleModelIsAvailable({
+        providerId: value.providerId,
+        model: value.model,
+      }))
+    )
+      throw new Error("Choose an enabled title model")
+  }
+  for (const policy of [
+    settings.appearance?.lightTheme,
+    settings.appearance?.darkTheme,
+  ]) {
+    if (!policy || policy.mode === "release") continue
+    const theme = await db
+      .selectFrom("themes")
+      .select("id")
+      .where("id", "=", policy.value)
+      .where("user_id", "=", userId)
+      .executeTakeFirst()
+    if (!theme) throw new Error("Theme not found")
+  }
   const stackId = settings.promptStack?.value
   if (stackId) {
     const existing = await db
@@ -408,6 +445,27 @@ async function assertSpaceSettingsStack(
   }
 }
 
+async function assertSpaceAppearancesResolve(
+  userId: string,
+  records: readonly SpaceRecord[],
+  prefs?: Awaited<ReturnType<typeof getUserSettings>>
+) {
+  const settings = prefs ?? (await getUserSettings(userId))
+  for (const space of records) {
+    for (const slot of ["light", "dark"] as const) {
+      resolveSpaceAppearance({
+        spaceId: space.id,
+        spaces: records,
+        slot,
+        userThemeId:
+          slot === "light" ? settings.light_theme_id : settings.dark_theme_id,
+        themes: settings.themes,
+        strict: true,
+      })
+    }
+  }
+}
+
 export async function resolveSettingsForChat(
   chat: {
     space_id?: string | null
@@ -420,6 +478,7 @@ export async function resolveSettingsForChat(
   const prefs = await ensureUserSettings(userId)
   const records = spaces ?? (await loadSpaceRecords(userId))
   return resolveSettings({
+    admin: await getAdminTitleSettings(),
     user: parseUserSettingValues(prefs.chat_defaults_json),
     chat: parseSettingValues(chat.settings_json),
     spaceId: chat.space_id ?? null,
@@ -1165,24 +1224,73 @@ export type TitleModelConfig = {
   model: string
 }
 
-function readTitleModelConfig(
-  raw: string | null | undefined
-): TitleModelConfig | null {
-  if (!raw) return null
-  const parsed = parseJson<{ providerId?: string; model?: string }>(raw, {})
-  const providerId = parsed.providerId?.trim()
-  const model = parsed.model?.trim()
-  if (!providerId || !model) return null
-  return { providerId, model }
-}
-
 async function readStoredTitleModelConfig() {
   const row = await db
     .selectFrom("instance")
     .select("title_model_config_json")
     .where("id", "=", 1)
     .executeTakeFirst()
-  return readTitleModelConfig(row?.title_model_config_json)
+  const settings = parseAdminTitleSettings(row?.title_model_config_json)
+  const model = settings.titleModel
+  return model?.providerId && model.model
+    ? { providerId: model.providerId, model: model.model }
+    : null
+}
+
+export async function getAdminTitleSettings(): Promise<TitleSettings> {
+  const row = await db
+    .selectFrom("instance")
+    .select("title_model_config_json")
+    .where("id", "=", 1)
+    .executeTakeFirst()
+  return parseAdminTitleSettings(row?.title_model_config_json)
+}
+
+export async function setAdminTitleSettings(settings: TitleSettings) {
+  const parsed = titleSettingsSchema.parse(settings)
+  const model = parsed.titleModel
+  if (
+    model &&
+    (!model.providerId ||
+      !model.model ||
+      !(await titleModelIsAvailable({
+        providerId: model.providerId,
+        model: model.model,
+      })))
+  ) {
+    throw new Error("Choose an enabled title model")
+  }
+  await db
+    .updateTable("instance")
+    .set({ title_model_config_json: JSON.stringify(parsed) })
+    .where("id", "=", 1)
+    .execute()
+  return parsed
+}
+
+export async function setPersonalTitleSettings(
+  userId: string,
+  settings: TitleSettings
+) {
+  const parsed = titleSettingsSchema.parse(settings)
+  const model = parsed.titleModel
+  const prefs = await ensureUserSettings(userId)
+  const previousModel = parseUserSettingValues(
+    prefs.chat_defaults_json
+  ).titleModel
+  if (
+    model &&
+    JSON.stringify(model) !== JSON.stringify(previousModel) &&
+    (!model.providerId ||
+      !model.model ||
+      !(await titleModelIsAvailable({
+        providerId: model.providerId,
+        model: model.model,
+      })))
+  ) {
+    throw new Error("Choose an enabled title model")
+  }
+  return setUserTitleSettings(userId, parsed)
 }
 
 /** Effective title model. Does not persist when the stored model is unavailable. */
@@ -1197,9 +1305,16 @@ async function clearTitleModelIfUnavailable() {
   const config = await readStoredTitleModelConfig()
   if (!config) return
   if (await titleModelIsAvailable(config)) return
+  const settings = await getAdminTitleSettings()
   await db
     .updateTable("instance")
-    .set({ title_model_config_json: null })
+    .set({
+      title_model_config_json: JSON.stringify({
+        ...settings,
+        titleStrategy: "first-message",
+        titleModel: undefined,
+      }),
+    })
     .where("id", "=", 1)
     .where("title_model_config_json", "is not", null)
     .execute()
@@ -1237,10 +1352,15 @@ export async function maybeAssignChatTitle(input: {
   attachmentNames: string[]
   assistantText?: string
   allowLlm: boolean
+  titleModel?: TitleModelConfig | null
+  titleInstructions?: string
 }) {
   const seed = seedChatTitle(input.userText, input.attachmentNames)
   if (input.allowLlm) {
-    const config = await getTitleModelConfig()
+    const config =
+      input.titleModel === undefined
+        ? await getTitleModelConfig()
+        : input.titleModel
     if (config) {
       try {
         const generated = await generateChatTitle({
@@ -1249,6 +1369,7 @@ export async function maybeAssignChatTitle(input: {
           chatId: input.chatId,
           userText: input.userText.trim() || seed,
           assistantText: input.assistantText,
+          instructions: input.titleInstructions,
         })
         await assignChatTitleIfUnnamed(input.chatId, generated)
         return
@@ -1261,18 +1382,12 @@ export async function maybeAssignChatTitle(input: {
 }
 
 export async function setInstanceTitleModel(config: TitleModelConfig | null) {
-  await db
-    .updateTable("instance")
-    .set({
-      title_model_config_json: config
-        ? JSON.stringify({
-            providerId: config.providerId,
-            model: config.model,
-          })
-        : null,
-    })
-    .where("id", "=", 1)
-    .execute()
+  const current = await getAdminTitleSettings()
+  await setAdminTitleSettings({
+    ...current,
+    titleStrategy: config ? "generate" : "first-message",
+    titleModel: config ?? undefined,
+  })
   return { ok: true as const, titleModelConfig: config }
 }
 
@@ -2528,10 +2643,19 @@ export async function updateTheme(
   } = { updated_at: now() }
   if (input.name !== undefined) patch.name = input.name.trim() || existing.name
   if (input.document !== undefined) {
-    patch.document_json = appearanceToJson(
-      parseAppearance(input.document),
-      false
+    const document = parseAppearance(input.document)
+    const prefs = await getUserSettings(userId)
+    await assertSpaceAppearancesResolve(
+      userId,
+      await loadSpaceRecords(userId),
+      {
+        ...prefs,
+        themes: prefs.themes.map((theme) =>
+          theme.id === themeId ? { ...theme, document } : theme
+        ),
+      }
     )
+    patch.document_json = appearanceToJson(document, false)
   }
   await db.updateTable("themes").set(patch).where("id", "=", themeId).execute()
   return getTheme(userId, themeId)
@@ -2557,6 +2681,23 @@ export async function deleteTheme(userId: string, themeId: string) {
       "Cannot delete a theme assigned to light or dark. Choose another theme for that slot first."
     )
   }
+  const spaceRows = await db
+    .selectFrom("spaces")
+    .select("settings_json")
+    .where("user_id", "=", userId)
+    .execute()
+  if (
+    spaceRows.some((row) => {
+      const appearance = parseSpaceSettings(row.settings_json).appearance
+      return (
+        (appearance?.lightTheme?.mode !== "release" &&
+          appearance?.lightTheme?.value === themeId) ||
+        (appearance?.darkTheme?.mode !== "release" &&
+          appearance?.darkTheme?.value === themeId)
+      )
+    })
+  )
+    throw new Error("This theme is used by a space. Change that space first.")
   const count = await db
     .selectFrom("themes")
     .select(sql<number>`count(*)`.as("n"))
@@ -2584,6 +2725,16 @@ export async function setThemeSlots(input: {
   lightThemeId: string
   darkThemeId: string
 }) {
+  const prefs = await getUserSettings(input.userId)
+  await assertSpaceAppearancesResolve(
+    input.userId,
+    await loadSpaceRecords(input.userId),
+    {
+      ...prefs,
+      light_theme_id: input.lightThemeId,
+      dark_theme_id: input.darkThemeId,
+    }
+  )
   return setUserThemeSlots(input.userId, input.lightThemeId, input.darkThemeId)
 }
 
@@ -3141,6 +3292,9 @@ export async function createSpace(input: {
   const name = spaceNameSchema.parse(input.name ?? "New space")
   const description = spaceDescriptionSchema.parse(input.description ?? "")
   const parentId = input.parentId ?? null
+  const appearancePrefs = settings.appearance
+    ? await getUserSettings(input.userId)
+    : null
 
   return await db.transaction().execute(async (trx) => {
     const rows = await listSpaceRows(input.userId, trx)
@@ -3157,6 +3311,16 @@ export async function createSpace(input: {
       }
     }
     const timestamp = now()
+    if (appearancePrefs) {
+      await assertSpaceAppearancesResolve(
+        input.userId,
+        [
+          ...records,
+          { id: "__new_space__", parent_id: parentId, name, settings },
+        ],
+        appearancePrefs
+      )
+    }
     const row = {
       id: id(),
       user_id: input.userId,
@@ -3198,8 +3362,32 @@ export async function updateSpace(input: {
   let settingsJson: string | undefined
   if (input.settings !== undefined) {
     const settings = spaceSettingsSchema.parse(input.settings)
-    await assertSpaceSettingsStack(input.userId, settings)
+    await assertSpaceSettingsStack(
+      input.userId,
+      settings,
+      parseSpaceSettings(row.settings_json)
+    )
     settingsJson = spaceSettingsToJson(settings)
+  }
+  const appearanceChanged =
+    settingsJson !== undefined &&
+    JSON.stringify(parseSpaceSettings(settingsJson).appearance) !==
+      JSON.stringify(parseSpaceSettings(row.settings_json).appearance)
+  if (appearanceChanged || parentId !== row.parent_id) {
+    await assertSpaceAppearancesResolve(
+      input.userId,
+      records.map((space) =>
+        space.id === input.spaceId
+          ? {
+              ...space,
+              parent_id: parentId,
+              settings: settingsJson
+                ? parseSpaceSettings(settingsJson)
+                : space.settings,
+            }
+          : space
+      )
+    )
   }
   const moving = parentId !== row.parent_id
   let update = db
@@ -3323,6 +3511,8 @@ export async function getInstanceSettings(userId: string) {
     builtInTools: parseBuiltInToolsJson(prefs.builtin_tools_json),
     pdfImagePageLimit: Number(prefs.pdf_image_page_limit),
     titleModelConfig: await getTitleModelConfig(),
+    adminTitleSettings: await getAdminTitleSettings(),
+    userTitleSettings: titleSettingsFromValues(userDefaults),
   }
 }
 
@@ -3633,15 +3823,16 @@ async function restoreOwnerBackup(
   }
 
   if (backup.instance) {
-    const titleModelJson =
-      backup.instance && "titleModelConfig" in backup.instance
-        ? backup.instance.titleModelConfig
-          ? JSON.stringify({
-              providerId: backup.instance.titleModelConfig.providerId,
-              model: backup.instance.titleModelConfig.model,
-            })
-          : null
-        : undefined
+    const titleModelJson = backup.instance.titleSettings
+      ? JSON.stringify(backup.instance.titleSettings)
+      : backup.instance.titleModelConfig
+        ? JSON.stringify({
+            titleStrategy: "generate" as const,
+            titleModel: backup.instance.titleModelConfig,
+          })
+        : backup.instance.titleModelConfig === null
+          ? null
+          : undefined
     await trx
       .updateTable("instance")
       .set({
@@ -4375,6 +4566,7 @@ export async function createBackup() {
     updated_at: row.updated_at,
   }))
   const titleModelConfig = await getTitleModelConfig()
+  const titleSettings = await getAdminTitleSettings()
   const users = await db.selectFrom("user").selectAll().execute()
   const userPreferences = await db
     .selectFrom("user_preferences")
@@ -4401,7 +4593,7 @@ export async function createBackup() {
   return {
     version: 1 as const,
     createdAt: new Date().toISOString(),
-    instance: { titleModelConfig },
+    instance: { titleModelConfig, titleSettings },
     promptStacks: normalizedStacks,
     contextBooks: contextBooks.map((row) => ({
       ...row,

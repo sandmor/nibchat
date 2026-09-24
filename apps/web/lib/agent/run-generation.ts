@@ -455,6 +455,7 @@ export async function startGenerationProducer(
     const result = streamText({
       model: languageModel,
       system: systemPrompt,
+      allowSystemInMessages: true,
       messages,
       tools: { ...mcp.tools, ...builtInTools },
       stopWhen: stepCountIs(MAX_STEPS),

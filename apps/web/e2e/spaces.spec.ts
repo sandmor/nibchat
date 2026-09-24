@@ -174,4 +174,36 @@ test.describe("spaces", () => {
       page.getByText("New chats from this space land here.")
     ).toBeVisible()
   })
+
+  test("applies a shared appearance override to the space and its draft chats", async () => {
+    await page.goto("/chat/new")
+    const newSpace = page.getByRole("button", { name: "New space" })
+    if (!(await newSpace.isVisible())) {
+      await page.getByRole("button", { name: "Spaces", exact: true }).click()
+    }
+    await newSpace.click()
+    await expect(page).toHaveURL(/\/space\//)
+    await page.getByRole("button", { name: "Add" }).click()
+    await page.getByRole("menuitem", { name: "Appearance" }).click()
+    await page.getByRole("button", { name: "Customize" }).click()
+    await page
+      .getByRole("group", { name: "Both density" })
+      .getByRole("button", { name: "Compact" })
+      .click()
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.dataset.density))
+      .toBe("compact")
+
+    await page.getByRole("button", { name: "New chat", exact: true }).click()
+    await expect(page).toHaveURL(/\/chat\/new\?space=/)
+    await page.reload()
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.dataset.density))
+      .toBe("compact")
+
+    await page.goto("/settings")
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.dataset.density))
+      .toBe("comfortable")
+  })
 })

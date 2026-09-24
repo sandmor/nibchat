@@ -56,6 +56,7 @@ import {
   type SamplingSettingKey,
   type SettingValues,
 } from "@/lib/chat-settings"
+import { policyModeCopy } from "@/lib/chat-settings/policy"
 import {
   definedSettingKeys,
   parseSpaceSettings,
@@ -70,6 +71,9 @@ import { isOrphanPromptStackRef, resolvePromptStack } from "@/lib/prompt-stack"
 import { displayChatTitle } from "@/lib/chat-title"
 import { cn } from "@/lib/utils"
 import { ModelPicker } from "./model-picker"
+import { firstAvailableModel } from "@/lib/provider-models"
+import { SpaceAppearanceFields } from "./space-appearance-fields"
+import type { ProviderSummary } from "./types"
 import {
   inheritedContextBooks,
   SpaceContextBooksCard,
@@ -164,7 +168,8 @@ export function SpaceView({
   const trpc = useTRPC()
   const router = useRouter()
   const queryClient = useQueryClient()
-  const { providers, appearance } = useWorkspaceChrome()
+  const { providers, appearance, themes, lightThemeId, darkThemeId } =
+    useWorkspaceChrome()
   const selection = useWorkspaceSelection()
   const workspaceQuery = useQuery({
     ...trpc.workspace.get.queryOptions({ draft: true }),
@@ -259,6 +264,45 @@ export function SpaceView({
   }
 
   function addSlot(key: AddableKey) {
+    if (key === "titleStrategy") {
+      patchSettings((current) => ({
+        ...current,
+        titleStrategy: {
+          mode: "default",
+          value: resolvedForSpace.effective.title.strategy,
+        },
+      }))
+      return
+    }
+    if (key === "titleInstructions") {
+      patchSettings((current) => ({
+        ...current,
+        titleInstructions: {
+          mode: "default",
+          value: resolvedForSpace.effective.title.instructions,
+        },
+      }))
+      return
+    }
+    if (key === "titleModel") {
+      const chosen =
+        resolvedForSpace.effective.title.model?.providerId &&
+        resolvedForSpace.effective.title.model.model
+          ? resolvedForSpace.effective.title.model
+          : firstAvailableModel(providers)
+      if (!chosen?.providerId || !chosen.model) {
+        toast.error("Enable a model first")
+        return
+      }
+      patchSettings((current) => ({
+        ...current,
+        titleModel: {
+          mode: "default",
+          value: { providerId: chosen.providerId!, model: chosen.model! },
+        },
+      }))
+      return
+    }
     const slot = defaultSlotValue(key, stacks, templates)
     if (key === "promptStack" && !stacks[0]) {
       toast.error("Create a prompt stack in Settings first")
@@ -282,12 +326,22 @@ export function SpaceView({
   const resolvedForSpace = useMemo(
     () =>
       resolveSettings({
-        user: defaultStackId ? { promptStack: defaultStackId } : {},
+        admin: settingsQuery.data?.adminTitleSettings,
+        user: {
+          ...settingsQuery.data?.userTitleSettings,
+          ...(defaultStackId ? { promptStack: defaultStackId } : {}),
+        },
         chat: {},
         spaceId,
         spaces: spaceRecords,
       }),
-    [defaultStackId, spaceId, spaceRecords]
+    [
+      defaultStackId,
+      spaceId,
+      spaceRecords,
+      settingsQuery.data?.adminTitleSettings,
+      settingsQuery.data?.userTitleSettings,
+    ]
   )
   const effectiveStackId = resolvedForSpace.effective.promptStackId
   const inheritedRules = useMemo(
@@ -332,7 +386,13 @@ export function SpaceView({
     ? (spaces.find((row) => row.id === space.parent_id) ?? null)
     : null
   const hasDefinitions = defined.length > 0 || variableNames.length > 0
-  const canAdd = available.length > 0 || addableVariables.length > 0
+  const showAppearance = settings.appearance !== undefined
+  const showBooks = settings.books !== undefined || inheritedBooks.size > 0
+  const canAdd =
+    available.length > 0 ||
+    addableVariables.length > 0 ||
+    !showAppearance ||
+    !showBooks
   const density = appearance.density
   const prefersReduced = usePrefersReducedMotion()
   const animate = shouldAnimate(appearance.motion, prefersReduced)
@@ -363,6 +423,34 @@ export function SpaceView({
                 {SETTING_LABELS[key] ?? key}
               </DropdownMenuItem>
             ))}
+          </DropdownMenuGroup>
+        ) : null}
+        {!showAppearance || !showBooks ? (
+          <DropdownMenuGroup>
+            {!showAppearance ? (
+              <DropdownMenuItem
+                onClick={() =>
+                  patchSettings((current) => ({
+                    ...current,
+                    appearance: current.appearance ?? {},
+                  }))
+                }
+              >
+                Appearance
+              </DropdownMenuItem>
+            ) : null}
+            {!showBooks ? (
+              <DropdownMenuItem
+                onClick={() =>
+                  patchSettings((current) => ({
+                    ...current,
+                    books: current.books ?? { reset: false, decisions: {} },
+                  }))
+                }
+              >
+                Context books
+              </DropdownMenuItem>
+            ) : null}
           </DropdownMenuGroup>
         ) : null}
         {available.length > 0 && addableVariables.length > 0 ? (
@@ -547,6 +635,32 @@ export function SpaceView({
 
             <div className="grid">
               <AnimatePresence initial={false}>
+                {showAppearance ? (
+                  <RevealItem
+                    key="appearance"
+                    itemKey="appearance"
+                    animate={animate}
+                    transition={transition}
+                  >
+                    <SpaceAppearanceFields
+                      settings={settings}
+                      themes={themes}
+                      lightThemeId={lightThemeId}
+                      darkThemeId={darkThemeId}
+                      spaceId={spaceId}
+                      spaces={spaceRecords}
+                      onChange={patchSettings}
+                      onRemove={() =>
+                        patchSettings((current) => {
+                          const next = { ...current }
+                          delete next.appearance
+                          return next
+                        })
+                      }
+                    />
+                  </RevealItem>
+                ) : null}
+                {showBooks ? (
                 <RevealItem
                   key="contextBooks"
                   itemKey="contextBooks"
@@ -554,6 +668,16 @@ export function SpaceView({
                   transition={transition}
                 >
                   <SpaceContextBooksCard
+                    onRemove={
+                      settings.books
+                        ? () =>
+                            patchSettings((current) => {
+                              const next = { ...current }
+                              delete next.books
+                              return next
+                            })
+                        : undefined
+                    }
                     books={contextBooks}
                     attachedIds={Object.entries(
                       settings.books?.decisions ?? {}
@@ -628,6 +752,14 @@ export function SpaceView({
                     }
                   />
                 </RevealItem>
+                ) : null}
+                <TitleSpaceFields
+                  settings={settings}
+                  providers={providers}
+                  onChange={patchSettings}
+                  animate={animate}
+                  transition={transition}
+                />
                 <RevealItem
                   key="rules"
                   itemKey="rules"
@@ -1493,11 +1625,7 @@ function DefinitionRow({
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium">{title}</p>
           <p className="text-[11px] text-muted-foreground">
-            {mode === "require"
-              ? "Required for chats here"
-              : mode === "default"
-                ? "Default; chats may override it"
-                : "Stops applying the parent value here"}
+            {policyModeCopy(mode)}
           </p>
         </div>
         <Button
@@ -1535,6 +1663,187 @@ function DefinitionRow({
       </div>
       <div className="min-w-0 ps-10">{children}</div>
     </div>
+  )
+}
+
+function TitleInstructionsField({
+  value,
+  onCommit,
+}: {
+  value: string
+  onCommit: (value: string) => void
+}) {
+  const [draft, setDraft] = useState(value)
+  const [editing, setEditing] = useState(false)
+  const preview = value.replace(/\s+/g, " ").slice(0, 80)
+  if (editing) {
+    return (
+      <Textarea
+        aria-label="Space title instructions"
+        value={draft}
+        autoFocus
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => {
+          setEditing(false)
+          const next = draft.trim()
+          if (!next) {
+            setDraft(value)
+            return
+          }
+          if (next !== value) onCommit(next)
+        }}
+      />
+    )
+  }
+  return (
+    <button
+      type="button"
+      className="rounded-lg border px-3 py-2 text-left text-sm text-muted-foreground"
+      onClick={() => {
+        setDraft(value)
+        setEditing(true)
+      }}
+    >
+      {preview || "Add instructions"}
+    </button>
+  )
+}
+
+function TitleSpaceFields({
+  settings,
+  providers,
+  onChange,
+  animate,
+  transition,
+}: {
+  settings: SpaceSettings
+  providers: ProviderSummary[]
+  onChange: (
+    next: SpaceSettings | ((current: SpaceSettings) => SpaceSettings)
+  ) => void
+  animate: boolean
+  transition: SlotMotion
+}) {
+  const strategy = settings.titleStrategy
+  const model = settings.titleModel
+  const instructions = settings.titleInstructions
+  if (!strategy && !model && !instructions) return null
+  return (
+    <>
+      {strategy && (
+        <RevealItem
+          key="titleStrategy"
+          itemKey="titleStrategy"
+          animate={animate}
+          transition={transition}
+        >
+        <DefinitionRow
+          title="Title strategy"
+          mode={strategy.mode}
+          onMode={(mode) =>
+            onChange((s) => ({ ...s, titleStrategy: { ...strategy, mode } }))
+          }
+          onRemove={() => onChange((s) => ({ ...s, titleStrategy: undefined }))}
+        >
+          {strategy.mode !== "release" && (
+            <Select
+              value={strategy.value}
+              onValueChange={(value) =>
+                onChange((s) => ({
+                  ...s,
+                  titleStrategy: {
+                    ...strategy,
+                    value: value as "first-message" | "generate",
+                  },
+                }))
+              }
+            >
+              <SelectTrigger aria-label="Space title strategy">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="first-message">First message</SelectItem>
+                <SelectItem value="generate">Generate with a model</SelectItem>
+              </SelectContent>
+            </Select>
+          )}
+        </DefinitionRow>
+        </RevealItem>
+      )}
+      {model && (
+        <RevealItem
+          key="titleModel"
+          itemKey="titleModel"
+          animate={animate}
+          transition={transition}
+        >
+        <DefinitionRow
+          title="Title model"
+          mode={model.mode}
+          canEnable={Boolean(model.value.providerId && model.value.model)}
+          onMode={(mode) =>
+            onChange((s) => ({ ...s, titleModel: { ...model, mode } }))
+          }
+          onRemove={() => onChange((s) => ({ ...s, titleModel: undefined }))}
+        >
+          {model.mode !== "release" && (
+            <ModelPicker
+              config={model.value}
+              providers={providers}
+              successToast="Space title model updated"
+              onChange={async (config) => {
+                if (!config.providerId || !config.model) return
+                onChange((s) => ({
+                  ...s,
+                  titleModel: {
+                    ...model,
+                    value: {
+                      providerId: config.providerId!,
+                      model: config.model!,
+                    },
+                  },
+                }))
+              }}
+            />
+          )}
+        </DefinitionRow>
+        </RevealItem>
+      )}
+      {instructions && (
+        <RevealItem
+          key="titleInstructions"
+          itemKey="titleInstructions"
+          animate={animate}
+          transition={transition}
+        >
+        <DefinitionRow
+          title="Title instructions"
+          mode={instructions.mode}
+          onMode={(mode) =>
+            onChange((s) => ({
+              ...s,
+              titleInstructions: { ...instructions, mode },
+            }))
+          }
+          onRemove={() =>
+            onChange((s) => ({ ...s, titleInstructions: undefined }))
+          }
+        >
+          {instructions.mode !== "release" && (
+            <TitleInstructionsField
+              value={instructions.value}
+              onCommit={(value) =>
+                onChange((s) => ({
+                  ...s,
+                  titleInstructions: { ...instructions, value },
+                }))
+              }
+            />
+          )}
+        </DefinitionRow>
+        </RevealItem>
+      )}
+    </>
   )
 }
 

@@ -10,6 +10,8 @@ import {
   userPromptStackId,
   userSettingValuesToJson,
   type ModelConfig,
+  type TitleSettings,
+  titleSettingsSchema,
 } from "@/lib/chat-settings"
 import {
   appearanceToJson,
@@ -179,6 +181,34 @@ export async function setChatDefaults(userId: string, config: ModelConfig) {
     })
     .where("user_id", "=", userId)
     .execute()
+}
+
+export async function setUserTitleSettings(
+  userId: string,
+  settings: TitleSettings
+) {
+  const parsed = titleSettingsSchema.parse(settings)
+  await ensureUserSettings(userId)
+  const current = await db
+    .selectFrom("user_preferences")
+    .select("chat_defaults_json")
+    .where("user_id", "=", userId)
+    .executeTakeFirstOrThrow()
+  const existing = parseUserSettingValues(current.chat_defaults_json)
+  const next = { ...existing }
+  delete next.titleStrategy
+  delete next.titleModel
+  delete next.titleInstructions
+  Object.assign(next, parsed)
+  await db
+    .updateTable("user_preferences")
+    .set({
+      chat_defaults_json: userSettingValuesToJson(next),
+      updated_at: now(),
+    })
+    .where("user_id", "=", userId)
+    .execute()
+  return parsed
 }
 
 export async function setUserPromptStack(userId: string, stackId: string) {

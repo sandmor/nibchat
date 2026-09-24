@@ -24,11 +24,15 @@ import type { SpaceLockSource } from "@/lib/spaces/types"
 
 export type SettingOrigin =
   | { layer: "product" }
+  | { layer: "admin" }
   | { layer: "user" }
   | { layer: "chat" }
   | { layer: "space"; space: SpaceLockSource }
 
 export type SettingLocks = {
+  titleStrategy?: SpaceLockSource
+  titleModel?: SpaceLockSource
+  titleInstructions?: SpaceLockSource
   promptStack?: SpaceLockSource
   chatTemplate?: SpaceLockSource
   model?: SpaceLockSource
@@ -44,6 +48,11 @@ export type SettingSources = Partial<
 
 export type ResolvedSettings = {
   effective: {
+    title: {
+      strategy: "first-message" | "generate"
+      model: SettingValues["titleModel"]
+      instructions: string
+    }
     promptStackId: string | null
     chatTemplateId: string | null
     variables: Record<string, PromptVariableValue>
@@ -82,6 +91,7 @@ function resolveSlot(
   chain: readonly SpaceRecord[],
   user: SettingValues,
   chat: SettingValues,
+  admin: SettingValues,
   product: SettingValues
 ): Winner | undefined {
   let spaceHit: {
@@ -120,6 +130,9 @@ function resolveSlot(
   }
   if (hasKey(user, key)) {
     return { value: user[key], origin: { layer: "user" } }
+  }
+  if (hasKey(admin, key)) {
+    return { value: admin[key], origin: { layer: "admin" } }
   }
   if (hasKey(product, key)) {
     return { value: product[key], origin: { layer: "product" } }
@@ -201,6 +214,7 @@ function emptyLocks(): SettingLocks {
  */
 export function resolveSettings(input: {
   product?: SettingValues
+  admin?: SettingValues
   user?: SettingValues
   chat?: SettingValues
   spaceId?: string | null
@@ -209,6 +223,7 @@ export function resolveSettings(input: {
 }): ResolvedSettings {
   const product = input.product ?? PRODUCT_DEFAULTS
   const user = input.user ?? {}
+  const admin = input.admin ?? {}
   const chat = input.chat ?? {}
   const chain = spaceChain(input.spaceId, spacesById(input.spaces))
   const locks = emptyLocks()
@@ -243,7 +258,7 @@ export function resolveSettings(input: {
   }
 
   for (const key of SCALAR_SETTING_KEYS) {
-    const winner = resolveSlot(key, chain, user, chat, product)
+    const winner = resolveSlot(key, chain, user, chat, admin, product)
     if (!winner) continue
     const value = copySetting(key, winner.value)
     Object.assign(values, { [key]: value })
@@ -267,6 +282,12 @@ export function resolveSettings(input: {
 
   return {
     effective: {
+      title: {
+        strategy: values.titleStrategy ?? "first-message",
+        model: values.titleModel,
+        instructions:
+          values.titleInstructions ?? PRODUCT_DEFAULTS.titleInstructions,
+      },
       promptStackId: typeof promptStack === "string" ? promptStack : null,
       chatTemplateId: typeof chatTemplate === "string" ? chatTemplate : null,
       variables,
@@ -313,6 +334,9 @@ export function withoutLockedSettings(
   const next: SettingValues = { ...values }
   if (values.variables) next.variables = { ...values.variables }
   if (locks.promptStack) delete next.promptStack
+  if (locks.titleStrategy) delete next.titleStrategy
+  if (locks.titleModel) delete next.titleModel
+  if (locks.titleInstructions) delete next.titleInstructions
   if (locks.chatTemplate) delete next.chatTemplate
   for (const key of lockedGenerationKeys(locks)) delete next[key]
   if (next.variables) {

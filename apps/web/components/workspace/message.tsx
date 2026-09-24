@@ -55,6 +55,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { MessageShell } from "./message-shell"
 import { cn } from "@/lib/utils"
 import { copyText } from "@/lib/clipboard"
 import { partsToMarkdown, pathToMarkdown } from "@/lib/message-markdown"
@@ -845,8 +846,11 @@ export const Message = memo(function Message({
   }
 
   const article = (
-    <article
+    <MessageShell
       ref={setShellRef}
+      role={node.role === "user" ? "user" : "assistant"}
+      tree={Boolean(tree)}
+      layout={presentation === "linear" ? roleLayout : undefined}
       tabIndex={-1}
       data-find-node={node.id}
       {...(node.status === "streaming" || streamId
@@ -854,22 +858,6 @@ export const Message = memo(function Message({
         : {})}
       {...(tree && streamId ? { "data-tree-streaming": "" } : {})}
       data-message-status={displayStatus}
-      data-theme-group={
-        node.role === "user" ? "message-user" : "message-assistant"
-      }
-      data-theme-target={
-        node.role === "user" ? "message-user" : "message-assistant"
-      }
-      className={cn(
-        "group relative min-w-0 rounded-xl border outline-none",
-        tree
-          ? "flex h-full min-h-0 flex-col overflow-hidden"
-          : "overflow-visible p-4",
-        node.role === "user"
-          ? "border-message-user-border bg-message-user text-message-user-foreground"
-          : "border-message-assistant-border bg-message-assistant text-message-assistant-foreground",
-        tree && "hover:border-foreground/30"
-      )}
     >
       <div
         className={
@@ -1343,7 +1331,7 @@ export const Message = memo(function Message({
         </AlertDialog>
       ) : null}
       {replacementDialog}
-    </article>
+    </MessageShell>
   )
 
   return tree ? (

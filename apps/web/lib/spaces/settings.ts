@@ -10,6 +10,10 @@ import {
 import { policyModeSchema, type PolicyMode } from "@/lib/chat-settings/policy"
 import { promptVariableValueSchema } from "@/lib/prompt-stack"
 import { spaceBooksSchema, spaceRulesSchema } from "@/lib/spaces/composition"
+import {
+  assertAppearancePatch,
+  spaceAppearanceSchema,
+} from "@/lib/spaces/appearance"
 
 const variableNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
 
@@ -23,6 +27,10 @@ function optionalPolicy<K extends ScalarSettingKey>(key: K) {
 }
 
 const spaceSettingsShape = z.object({
+  appearance: spaceAppearanceSchema.optional(),
+  titleStrategy: optionalPolicy("titleStrategy"),
+  titleModel: optionalPolicy("titleModel"),
+  titleInstructions: optionalPolicy("titleInstructions"),
   promptStack: optionalPolicy("promptStack"),
   chatTemplate: optionalPolicy("chatTemplate"),
   model: optionalPolicy("model"),
@@ -76,6 +84,9 @@ export function spaceSettingsToJson(settings: SpaceSettings): string {
 
 /** Enabled slots that would break generation cannot be saved. */
 export function assertSpaceSettingsLocks(settings: SpaceSettings) {
+  assertAppearancePatch(settings.appearance?.shared)
+  assertAppearancePatch(settings.appearance?.light)
+  assertAppearancePatch(settings.appearance?.dark)
   for (const key of SCALAR_SETTING_KEYS) {
     const policy = settings[key]
     if (!policy || policy.mode === "release") continue
@@ -100,9 +111,15 @@ export function omitModelProviderRef(
   settings: SpaceSettings,
   providerId: string
 ): SpaceSettings {
-  if (settings.model?.value.providerId !== providerId) return settings
+  if (
+    settings.model?.value.providerId !== providerId &&
+    settings.titleModel?.value.providerId !== providerId
+  )
+    return settings
   const next = { ...settings }
-  delete next.model
+  if (settings.model?.value.providerId === providerId) delete next.model
+  if (settings.titleModel?.value.providerId === providerId)
+    delete next.titleModel
   return next
 }
 

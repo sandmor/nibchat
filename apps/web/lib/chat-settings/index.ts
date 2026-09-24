@@ -33,3 +33,9 @@ export {
   valuesEqual,
   type ModelConfig,
 } from "@/lib/chat-settings/values"
+export {
+  parseAdminTitleSettings,
+  titleSettingsFromValues,
+  titleSettingsSchema,
+  type TitleSettings,
+} from "@/lib/chat-settings/title"

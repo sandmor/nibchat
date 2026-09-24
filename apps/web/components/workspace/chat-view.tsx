@@ -859,7 +859,14 @@ export function ChatView({
   ])
 
   const spaceId = data.chat?.space_id ?? draftSpaceId
-  const userLayer = useMemo(() => userSettingsFromWorkspace(data), [data])
+  const settingsQuery = useQuery(trpc.workspace.getSettings.queryOptions())
+  const userLayer = useMemo(
+    () => ({
+      ...userSettingsFromWorkspace(data),
+      ...settingsQuery.data?.userTitleSettings,
+    }),
+    [data, settingsQuery.data?.userTitleSettings]
+  )
   const chatOverrides = data.chat
     ? parseSettingValues(data.chat.settings_json)
     : draftSettings
@@ -879,24 +886,39 @@ export function ChatView({
   const resolvedSettings = useMemo(
     () =>
       resolveSettings({
+        admin: settingsQuery.data?.adminTitleSettings,
         user: userLayer,
         chat: chatOverrides,
         spaceId,
         spaces: (data.spaces ?? []).map(spaceFromRow),
         contextBookIds: chatContextBookIds,
       }),
-    [userLayer, chatOverrides, spaceId, chatContextBookIds, data.spaces]
+    [
+      userLayer,
+      chatOverrides,
+      spaceId,
+      chatContextBookIds,
+      data.spaces,
+      settingsQuery.data?.adminTitleSettings,
+    ]
   )
   const inheritedSettings = useMemo(
     () =>
       resolveSettings({
+        admin: settingsQuery.data?.adminTitleSettings,
         user: userLayer,
         chat: {},
         spaceId,
         spaces: (data.spaces ?? []).map(spaceFromRow),
         contextBookIds: chatContextBookIds,
       }),
-    [userLayer, spaceId, chatContextBookIds, data.spaces]
+    [
+      userLayer,
+      spaceId,
+      chatContextBookIds,
+      data.spaces,
+      settingsQuery.data?.adminTitleSettings,
+    ]
   )
   const activeModelConfig = resolvedSettings.effective.model
   const effectivePromptStackId = resolvedSettings.effective.promptStackId
@@ -921,7 +943,6 @@ export function ChatView({
     spaceId,
     templatesQuery.data,
   ])
-  const settingsQuery = useQuery(trpc.workspace.getSettings.queryOptions())
   const declaredVariableNames = useMemo(() => {
     const stacks = settingsQuery.data?.promptStacks ?? []
     const defaultId = settingsQuery.data?.defaultPromptStackId
@@ -1536,11 +1557,7 @@ export function ChatView({
           if (isPost && ++postAttempts <= 2) continue
           throw error
         }
-        if (
-          isPost &&
-          response.status >= 500 &&
-          ++postAttempts <= 2
-        ) {
+        if (isPost && response.status >= 500 && ++postAttempts <= 2) {
           await response.body?.cancel()
           continue
         }

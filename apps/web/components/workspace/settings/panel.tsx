@@ -46,11 +46,11 @@ export function SettingsPanel({
                 providers={providers}
                 onSaved={onProvidersChange}
               />
-              <TitleModelSettings providers={providers} />
               <McpSettings />
             </>
           )}
           <ChatDefaultsSettings providers={providers} />
+          <TitleModelSettings providers={providers} isOwner={isOwner} />
           <PdfImageSettings />
           <PromptStackSettings />
           <ContextBookSettings />

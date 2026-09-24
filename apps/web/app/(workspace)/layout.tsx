@@ -5,6 +5,7 @@ import { WorkspaceShell } from "@/components/workspace/shell"
 import { ThemeProvider } from "@/components/theme-provider"
 import { ThemeBootstrap } from "@/components/workspace/theme-bootstrap"
 import { getOwnerUserId } from "@/lib/identity/adapters/kysely-instance"
+import { spaceFromRow } from "@/lib/spaces/tree"
 
 export const dynamic = "force-dynamic"
 
@@ -31,6 +32,8 @@ export default async function WorkspaceLayout({
         darkThemeId={visibleSettings.darkThemeId}
         userId={user.id}
         initialMode={settings.themeMode}
+        spaces={workspace.spaces.map(spaceFromRow)}
+        chats={workspace.chats}
       />
       <ThemeProvider userId={user.id} initialMode={settings.themeMode}>
         <WorkspaceShell

@@ -4,10 +4,7 @@ import { useState } from "react"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { HugeiconsIcon } from "@hugeicons/react"
-import {
-  ArrowDown01Icon,
-  InformationCircleIcon,
-} from "@hugeicons/core-free-icons"
+import { ArrowDown01Icon } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
 import { AppearanceJsonEditor } from "./appearance-json-editor"
 import {
@@ -18,13 +15,10 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import { TooltipProvider, WithTooltip } from "@/components/ui/tooltip"
+  AppearanceControls,
+  appearanceControlValues,
+  mergeAppearanceControls,
+} from "./appearance-controls"
 import { cn } from "@/lib/utils"
 import {
   addPaletteExtra,
@@ -47,12 +41,6 @@ type EditorBuffer = {
   text: string
   parseError: string | null
 }
-
-const SCHEME_ITEMS = { light: "Light theme", dark: "Dark theme" } as const
-const DENSITY_ITEMS = {
-  comfortable: "Comfortable",
-  compact: "Compact",
-} as const
 
 export function ThemeDocumentEditor({
   theme,
@@ -201,134 +189,11 @@ export function ThemeDocumentEditor({
         />
       </div>
 
-      <div className="flex flex-wrap gap-3">
-        <div className="grid gap-1.5">
-          <div className="flex items-center gap-1.5">
-            <Label className="mb-0">This is a</Label>
-            <TooltipProvider delay={200}>
-              <WithTooltip
-                side="top"
-                label="For native scrollbars and markdown invert."
-              >
-                <button
-                  type="button"
-                  className="inline-flex size-5 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground"
-                  aria-label="About light and dark look"
-                >
-                  <HugeiconsIcon
-                    icon={InformationCircleIcon}
-                    className="size-3.5"
-                    strokeWidth={2}
-                  />
-                </button>
-              </WithTooltip>
-            </TooltipProvider>
-          </div>
-          <Select
-            value={draft.scheme}
-            items={SCHEME_ITEMS}
-            onValueChange={(value) => {
-              if (value === "light" || value === "dark") {
-                applyDocument({ ...draft, scheme: value })
-              }
-            }}
-          >
-            <SelectTrigger size="sm">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="light">Light theme</SelectItem>
-              <SelectItem value="dark">Dark theme</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="grid gap-1.5">
-          <Label>Density</Label>
-          <Select
-            value={draft.density}
-            items={DENSITY_ITEMS}
-            onValueChange={(value) => {
-              if (value === "comfortable" || value === "compact") {
-                applyDocument({ ...draft, density: value })
-              }
-            }}
-          >
-            <SelectTrigger size="sm">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="comfortable">Comfortable</SelectItem>
-              <SelectItem value="compact">Compact</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-2">
-        {(["user", "assistant"] as const).map((role) => {
-          const layout = draft.messageLayout[role]
-          return (
-            <div key={role} className="grid grid-cols-2 gap-2">
-              <Label className="col-span-2 capitalize">{role} messages</Label>
-              <div className="grid gap-1">
-                <Label className="text-xs text-muted-foreground">Align</Label>
-                <Select
-                  value={layout.align}
-                  onValueChange={(value) => {
-                    if (
-                      value !== "left" &&
-                      value !== "center" &&
-                      value !== "right"
-                    )
-                      return
-                    applyDocument({
-                      ...draft,
-                      messageLayout: {
-                        ...draft.messageLayout,
-                        [role]: { ...layout, align: value },
-                      },
-                    })
-                  }}
-                >
-                  <SelectTrigger size="sm">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="left">Left</SelectItem>
-                    <SelectItem value="center">Center</SelectItem>
-                    <SelectItem value="right">Right</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="grid gap-1">
-                <Label className="text-xs text-muted-foreground">
-                  Max width %
-                </Label>
-                <Input
-                  type="number"
-                  min={20}
-                  max={100}
-                  value={layout.maxWidthPercent}
-                  onChange={(event) => {
-                    const width = Math.max(
-                      20,
-                      Math.min(100, Number(event.target.value) || 20)
-                    )
-                    applyDocument({
-                      ...draft,
-                      messageLayout: {
-                        ...draft.messageLayout,
-                        [role]: { ...layout, maxWidthPercent: width },
-                      },
-                    })
-                  }}
-                  aria-label={`${role} message maximum width percent`}
-                />
-              </div>
-            </div>
-          )
-        })}
-      </div>
+      <AppearanceControls
+        idPrefix="Theme"
+        values={appearanceControlValues(draft)}
+        onChange={(next) => applyDocument(mergeAppearanceControls(draft, next))}
+      />
 
       <div>
         <Label className="mb-2 block text-xs text-muted-foreground">

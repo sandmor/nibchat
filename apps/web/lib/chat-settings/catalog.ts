@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { MAX_SCAN_DEPTH } from "@/lib/limits"
+import { MAX_PROMPT_CHARS, MAX_SCAN_DEPTH } from "@/lib/limits"
 import { promptVariableValueSchema } from "@/lib/prompt-stack"
 import { reasoningPreferencesSchema } from "@/lib/reasoning"
 
@@ -16,6 +16,15 @@ export const modelIdentitySchema = z.object({
   model: z.string().min(1).optional(),
 })
 
+export const titleStrategySchema = z.enum(["first-message", "generate"])
+export const titleInstructionsSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(MAX_PROMPT_CHARS)
+export const DEFAULT_TITLE_INSTRUCTIONS =
+  "Name this chat in a few words. Return only the title. No quotes, colons, or trailing punctuation."
+
 export type ModelIdentity = z.infer<typeof modelIdentitySchema>
 
 /**
@@ -23,6 +32,9 @@ export type ModelIdentity = z.infer<typeof modelIdentitySchema>
  * own slot, not one blob.
  */
 export const settingValueSchemas = {
+  titleStrategy: titleStrategySchema,
+  titleModel: modelIdentitySchema,
+  titleInstructions: titleInstructionsSchema,
   promptStack: z.string().min(1).nullable(),
   chatTemplate: z.string().min(1).nullable(),
   model: modelIdentitySchema,
@@ -50,6 +62,9 @@ export type SettingLayer = "user" | "chat" | "space"
 /** Which documents may persist the key. `require` is still space-only. */
 export const SETTING_LAYERS: Record<ScalarSettingKey, readonly SettingLayer[]> =
   {
+    titleStrategy: ["user", "chat", "space"],
+    titleModel: ["user", "chat", "space"],
+    titleInstructions: ["user", "chat", "space"],
     promptStack: ["user", "chat", "space"],
     chatTemplate: ["space"],
     model: ["user", "chat", "space"],
@@ -67,6 +82,9 @@ export const SETTING_LAYERS: Record<ScalarSettingKey, readonly SettingLayer[]> =
   }
 
 export const SETTING_LABELS: Record<ScalarSettingKey, string> = {
+  titleStrategy: "Title strategy",
+  titleModel: "Title model",
+  titleInstructions: "Title instructions",
   promptStack: "Prompt stack",
   chatTemplate: "Chat template",
   model: "Model",
@@ -110,6 +128,9 @@ export type GenerationSettingKey = (typeof GENERATION_SETTING_KEYS)[number]
 
 /** Keys a space editor can add. Chat template is space-only. */
 export const ADDABLE_SETTING_KEYS = [
+  "titleStrategy",
+  "titleModel",
+  "titleInstructions",
   "chatTemplate",
   "promptStack",
   "model",
@@ -126,7 +147,11 @@ export type SettingValues = {
 }
 
 /** Fallback when no user, space, or chat value is present. */
-export const PRODUCT_DEFAULTS = { contextScanDepth: 2 } satisfies SettingValues
+export const PRODUCT_DEFAULTS = {
+  contextScanDepth: 2,
+  titleStrategy: "first-message",
+  titleInstructions: DEFAULT_TITLE_INSTRUCTIONS,
+} satisfies SettingValues
 
 export function layerCanPersist(
   key: ScalarSettingKey,
@@ -147,7 +172,7 @@ export function settingLockable(
   key: ScalarSettingKey,
   value: unknown
 ): { ok: true } | { ok: false; message: string } {
-  if (key === "model") {
+  if (key === "model" || key === "titleModel") {
     const identity = modelIdentitySchema.safeParse(value)
     if (!identity.success || !modelIdentityComplete(identity.data)) {
       return {
@@ -172,6 +197,12 @@ export function initialSettingValue(
   key: ScalarSettingKey
 ): SettingValues[ScalarSettingKey] {
   switch (key) {
+    case "titleStrategy":
+      return "first-message"
+    case "titleModel":
+      return {}
+    case "titleInstructions":
+      return DEFAULT_TITLE_INSTRUCTIONS
     case "chatTemplate":
       return null
     case "promptStack":

@@ -1,5 +1,6 @@
 import { generateText } from "ai"
 import { TITLE_MAX_CHARS } from "@/lib/chat-title"
+import { DEFAULT_TITLE_INSTRUCTIONS } from "@/lib/chat-settings/catalog"
 import { modelFor, type ModelConfig } from "@/lib/providers"
 
 export const TITLE_GENERATE_TIMEOUT_MS = 8_000
@@ -30,6 +31,7 @@ export async function generateChatTitle(input: {
   chatId?: string
   userText: string
   assistantText?: string
+  instructions?: string
 }) {
   const model = await modelFor(input.userId, input.config, {
     requireConfiguredModel: true,
@@ -44,8 +46,7 @@ export async function generateChatTitle(input: {
     : userText
   const { text } = await generateText({
     model,
-    system:
-      "Name this chat in a few words. Return only the title. No quotes, colons, or trailing punctuation.",
+    system: input.instructions ?? DEFAULT_TITLE_INSTRUCTIONS,
     prompt: prompt || "Untitled conversation",
     maxOutputTokens: 48,
     temperature: 0.2,

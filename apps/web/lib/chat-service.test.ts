@@ -1339,6 +1339,91 @@ describe("SQLite chat repository", () => {
     expect(rootRow?.selected_child_id).toBe(a.id)
   })
 
+  it("deleteNode reparent rejects a message that is not the only child", async () => {
+    const chat = await createChat(userId, "Keep replies blocked")
+    const root = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "root" }],
+    })
+    const first = await insertNode({
+      chatId: chat.id,
+      parentId: root.id,
+      role: "assistant",
+      parts: [{ type: "text", text: "first" }],
+    })
+    await insertNode({
+      chatId: chat.id,
+      parentId: root.id,
+      role: "assistant",
+      parts: [{ type: "text", text: "second" }],
+    })
+    const reply = await insertNode({
+      chatId: chat.id,
+      parentId: first.id,
+      role: "user",
+      parts: [{ type: "text", text: "reply" }],
+    })
+    await expect(deleteNode(userId, first.id, "reparent")).rejects.toThrow(
+      "only child"
+    )
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    expect(
+      workspace.nodes.find((node) => node.id === reply.id)?.parent_id
+    ).toBe(first.id)
+  })
+
+  it("deleteNode siblings removes same-role branches and keeps other roles", async () => {
+    const chat = await createChat(userId, "Delete sibling group")
+    const root = await insertNode({
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "root" }],
+    })
+    const first = await insertNode({
+      chatId: chat.id,
+      parentId: root.id,
+      role: "assistant",
+      parts: [{ type: "text", text: "first" }],
+    })
+    const reply = await insertNode({
+      chatId: chat.id,
+      parentId: first.id,
+      role: "user",
+      parts: [{ type: "text", text: "reply" }],
+    })
+    const second = await insertNode({
+      chatId: chat.id,
+      parentId: root.id,
+      role: "assistant",
+      parts: [{ type: "text", text: "second" }],
+    })
+    const otherRole = await insertNode({
+      chatId: chat.id,
+      parentId: root.id,
+      role: "user",
+      parts: [{ type: "text", text: "aside" }],
+      attachSelection: false,
+    })
+    expect(
+      (await getWorkspace(userId, { chatId: chat.id })).nodes.find(
+        (node) => node.id === root.id
+      )?.selected_child_id
+    ).toBe(second.id)
+    await deleteNode(userId, first.id, "siblings")
+    const workspace = await getWorkspace(userId, { chatId: chat.id })
+    expect(workspace.nodes.map((node) => node.id).sort()).toEqual(
+      [root.id, otherRole.id].sort()
+    )
+    expect(workspace.nodes.some((node) => node.id === reply.id)).toBe(false)
+    expect(workspace.nodes.some((node) => node.id === second.id)).toBe(false)
+    expect(
+      workspace.nodes.find((node) => node.id === root.id)?.selected_child_id
+    ).toBe(otherRole.id)
+  })
+
   it("persists conversation view without bumping updated_at", async () => {
     const chat = await createChat(userId, "View state")
     const node = await insertNode({

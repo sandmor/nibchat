@@ -426,6 +426,13 @@ export const Message = memo(function Message({
       candidate.status === "streaming"
   ).length
   const index = siblings.findIndex((candidate) => candidate.id === node.id)
+  const onlyChild = !nodes.some(
+    (candidate) =>
+      candidate.id !== node.id && candidate.parent_id === node.parent_id
+  )
+  const hasReplies = nodes.some((candidate) => candidate.parent_id === node.id)
+  const showKeepReplies = onlyChild && hasReplies
+  const showDeleteSiblings = siblings.length > 1
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [multipleOpen, setMultipleOpen] = useState(false)
   const [deleteOpen, setDeleteOpen] = useState(false)
@@ -1252,33 +1259,43 @@ export const Message = memo(function Message({
             <AlertDialogHeader>
               <AlertDialogTitle>Delete message node</AlertDialogTitle>
               <AlertDialogDescription>
-                Subtree delete removes this node and all descendants. Keep
-                replies removes only this message and promotes every direct
-                reply.
+                {[
+                  "Delete subtree removes this message and everything under it.",
+                  showKeepReplies
+                    ? "Keep replies removes only this message and promotes its replies."
+                    : "",
+                  showDeleteSiblings
+                    ? "Delete all versions removes this message, the other versions beside it, and everything under them."
+                    : "",
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <Button
-                variant="outline"
-                onClick={() =>
-                  void runMessageMutation(
-                    {
-                      kind: "delete",
-                      input: {
-                        nodeId: node.id,
-                        mode: "reparent",
+              {showKeepReplies ? (
+                <Button
+                  variant="outline"
+                  onClick={() =>
+                    void runMessageMutation(
+                      {
+                        kind: "delete",
+                        input: {
+                          nodeId: node.id,
+                          mode: "reparent",
+                        },
                       },
-                    },
-                    async () => {
-                      setDeleteOpen(false)
-                      await Promise.resolve(onChanged?.())
-                    }
-                  )
-                }
-              >
-                Keep replies
-              </Button>
+                      async () => {
+                        setDeleteOpen(false)
+                        await Promise.resolve(onChanged?.())
+                      }
+                    )
+                  }
+                >
+                  Keep replies
+                </Button>
+              ) : null}
               <AlertDialogAction
                 variant="destructive"
                 onClick={() =>
@@ -1299,6 +1316,28 @@ export const Message = memo(function Message({
               >
                 Delete subtree
               </AlertDialogAction>
+              {showDeleteSiblings ? (
+                <Button
+                  variant="destructive"
+                  onClick={() =>
+                    void runMessageMutation(
+                      {
+                        kind: "delete",
+                        input: {
+                          nodeId: node.id,
+                          mode: "siblings",
+                        },
+                      },
+                      async () => {
+                        setDeleteOpen(false)
+                        await Promise.resolve(onChanged?.())
+                      }
+                    )
+                  }
+                >
+                  Delete all versions
+                </Button>
+              ) : null}
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>

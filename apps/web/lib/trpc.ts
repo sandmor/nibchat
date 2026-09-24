@@ -773,7 +773,7 @@ export const appRouter = t.router({
       .input(
         z.object({
           nodeId: z.string(),
-          mode: z.enum(["subtree", "reparent"]),
+          mode: z.enum(["subtree", "reparent", "siblings"]),
         })
       )
       .mutation(async ({ ctx, input }) => {

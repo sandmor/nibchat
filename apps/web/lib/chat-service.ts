@@ -1936,10 +1936,12 @@ async function deleteStreamingShell(
   })
 }
 
+export type DeleteNodeMode = "subtree" | "reparent" | "siblings"
+
 export async function deleteNode(
   userId: string,
   nodeId: string,
-  mode: "subtree" | "reparent"
+  mode: DeleteNodeMode
 ) {
   const target = await db
     .selectFrom("message_nodes")
@@ -1977,30 +1979,56 @@ async function clearDeletedTreeCamera(
     .execute()
 }
 
+/** Same-role siblings and every node under them. Other roles under the parent stay. */
+function siblingGroupNodeIds(
+  rows: Array<{ id: string; parent_id: string | null; role: string }>,
+  node: { id: string; parent_id: string | null; role: string }
+) {
+  const ids = new Set<string>()
+  for (const row of rows) {
+    if (row.parent_id !== node.parent_id || row.role !== node.role) continue
+    for (const id of subtreeNodeIds(rows, row.id)) ids.add(id)
+  }
+  ids.add(node.id)
+  return [...ids]
+}
+
 /** Delete under the chat lock and return the exact committed deletion targets. */
 async function deleteNodeInternal(
   nodeId: string,
   chatId: string,
   userId: string,
-  mode: "subtree" | "reparent"
+  mode: DeleteNodeMode
 ) {
   return db.transaction().execute(async (trx) => {
     await lockChatMutation(trx, chatId, userId)
     const node = await assertNodeOwner(nodeId, userId, trx)
     if (node.chat_id !== chatId) throw new Error("Message not found")
+    const rows = await trx
+      .selectFrom("message_nodes")
+      .select([
+        "id",
+        "parent_id",
+        "role",
+        "sort_key",
+        "created_at",
+        "selected_child_id",
+      ])
+      .where("chat_id", "=", chatId)
+      .execute()
+    if (
+      mode === "reparent" &&
+      rows.some((row) => row.parent_id === node.parent_id && row.id !== node.id)
+    )
+      throw new Error(
+        "Cannot keep replies unless this message is the only child"
+      )
     const deletedIds =
-      mode === "subtree"
-        ? [
-            ...subtreeNodeIds(
-              await trx
-                .selectFrom("message_nodes")
-                .select(["id", "parent_id"])
-                .where("chat_id", "=", chatId)
-                .execute(),
-              node.id
-            ),
-          ]
-        : [node.id]
+      mode === "reparent"
+        ? [node.id]
+        : mode === "subtree"
+          ? [...subtreeNodeIds(rows, node.id)]
+          : siblingGroupNodeIds(rows, node)
     const generationRunIds = deletedIds.length
       ? await trx
           .selectFrom("generation_runs")
@@ -2057,6 +2085,28 @@ async function deleteNodeInternal(
             .execute()
       }
       await trx.deleteFrom("message_nodes").where("id", "=", node.id).execute()
+      return {
+        nodeIds: deletedIds,
+        generationRunIds: generationRunIds.map((run) => run.id),
+      }
+    }
+    if (mode === "siblings") {
+      await repairSelectionAfterSiblingGroup(
+        trx,
+        node,
+        rows,
+        new Set(deletedIds),
+        timestamp
+      )
+      const rootIds = rows
+        .filter(
+          (row) => row.parent_id === node.parent_id && row.role === node.role
+        )
+        .map((row) => row.id)
+      await trx
+        .deleteFrom("message_nodes")
+        .where("id", "in", rootIds.length ? rootIds : [node.id])
+        .execute()
       return {
         nodeIds: deletedIds,
         generationRunIds: generationRunIds.map((run) => run.id),
@@ -2228,6 +2278,55 @@ async function replacementSiblingId(
     node.id
   )
   return siblings.at(-1)?.id ?? null
+}
+
+/** Point selection at a remaining child when the chosen version was in the deleted group. */
+async function repairSelectionAfterSiblingGroup(
+  trx: Transaction<DB>,
+  node: Pick<NodeRow, "id" | "chat_id" | "parent_id">,
+  rows: Array<{
+    id: string
+    parent_id: string | null
+    sort_key: number
+    created_at: string
+    selected_child_id: string | null
+  }>,
+  deletedIds: ReadonlySet<string>,
+  timestamp: string
+) {
+  const replacementId =
+    rows
+      .filter(
+        (row) => row.parent_id === node.parent_id && !deletedIds.has(row.id)
+      )
+      .sort(siblingSort)
+      .at(-1)?.id ?? null
+  if (node.parent_id) {
+    const parent = rows.find((row) => row.id === node.parent_id)
+    if (!parent?.selected_child_id || !deletedIds.has(parent.selected_child_id))
+      return
+    await trx
+      .updateTable("message_nodes")
+      .set({ selected_child_id: replacementId, updated_at: timestamp })
+      .where("id", "=", node.parent_id)
+      .execute()
+    return
+  }
+  const chat = await trx
+    .selectFrom("chats")
+    .select("selected_root_node_id")
+    .where("id", "=", node.chat_id)
+    .executeTakeFirst()
+  if (
+    !chat?.selected_root_node_id ||
+    !deletedIds.has(chat.selected_root_node_id)
+  )
+    return
+  await trx
+    .updateTable("chats")
+    .set({ selected_root_node_id: replacementId, updated_at: timestamp })
+    .where("id", "=", node.chat_id)
+    .execute()
 }
 
 async function repairSelectionAfterDetach(

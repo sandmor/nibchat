@@ -413,7 +413,7 @@ describe("scheduled generations", () => {
     ).toBeUndefined()
   })
 
-  it("creates the user message and its generation together", async () => {
+  it("creates an image message and its scheduled generation together", async () => {
     const chat = await createChat(userId, "Deferred send")
     await expect(
       createScheduledUserMessage({
@@ -442,16 +442,41 @@ describe("scheduled generations", () => {
         .execute()
     ).toEqual([])
 
+    const attachmentId = crypto.randomUUID()
+    await db
+      .insertInto("attachments")
+      .values({
+        id: attachmentId,
+        user_id: userId,
+        filename: "photo.png",
+        media_type: "image/png",
+        byte_size: 4,
+        sha256: "b".repeat(64),
+        storage_backend: "database",
+        storage_key: null,
+        data: new Uint8Array([1, 2, 3, 4]),
+        claimed_at: null,
+        created_at: new Date().toISOString(),
+      })
+      .execute()
     const message = await createScheduledUserMessage({
       userId,
       name: "Ask later",
       chatId: chat.id,
       parentId: null,
       parts: [{ type: "text", text: "Ask later" }],
+      attachments: [{ kind: "uploaded-file", id: attachmentId }],
       at: "2099-01-01T12:00:00.000Z",
       timeZone: "UTC",
     })
     expect(message.role).toBe("user")
+    expect(
+      await db
+        .selectFrom("message_attachments")
+        .select("attachment_id")
+        .where("message_node_id", "=", message.id)
+        .executeTakeFirstOrThrow()
+    ).toEqual({ attachment_id: attachmentId })
     const stored = await db
       .selectFrom("scheduled_jobs")
       .select(["id", "name", "action_json"])

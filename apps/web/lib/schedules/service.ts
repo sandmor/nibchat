@@ -356,6 +356,12 @@ export async function createScheduledUserMessage(input: {
   if (!chat) throw new Error("Chat not found")
   await assertSchedulableChat(chat.id)
   const settings = await resolveSettingsForChat(chat, input.userId)
+  const preparedParts = await prepareAuthoredParts({
+    userId: input.userId,
+    role: "user",
+    parts: input.parts,
+    attachments: input.attachments,
+  })
   return db.transaction().execute(async (trx) => {
     const message = await createMessage({
       userId: input.userId,
@@ -364,6 +370,7 @@ export async function createScheduledUserMessage(input: {
       beforeNodeId: input.beforeNodeId,
       role: "user",
       parts: input.parts,
+      preparedParts,
       attachments: input.attachments,
       attachSelection: input.attachSelection,
       trx,

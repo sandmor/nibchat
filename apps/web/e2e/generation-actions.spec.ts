@@ -8,6 +8,35 @@ import {
   sendMessage,
 } from "./helpers/workspace"
 
+test("sends an uploaded image and receives a reply", async ({ page }) => {
+  const llm = await startMockLlm()
+  try {
+    await ensureWorkspace(page)
+    await ensureMockProvider(page, llm.baseUrl)
+    await openNewChat(page)
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "tiny.png",
+      mimeType: "image/png",
+      buffer: Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/h8sAAAAASUVORK5CYII=",
+        "base64"
+      ),
+    })
+    await expect(page.getByAltText("tiny.png")).toBeVisible()
+    await expect(page.locator('span[aria-busy="true"]')).toHaveCount(0)
+
+    llm.enqueue({ text: "IMAGE_REPLY" })
+    await sendMessage(page, "Describe this image")
+    await expectAssistantText(page, "IMAGE_REPLY")
+    expect(llm.requestCount()).toBe(1)
+    expect(JSON.stringify(llm.requestBodies()[0]?.messages)).toContain(
+      "image_url"
+    )
+  } finally {
+    await llm.close()
+  }
+})
+
 test("a retried action streams the same durable generation", async ({
   page,
 }) => {

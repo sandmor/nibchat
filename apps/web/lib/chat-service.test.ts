@@ -98,6 +98,50 @@ beforeAll(async () => {
 })
 
 describe("SQLite chat repository", () => {
+  it("saves a direct message with an uploaded image", async () => {
+    const chat = await createChat(userId, "Direct image")
+    const attachmentId = crypto.randomUUID()
+    await db
+      .insertInto("attachments")
+      .values({
+        id: attachmentId,
+        user_id: userId,
+        filename: "photo.png",
+        media_type: "image/png",
+        byte_size: 4,
+        sha256: "a".repeat(64),
+        storage_backend: "database",
+        storage_key: null,
+        data: new Uint8Array([1, 2, 3, 4]),
+        claimed_at: null,
+        created_at: new Date().toISOString(),
+      })
+      .execute()
+    const message = await createMessage({
+      userId,
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: [{ type: "text", text: "Look at this" }],
+      attachments: [{ kind: "uploaded-file", id: attachmentId }],
+    })
+    expect(nodeParts(message)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "attachment",
+          content: expect.objectContaining({ attachmentId }),
+        }),
+      ])
+    )
+    expect(
+      await db
+        .selectFrom("message_attachments")
+        .selectAll()
+        .where("message_node_id", "=", message.id)
+        .execute()
+    ).toEqual([{ message_node_id: message.id, attachment_id: attachmentId }])
+  })
+
   it("saves and idempotently materializes a branching chat template", async () => {
     const source = await createChat(userId, "Template source")
     const first = await insertNode({

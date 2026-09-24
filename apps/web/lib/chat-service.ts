@@ -873,25 +873,38 @@ export async function insertNode(input: {
 /**
  * Save one authored conversation message. Generation is deliberately a
  * separate operation, allowing either role to follow either role.
+ * Prepare attachments before opening a transaction because hydration uses the
+ * global database handle.
  */
-export async function createMessage(input: {
-  userId: string
-  chatId: string
-  parentId: string | null
-  /** Insert immediately before this sibling/root message. */
-  beforeNodeId?: string
-  role: Extract<MessageRole, "user" | "assistant">
-  parts: Parts
-  /** Parts already validated and hydrated before entering a caller's transaction. */
-  preparedParts?: Parts
-  attachments?: AttachmentReference[]
-  metadata?: Record<string, unknown>
-  /** Opt-in; omitted means the view selection is left unchanged. */
-  attachSelection?: boolean
-  trx?: Transaction<DB>
-}): Promise<NodeRow> {
-  if (!input.trx)
-    return db.transaction().execute((trx) => createMessage({ ...input, trx }))
+export async function createMessage(
+  input: {
+    userId: string
+    chatId: string
+    parentId: string | null
+    /** Insert immediately before this sibling/root message. */
+    beforeNodeId?: string
+    role: Extract<MessageRole, "user" | "assistant">
+    parts: Parts
+    attachments?: AttachmentReference[]
+    metadata?: Record<string, unknown>
+    /** Opt-in; omitted means the view selection is left unchanged. */
+    attachSelection?: boolean
+  } & (
+    | { trx: Transaction<DB>; preparedParts: Parts }
+    | { trx?: undefined; preparedParts?: never }
+  )
+): Promise<NodeRow> {
+  if (!input.trx) {
+    const preparedParts = await prepareAuthoredParts({
+      userId: input.userId,
+      role: input.role,
+      parts: input.parts,
+      attachments: input.attachments,
+    })
+    return db
+      .transaction()
+      .execute((trx) => createMessage({ ...input, preparedParts, trx }))
+  }
   const executor = input.trx
   await lockChatMutation(input.trx, input.chatId, input.userId)
   await assertChatOwner(input.chatId, input.userId, executor)
@@ -915,14 +928,7 @@ export async function createMessage(input: {
       .executeTakeFirst()
     if (!parent) throw new Error("Parent node not found in chat")
   }
-  const parts =
-    input.preparedParts ??
-    (await prepareAuthoredParts({
-      userId: input.userId,
-      role: input.role,
-      parts: input.parts,
-      attachments: input.attachments,
-    }))
+  const parts = input.preparedParts
   const persist = async (trx: Transaction<DB>) => {
     const sortKey = await allocateSortKey(trx, {
       chatId: input.chatId,
@@ -1002,6 +1008,11 @@ export async function submitUserTurnBatch(input: {
   action?: { id: string; requestHash: string; intent: string }
 }) {
   assertGenerationCount(input.generationIds.length)
+  const preparedParts = await prepareAuthoredParts({
+    userId: input.userId,
+    role: "user",
+    parts: input.parts,
+  })
   return db.transaction().execute(async (trx) => {
     const user = await createMessage({
       userId: input.userId,
@@ -1009,6 +1020,7 @@ export async function submitUserTurnBatch(input: {
       parentId: input.parentId,
       role: "user",
       parts: input.parts,
+      preparedParts,
       attachSelection: input.attachSelection,
       trx,
     })

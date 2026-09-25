@@ -100,6 +100,25 @@ describe("prompt macros", () => {
     )
   })
 
+  it("joins, measures, and changes case of text", () => {
+    const branched = defaultMacroContext({ ...context, branchId: "/1" })
+    const composed = expandPromptMacros(
+      '{{hash(concat(chatId, "|", branchId), "hex")}}',
+      branched
+    )
+    expect(composed).toBe(
+      expandPromptMacros('{{hash("chat-1|/1", "hex")}}', branched)
+    )
+    expect(composed).not.toContain("{")
+    expect(expandPromptMacros("{{concat()}}", context)).toBe("{{concat()}}")
+    expect(expandPromptMacros('{{len("\u{1F44D}")}}', context)).toBe("1")
+    expect(
+      expandPromptMacros('{{slice("\u{1F44D}!", 0, 1)}}', context)
+    ).toBe("\u{1F44D}")
+    expect(expandPromptMacros('{{lower("Chat-1")}}', context)).toBe("chat-1")
+    expect(expandPromptMacros('{{upper("Chat-1")}}', context)).toBe("CHAT-1")
+  })
+
   it("preserves unknown and invalid expressions literally", () => {
     expect(
       expandPromptMacros('{{unknown(date)}} {{time("Mars")}} {{date')

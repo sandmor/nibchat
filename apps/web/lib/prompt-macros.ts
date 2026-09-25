@@ -397,6 +397,30 @@ export const builtInMacroDefinitions: readonly MacroDefinition[] = [
     },
   },
   {
+    name: "div",
+    summary: "Integer division",
+    group: "transform",
+    snippet: "{{div(7, 2)}}",
+    evaluate: (args) => {
+      const [left, right] = args.map(integer)
+      return args.length === 2 && left != null && right != null && right !== 0n
+        ? String(left / right)
+        : null
+    },
+  },
+  {
+    name: "mod",
+    summary: "Integer remainder",
+    group: "transform",
+    snippet: "{{mod(7, 2)}}",
+    evaluate: (args) => {
+      const [left, right] = args.map(integer)
+      return args.length === 2 && left != null && right != null && right !== 0n
+        ? String(left % right)
+        : null
+    },
+  },
+  {
     name: "bitnot",
     summary: "Integer bitwise complement",
     group: "transform",
@@ -460,6 +484,35 @@ export const builtInMacroDefinitions: readonly MacroDefinition[] = [
         .slice(Number(start), end == null ? undefined : Number(end))
         .join("")
     },
+  },
+  {
+    name: "concat",
+    summary: "Join text",
+    group: "transform",
+    snippet: '{{concat(chatId, "|", branchId)}}',
+    evaluate: (args) => (args.length > 0 ? args.join("") : null),
+  },
+  {
+    name: "len",
+    summary: "Text length",
+    group: "transform",
+    snippet: "{{len(chatId)}}",
+    evaluate: (args) =>
+      args.length === 1 ? String(Array.from(args[0]!).length) : null,
+  },
+  {
+    name: "lower",
+    summary: "Lowercase text",
+    group: "transform",
+    snippet: "{{lower(chatId)}}",
+    evaluate: (args) => (args.length === 1 ? args[0]!.toLowerCase() : null),
+  },
+  {
+    name: "upper",
+    summary: "Uppercase text",
+    group: "transform",
+    snippet: "{{upper(chatId)}}",
+    evaluate: (args) => (args.length === 1 ? args[0]!.toUpperCase() : null),
   },
   {
     name: "idleDuration",

@@ -13,6 +13,7 @@ import {
   MAX_NAME,
   MAX_PROMPT_CHARS,
 } from "@/lib/limits"
+import { isSupportedSillyTavernMacro } from "@/lib/imports/silly-tavern-macros"
 import { readArchiveEntry } from "./browser-archive"
 
 type Raw = Record<string, unknown>
@@ -317,12 +318,7 @@ function characterTemplate(data: Raw) {
   for (const beginning of beginnings) {
     for (const match of beginning.matchAll(/{{\s*([^{}]+?)\s*}}/g)) {
       const macro = match[1]!.toLowerCase()
-      if (
-        macro !== "char" &&
-        macro !== "character" &&
-        macro !== "character_name"
-      )
-        unsupported.add(macro)
+      if (!isSupportedSillyTavernMacro(macro)) unsupported.add(macro)
     }
   }
   return {
@@ -335,22 +331,29 @@ function characterTemplate(data: Raw) {
   }
 }
 
-function chatVariables(metadata: Raw, warnings: string[]) {
+function chatVariables(metadata: Raw, warnings: string[], header?: Raw | null) {
   const values: Record<string, string | boolean> = {}
   const source = object(metadata.variables)
-  if (!source) return values
-  for (const [name, value] of Object.entries(source)) {
-    if (Object.keys(values).length >= MAX_COLLECTION) {
+  if (source) {
+    for (const [name, value] of Object.entries(source)) {
+      if (Object.keys(values).length >= MAX_COLLECTION) {
+        warnings.push("Skipped extra chat variables")
+        break
+      }
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+        warnings.push(`Skipped invalid chat variable ${name}`)
+        continue
+      }
+      if (typeof value === "boolean") values[name] = value
+      else if (typeof value === "string") values[name] = safe(value)
+      else warnings.push(`Skipped non-string chat variable ${name}`)
+    }
+  }
+  const userName = text(header?.user_name)?.trim()
+  if (userName && values.user_name === undefined) {
+    if (Object.keys(values).length >= MAX_COLLECTION)
       warnings.push("Skipped extra chat variables")
-      break
-    }
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-      warnings.push(`Skipped invalid chat variable ${name}`)
-      continue
-    }
-    if (typeof value === "boolean") values[name] = value
-    else if (typeof value === "string") values[name] = safe(value)
-    else warnings.push(`Skipped non-string chat variable ${name}`)
+    else values.user_name = safe(userName)
   }
   return values
 }
@@ -561,7 +564,7 @@ export const sillyTavernFormat: ImportFormatPort = {
         updatedAt: dates.at(-1) ?? new Date(0).toISOString(),
         nodeCount: graph.nodes.length,
         selectedRootId: graph.selectedRootId,
-        variables: chatVariables(metadata, warnings),
+        variables: chatVariables(metadata, warnings, header),
         nodes: graph.nodes,
         assets: graph.assets,
         warnings,

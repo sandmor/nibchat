@@ -55,7 +55,7 @@ const castleEntry = {
   key: ["castle", "fortress"],
   keysecondary: ["north"],
   selectiveLogic: 1,
-  content: "Welcome {{char}}.",
+  content: "Welcome {{char}} and {{user}}.",
   position: 7,
   outletName: "background",
   order: 250,
@@ -74,7 +74,7 @@ describe("SillyTavern World Info import", () => {
       enabled: true,
       namespace: "background",
       priority: 250,
-      content: "Welcome {{character_name}}.",
+      content: "Welcome {{vars.character_name}} and {{vars.user_name}}.",
       activation: {
         kind: "match",
         keywords: ["castle", "fortress"],
@@ -154,6 +154,6 @@ describe("SillyTavern World Info extraction", () => {
     ])
     const ada = found.find((item) => item.name === "Ada context")
     expect(ada?.fromCharacter).toBe(true)
-    expect(ada?.book.entries[0]?.content).toBe("{{character_name}}'s lab")
+    expect(ada?.book.entries[0]?.content).toBe("{{vars.character_name}}'s lab")
   })
 })

@@ -69,6 +69,7 @@ describe("SillyTavern import adapter", () => {
         "chats/Ada/Ada chat.jsonl": encoder.encode(
           [
             {
+              user_name: "Mina",
               chat_metadata: {
                 variables: { location: "library", bad: 12 },
               },
@@ -103,11 +104,13 @@ describe("SillyTavern import adapter", () => {
       variables: { character_name: "Ada", system_prompt: "Be Ada" },
       chatTemplate: {
         beginnings: ["Welcome {{char}} and {{user}}"],
-        warnings: ["The SillyTavern macro {{user}} was kept literally."],
       },
     })
     expect(JSON.stringify(chat.entity)).not.toContain("Do not import")
-    expect(chat.variables).toEqual({ location: "library" })
+    expect(chat.variables).toEqual({
+      location: "library",
+      user_name: "Mina",
+    })
     expect(chat.nodes[0]).toMatchObject({ role: "assistant", excluded: true })
     expect(chat.nodes[1]).toMatchObject({
       role: "system",

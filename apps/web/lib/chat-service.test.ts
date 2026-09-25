@@ -33,6 +33,7 @@ import {
   setChatsSpace,
   updateChat,
 } from "@/lib/chat-service"
+import { branchIdOf } from "@/lib/domain"
 import { getGenerationRun } from "@/lib/generation-runs"
 import { generationStreamStore } from "@/lib/generation-streams/default-port"
 import {
@@ -140,6 +141,65 @@ describe("SQLite chat repository", () => {
         .where("message_node_id", "=", message.id)
         .execute()
     ).toEqual([{ message_node_id: message.id, attachment_id: attachmentId }])
+  })
+
+  it("mints a branch index only when a message is continued", async () => {
+    const chat = await createChat(userId, "Branches")
+    const text = (value: string) => [{ type: "text" as const, text: value }]
+    const root = await createMessage({
+      userId,
+      chatId: chat.id,
+      parentId: null,
+      role: "user",
+      parts: text("root"),
+    })
+    const abandoned = await createMessage({
+      userId,
+      chatId: chat.id,
+      parentId: root.id,
+      role: "assistant",
+      parts: text("abandoned"),
+    })
+    const continued = await createMessage({
+      userId,
+      chatId: chat.id,
+      parentId: root.id,
+      role: "assistant",
+      parts: text("continued"),
+    })
+    await createMessage({
+      userId,
+      chatId: chat.id,
+      parentId: continued.id,
+      role: "user",
+      parts: text("child"),
+    })
+    const later = await createMessage({
+      userId,
+      chatId: chat.id,
+      parentId: root.id,
+      role: "assistant",
+      parts: text("later"),
+    })
+    const laterChild = await createMessage({
+      userId,
+      chatId: chat.id,
+      parentId: later.id,
+      role: "user",
+      parts: text("later child"),
+    })
+    const nodes = await db
+      .selectFrom("message_nodes")
+      .select(["id", "parent_id", "branch_index"])
+      .where("chat_id", "=", chat.id)
+      .execute()
+    const indexOf = (id: string) =>
+      nodes.find((row) => row.id === id)?.branch_index
+    expect(indexOf(abandoned.id)).toBeNull()
+    expect(indexOf(root.id)).toBe(0)
+    expect(indexOf(continued.id)).toBe(0)
+    expect(indexOf(later.id)).toBe(1)
+    expect(branchIdOf(nodes, laterChild.id)).toBe("/1")
   })
 
   it("saves and idempotently materializes a branching chat template", async () => {

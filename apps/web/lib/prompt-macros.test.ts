@@ -65,6 +65,19 @@ describe("prompt macros", () => {
 
   it("expands chat identity and integer transforms", () => {
     expect(expandPromptMacros("{{chatId}}", context)).toBe("chat-1")
+    expect(expandPromptMacros("{{branchId}}", context)).toBe("{{branchId}}")
+    expect(
+      expandPromptMacros(
+        "{{branchId}}",
+        defaultMacroContext({ ...context, branchId: "" })
+      )
+    ).toBe("")
+    expect(
+      expandPromptMacros(
+        "{{branchId}}",
+        defaultMacroContext({ ...context, branchId: "/1" })
+      )
+    ).toBe("/1")
     expect(expandPromptMacros("{{chatCreatedAt}}", context)).toBe(
       "2026-04-16T08:00:00.000Z"
     )

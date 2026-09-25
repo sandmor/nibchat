@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest"
 import {
   ancestorPath,
+  branchIdForAssistantAfterUserMessage,
+  branchIdForContinuation,
+  branchIdOf,
   resolveActivePath,
   subtreeNodeIds,
   textFromParts,
@@ -18,6 +21,7 @@ const node = (
   selected_child_id,
   sort_key: 0,
   revision: 0,
+  branch_index: null,
   role: "user",
   parts_json: "[]",
   search_text: "",
@@ -99,5 +103,35 @@ describe("tree navigation", () => {
       node("c", "root", null),
     ]
     expect([...subtreeNodeIds(nodes, "a")].sort()).toEqual(["a", "b"])
+  })
+  it("builds a stable branch id from continued siblings", () => {
+    const nodes = [
+      { ...node("root", null, "b"), branch_index: 0 },
+      node("abandoned", "root", null),
+      { ...node("b", "root", "c"), branch_index: 0 },
+      { ...node("c", "b", null), branch_index: 0 },
+      { ...node("e", "root", "f"), branch_index: 1 },
+      node("f", "e", null),
+      { ...node("f2", "e", "deeper"), branch_index: 2 },
+      node("deeper", "f2", null),
+    ]
+    expect(branchIdOf(nodes, "c")).toBe("")
+    expect(branchIdOf(nodes, "f")).toBe("/1")
+    expect(branchIdOf(nodes, "deeper")).toBe("/1/2")
+    expect(branchIdOf(nodes, "e")).toBe("")
+    expect(branchIdForContinuation(nodes, "e")).toBe("/1")
+    expect(branchIdForContinuation(nodes, "abandoned")).toBe("/2")
+  })
+
+  it("predicts the assistant id under a new user message", () => {
+    const nodes = [
+      { ...node("root", null, "kept"), branch_index: 0 },
+      { ...node("kept", "root", "reply"), branch_index: 0 },
+      node("reply", "kept", null),
+    ]
+    expect(branchIdForContinuation(nodes, "root")).toBe("")
+    expect(branchIdForAssistantAfterUserMessage(nodes, "root")).toBe("/1")
+    expect(branchIdForAssistantAfterUserMessage(nodes, null)).toBe("/1")
+    expect(branchIdForAssistantAfterUserMessage([], null)).toBe("")
   })
 })

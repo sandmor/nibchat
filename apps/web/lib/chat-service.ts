@@ -298,6 +298,42 @@ async function lockChatMutation(
     throw new Error("Chat not found")
 }
 
+/** Assign a branch index the first time a message is continued. */
+export async function mintParentBranchIndex(
+  trx: Transaction<DB>,
+  chatId: string,
+  parentId: string
+) {
+  const parent = await trx
+    .selectFrom("message_nodes")
+    .select(["id", "parent_id", "branch_index"])
+    .where("id", "=", parentId)
+    .where("chat_id", "=", chatId)
+    .executeTakeFirst()
+  if (!parent || parent.branch_index != null) return
+  let siblings = trx
+    .selectFrom("message_nodes")
+    .select("branch_index")
+    .where("chat_id", "=", chatId)
+    .where("id", "!=", parentId)
+  siblings =
+    parent.parent_id == null
+      ? siblings.where("parent_id", "is", null)
+      : siblings.where("parent_id", "=", parent.parent_id)
+  const rows = await siblings.execute()
+  const maxIndex = rows.reduce(
+    (highest, row) =>
+      row.branch_index == null ? highest : Math.max(highest, row.branch_index),
+    -1
+  )
+  await trx
+    .updateTable("message_nodes")
+    .set({ branch_index: maxIndex + 1 })
+    .where("id", "=", parentId)
+    .where("branch_index", "is", null)
+    .execute()
+}
+
 async function assertChatOwner(
   chatId: string,
   userId: string,
@@ -506,6 +542,7 @@ async function assertNodeOwner(
       "message_nodes.parts_json",
       "message_nodes.search_text",
       "message_nodes.metadata_json",
+      "message_nodes.branch_index",
       "message_nodes.excluded_from_context",
       "message_nodes.status",
       "message_nodes.created_at",
@@ -833,6 +870,7 @@ export async function insertNode(input: {
     parts_json: JSON.stringify(input.parts),
     search_text: searchTextFromParts(input.parts),
     metadata_json: JSON.stringify(input.metadata ?? {}),
+    branch_index: null,
     excluded_from_context: toDbBool(false),
     status: input.status ?? ("complete" as const),
     created_at: timestamp,
@@ -845,6 +883,8 @@ export async function insertNode(input: {
         chatId: input.chatId,
         parentId: input.parentId,
       }))
+    if (input.parentId)
+      await mintParentBranchIndex(trx, input.chatId, input.parentId)
     await trx.insertInto("message_nodes").values(node).execute()
     if (input.generationId)
       await insertGenerationRun(trx, {
@@ -4150,6 +4190,7 @@ async function insertRestoredMessageNodes(
         parts_json: node.parts_json,
         search_text: node.search_text,
         metadata_json: node.metadata_json,
+        branch_index: node.branch_index ?? null,
         excluded_from_context: toDbBool(node.excluded_from_context),
         status: node.status,
         created_at: node.created_at,

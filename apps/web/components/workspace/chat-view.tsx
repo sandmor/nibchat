@@ -48,7 +48,12 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { cn } from "@/lib/utils"
-import { parseJson, resolveActivePath } from "@/lib/domain"
+import {
+  branchIdForContinuation,
+  branchIdsOf,
+  parseJson,
+  resolveActivePath,
+} from "@/lib/domain"
 import { displayChatTitle } from "@/lib/chat-title"
 import { type PromptVariableValues } from "@/lib/prompt-stack"
 import { firstAvailableModel } from "@/lib/provider-models"
@@ -275,6 +280,7 @@ function draftRowsFromTemplate(document: ChatTemplateDocument): NodeRow[] {
     selected_child_id: node.selectedChildId,
     sort_key: node.sortKey,
     revision: 0,
+    branch_index: node.branchIndex,
     role: node.role,
     parts_json: JSON.stringify(node.parts),
     search_text: "",
@@ -284,6 +290,17 @@ function draftRowsFromTemplate(document: ChatTemplateDocument): NodeRow[] {
     created_at: timestamp,
     updated_at: timestamp,
   }))
+}
+
+/** Parent a composer send attaches to. A paused tool turn stays a sibling. */
+function composerAttachParent(
+  path: ReadonlyArray<Pick<NodeRow, "id" | "parent_id" | "role" | "status">>
+): string | null {
+  const tip = path.at(-1)
+  if (!tip) return null
+  if (tip.role === "assistant" && tip.status === "awaiting_input")
+    return tip.parent_id
+  return tip.id
 }
 
 function draftTemplateEditSlots() {
@@ -1301,10 +1318,20 @@ export function ChatView({
       nodes,
       data.chat?.selected_root_node_id ?? draftTemplateRootId
     )
+    const leaf = literalPath.at(-1)
+    const branchIds = branchIdsOf(nodes)
+    // Context entries use the assistant this path was generated for. A user
+    // tip has not been continued yet, so the reply id includes that tip's index.
+    const stackBranchId = !leaf
+      ? ""
+      : leaf.role === "user"
+        ? branchIdForContinuation(nodes, leaf.id)
+        : (branchIds.get(leaf.id) ?? "")
     const baseMacroContext = {
       now,
       timeZone,
       idleSince: idleSinceFromPath(literalPath),
+      branchId: stackBranchId,
       ...(data.chat
         ? {
             chat: {
@@ -1343,10 +1370,14 @@ export function ChatView({
       contextEntries: contextEntries.namespaces,
     }
     return nodes.map((node) => {
+      const nodeContext = {
+        ...macroContext,
+        branchId: branchIds.get(node.id) ?? "",
+      }
       const literalParts = parseJson<Parts>(node.parts_json, [])
       const parts = literalParts.map((part) =>
         part.type === "text"
-          ? { ...part, text: expandPromptMacros(part.text, macroContext) }
+          ? { ...part, text: expandPromptMacros(part.text, nodeContext) }
           : part
       )
       return {
@@ -1356,13 +1387,13 @@ export function ChatView({
           ...parseJson<Record<string, unknown>>(node.metadata_json, {}),
           literalParts,
           liveMacroContext: {
-            ...macroContext,
+            ...nodeContext,
             now: now.toISOString(),
-            ...(macroContext.chat
+            ...(nodeContext.chat
               ? {
                   chat: {
-                    ...macroContext.chat,
-                    createdAt: macroContext.chat.createdAt.toISOString(),
+                    ...nodeContext.chat,
+                    createdAt: nodeContext.chat.createdAt.toISOString(),
                   },
                 }
               : {}),
@@ -1787,14 +1818,10 @@ export function ChatView({
    * sibling under the tip's parent so an unfinished Q&A is not buried under
    * a new user message child.
    */
-  const composerParentId = useMemo(() => {
-    const tip = activePath.at(-1)
-    if (!tip) return null
-    if (tip.role === "assistant" && tip.status === "awaiting_input") {
-      return tip.parent_id
-    }
-    return tip.id
-  }, [activePath])
+  const composerParentId = useMemo(
+    () => composerAttachParent(activePath),
+    [activePath]
+  )
 
   async function streamSubmit(count = 1) {
     const { text, attachments } = readComposerDraft(linearComposerSlot)

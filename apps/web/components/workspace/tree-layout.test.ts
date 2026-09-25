@@ -28,6 +28,7 @@ const node = (
   selected_child_id: null,
   sort_key: 0,
   revision: 0,
+  branch_index: null,
   role: "user",
   parts_json: "[]",
   search_text,

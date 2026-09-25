@@ -57,6 +57,7 @@ function streamingAssistant(
       excluded_from_context: false,
       sort_key: 0,
       revision: 0,
+      branch_index: null,
       created_at: "",
       updated_at: "",
     },
@@ -216,6 +217,7 @@ describe("patchTerminalGeneration", () => {
         excluded_from_context: false,
         sort_key: 0,
         revision: 0,
+        branch_index: null,
         created_at: "2026-01-01T00:00:00.000Z",
         updated_at: "2026-01-01T00:00:00.000Z",
       },
@@ -242,6 +244,7 @@ describe("patchTerminalGeneration", () => {
       excluded_from_context: false,
       sort_key: 1,
       revision: 0,
+      branch_index: null,
       created_at: "2026-01-01T00:00:01.000Z",
       updated_at: "2026-01-01T00:00:01.000Z",
     }

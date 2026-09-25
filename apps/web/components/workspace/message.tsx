@@ -384,6 +384,7 @@ export const Message = memo(function Message({
       ...(raw.contextEntries && typeof raw.contextEntries === "object"
         ? { contextEntries: raw.contextEntries as Record<string, string> }
         : {}),
+      ...(typeof raw.branchId === "string" ? { branchId: raw.branchId } : {}),
     }
   }, [metadata.liveMacroContext])
   const editSlot = messageEditSlotId(node.chat_id, node.id)

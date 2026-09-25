@@ -1,6 +1,12 @@
 import { buildModelMessages } from "@/lib/agent/build-messages"
 import { searchTextFromParts } from "@/lib/agent/parts"
-import { ancestorPath, parseJson } from "@/lib/domain"
+import {
+  ancestorPath,
+  branchIdForAssistantAfterUserMessage,
+  branchIdForContinuation,
+  branchIdOf,
+  parseJson,
+} from "@/lib/domain"
 import {
   assemblePromptContext,
   resolvePromptVariableValues,
@@ -326,6 +332,12 @@ export type AssembleContextPreviewInput = {
   contextScanDepth?: number | null
   /** Unsent composer text participates in activation without becoming history. */
   draftText?: string
+  /**
+   * Send will insert a user message under `contextParentId` before generating.
+   * An empty composer generates an assistant directly under that parent.
+   * Defaults to whether `draftText` is non-empty.
+   */
+  pendingUserTurn?: boolean
 }
 
 function overlayContextNodes(
@@ -348,6 +360,33 @@ function overlayContextNodes(
       }),
     }
   })
+}
+
+/**
+ * Branch id generation puts on the prompt stack and context entries.
+ * A user turn is minted when its assistant is created, so the reply's id is
+ * one step past the user message. Editing a user message forks a sibling
+ * first; an assistant edit is already that generated message.
+ */
+function previewStackBranchId(
+  nodes: NodeRow[],
+  input: Pick<
+    AssembleContextPreviewInput,
+    "contextParentId" | "draftText" | "overlay" | "pendingUserTurn"
+  >
+): string {
+  if (input.overlay) {
+    const edited = nodes.find((node) => node.id === input.overlay?.nodeId)
+    if (!edited) return ""
+    if (edited.role === "user")
+      return branchIdForAssistantAfterUserMessage(nodes, edited.parent_id)
+    return branchIdOf(nodes, edited.id)
+  }
+  const pendingUserTurn =
+    input.pendingUserTurn ?? Boolean(input.draftText?.trim())
+  return pendingUserTurn
+    ? branchIdForAssistantAfterUserMessage(nodes, input.contextParentId)
+    : branchIdForContinuation(nodes, input.contextParentId)
 }
 
 export function assembleContextPreview(
@@ -378,6 +417,7 @@ export function assembleContextPreview(
     timeZone: normalizeTimeZone(input.timeZone),
     idleSince: idleSinceFromPath(contextNodes),
     ...(chat ? { chat } : {}),
+    branchId: previewStackBranchId(nodes, input),
     variables: resolvePromptVariableValues(
       resolved.stack.variables ?? [],
       input.variableOverrides

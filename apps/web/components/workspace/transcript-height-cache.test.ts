@@ -33,6 +33,7 @@ function row(
       created_at: "2026-01-01T00:00:00.000Z",
       updated_at: "2026-01-01T00:00:00.000Z",
       ...overrides,
+      branch_index: overrides.branch_index ?? null,
     },
   }
 }

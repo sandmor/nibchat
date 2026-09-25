@@ -29,6 +29,9 @@ describe("chat template graph", () => {
       ],
     })
     expect(document.selectedRootId).toBe("second")
+    expect(document.nodes.every((node) => node.branchIndex === null)).toBe(
+      true
+    )
   })
 
   it("rejects broken selections and cycles", () => {

@@ -14,6 +14,8 @@ const templateNodeSchema = z.object({
   role: z.enum(["user", "assistant", "system", "tool"]),
   parts: z.array(messagePartSchema),
   excludedFromContext: z.boolean(),
+  /** Copied from the source message. Absent on templates saved before branch ids. */
+  branchIndex: z.number().int().nonnegative().nullable().default(null),
 })
 
 export const chatTemplateDocumentSchema = z
@@ -107,6 +109,7 @@ export function templateActiveLeaf(document: {
         selected_child_id: node.selectedChildId,
         sort_key: node.sortKey,
         revision: 0,
+        branch_index: null,
         role: node.role,
         parts_json: "[]",
         search_text: "",
@@ -155,6 +158,7 @@ export function chatTemplateFromNodes(
       role: node.role,
       parts: portableParts(parseJson<Parts>(node.parts_json, [])),
       excludedFromContext: Boolean(node.excluded_from_context),
+      branchIndex: node.branch_index,
     })),
   })
 }

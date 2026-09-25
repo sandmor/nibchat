@@ -34,6 +34,7 @@ const nodeRowSchema = z
     selected_child_id: z.string().nullable(),
     sort_key: z.number(),
     revision: z.number().int().nonnegative(),
+    branch_index: z.number().int().nonnegative().nullable().optional(),
     role: z.enum(["user", "assistant", "system", "tool"]),
     parts_json: z.string(),
     search_text: z.string(),

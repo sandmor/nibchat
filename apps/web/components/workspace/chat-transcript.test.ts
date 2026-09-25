@@ -41,6 +41,7 @@ function node(
     created_at: "",
     updated_at: "",
     ...overrides,
+    branch_index: overrides.branch_index ?? null,
   }
 }
 

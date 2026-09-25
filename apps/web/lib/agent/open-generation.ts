@@ -16,6 +16,7 @@ import {
   type ResolvedSettings,
 } from "@/lib/chat-settings"
 import { db } from "@/lib/db"
+import { branchIdOf } from "@/lib/domain"
 import { formatSpaceRules } from "@/lib/spaces"
 import {
   modelFor,
@@ -144,10 +145,6 @@ export async function continueChatGeneration(input: {
   }
   const settings = await resolveSettingsForChat(chat, input.userId)
   const config = await withModelFallback(input.userId, settings.effective.model)
-  const languageModel = await modelFor(input.userId, config, {
-    chatId: chat.id,
-    timeZone: input.timeZone,
-  })
   const responsesReplay = await responsesReplayTargetFor(input.userId, config)
   const generationId = input.existing?.generationId ?? crypto.randomUUID()
   const assistantMeta = {
@@ -170,6 +167,16 @@ export async function continueChatGeneration(input: {
         assistantMetadata: assistantMeta,
         attachSelection: input.attachSelection,
       })
+  const branchNodes = await db
+    .selectFrom("message_nodes")
+    .select(["id", "parent_id", "branch_index"])
+    .where("chat_id", "=", chat.id)
+    .execute()
+  const languageModel = await modelFor(input.userId, config, {
+    chatId: chat.id,
+    timeZone: input.timeZone,
+    branchId: branchIdOf(branchNodes, assistant.id),
+  })
   await input.onStarted?.(assistant.id)
   return startChatGeneration({
     userId: input.userId,

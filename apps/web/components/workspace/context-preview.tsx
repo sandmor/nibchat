@@ -187,7 +187,8 @@ function useAssembledContextPreview(
   contextParentId: string | null,
   refreshedAt: Date | null,
   overlay?: ContextPreviewOverlay,
-  draftText?: string
+  draftText?: string,
+  pendingUserTurn?: boolean
 ) {
   const graph = useContextPreviewGraph()
   const trpc = useTRPC()
@@ -235,6 +236,7 @@ function useAssembledContextPreview(
       spaceRulesText: graph.spaceRulesText,
       contextScanDepth: graph.modelConfig.contextScanDepth,
       draftText,
+      pendingUserTurn,
     })
   }, [
     graph,
@@ -242,6 +244,7 @@ function useAssembledContextPreview(
     overlay,
     refreshedAt,
     draftText,
+    pendingUserTurn,
     settingsQuery.data,
     surfacesQuery.data,
     timeZone,
@@ -589,7 +592,8 @@ export function ContextPreviewStrip({
     contextParentId,
     refreshedAt,
     overlay,
-    overlay ? undefined : draft?.text
+    overlay ? undefined : draft?.text,
+    !overlay && Boolean(draft?.text.trim() || draft?.attachments.length)
   )
   const merged = draft
     ? mergeDraftSummary(data.summary, draft, data.pdfInputMode)

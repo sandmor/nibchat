@@ -24,6 +24,7 @@ function node(id: string): NodeRow {
     selected_child_id: null,
     sort_key: 0,
     revision: 0,
+    branch_index: null,
     parts_json: "[]",
     search_text: "",
     metadata_json: "{}",

@@ -29,7 +29,12 @@ describe("applySchema", () => {
       dflt_value: string | null
     }>
     expect(columns.map((column) => column.name)).toEqual(
-      expect.arrayContaining(["sort_key", "revision", "excluded_from_context"])
+      expect.arrayContaining([
+        "sort_key",
+        "revision",
+        "branch_index",
+        "excluded_from_context",
+      ])
     )
     expect(columns).toContainEqual(
       expect.objectContaining({

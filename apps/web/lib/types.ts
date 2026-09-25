@@ -149,6 +149,12 @@ export interface MessageNodesTable {
   sort_key: number
   /** Optimistic-concurrency revision for destructive replacement. */
   revision: number
+  /**
+   * Set when this message first receives a child. `0` continues the parent
+   * branch id; higher values append `/{n}` for later continued siblings.
+   * Null means nothing has continued from here.
+   */
+  branch_index: number | null
   role: MessageRole
   parts_json: string
   search_text: string

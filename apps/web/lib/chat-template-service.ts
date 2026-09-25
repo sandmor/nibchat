@@ -609,6 +609,7 @@ export async function createChatFromTemplate(input: TemplateChatInput) {
           selected_child_id: selectedChildId ? ids.get(selectedChildId)! : null,
           sort_key: node.sortKey,
           revision: 0,
+          branch_index: node.branchIndex,
           role: node.role,
           parts_json: JSON.stringify(parts),
           search_text: searchTextFromParts(parts),

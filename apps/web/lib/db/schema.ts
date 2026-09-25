@@ -58,7 +58,7 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create table if not exists chat_context_books (chat_id text not null references chats(id) on delete cascade, context_book_id text not null references context_books(id) on delete cascade, position integer not null, primary key(chat_id, context_book_id))`.execute(
     db
   )
-  await sql`create table if not exists message_nodes (id text primary key, chat_id text not null references chats(id) on delete cascade, parent_id text references message_nodes(id) on delete cascade, selected_child_id text, sort_key ${sortKeyType} not null, revision integer not null default 0, role text not null, parts_json text not null, search_text text not null, metadata_json text not null, excluded_from_context boolean not null default false, status text not null, created_at text not null, updated_at text not null)`.execute(
+  await sql`create table if not exists message_nodes (id text primary key, chat_id text not null references chats(id) on delete cascade, parent_id text references message_nodes(id) on delete cascade, selected_child_id text, sort_key ${sortKeyType} not null, revision integer not null default 0, branch_index integer, role text not null, parts_json text not null, search_text text not null, metadata_json text not null, excluded_from_context boolean not null default false, status text not null, created_at text not null, updated_at text not null)`.execute(
     db
   )
   await sql`create table if not exists generation_runs (id text primary key, node_id text not null unique references message_nodes(id) on delete cascade, chat_id text not null references chats(id) on delete cascade, started_at text not null, state text not null)`.execute(

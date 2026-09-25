@@ -11,6 +11,7 @@ import { messagePartsSchema, searchTextFromParts } from "@/lib/agent/parts"
 import { parseSettingValues, settingValuesToJson } from "@/lib/chat-settings"
 import {
   prepareChatRow,
+  mintParentBranchIndex,
   createSpace,
   updateSpace,
   createContextBook,
@@ -886,12 +887,19 @@ export async function publishImport(
                 : {}),
             },
           }),
+          branch_index: null,
           excluded_from_context: toDbBool(Boolean(node.excluded)),
           status: "complete",
           created_at: node.created_at,
           updated_at: node.created_at,
         })
         .execute()
+      if (node.parent_source_id)
+        await mintParentBranchIndex(
+          trx,
+          chat.id,
+          ids.get(node.parent_source_id)!
+        )
       const linked = parts.filter(
         (part): part is AttachmentPart => part.type === "attachment"
       )

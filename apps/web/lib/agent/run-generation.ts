@@ -26,7 +26,12 @@ import {
   finalizeStreamingAssistantWithSnapshot,
   restoreAwaitingInput,
 } from "@/lib/chat-service"
-import { ancestorPath, parseJson } from "@/lib/domain"
+import {
+  ancestorPath,
+  branchIdForContinuation,
+  branchIdsOf,
+  parseJson,
+} from "@/lib/domain"
 import {
   registerGeneration,
   unregisterGeneration,
@@ -258,6 +263,10 @@ export async function startGenerationProducer(
     const contextNodes = contextLeafId
       ? ancestorPath(nodesForContext, contextLeafId)
       : []
+    const branchIds = branchIdsOf(nodesForContext)
+    const assistantBranchId =
+      branchIds.get(assistant.id) ??
+      branchIdForContinuation(nodesForContext, contextLeafId)
     const historyEnabled = normalizePromptStack(promptStack).modules.some(
       (module) => module.kind === "history" && module.enabled
     )
@@ -290,6 +299,7 @@ export async function startGenerationProducer(
       now: new Date(),
       timeZone: normalizeTimeZone(timeZone),
       idleSince: idleSinceFromPath(contextNodes),
+      branchId: assistantBranchId,
       ...(chatIdentity ? { chat: chatIdentity } : {}),
       variables: resolvePromptVariableValues(
         promptStack.variables ?? [],
@@ -328,7 +338,10 @@ export async function startGenerationProducer(
               part.type === "text"
                 ? {
                     ...part,
-                    text: expandPromptMacros(part.text, macroContextWithBooks),
+                    text: expandPromptMacros(part.text, {
+                      ...macroContextWithBooks,
+                      branchId: branchIds.get(node.id) ?? "",
+                    }),
                   }
                 : part
             )

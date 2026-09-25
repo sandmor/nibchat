@@ -187,6 +187,8 @@ export async function modelFor(
     requireConfiguredModel?: boolean
     chatId?: string
     timeZone?: string
+    /** Branch id of the message this request is generating. */
+    branchId?: string
   }
 ): Promise<LanguageModel> {
   const profile = config.providerId
@@ -228,6 +230,7 @@ export async function modelFor(
       now: new Date(),
       timeZone: normalizeTimeZone(options?.timeZone),
       ...(chatIdentity ? { chat: chatIdentity } : {}),
+      ...(options?.branchId != null ? { branchId: options.branchId } : {}),
     },
   })
   const configured = enabledModels.find((item) => item.id === model)

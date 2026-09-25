@@ -38,6 +38,8 @@ export type MacroContext = {
   idleSince?: Date
   /** Stable chat identity, when rendering a conversation-scoped value. */
   chat?: { id: string; createdAt: Date }
+  /** Branch id of the message this expansion is about. Empty continues the main spine. */
+  branchId?: string
   /** Prompt-stack variables resolved for this conversation. */
   variables?: Readonly<Record<string, PromptVariableValue>>
   /** Context-book content, resolved once before prompt expansion. */
@@ -96,7 +98,7 @@ export const SAMPLE_MACRO_CHAT = {
 
 /** True when expansion needs a conversation, not just the current time. */
 export function valueNeedsChatContext(value: string): boolean {
-  return /\b(chatId|chatCreatedAt)\b/.test(value)
+  return /\b(chatId|chatCreatedAt|branchId)\b/.test(value)
 }
 
 /** Header rendering treats leftover braces as an unresolved entry. */
@@ -123,6 +125,7 @@ export function catalogMacroContext(
     timeZone,
     idleSince: new Date(now.getTime() - 2 * 60 * 60 * 1000),
     chat: SAMPLE_MACRO_CHAT,
+    branchId: "/1",
     ...(variables ? { variables } : {}),
   })
 }
@@ -220,6 +223,7 @@ export function defaultMacroContext(
     timeZone: normalizeTimeZone(src.timeZone),
     ...(src.idleSince ? { idleSince: src.idleSince } : {}),
     ...(src.chat ? { chat: src.chat } : {}),
+    ...(src.branchId != null ? { branchId: src.branchId } : {}),
     ...(src.variables ? { variables: src.variables } : {}),
     ...(src.contextEntries ? { contextEntries: src.contextEntries } : {}),
   }
@@ -360,6 +364,13 @@ export const builtInMacroDefinitions: readonly MacroDefinition[] = [
         ? String(context.chat.createdAt.getTime())
         : dayjs(context.chat.createdAt).tz(context.timeZone).format(args[0]!)
     },
+  },
+  {
+    name: "branchId",
+    summary: "Current branch ID",
+    group: "chat",
+    evaluate: (args, context) =>
+      noArgs(args) && context.branchId != null ? context.branchId : null,
   },
   {
     name: "add",

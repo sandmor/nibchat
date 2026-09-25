@@ -30,7 +30,7 @@ import {
 } from "@/lib/generation-actions"
 import { generationActionSseResponse } from "@/lib/generation-actions-stream"
 import { generationLifetime } from "@/lib/generation-streams/default-port"
-import { parseJson } from "@/lib/domain"
+import { branchIdOf, parseJson } from "@/lib/domain"
 import { formatProviderError } from "@/lib/provider-errors"
 import {
   modelFor,
@@ -89,10 +89,6 @@ export async function startGenerationAction(input: {
   }
   const settings = await resolveSettingsForChat(chat, user.id)
   let config = await withModelFallback(user.id, settings.effective.model)
-  let languageModel = await modelFor(user.id, config, {
-    chatId: chat.id,
-    timeZone: body.timeZone,
-  })
   let responsesReplay = await responsesReplayTargetFor(user.id, config)
   let assistantMeta = generationAssistantMeta(config, responsesReplay)
   const replyCount = body.intent === "resume" ? 1 : (body.replyCount ?? 1)
@@ -213,11 +209,6 @@ export async function startGenerationAction(input: {
       // selected provider would create a node whose parts have incompatible
       // provenance, so retain the original selection.
       config = priorConfig
-      languageModel = await modelFor(user.id, config, {
-        chatId: chat.id,
-        timeZone: body.timeZone,
-        requireConfiguredModel: true,
-      })
       responsesReplay = await responsesReplayTargetFor(user.id, config)
       assistantMeta = generationAssistantMeta(config, responsesReplay)
     }
@@ -292,6 +283,12 @@ export async function startGenerationAction(input: {
     contextLeafId = assistant.id
     seedParts = nextParts
     assistants = [assistant]
+    const languageModel = await modelFor(user.id, config, {
+      chatId: chat.id,
+      timeZone: body.timeZone,
+      requireConfiguredModel: Boolean(priorConfig),
+      branchId: branchIdOf(await branchNodesFor(chat.id), assistant.id),
+    })
 
     try {
       await startChatGeneration({
@@ -332,16 +329,19 @@ export async function startGenerationAction(input: {
     }
   }
 
+  // Assistant siblings share a parent, so they share a branch id. Read the
+  // graph once and reuse that result across the batch.
+  const branchId = branchNodesFor(chat.id).then((nodes) =>
+    branchIdOf(nodes, assistants[0]!.id)
+  )
   const startup = Promise.allSettled(
     assistants.map(async (assistant, index) => {
       try {
-        const siblingModel =
-          index === 0
-            ? languageModel
-            : await modelFor(user.id, config, {
-                chatId: chat.id,
-                timeZone: body.timeZone,
-              })
+        const siblingModel = await modelFor(user.id, config, {
+          chatId: chat.id,
+          timeZone: body.timeZone,
+          branchId: await branchId,
+        })
         await startChatGeneration({
           userId: user.id,
           chat,
@@ -379,6 +379,14 @@ export async function startGenerationAction(input: {
   const receipt = await getGenerationAction(body.actionId, user.id)
   if (!receipt) throw new Error("Action receipt was not saved")
   return generationActionSseResponse(receipt, null)
+}
+
+async function branchNodesFor(chatId: string) {
+  return db
+    .selectFrom("message_nodes")
+    .select(["id", "parent_id", "branch_index"])
+    .where("chat_id", "=", chatId)
+    .execute()
 }
 
 function parseGenerationConfig(value: unknown): ModelConfig | undefined {

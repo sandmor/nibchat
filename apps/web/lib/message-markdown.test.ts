@@ -19,6 +19,7 @@ const node = (
   selected_child_id,
   sort_key: 0,
   revision: 0,
+  branch_index: null,
   role,
   parts_json: JSON.stringify(parts),
   search_text: "",

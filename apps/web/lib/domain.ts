@@ -49,13 +49,126 @@ export function ancestorPath(nodes: NodeRow[], nodeId: string) {
   const seen = new Set<string>()
   let current = byId.get(nodeId)
   while (current) {
-    if (seen.has(current.id))
-      throw new Error("Message graph contains a cycle")
+    if (seen.has(current.id)) throw new Error("Message graph contains a cycle")
     seen.add(current.id)
     path.unshift(current)
     current = current.parent_id ? byId.get(current.parent_id) : undefined
   }
   return path
+}
+
+/**
+ * Branch id of a message. The node's own index is not part of its id.
+ * A parent index above 0 appends `/{index}`; null and 0 leave the parent id.
+ * A message with no parent is the empty id.
+ */
+export function branchIdOf(
+  nodes: ReadonlyArray<{
+    id: string
+    parent_id: string | null
+    branch_index: number | null
+  }>,
+  nodeId: string
+): string {
+  return branchIdsOf(nodes).get(nodeId) ?? ""
+}
+
+/** Resolve branch ids for a whole graph in linear time. */
+export function branchIdsOf(
+  nodes: ReadonlyArray<{
+    id: string
+    parent_id: string | null
+    branch_index: number | null
+  }>
+): Map<string, string> {
+  const byId = new Map(nodes.map((node) => [node.id, node]))
+  const branchIds = new Map<string, string>()
+
+  for (const node of nodes) {
+    if (branchIds.has(node.id)) continue
+    const chain: Array<(typeof nodes)[number]> = []
+    const seen = new Set<string>()
+    let current: (typeof nodes)[number] | undefined = node
+    while (current && !branchIds.has(current.id) && !seen.has(current.id)) {
+      seen.add(current.id)
+      chain.push(current)
+      current = current.parent_id ? byId.get(current.parent_id) : undefined
+    }
+
+    let branchId = current ? (branchIds.get(current.id) ?? "") : ""
+    for (let index = chain.length - 1; index >= 0; index--) {
+      const child = chain[index]!
+      const parent = child.parent_id ? byId.get(child.parent_id) : undefined
+      if (parent) {
+        branchId = branchIds.get(parent.id) ?? branchId
+        if (parent.branch_index != null && parent.branch_index > 0)
+          branchId += `/${parent.branch_index}`
+      } else {
+        branchId = ""
+      }
+      branchIds.set(child.id, branchId)
+    }
+  }
+
+  return branchIds
+}
+
+/** Branch id a new child of `parentId` will receive once that parent is minted. */
+export function branchIdForContinuation(
+  nodes: ReadonlyArray<{
+    id: string
+    parent_id: string | null
+    branch_index: number | null
+  }>,
+  parentId: string | null
+): string {
+  if (!parentId) return ""
+  const parent = nodes.find((node) => node.id === parentId)
+  if (!parent) return ""
+  const index =
+    parent.branch_index ??
+    nextSiblingBranchIndex(
+      nodes.filter(
+        (node) => node.parent_id === parent.parent_id && node.id !== parent.id
+      )
+    )
+  const base = branchIdOf(nodes, parentId)
+  return index > 0 ? `${base}/${index}` : base
+}
+
+/**
+ * Branch id of the assistant generated after a new user message is attached
+ * under `parentId`. That user message is minted when the assistant is created,
+ * so a later sibling's reply appends `/{n}` even though the user message's own
+ * id does not.
+ */
+export function branchIdForAssistantAfterUserMessage(
+  nodes: ReadonlyArray<{
+    id: string
+    parent_id: string | null
+    branch_index: number | null
+  }>,
+  parentId: string | null
+): string {
+  const userBranchId = branchIdForContinuation(nodes, parentId)
+  const userIndex = nextSiblingBranchIndex(
+    nodes.filter((node) => node.parent_id === parentId)
+  )
+  return userIndex > 0 ? `${userBranchId}/${userIndex}` : userBranchId
+}
+
+function nextSiblingBranchIndex(
+  siblings: ReadonlyArray<{ branch_index: number | null }>
+) {
+  return (
+    siblings.reduce(
+      (highest, row) =>
+        row.branch_index == null
+          ? highest
+          : Math.max(highest, row.branch_index),
+      -1
+    ) + 1
+  )
 }
 
 /** Collect a node and all descendants by parent_id (for subtree abort/delete). */

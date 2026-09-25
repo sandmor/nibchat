@@ -185,6 +185,7 @@ export function seedGenerationBatch(
         selected_child_id: null,
         sort_key: sortKey,
         revision: 0,
+        branch_index: null,
         role: "assistant" as const,
         parts_json: "[]",
         search_text: "",

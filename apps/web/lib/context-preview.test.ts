@@ -42,6 +42,7 @@ function node(
     created_at: "",
     updated_at: "",
     ...extra,
+    branch_index: extra?.branch_index ?? null,
   }
 }
 

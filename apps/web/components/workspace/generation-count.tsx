@@ -84,20 +84,18 @@ export function MultipleGenerationsDialog({
   onOpenChange,
   onConfirm,
   verb = "Generate",
-  min = 2,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   onConfirm: (count: number) => void
   verb?: string
-  min?: number
 }) {
   const fieldId = useId()
-  const [count, setCount] = useState(min)
-  const valid = generationCountInRange(count, min)
+  const [count, setCount] = useState(1)
+  const valid = generationCountInRange(count)
   useEffect(() => {
-    if (open) setCount(min)
-  }, [open, min])
+    if (open) setCount(1)
+  }, [open])
   return (
     <Dialog
       open={open}
@@ -114,7 +112,6 @@ export function MultipleGenerationsDialog({
           id={fieldId}
           value={count}
           onChange={setCount}
-          min={min}
         />
         <DialogFooter>
           <Button
@@ -132,7 +129,7 @@ export function MultipleGenerationsDialog({
               onConfirm(count)
             }}
           >
-            {verb} {count} replies
+            {verb} {count} {count === 1 ? "reply" : "replies"}
           </Button>
         </DialogFooter>
       </DialogContent>

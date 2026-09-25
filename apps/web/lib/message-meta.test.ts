@@ -131,6 +131,23 @@ describe("message time and origin", () => {
       modelName: "gpt-4o",
     })
     expect(
+      resolveMessageOrigin(
+        {
+          import: {
+            source: "sillytavern",
+            sourceModel: "deepseek-chat",
+            sourceApi: "openrouter",
+          },
+        },
+        providers
+      )
+    ).toEqual({
+      providerId: null,
+      providerName: "openrouter",
+      modelId: "deepseek-chat",
+      modelName: "deepseek-chat",
+    })
+    expect(
       messageOriginLabel({
         providerId: "openai",
         providerName: "OpenAI",

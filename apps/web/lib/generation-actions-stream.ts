@@ -83,6 +83,7 @@ export function generationActionSseResponse(
         actionId: action.actionId,
         chatId: action.chatId,
         userNodeId: action.userNodeId,
+        selectedNodeId: action.selectedNodeId,
         generations: action.generations.map((item) => ({
           generationId: item.generationId,
           assistantNodeId: item.assistantNodeId,

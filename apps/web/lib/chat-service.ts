@@ -1049,6 +1049,7 @@ export async function submitUserTurnBatch(input: {
         intent: input.action.intent,
         requestHash: input.action.requestHash,
         userNodeId: user.id,
+        selectedNodeId: input.attachSelection ? assistants[0]!.id : null,
         generations: assistants.map((assistant, index) => ({
           generationId: input.generationIds[index]!,
           assistantNodeId: assistant.id,
@@ -1094,6 +1095,7 @@ export async function startGenerationBatch(input: {
         intent: input.action.intent,
         requestHash: input.action.requestHash,
         userNodeId: null,
+        selectedNodeId: input.attachSelection ? assistants[0]!.id : null,
         generations: assistants.map((assistant, index) => ({
           generationId: input.generationIds[index]!,
           assistantNodeId: assistant.id,
@@ -1959,6 +1961,7 @@ export async function beginResumeAssistant(
         intent: "resume",
         requestHash: action.requestHash,
         userNodeId: null,
+        selectedNodeId: nodeId,
         generations: [
           {
             generationId,

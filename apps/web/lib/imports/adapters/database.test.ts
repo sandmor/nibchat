@@ -70,6 +70,7 @@ describe("database import adapter", () => {
         parts: [{ type: "text", text: "Hi" }],
         createdAt: timestamp,
         sourceModel: "test-model",
+        sourceApi: "openrouter",
         speaker: { name: "Ada" },
         excluded: false,
       },
@@ -98,6 +99,7 @@ describe("database import adapter", () => {
       .where("role", "=", "assistant")
       .executeTakeFirstOrThrow()
     expect(assistant.metadata_json).toContain('"speaker":{"name":"Ada"}')
+    expect(assistant.metadata_json).toContain('"sourceApi":"openrouter"')
     expect(await beginImport(scope, manifest)).toEqual({
       status: "skipped",
       chatId: first.chatId,

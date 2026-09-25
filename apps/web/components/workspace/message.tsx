@@ -440,6 +440,9 @@ export const Message = memo(function Message({
   const showDeleteSiblings = siblings.length > 1
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [multipleOpen, setMultipleOpen] = useState(false)
+  const [multipleMode, setMultipleMode] = useState<"replies" | "regenerate">(
+    "replies"
+  )
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [teleportOpen, setTeleportOpen] = useState(false)
   const teleportTargets = useMemo(() => {
@@ -691,13 +694,13 @@ export const Message = memo(function Message({
         })()
       : null
 
-  const canGenerateReplies =
-    (node.role === "user"
-      ? Boolean(onGenerateReplies)
-      : node.role === "assistant" && Boolean(onRegenerate)) &&
+  const generationIdle =
     node.status !== "streaming" &&
     node.status !== "awaiting_input" &&
     !streamId
+  const canGenerateReplies = Boolean(onGenerateReplies) && generationIdle
+  const canRegenerate =
+    node.role === "assistant" && Boolean(onRegenerate) && generationIdle
 
   const footerHtml = prepareMessageFooterHtml({
     captions: messageActionCaptions,
@@ -715,11 +718,11 @@ export const Message = memo(function Message({
     },
     showDetailsAction: hasDetails && !identityLabel,
     showEdit: canEditAsBranch,
-    generate: canGenerateReplies
-      ? node.role === "assistant"
-        ? "regenerate"
-        : "answer"
-      : null,
+    generate: canRegenerate
+      ? "regenerate"
+      : canGenerateReplies && node.role === "user"
+        ? "answer"
+        : null,
     siblingCount: presentation === "linear" ? siblings.length : 0,
     siblingIndex: index,
   })
@@ -962,21 +965,36 @@ export const Message = memo(function Message({
               side="top"
               className="max-w-[min(20rem,calc(100vw-1.5rem))]"
             >
-              {canGenerateReplies ? (
+              {canRegenerate ? (
                 <DropdownMenuItem
-                  onClick={() => openDialog("multiple", setMultipleOpen)}
+                  onClick={() => {
+                    setMultipleMode("regenerate")
+                    openDialog("multiple", setMultipleOpen)
+                  }}
                 >
                   <HugeiconsIcon
-                    icon={
-                      node.role === "assistant" ? Refresh01Icon : GitBranchIcon
-                    }
+                    icon={Refresh01Icon}
                     strokeWidth={2}
                     className="size-3.5 text-muted-foreground"
                     aria-hidden
                   />
-                  {node.role === "assistant"
-                    ? "Regenerate several…"
-                    : "Generate multiple replies…"}
+                  Regenerate several…
+                </DropdownMenuItem>
+              ) : null}
+              {canGenerateReplies ? (
+                <DropdownMenuItem
+                  onClick={() => {
+                    setMultipleMode("replies")
+                    openDialog("multiple", setMultipleOpen)
+                  }}
+                >
+                  <HugeiconsIcon
+                    icon={GitBranchIcon}
+                    strokeWidth={2}
+                    className="size-3.5 text-muted-foreground"
+                    aria-hidden
+                  />
+                  Generate replies…
                 </DropdownMenuItem>
               ) : null}
               {scheduleMenu ? (
@@ -1018,9 +1036,9 @@ export const Message = memo(function Message({
         <MultipleGenerationsDialog
           open={multipleOpen}
           onOpenChange={setMultipleOpen}
-          verb={node.role === "assistant" ? "Regenerate" : "Generate"}
+          verb={multipleMode === "regenerate" ? "Regenerate" : "Generate"}
           onConfirm={(count) =>
-            node.role === "assistant"
+            multipleMode === "regenerate"
               ? onRegenerate?.(count)
               : onGenerateReplies?.(count)
           }

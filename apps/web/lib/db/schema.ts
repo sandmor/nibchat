@@ -67,7 +67,7 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create index if not exists generation_runs_chat_idx on generation_runs(chat_id)`.execute(
     db
   )
-  await sql`create table if not exists generation_actions (id text primary key, user_id text not null references "user"(id) on delete cascade, chat_id text not null references chats(id) on delete cascade, intent text not null, request_hash text not null, user_node_id text, created_at text not null, completed_at text)`.execute(
+  await sql`create table if not exists generation_actions (id text primary key, user_id text not null references "user"(id) on delete cascade, chat_id text not null references chats(id) on delete cascade, intent text not null, request_hash text not null, user_node_id text, selected_node_id text, created_at text not null, completed_at text)`.execute(
     db
   )
   await sql`create index if not exists generation_actions_chat_idx on generation_actions(chat_id, created_at)`.execute(
@@ -111,7 +111,7 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create table if not exists import_sessions (id text primary key, user_id text not null references "user"(id) on delete cascade, source text not null, parser_version integer not null, source_conversation_id text not null, source_fingerprint text not null, title text, space_id text not null references spaces(id) on delete cascade, source_created_at text not null, source_updated_at text not null, node_count integer not null, selected_root_source_id text, variables_json text not null default '{}', created_at text not null, updated_at text not null, unique(user_id, source, source_conversation_id))`.execute(
     db
   )
-  await sql`create table if not exists import_nodes (session_id text not null references import_sessions(id) on delete cascade, position integer not null, source_node_id text not null, parent_source_id text, selected_child_source_id text, role text not null, parts_json text not null, source_model text, speaker_json text, excluded boolean not null default false, created_at text not null, primary key(session_id, position), unique(session_id, source_node_id))`.execute(
+  await sql`create table if not exists import_nodes (session_id text not null references import_sessions(id) on delete cascade, position integer not null, source_node_id text not null, parent_source_id text, selected_child_source_id text, role text not null, parts_json text not null, source_model text, source_api text, speaker_json text, excluded boolean not null default false, created_at text not null, primary key(session_id, position), unique(session_id, source_node_id))`.execute(
     db
   )
   await sql`create table if not exists import_assets (session_id text not null references import_sessions(id) on delete cascade, source_asset_id text not null, filename text not null, media_type text not null, byte_size integer not null default 0, sha256 text, attachment_id text references attachments(id) on delete set null, state text not null, reason text, data ${attachmentDataType}, primary key(session_id, source_asset_id))`.execute(

@@ -744,6 +744,7 @@ export async function appendImportNodes(
         role: node.role,
         parts_json: JSON.stringify(node.parts),
         source_model: node.sourceModel ?? null,
+        source_api: node.sourceApi ?? null,
         speaker_json: node.speaker ? JSON.stringify(node.speaker) : null,
         excluded: toDbBool(node.excluded),
         created_at: node.createdAt,
@@ -873,7 +874,8 @@ export async function publishImport(
             import: {
               source: scope.source,
               parserVersion: scope.parserVersion,
-              sourceModel: node.source_model,
+              ...(node.source_model ? { sourceModel: node.source_model } : {}),
+              ...(node.source_api ? { sourceApi: node.source_api } : {}),
               ...(node.speaker_json
                 ? {
                     speaker: parseJson<Record<string, unknown>>(

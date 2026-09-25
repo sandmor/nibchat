@@ -236,9 +236,12 @@ export function resolveMessageOrigin(
     ? providers.find((candidate) => candidate.id === providerId)
     : undefined
   const importSource = asNonEmptyString(imported?.source)
+  const sourceApi = asNonEmptyString(imported?.sourceApi)
   const providerName = provider
     ? provider.name
-    : (providerId ?? (importSource ? importSourceLabel(importSource) : null))
+    : (providerId ??
+      sourceApi ??
+      (importSource ? importSourceLabel(importSource) : null))
   const modelName = modelId
     ? (resolveModelLabel(
         cachedProviderModels(provider?.models_json ?? "[]"),

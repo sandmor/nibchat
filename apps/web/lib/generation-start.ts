@@ -67,6 +67,8 @@ export type GenerationStartInput = GenerationStartBody extends infer T
 export const generationBatchResponseSchema = z.object({
   actionId: z.uuid(),
   userNodeId: z.string().min(1).nullable(),
+  /** The assistant this action attached to the linear path, if it attached one. */
+  selectedNodeId: z.string().min(1).nullable(),
   generations: z
     .array(
       z.object({

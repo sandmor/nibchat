@@ -78,6 +78,7 @@ import {
 import { useTRPC } from "@/lib/trpc-react"
 import {
   hydrateStreamingNodeParts,
+  seedGenerationBatch,
   patchChatTitle,
   patchChatViewState,
   patchNodeFromStreamParts,
@@ -1495,6 +1496,23 @@ export function ChatView({
             throw new Error("Generation action returned unexpected replies")
           if (manifestSeen) return
           manifestSeen = true
+          const path = viewPathFromCache(
+            queryClient,
+            (input) => trpc.workspace.get.queryKey(input),
+            body.chatId
+          )
+          const follow =
+            !options?.suppressSelectionFollow &&
+            shouldSoftFollow(body, path, selectedChatIdRef.current)
+          queryClient.setQueryData<WorkspaceData>(
+            trpc.workspace.get.queryKey({ chatId: body.chatId }),
+            (current) =>
+              seedGenerationBatch(current, {
+                chatId: body.chatId,
+                generations: batch.generations,
+                selectedNodeId: follow ? batch.selectedNodeId : null,
+              })
+          )
           const cached = queryClient.getQueryData<WorkspaceData>(
             trpc.workspace.get.queryKey({ chatId: body.chatId })
           )

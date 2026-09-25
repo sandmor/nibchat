@@ -231,6 +231,8 @@ export interface GenerationActionsTable {
   intent: string
   request_hash: string
   user_node_id: string | null
+  /** Assistant row this action selected, when it rewired the linear path. */
+  selected_node_id: string | null
   created_at: string
   completed_at: string | null
 }
@@ -301,6 +303,7 @@ export interface ImportNodesTable {
   role: MessageRole
   parts_json: string
   source_model: string | null
+  source_api: string | null
   speaker_json: string | null
   excluded: boolean
   created_at: string

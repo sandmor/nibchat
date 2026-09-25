@@ -24,6 +24,10 @@ const object = (value: unknown): Raw | null =>
     ? (value as Raw)
     : null
 const text = (value: unknown) => (typeof value === "string" ? value : undefined)
+const storedText = (value: unknown) => {
+  const trimmed = text(value)?.trim()
+  return trimmed || undefined
+}
 const array = (value: unknown) => (Array.isArray(value) ? value : [])
 const safe = (value: string, max = MAX_PROMPT_CHARS) => value.slice(0, max)
 
@@ -399,19 +403,28 @@ function messageNodes(
     if ((text(message.mes) ?? "") !== swipes[selected])
       swipes[selected] = text(message.mes) ?? ""
     const swipeInfo = array(message.swipe_info)
+    const selectedReasoning =
+      storedText(extra.reasoning) ??
+      storedText(object(object(swipeInfo[selected])?.extra)?.reasoning)
     const alternatives: ImportNode[] = []
     for (let swipe = 0; swipe < swipes.length; swipe++) {
       const info = object(swipeInfo[swipe]) ?? {}
-      // ST snapshots the selected message extra into each swipe_info entry.
-      // If old data lacks that snapshot, only the selected swipe can safely
-      // inherit the live message extra.
+      // ST copies the selected message extra into swipe_info, including its
+      // reasoning. Only the selected swipe may inherit the live extra, and a
+      // copy of that live reasoning is not another swipe's thinking.
       const swipeExtra = object(info.extra) ?? (swipe === selected ? extra : {})
+      const ownReasoning = storedText(swipeExtra.reasoning)
+      const reasoning =
+        swipe === selected
+          ? (selectedReasoning ?? ownReasoning)
+          : ownReasoning && ownReasoning !== selectedReasoning
+            ? ownReasoning
+            : undefined
       const parts: ImportNode["parts"] = []
-      const body = swipes[swipe] || "[Empty SillyTavern message]"
-      parts.push({ type: "text", text: body })
-      const reasoning = text(swipeExtra.reasoning)
       if (role === "assistant" && reasoning)
         parts.push({ type: "reasoning", text: reasoning })
+      const body = swipes[swipe] || "[Empty SillyTavern message]"
+      parts.push({ type: "text", text: body })
       const files = [
         ...array(swipeExtra.files),
         ...(object(swipeExtra.file) ? [swipeExtra.file] : []),
@@ -447,7 +460,12 @@ function messageNodes(
         role,
         parts,
         createdAt: iso(info.send_date ?? message.send_date),
-        sourceModel: text(swipeExtra.model) ?? text(extra.model),
+        sourceModel:
+          (swipe === selected ? text(extra.model) : undefined) ??
+          text(swipeExtra.model),
+        sourceApi:
+          storedText(swipe === selected ? extra.api : undefined) ??
+          storedText(swipeExtra.api),
         ...(name
           ? {
               speaker: {

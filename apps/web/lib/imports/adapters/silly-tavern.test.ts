@@ -88,7 +88,7 @@ describe("SillyTavern import adapter", () => {
               swipe_id: 1,
               swipe_info: [
                 { extra: { reasoning: "old" } },
-                { extra: { reasoning: "chosen", model: "m" } },
+                { extra: { reasoning: "chosen", model: "m", api: "openrouter" } },
               ],
             },
           ]
@@ -123,12 +123,17 @@ describe("SillyTavern import adapter", () => {
       ["m3s0", "m2s0", null],
       ["m3s1", "m2s0", null],
     ])
+    expect(chat.nodes[3]?.parts).toEqual([
+      { type: "reasoning", text: "old" },
+      { type: "text", text: "First" },
+    ])
     expect(chat.nodes[4]).toMatchObject({
       sourceModel: "m",
+      sourceApi: "openrouter",
       speaker: { name: "Ada" },
       parts: [
-        { type: "text", text: "Second" },
         { type: "reasoning", text: "chosen" },
+        { type: "text", text: "Second" },
       ],
     })
   })

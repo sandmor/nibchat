@@ -32,6 +32,7 @@ export type GenerationActionHandle = {
   actionId: string
   chatId: string
   userNodeId: string | null
+  selectedNodeId: string | null
   generations: Array<{
     generationId: string
     assistantNodeId: string
@@ -49,6 +50,7 @@ export async function recordGenerationAction(
     intent: string
     requestHash: string
     userNodeId: string | null
+    selectedNodeId: string | null
     generations: GenerationActionHandle["generations"]
   }
 ) {
@@ -61,6 +63,7 @@ export async function recordGenerationAction(
       intent: input.intent,
       request_hash: input.requestHash,
       user_node_id: input.userNodeId,
+      selected_node_id: input.selectedNodeId,
       created_at: now(),
       completed_at: null,
     })
@@ -200,6 +203,7 @@ export async function getGenerationAction(actionId: string, userId: string) {
     intent: action.intent,
     requestHash: action.request_hash,
     userNodeId: action.user_node_id,
+    selectedNodeId: action.selected_node_id,
     generations: items.map((item) => ({
       generationId: item.generation_id,
       assistantNodeId: item.assistant_node_id,

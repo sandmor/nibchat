@@ -5,6 +5,7 @@ import {
 } from "@/lib/agent/parts"
 import type { ChatRow, NodeRow, SpaceRow, Parts } from "@/lib/types"
 import { chatViewStateToJson, type ChatViewState } from "@/lib/chat-view-state"
+import { SORT_KEY_STEP, sortKeyAfter } from "@/lib/sort-key"
 
 export type WorkspaceData = {
   chatDefaults?: import("@/lib/providers").ModelConfig
@@ -145,6 +146,71 @@ export function patchSelection(
         : node
     ),
   }
+}
+
+/**
+ * Insert streaming assistant rows for a batch and, when this view should follow
+ * it, select that reply before any stream is shown.
+ */
+export function seedGenerationBatch(
+  data: WorkspaceData | undefined,
+  input: {
+    chatId: string
+    generations: Array<{
+      assistantNodeId: string
+      parentNodeId: string | null
+    }>
+    selectedNodeId: string | null
+  }
+): WorkspaceData | undefined {
+  if (!data?.chat || data.chat.id !== input.chatId) return data
+  const timestamp = new Date().toISOString()
+  const known = new Set(data.nodes.map((node) => node.id))
+  const seeded = input.generations.flatMap((generation, index) => {
+    if (known.has(generation.assistantNodeId)) return []
+    const siblingKeys = data.nodes.flatMap((node) =>
+      node.parent_id === generation.parentNodeId &&
+      node.chat_id === input.chatId
+        ? [node.sort_key]
+        : []
+    )
+    const sortKey =
+      sortKeyAfter(siblingKeys.length ? Math.max(...siblingKeys) : null) +
+      index * SORT_KEY_STEP
+    return [
+      {
+        id: generation.assistantNodeId,
+        chat_id: input.chatId,
+        parent_id: generation.parentNodeId,
+        selected_child_id: null,
+        sort_key: sortKey,
+        revision: 0,
+        role: "assistant" as const,
+        parts_json: "[]",
+        search_text: "",
+        metadata_json: "{}",
+        excluded_from_context: false,
+        status: "streaming" as const,
+        created_at: timestamp,
+        updated_at: timestamp,
+      },
+    ]
+  })
+  let nodes = seeded.length ? [...data.nodes, ...seeded] : data.nodes
+  let chat = data.chat
+  const selected = input.generations.find(
+    (generation) => generation.assistantNodeId === input.selectedNodeId
+  )
+  if (selected?.parentNodeId == null && input.selectedNodeId) {
+    chat = { ...chat, selected_root_node_id: input.selectedNodeId }
+  } else if (selected?.parentNodeId) {
+    nodes = nodes.map((node) =>
+      node.id === selected.parentNodeId
+        ? { ...node, selected_child_id: selected.assistantNodeId }
+        : node
+    )
+  }
+  return { ...data, chat, nodes }
 }
 
 /** Optimistic context-exclusion state for a single durable message node. */

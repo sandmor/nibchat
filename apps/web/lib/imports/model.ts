@@ -51,6 +51,8 @@ export const importNodeSchema = z.object({
   parts: z.array(importPartSchema).min(1),
   createdAt: z.string().datetime(),
   sourceModel: z.string().max(MAX_ID).optional(),
+  /** Backend name recorded by the source app. Shown as-is, not mapped. */
+  sourceApi: z.string().max(MAX_ID).optional(),
   speaker: speakerSchema.optional(),
   excluded: z.boolean(),
 })

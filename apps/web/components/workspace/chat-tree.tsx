@@ -207,7 +207,7 @@ export function ChatTree({
   onLocateHit?: (nodeId: string) => void
   onHandoffComplete?: (anchor: string | null) => void
   onChanged: () => void | Promise<void>
-  onGenerateReplies: (id: string, count?: number) => void
+  onGenerateReplies: (id: string | null, count?: number) => void
   onAnswerTools: (
     id: string,
     results: Array<{ toolCallId: string; output: unknown }>
@@ -1548,7 +1548,7 @@ const TreeMessage = memo(function TreeMessage({
   providers: ProviderSummary[]
   messageActionCaptions: boolean
   onChanged: () => void | Promise<void>
-  onGenerateReplies: (id: string, count?: number) => void
+  onGenerateReplies: (id: string | null, count?: number) => void
   onAnswerTools: (
     id: string,
     results: Array<{ toolCallId: string; output: unknown }>
@@ -1560,6 +1560,10 @@ const TreeMessage = memo(function TreeMessage({
     (count?: number) => onGenerateReplies(node.id, count),
     [node.id, onGenerateReplies]
   )
+  const handleRegenerate = useCallback(
+    (count?: number) => onGenerateReplies(node.parent_id, count),
+    [node.parent_id, onGenerateReplies]
+  )
   return (
     <Message
       node={node}
@@ -1570,6 +1574,7 @@ const TreeMessage = memo(function TreeMessage({
       attachSelectionOnEdit={false}
       onChanged={onChanged}
       onGenerateReplies={handleGenerateReplies}
+      onRegenerate={handleRegenerate}
       onAnswerTools={onAnswerTools}
       editor={editor}
       streamId={streamId}

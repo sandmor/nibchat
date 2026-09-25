@@ -7,6 +7,7 @@ import {
   Edit02Icon,
   GitBranchIcon,
   InformationCircleIcon,
+  Refresh01Icon,
   ViewIcon,
   ViewOffIcon,
 } from "@hugeicons/core-free-icons"
@@ -43,8 +44,8 @@ export type MessageFooterHtmlModel = {
   identity: FooterIdentity
   showDetailsAction: boolean
   showEdit: boolean
-  /** Another answer under a user message. Continuing an assistant is an empty send. */
-  generate: "answer" | null
+  /** "answer" adds a child under a user message. "regenerate" adds a sibling of an assistant. */
+  generate: "answer" | "regenerate" | null
   siblingCount: number
   siblingIndex: number
 }
@@ -193,12 +194,12 @@ function renderActions(model: MessageFooterHtmlModel) {
     icon: Copy01Icon,
     label: "Copy",
   })
-  if (model.generate === "answer")
+  if (model.generate === "answer" || model.generate === "regenerate")
     add({
       action: MESSAGE_FOOTER_ACTION.generate,
       captions: model.captions,
-      icon: GitBranchIcon,
-      label: "Another answer",
+      icon: model.generate === "regenerate" ? Refresh01Icon : GitBranchIcon,
+      label: model.generate === "regenerate" ? "Regenerate" : "Another answer",
     })
   if (model.showEdit)
     add({

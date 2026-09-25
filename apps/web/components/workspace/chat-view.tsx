@@ -2165,11 +2165,13 @@ export function ChatView({
       void fetch(`/api/attachments/${part.reference.id}`, { method: "DELETE" })
   }
 
-  async function streamRepliesFromNode(nodeId: string, count = 1) {
+  async function streamRepliesFromNode(nodeId: string | null, count = 1) {
     const ensured = await ensureChatId()
-    const persistedNodeId = ensured.created
-      ? (draftNodeIdMap.current[nodeId] ?? nodeId)
-      : nodeId
+    const persistedNodeId = nodeId
+      ? ensured.created
+        ? (draftNodeIdMap.current[nodeId] ?? nodeId)
+        : nodeId
+      : null
     await runGenerationBatch(
       {
         chatId: ensured.chatId,
@@ -2461,11 +2463,13 @@ export function ChatView({
     }
   }
 
-  async function streamTreeRepliesFromNode(nodeId: string, count = 1) {
+  async function streamTreeRepliesFromNode(nodeId: string | null, count = 1) {
     const ensured = await ensureChatId()
-    const persistedNodeId = ensured.created
-      ? (draftNodeIdMap.current[nodeId] ?? nodeId)
-      : nodeId
+    const persistedNodeId = nodeId
+      ? ensured.created
+        ? (draftNodeIdMap.current[nodeId] ?? nodeId)
+        : nodeId
+      : null
     await runGenerationBatch(
       {
         chatId: ensured.chatId,

@@ -20,6 +20,7 @@ import {
   Copy01Icon,
   GitBranchIcon,
   MoreHorizontalIcon,
+  Refresh01Icon,
 } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
@@ -299,6 +300,8 @@ type MessageProps = {
   onSelect?: (parentId: string, childId: string) => void
   onChanged?: () => void | Promise<void>
   onGenerateReplies?: (count?: number) => void
+  /** New sibling of this assistant, parented where this message already sits. */
+  onRegenerate?: (count?: number) => void
   onAnswerTools?: (
     assistantNodeId: string,
     toolResults: Array<{ toolCallId: string; output: unknown }>
@@ -337,6 +340,7 @@ export const Message = memo(function Message({
   onSelect,
   onChanged,
   onGenerateReplies,
+  onRegenerate,
   onAnswerTools,
   presentation = "linear",
   attachSelectionOnEdit = true,
@@ -688,8 +692,9 @@ export const Message = memo(function Message({
       : null
 
   const canGenerateReplies =
-    Boolean(onGenerateReplies) &&
-    (node.role === "user" || node.role === "assistant") &&
+    (node.role === "user"
+      ? Boolean(onGenerateReplies)
+      : node.role === "assistant" && Boolean(onRegenerate)) &&
     node.status !== "streaming" &&
     node.status !== "awaiting_input" &&
     !streamId
@@ -710,7 +715,11 @@ export const Message = memo(function Message({
     },
     showDetailsAction: hasDetails && !identityLabel,
     showEdit: canEditAsBranch,
-    generate: canGenerateReplies && node.role === "user" ? "answer" : null,
+    generate: canGenerateReplies
+      ? node.role === "assistant"
+        ? "regenerate"
+        : "answer"
+      : null,
     siblingCount: presentation === "linear" ? siblings.length : 0,
     siblingIndex: index,
   })
@@ -728,7 +737,8 @@ export const Message = memo(function Message({
     if (action === MESSAGE_FOOTER_ACTION.copy) {
       void copyMarkdown("message")
     } else if (action === MESSAGE_FOOTER_ACTION.generate) {
-      onGenerateReplies?.()
+      if (node.role === "assistant") onRegenerate?.()
+      else onGenerateReplies?.()
     } else if (action === MESSAGE_FOOTER_ACTION.edit) {
       beginEdit()
     } else if (action === MESSAGE_FOOTER_ACTION.toggleContext) {
@@ -957,12 +967,16 @@ export const Message = memo(function Message({
                   onClick={() => openDialog("multiple", setMultipleOpen)}
                 >
                   <HugeiconsIcon
-                    icon={GitBranchIcon}
+                    icon={
+                      node.role === "assistant" ? Refresh01Icon : GitBranchIcon
+                    }
                     strokeWidth={2}
                     className="size-3.5 text-muted-foreground"
                     aria-hidden
                   />
-                  Generate multiple replies…
+                  {node.role === "assistant"
+                    ? "Regenerate several…"
+                    : "Generate multiple replies…"}
                 </DropdownMenuItem>
               ) : null}
               {scheduleMenu ? (
@@ -1004,7 +1018,12 @@ export const Message = memo(function Message({
         <MultipleGenerationsDialog
           open={multipleOpen}
           onOpenChange={setMultipleOpen}
-          onConfirm={(count) => onGenerateReplies?.(count)}
+          verb={node.role === "assistant" ? "Regenerate" : "Generate"}
+          onConfirm={(count) =>
+            node.role === "assistant"
+              ? onRegenerate?.(count)
+              : onGenerateReplies?.(count)
+          }
         />
       ) : null}
       {!tree && node.status === "error" && (

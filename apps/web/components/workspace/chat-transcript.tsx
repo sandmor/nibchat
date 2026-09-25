@@ -93,7 +93,7 @@ export type ChatTranscriptProps = {
   findLocateKey?: number
   onSelect: (parentId: string, childId: string) => void
   onChanged: () => void | Promise<void>
-  onGenerateReplies: (nodeId: string, count?: number) => void
+  onGenerateReplies: (nodeId: string | null, count?: number) => void
   onAnswerTools?: (
     assistantNodeId: string,
     toolResults: Array<{ toolCallId: string; output: unknown }>
@@ -607,7 +607,7 @@ function AfterTipSlot({
   messageActionCaptions: boolean
   onSelect: (parentId: string, childId: string) => void
   onChanged: () => void | Promise<void>
-  onGenerateReplies: (nodeId: string, count?: number) => void
+  onGenerateReplies: (nodeId: string | null, count?: number) => void
   onAnswerTools?: (
     assistantNodeId: string,
     toolResults: Array<{ toolCallId: string; output: unknown }>
@@ -617,6 +617,15 @@ function AfterTipSlot({
   const handleGenerateReplies = useCallback(
     (count?: number) => onGenerateReplies(row.messageId, count),
     [onGenerateReplies, row.messageId]
+  )
+  const handleRegenerate = useCallback(
+    (count?: number) => {
+      const parentId =
+        nodes.find((candidate) => candidate.id === row.messageId)?.parent_id ??
+        null
+      onGenerateReplies(parentId, count)
+    },
+    [nodes, onGenerateReplies, row.messageId]
   )
   const node = nodes.find((candidate) => candidate.id === row.messageId)
   if (!node) {
@@ -638,6 +647,7 @@ function AfterTipSlot({
       onSelect={onSelect}
       onChanged={onChanged}
       onGenerateReplies={handleGenerateReplies}
+      onRegenerate={handleRegenerate}
       onAnswerTools={onAnswerTools}
       editor={editor}
       streamId={row.streamId}

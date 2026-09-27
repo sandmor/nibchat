@@ -80,25 +80,63 @@ describe("SillyTavern World Info import", () => {
         keywords: ["castle", "fortress"],
         secondary: ["north"],
         secondaryMatch: "all",
+        caseSensitive: false,
+        wholeWord: false,
       },
     })
+    expect(result.book.entries[0]?.source).toBeUndefined()
   })
 
-  it("disables entries whose behavior cannot be preserved", () => {
+  it("keeps entries on and turns simple regex keys into literals", () => {
     const result = importSillyTavernWorldInfo({
       entries: [
         {
           uid: 2,
-          key: ["/dragons?/i"],
+          key: ["/dragons?/i", "wyrm"],
+          keysecondary: ["/north|south/"],
           content: "Dragon lore",
           probability: 50,
           useProbability: true,
+          position: 0,
+          sticky: 3,
+          group: "beasts",
+          groupOverride: true,
+          scanDepth: 4,
+        },
+        {
+          uid: 3,
+          key: ["hidden"],
+          content: "Never",
+          useProbability: true,
+          probability: 0,
+        },
+        {
+          uid: 4,
+          key: ["/(a+)+$/"],
+          content: "Too complex to translate",
         },
       ],
     })
-    expect(result.book.entries[0]?.enabled).toBe(false)
-    expect(result.issues[0]?.reason).toContain("probability")
-    expect(result.issues[0]?.reason).toContain("regular expressions")
+    expect(result.issues).toEqual([])
+    expect(result.book.entries[0]).toMatchObject({
+      enabled: true,
+      namespace: "default",
+      group: "beasts",
+      groupOverride: true,
+      activation: {
+        kind: "match",
+        keywords: ["dragon", "dragons", "wyrm"],
+        secondary: ["north", "south"],
+        caseSensitive: false,
+        wholeWord: false,
+        scanMessages: 4,
+      },
+    })
+    expect(result.book.entries[1]?.enabled).toBe(false)
+    expect(result.book.entries[2]).toMatchObject({
+      enabled: true,
+      activation: { kind: "match", keywords: [] },
+    })
   })
 })
 

@@ -15,7 +15,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { MetaLine } from "@/components/ui/inline-separator"
 import {
@@ -92,12 +91,12 @@ function scanRolesFromChoice(choice: ScanRoleChoice): ("user" | "assistant")[] {
   return ["user"]
 }
 
-const STATUS_LABEL: Record<ContextEntryDecision["status"], string> = {
-  included: "Included",
-  unmatched: "Not triggered",
-  disabled: "Off",
-  budget: "Over budget",
-  invalid: "Invalid",
+function entryRowStatus(decision?: ContextEntryDecision) {
+  if (!decision) return null
+  if (decision.status === "included") return "Included"
+  if (decision.status === "budget") return "Over budget"
+  if (decision.status === "invalid") return "Invalid"
+  return null
 }
 
 function matchActivation(): Extract<
@@ -113,14 +112,6 @@ function matchActivation(): Extract<
     caseSensitive: false,
     wholeWord: true,
   }
-}
-
-function triggerLabel(entry: ContextBookEntry) {
-  if (entry.activation.kind === "always") return "Always"
-  const count = entry.activation.keywords.length
-  if (count === 0) return "No triggers"
-  if (count === 1) return entry.activation.keywords[0] ?? "1 trigger"
-  return `${count} triggers`
 }
 
 function lines(value: string) {
@@ -364,10 +355,7 @@ export function ContextBookSettings() {
         }
         if (looksLikeWorldInfo(raw)) {
           const converted = importSillyTavernWorldInfo(raw)
-          if (converted.issues.length)
-            toast.warning(
-              `${converted.issues.length} entries need review and were disabled`
-            )
+          for (const issue of converted.issues) toast.warning(issue.reason)
           await importSillyTavernBook(
             converted.name ?? fallbackName,
             converted.book,
@@ -381,10 +369,9 @@ export function ContextBookSettings() {
       )
       if (!found.length) throw new Error("No SillyTavern world info was found")
       for (const item of found) {
-        if (item.issues.length)
-          toast.warning(
-            `${item.name ?? item.source}: ${item.issues.length} entries need review and were disabled`
-          )
+        const label = item.name ?? item.source
+        for (const issue of item.issues)
+          toast.warning(`${label}: ${issue.reason}`)
         await importSillyTavernBook(
           item.name ??
             item.source
@@ -627,7 +614,7 @@ export function ContextBookSettings() {
                 </p>
               ) : (
                 <p className="text-xs text-muted-foreground">
-                  Matching badges appear on entries while this field has text.
+                  Included entries are marked while this field has text.
                 </p>
               )}
             </div>
@@ -772,9 +759,7 @@ function EntryEditor({
   onRemove: () => void
 }) {
   const rule = entry.activation.kind === "match" ? entry.activation : null
-  const compatibilityIssues = Array.isArray(entry.source?.compatibilityIssues)
-    ? entry.source.compatibilityIssues.map(String)
-    : []
+  const rowStatus = entryRowStatus(decision)
   const contentRef = useRef<HTMLTextAreaElement>(null)
   const browserTimeZone = useBrowserTimeZone()
   const catalogContext = useMemo(() => {
@@ -797,25 +782,15 @@ function EntryEditor({
             checked={entry.enabled}
             onCheckedChange={(enabled) => onChange({ enabled })}
           />
-          <CollapsibleTrigger className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 text-left">
-            <span className="min-w-0 flex-1 basis-32 truncate text-sm font-medium">
+          <CollapsibleTrigger className="flex min-w-0 flex-1 items-center gap-2 text-left">
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">
               {entry.title.trim() || "Untitled entry"}
             </span>
-            <span className="flex flex-wrap items-center gap-1">
-              <Badge variant="outline">{triggerLabel(entry)}</Badge>
-              {decision ? (
-                <Badge
-                  variant={
-                    decision.status === "included" ? "default" : "secondary"
-                  }
-                >
-                  {STATUS_LABEL[decision.status]}
-                </Badge>
-              ) : null}
-              {compatibilityIssues.length ? (
-                <Badge variant="destructive">Needs review</Badge>
-              ) : null}
-            </span>
+            {rowStatus ? (
+              <span className="shrink-0 text-xs text-muted-foreground">
+                {rowStatus}
+              </span>
+            ) : null}
             <HugeiconsIcon
               icon={ArrowDown01Icon}
               className={cn(
@@ -837,13 +812,6 @@ function EntryEditor({
         </div>
         <CollapsibleContent>
           <div className="space-y-3 border-t p-3">
-            {compatibilityIssues.length ? (
-              <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
-                Review before enabling: unsupported SillyTavern{" "}
-                {compatibilityIssues.join(", ")}. Original fields stay in this
-                entry’s source metadata.
-              </p>
-            ) : null}
             {decision && decision.status !== "included" ? (
               <p className="text-xs text-muted-foreground">{decision.reason}</p>
             ) : null}

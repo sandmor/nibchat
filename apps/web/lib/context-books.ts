@@ -35,6 +35,9 @@ export const contextBookEntrySchema = z.object({
     }),
   ]),
   priority: z.number().int().default(100),
+  /** SillyTavern inclusion group. At most one matching entry from a group is kept. */
+  group: z.string().trim().min(1).max(MAX_NAME).optional(),
+  groupOverride: z.boolean().optional(),
   source: z.record(z.string(), z.unknown()).optional(),
 })
 
@@ -211,6 +214,60 @@ function entryMatches(
   }
 }
 
+type RankedEntry = {
+  bookIndex: number
+  entryIndex: number
+  priority: number
+  group?: string
+  groupOverride?: boolean
+  decision: ContextEntryDecision
+}
+
+/** Highest priority wins. Equal priority keeps the earlier entry. */
+function inclusionGroupWinner(members: RankedEntry[]) {
+  const overrides = members.filter((item) => item.groupOverride)
+  const pool = overrides.length > 0 ? overrides : members
+  return pool.reduce((best, item) =>
+    item.priority > best.priority ||
+    (item.priority === best.priority && item.entryIndex < best.entryIndex)
+      ? item
+      : best
+  )
+}
+
+function applyInclusionGroups(candidates: RankedEntry[]) {
+  let active = candidates
+  let removed = true
+  while (removed) {
+    removed = false
+    const drop = new Set<RankedEntry>()
+    const groups = new Map<string, RankedEntry[]>()
+    for (const candidate of active) {
+      if (!candidate.group) continue
+      for (const name of candidate.group.split(",")) {
+        const key = name.trim()
+        if (!key) continue
+        const list = groups.get(key)
+        if (list) list.push(candidate)
+        else groups.set(key, [candidate])
+      }
+    }
+    for (const name of [...groups.keys()].sort()) {
+      const members = groups.get(name) ?? []
+      if (members.length <= 1) continue
+      const winner = inclusionGroupWinner(members)
+      for (const item of members) {
+        if (item !== winner) drop.add(item)
+      }
+    }
+    if (drop.size > 0) {
+      active = active.filter((item) => !drop.has(item))
+      removed = true
+    }
+  }
+  return active
+}
+
 export function resolveContextEntries(input: {
   books: readonly ContextBookSource[]
   messages: readonly ContextScanMessage[]
@@ -218,14 +275,9 @@ export function resolveContextEntries(input: {
   macroContext?: MacroContext
 }): ResolvedContextEntries {
   const decisions: ContextEntryDecision[] = []
-  const included: Array<{
-    bookIndex: number
-    entryIndex: number
-    priority: number
-    decision: ContextEntryDecision
-  }> = []
+  const included: RankedEntry[] = []
   input.books.forEach((source, bookIndex) => {
-    const candidates: typeof included = []
+    const candidates: RankedEntry[] = []
     source.book.entries.forEach((entry, entryIndex) => {
       const base = {
         bookId: source.id,
@@ -278,11 +330,24 @@ export function resolveContextEntries(input: {
         bookIndex,
         entryIndex,
         priority: entry.priority,
+        ...(entry.group ? { group: entry.group } : {}),
+        ...(entry.groupOverride ? { groupOverride: true } : {}),
         decision,
       })
     })
+    const kept = new Set(applyInclusionGroups(candidates))
+    for (const candidate of candidates) {
+      if (kept.has(candidate)) continue
+      decisions.push({
+        ...candidate.decision,
+        content: undefined,
+        estimatedTokens: undefined,
+        status: "unmatched",
+        reason: "Another entry in this inclusion group was selected",
+      })
+    }
     let used = 0
-    for (const candidate of [...candidates].sort(
+    for (const candidate of [...kept].sort(
       (a, b) => b.priority - a.priority || a.entryIndex - b.entryIndex
     )) {
       const cost = candidate.decision.estimatedTokens ?? 0

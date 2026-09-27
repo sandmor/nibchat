@@ -71,6 +71,66 @@ describe("resolveContextEntries", () => {
     expect(partial.namespaces.default).toBeUndefined()
   })
 
+  it("treats slash-wrapped keywords as literal text", () => {
+    const result = resolveContextEntries({
+      books: [
+        source([
+          match({
+            activation: {
+              kind: "match",
+              keywords: ["/(a+)+$/"],
+              match: "any",
+              secondary: [],
+              secondaryMatch: "any",
+              caseSensitive: false,
+              wholeWord: false,
+            },
+          }),
+        ]),
+      ],
+      messages: [{ role: "user", text: "aaa" }],
+    })
+    expect(result.decisions[0]?.status).toBe("unmatched")
+  })
+
+  it("keeps one matching entry from an inclusion group", () => {
+    const low = match({
+      id: "low",
+      content: "common",
+      priority: 1,
+      group: "beasts",
+      activation: { kind: "always" },
+    })
+    const high = match({
+      id: "high",
+      content: "rare",
+      priority: 10,
+      group: "beasts",
+      activation: { kind: "always" },
+    })
+    const forced = match({
+      id: "forced",
+      content: "override",
+      priority: 0,
+      group: "beasts",
+      groupOverride: true,
+      activation: { kind: "always" },
+    })
+    const plain = resolveContextEntries({
+      books: [source([low, high])],
+      messages: [],
+    })
+    expect(plain.namespaces.default).toBe("rare")
+    expect(plain.decisions.find((item) => item.entryId === "low")?.reason).toBe(
+      "Another entry in this inclusion group was selected"
+    )
+    const overridden = resolveContextEntries({
+      books: [source([low, high, forced])],
+      messages: [],
+    })
+    expect(overridden.namespaces.default).toBe("override")
+  })
+
   it("selects higher priority entries first without splitting entries", () => {
     const low = match({
       id: "low",

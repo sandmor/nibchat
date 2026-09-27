@@ -754,9 +754,9 @@ export function ConversationImportSettings() {
                 />
                 <p className="text-xs text-muted-foreground">
                   Embedded books follow their character by default. Archive
-                  books follow the import root. Unsupported entries stay
-                  disabled until reviewed. Reimporting reuses the existing book;
-                  turn on Replace to overwrite it, or delete the book first.
+                  books follow the import root. Entries stay enabled and match
+                  by keyword. Reimporting reuses the existing book; turn on
+                  Replace to overwrite it, or delete the book first.
                 </p>
                 <div className="overflow-hidden rounded-lg bg-background/80 ring-1 ring-foreground/8">
                   {contextBooks.map((book) => {
@@ -789,11 +789,8 @@ export function ConversationImportSettings() {
                           />
                           <SelectionMark checked={book.selected} />
                           <span className="min-w-0">
-                            <span className="flex min-w-0 items-center gap-2">
-                              <span className="truncate font-medium">
-                                {title}
-                              </span>
-                              <Badge variant="outline">book</Badge>
+                            <span className="block truncate font-medium">
+                              {title}
                             </span>
                             <span className="mt-0.5 block text-xs text-muted-foreground">
                               <MetaLine
@@ -804,9 +801,6 @@ export function ConversationImportSettings() {
                                       : "entries"
                                   }`,
                                   book.source,
-                                  book.issues.length
-                                    ? `${book.issues.length} need review`
-                                    : null,
                                   bookImportHint(book, saved),
                                 ]}
                               />

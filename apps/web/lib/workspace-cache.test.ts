@@ -7,6 +7,14 @@ import {
   type WorkspaceData,
 } from "@/lib/workspace-cache"
 
+const conversation = {
+  kind: "conversation" as const,
+  parent_chat_id: null,
+  parent_node_id: null,
+  parent_tool_call_id: null,
+  agent_config_json: null,
+}
+
 function sample(chatId: string, title: string): WorkspaceData {
   return {
     chats: [
@@ -18,6 +26,7 @@ function sample(chatId: string, title: string): WorkspaceData {
         view_state_json: '{"mode":"linear","camera":null}',
         space_id: null,
         selected_root_node_id: null,
+        ...conversation,
         created_at: "",
         updated_at: "",
       },
@@ -30,6 +39,7 @@ function sample(chatId: string, title: string): WorkspaceData {
       view_state_json: '{"mode":"linear","camera":null}',
       space_id: null,
       selected_root_node_id: null,
+      ...conversation,
       created_at: "",
       updated_at: "",
     },
@@ -303,6 +313,7 @@ describe("patchChatTitle", () => {
           view_state_json: '{"mode":"linear","camera":null}',
           space_id: null,
           selected_root_node_id: null,
+          ...conversation,
           created_at: "",
           updated_at: "",
         },
@@ -314,6 +325,7 @@ describe("patchChatTitle", () => {
           view_state_json: '{"mode":"linear","camera":null}',
           space_id: null,
           selected_root_node_id: null,
+          ...conversation,
           created_at: "",
           updated_at: "",
         },

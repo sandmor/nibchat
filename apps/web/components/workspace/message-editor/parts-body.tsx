@@ -25,6 +25,7 @@ import {
 } from "@hugeicons/core-free-icons"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { MetaLine } from "@/components/ui/inline-separator"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -236,7 +237,7 @@ export function PartsEditor({
       onCancel={onCancel}
       onReplace={onReplace ? replace : undefined}
       replaceLabel="Replace"
-      hint="⌘/Ctrl + Enter to save · Esc to cancel"
+      hint={<MetaLine items={["⌘/Ctrl + Enter to save", "Esc to cancel"]} />}
       expandable={false}
     >
       <PartsField

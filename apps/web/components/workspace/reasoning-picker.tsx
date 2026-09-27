@@ -359,7 +359,7 @@ export function ReasoningPicker({
   if (!mdUp) {
     return (
       <TooltipProvider delay={400}>
-        <WithTooltip label={`Reasoning · ${label}`}>
+        <WithTooltip label={`Reasoning: ${label}`}>
           <Button
             variant="ghost"
             size="sm"
@@ -387,7 +387,7 @@ export function ReasoningPicker({
   return (
     <TooltipProvider delay={400}>
       <Popover open={open} onOpenChange={setPickerOpen}>
-        <WithTooltip label={`Reasoning · ${label}`}>
+        <WithTooltip label={`Reasoning: ${label}`}>
           <PopoverTrigger
             render={
               <Button

@@ -3,4 +3,6 @@ export async function register() {
   if (process.env.GENERATION_RUNTIME_MODE === "stateless") return
   const { startScheduleRunner } = await import("@/lib/schedules/runner")
   startScheduleRunner()
+  const { startAgentRecoveryRunner } = await import("@/lib/agent/recovery-runner")
+  startAgentRecoveryRunner()
 }

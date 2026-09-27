@@ -563,6 +563,7 @@ export async function getWorkspace(
     .selectFrom("chats")
     .selectAll()
     .where("user_id", "=", userId)
+    .where("kind", "=", "conversation")
     .where("id", "not in", db.selectFrom("template_chats").select("chat_id"))
     .orderBy("updated_at", "desc")
     .execute()
@@ -750,6 +751,11 @@ export async function prepareChatRow(
     settings_json: settingValuesToJson(stored),
     view_state_json: chatViewStateToJson({ mode: "linear", camera: null }),
     space_id: resolvedSpaceId,
+    kind: "conversation" as const,
+    parent_chat_id: null,
+    parent_node_id: null,
+    parent_tool_call_id: null,
+    agent_config_json: null,
     created_at: timestamp,
     updated_at: timestamp,
   }
@@ -783,11 +789,26 @@ async function deleteOwnedChats(
   if (chatIds.length === 0) {
     return { nodeIds: [] as string[], generationRunIds: [] as string[] }
   }
+  const descendants = [...chatIds]
+  const seenChats = new Set(chatIds)
+  for (let offset = 0; offset < descendants.length; offset++) {
+    const children = await trx
+      .selectFrom("chats")
+      .select("id")
+      .where("parent_chat_id", "=", descendants[offset]!)
+      .where("user_id", "=", userId)
+      .execute()
+    for (const child of children) {
+      if (seenChats.has(child.id)) continue
+      seenChats.add(child.id)
+      descendants.push(child.id)
+    }
+  }
   const nodeIds = (
     await trx
       .selectFrom("message_nodes")
       .select("id")
-      .where("chat_id", "in", chatIds)
+      .where("chat_id", "in", descendants)
       .execute()
   ).map((node) => node.id)
   const generationRunIds = nodeIds.length
@@ -799,12 +820,54 @@ async function deleteOwnedChats(
           .execute()
       ).map((run) => run.id)
     : []
+  if (nodeIds.length) {
+    await trx
+      .deleteFrom("helper_task_invocations")
+      .where((eb) =>
+        eb.or([
+          eb("parent_node_id", "in", nodeIds),
+          eb("root_node_id", "in", nodeIds),
+        ])
+      )
+      .execute()
+  }
   await trx
     .deleteFrom("chats")
     .where("id", "in", chatIds)
     .where("user_id", "=", userId)
     .execute()
   return { nodeIds, generationRunIds }
+}
+
+/** Remove helper trees owned by task calls on messages being removed or edited. */
+async function deleteOwnedHelpers(
+  trx: Transaction<DB>,
+  userId: string,
+  parentNodeIds: readonly string[],
+  removedToolCallIds?: readonly string[]
+) {
+  if (
+    !parentNodeIds.length ||
+    (removedToolCallIds && !removedToolCallIds.length)
+  )
+    return { nodeIds: [] as string[], generationRunIds: [] as string[] }
+  let query = trx
+    .selectFrom("chats")
+    .select("id")
+    .where("user_id", "=", userId)
+    .where("kind", "=", "agent_run")
+    .where("parent_node_id", "in", parentNodeIds)
+  if (removedToolCallIds)
+    query = query.where("parent_tool_call_id", "in", removedToolCallIds)
+  const roots = (await query.execute()).map((row) => row.id)
+  const deletion = await deleteOwnedChats(trx, userId, roots)
+  let invocations = trx
+    .deleteFrom("helper_task_invocations")
+    .where("parent_node_id", "in", parentNodeIds)
+  if (removedToolCallIds)
+    invocations = invocations.where("tool_call_id", "in", removedToolCallIds)
+  await invocations.execute()
+  return deletion
 }
 
 export async function finishChatDeletion(deletion: {
@@ -837,6 +900,48 @@ export async function deleteChats(userId: string, chatIds: readonly string[]) {
   })
   await finishChatDeletion(deletion)
   return { ok: true as const, count: unique.length }
+}
+
+/** Repair helper chats left by older message edits/deletions. Live parents are skipped. */
+export async function repairOrphanedAgentRuns(
+  candidateIds?: readonly string[]
+) {
+  if (candidateIds && !candidateIds.length) return []
+  let query = db
+    .selectFrom("chats")
+    .select(["id", "user_id", "parent_node_id", "parent_tool_call_id"])
+    .where("kind", "=", "agent_run")
+  if (candidateIds) query = query.where("id", "in", candidateIds)
+  const helpers = await query.execute()
+  const deferred: string[] = []
+  for (const helper of helpers) {
+    if (!helper.parent_node_id || !helper.parent_tool_call_id) continue
+    const parent = await db
+      .selectFrom("message_nodes")
+      .select(["status", "parts_json"])
+      .where("id", "=", helper.parent_node_id)
+      .executeTakeFirst()
+    if (parent?.status === "streaming") {
+      deferred.push(helper.id)
+      continue
+    }
+    const linked =
+      parent &&
+      parseJson<Parts>(parent.parts_json, []).some(
+        (part) =>
+          part.type === "tool-invocation" &&
+          (part.toolName === "task" || part.toolName === "continue_task") &&
+          part.toolCallId === helper.parent_tool_call_id
+      )
+    if (linked) continue
+    const stillThere = await db
+      .selectFrom("chats")
+      .select("id")
+      .where("id", "=", helper.id)
+      .executeTakeFirst()
+    if (stillThere) await deleteChat(helper.user_id, helper.id)
+  }
+  return deferred
 }
 
 export async function insertNode(input: {
@@ -1459,6 +1564,7 @@ export async function searchChats(userId: string, query: string) {
       "chats.title",
     ])
     .where("chats.user_id", "=", userId)
+    .where("chats.kind", "=", "conversation")
     .where(
       "chats.id",
       "not in",
@@ -1702,6 +1808,22 @@ async function updateStreamingNode(
   return Number(result.numUpdatedRows ?? 0) > 0
 }
 
+/** Persist a completed model/tool step so recovery can retain its results. */
+export async function checkpointStreamingAssistant(input: {
+  nodeId: string
+  generationId: string
+  parts: Parts
+}) {
+  const run = await db
+    .selectFrom("generation_runs")
+    .select("node_id")
+    .where("id", "=", input.generationId)
+    .where("state", "=", "active")
+    .executeTakeFirst()
+  if (run?.node_id !== input.nodeId) return false
+  return updateStreamingNode(input.nodeId, input.parts, "streaming")
+}
+
 function persistAssistantMetadata(
   previous: Record<string, unknown>,
   fields: Record<string, unknown>
@@ -1895,6 +2017,139 @@ export async function finalizeStreamingAssistantWithSnapshot(
   return { result, node: node ? normalizeNodeRow(node as NodeRow) : null }
 }
 
+async function restartInterruptedAgentGeneration(input: {
+  runId: string
+  nodeId: string
+  chatId: string
+}) {
+  const [chat, rawAssistant, invocation] = await Promise.all([
+    db
+      .selectFrom("chats")
+      .select(["id", "user_id", "kind"])
+      .where("id", "=", input.chatId)
+      .executeTakeFirst(),
+    db
+      .selectFrom("message_nodes")
+      .selectAll()
+      .where("id", "=", input.nodeId)
+      .executeTakeFirst(),
+    db
+      .selectFrom("helper_task_invocations")
+      .select(["tool_call_id", "input_json"])
+      .where("parent_node_id", "=", input.nodeId)
+      .execute(),
+  ])
+  if (!chat || !rawAssistant || rawAssistant.status !== "streaming")
+    return false
+  if (chat.kind !== "agent_run" && invocation.length === 0) return false
+
+  const assistant = normalizeNodeRow(rawAssistant as NodeRow)
+  const parts = parseJson<Parts>(assistant.parts_json, [])
+  const invocationById = new Map(
+    invocation.map((row) => [row.tool_call_id, row])
+  )
+  const seedParts: Parts = []
+  for (const part of parts) {
+    if (part.type !== "tool-invocation") {
+      seedParts.push(part)
+      continue
+    }
+    if (part.state === "output-available" || part.state === "output-error") {
+      seedParts.push(part)
+      continue
+    }
+    const recorded = invocationById.get(part.toolCallId)
+    if (!recorded) continue
+    const taskInput = parseJson<unknown>(recorded.input_json ?? "null", null)
+    seedParts.push({
+      ...part,
+      toolName:
+        typeof taskInput === "object" &&
+        taskInput !== null &&
+        "task_id" in taskInput
+          ? "continue_task"
+          : "task",
+      state: "input-available",
+      input: taskInput,
+    })
+  }
+  for (const row of invocation) {
+    if (
+      seedParts.some(
+        (part) =>
+          part.type === "tool-invocation" &&
+          part.toolCallId === row.tool_call_id
+      )
+    )
+      continue
+    const taskInput = parseJson<unknown>(row.input_json ?? "null", null)
+    seedParts.push({
+      type: "tool-invocation",
+      toolCallId: row.tool_call_id,
+      toolName:
+        typeof taskInput === "object" &&
+        taskInput !== null &&
+        "task_id" in taskInput
+          ? "continue_task"
+          : "task",
+      state: "input-available",
+      input: taskInput,
+    })
+  }
+  const metadata = parseJson<{ timeZone?: string }>(assistant.metadata_json, {})
+  const nextId = id()
+  const claimed = await db.transaction().execute(async (trx) => {
+    const changed = await trx
+      .updateTable("generation_runs")
+      .set({ id: nextId, state: "starting", started_at: now() })
+      .where("id", "=", input.runId)
+      .where("state", "=", "recovering")
+      .executeTakeFirst()
+    if (Number(changed.numUpdatedRows ?? 0) !== 1) return false
+    await trx
+      .updateTable("helper_task_invocations")
+      .set({ replay_claim_id: null })
+      .where("parent_node_id", "=", input.nodeId)
+      .execute()
+    await trx
+      .updateTable("generation_action_items")
+      .set({ generation_id: nextId })
+      .where("generation_id", "=", input.runId)
+      .execute()
+    return true
+  })
+  if (!claimed) return true
+  await generationStreamStore
+    .discard(input.runId)
+    .catch((error) => console.warn("[nibchat/agent-recovery] discard", error))
+  try {
+    const { continueChatGeneration } =
+      await import("@/lib/agent/open-generation")
+    await continueChatGeneration({
+      userId: chat.user_id,
+      chatId: chat.id,
+      parentId: assistant.parent_id,
+      timeZone: metadata.timeZone ?? "UTC",
+      attachSelection: true,
+      existing: {
+        assistant,
+        generationId: nextId,
+        seedParts,
+      },
+    })
+  } catch (error) {
+    console.error("[nibchat/agent-recovery] restart", error)
+    await finalizeStreamingAssistantWithSnapshot({
+      nodeId: assistant.id,
+      generationId: nextId,
+      outcome: "error",
+      parts,
+      error: "Could not restart the interrupted helper workflow.",
+    })
+  }
+  return true
+}
+
 /** Lazy reconciliation: never treat an adapter outage as a lost producer. */
 export async function reconcileChatGenerationRuns(chatId: string) {
   const runs = await db
@@ -1921,6 +2176,15 @@ export async function reconcileChatGenerationRuns(chatId: string) {
     )
       continue
     if (!(await claimGenerationRecovery(run.id))) continue
+    if (
+      run.state !== "cancel_requested" &&
+      (await restartInterruptedAgentGeneration({
+        runId: run.id,
+        nodeId: run.node_id,
+        chatId: run.chat_id,
+      }))
+    )
+      continue
     let parts: Parts = []
     try {
       for (const event of await generationStreamStore.replay(run.id))
@@ -2128,6 +2392,43 @@ export async function deleteNode(
   await cleanupDetachedAttachments()
 }
 
+/** Preview how many hidden helper chats each message deletion mode removes. */
+export async function helperDeletionImpact(userId: string, nodeId: string) {
+  const node = await assertNodeOwner(nodeId, userId)
+  const rows = await db
+    .selectFrom("message_nodes")
+    .select(["id", "parent_id", "role"])
+    .where("chat_id", "=", node.chat_id)
+    .execute()
+  const count = async (nodeIds: string[]) => {
+    if (!nodeIds.length) return 0
+    const roots = await db
+      .selectFrom("chats")
+      .select("id")
+      .where("user_id", "=", userId)
+      .where("kind", "=", "agent_run")
+      .where("parent_node_id", "in", nodeIds)
+      .execute()
+    const ids = roots.map((row) => row.id)
+    for (let index = 0; index < ids.length; index++) {
+      const children = await db
+        .selectFrom("chats")
+        .select("id")
+        .where("user_id", "=", userId)
+        .where("parent_chat_id", "=", ids[index]!)
+        .execute()
+      for (const child of children)
+        if (!ids.includes(child.id)) ids.push(child.id)
+    }
+    return ids.length
+  }
+  return {
+    reparent: await count([node.id]),
+    subtree: await count([...subtreeNodeIds(rows, node.id)]),
+    siblings: await count(siblingGroupNodeIds(rows, node)),
+  }
+}
+
 /** A deleted anchor cannot be restored meaningfully, but its view mode can. */
 async function clearDeletedTreeCamera(
   executor: DbExecutor,
@@ -2199,6 +2500,7 @@ async function deleteNodeInternal(
         : mode === "subtree"
           ? [...subtreeNodeIds(rows, node.id)]
           : siblingGroupNodeIds(rows, node)
+    const helperDeletion = await deleteOwnedHelpers(trx, userId, deletedIds)
     const generationRunIds = deletedIds.length
       ? await trx
           .selectFrom("generation_runs")
@@ -2256,8 +2558,11 @@ async function deleteNodeInternal(
       }
       await trx.deleteFrom("message_nodes").where("id", "=", node.id).execute()
       return {
-        nodeIds: deletedIds,
-        generationRunIds: generationRunIds.map((run) => run.id),
+        nodeIds: [...deletedIds, ...helperDeletion.nodeIds],
+        generationRunIds: [
+          ...generationRunIds.map((run) => run.id),
+          ...helperDeletion.generationRunIds,
+        ],
       }
     }
     if (mode === "siblings") {
@@ -2278,16 +2583,22 @@ async function deleteNodeInternal(
         .where("id", "in", rootIds.length ? rootIds : [node.id])
         .execute()
       return {
-        nodeIds: deletedIds,
-        generationRunIds: generationRunIds.map((run) => run.id),
+        nodeIds: [...deletedIds, ...helperDeletion.nodeIds],
+        generationRunIds: [
+          ...generationRunIds.map((run) => run.id),
+          ...helperDeletion.generationRunIds,
+        ],
       }
     }
     const replacement = await replacementSiblingId(trx, node)
     await repairSelectionAfterDetach(trx, node, replacement, timestamp)
     await trx.deleteFrom("message_nodes").where("id", "=", node.id).execute()
     return {
-      nodeIds: deletedIds,
-      generationRunIds: generationRunIds.map((run) => run.id),
+      nodeIds: [...deletedIds, ...helperDeletion.nodeIds],
+      generationRunIds: [
+        ...generationRunIds.map((run) => run.id),
+        ...helperDeletion.generationRunIds,
+      ],
     }
   })
 }
@@ -2391,11 +2702,34 @@ export async function replaceMessage(input: {
     attachments: input.attachments,
     sourceParts: nodeParts(node),
   })
+  const previousCalls = nodeParts(node).flatMap((part) =>
+    part.type === "tool-invocation" &&
+    (part.toolName === "task" || part.toolName === "continue_task")
+      ? [part.toolCallId]
+      : []
+  )
+  const retainedCalls = new Set(
+    parts.flatMap((part) =>
+      part.type === "tool-invocation" &&
+      (part.toolName === "task" || part.toolName === "continue_task")
+        ? [part.toolCallId]
+        : []
+    )
+  )
+  const removedCalls = previousCalls.filter(
+    (callId) => !retainedCalls.has(callId)
+  )
+  if (
+    node.status === "streaming" &&
+    previousCalls.some((callId) => retainedCalls.has(callId))
+  )
+    throw new Error("Stop the running helper before editing this task card.")
   if (node.status === "streaming") {
     abortGenerations([node.id])
     await cancelGenerationRuns([node.id])
   }
-  await db.transaction().execute(async (trx) => {
+  const deletion = await db.transaction().execute(async (trx) => {
+    await lockChatMutation(trx, node.chat_id, input.userId)
     await trx
       .deleteFrom("generation_runs")
       .where("node_id", "=", node.id)
@@ -2421,9 +2755,16 @@ export async function replaceMessage(input: {
       })
       .where("id", "=", node.id)
       .where("revision", "=", input.expectedRevision ?? node.revision)
+      .where("parts_json", "=", node.parts_json)
       .executeTakeFirst()
     if (Number(result.numUpdatedRows ?? 0) !== 1)
       throw new Error("Message changed before it could be replaced.")
+    const removed = await deleteOwnedHelpers(
+      trx,
+      input.userId,
+      [node.id],
+      removedCalls
+    )
     await claimUploadedAttachments(
       input.userId,
       node.id,
@@ -2432,7 +2773,10 @@ export async function replaceMessage(input: {
       ),
       trx
     )
+    return removed
   })
+  abortGenerations(deletion.nodeIds)
+  await requestCancelGenerationRuns(deletion.generationRunIds)
   await cleanupDetachedAttachments()
   return node
 }
@@ -3190,6 +3534,16 @@ export async function deletePromptStack(userId: string, stackId: string) {
     .where("user_id", "=", userId)
     .executeTakeFirst()
   if (!existing) throw new Error("Prompt stack not found")
+  const helper = await db
+    .selectFrom("helper_profiles")
+    .select("id")
+    .where("user_id", "=", userId)
+    .where("prompt_stack_id", "=", stackId)
+    .executeTakeFirst()
+  if (helper)
+    throw new Error(
+      "Choose another prompt stack for helpers before deleting this one"
+    )
   await db.transaction().execute(async (trx) => {
     const chats = await trx
       .selectFrom("chats")
@@ -3565,6 +3919,8 @@ export async function getInstanceSettings(userId: string) {
     themeMode: prefs.theme_mode,
     builtInTools: parseBuiltInToolsJson(prefs.builtin_tools_json),
     pdfImagePageLimit: Number(prefs.pdf_image_page_limit),
+    agentDepth: Number(prefs.agent_depth),
+    maxModelSteps: Number(prefs.max_model_steps),
     titleModelConfig: await getTitleModelConfig(),
     adminTitleSettings: await getAdminTitleSettings(),
     userTitleSettings: titleSettingsFromValues(userDefaults),
@@ -3602,6 +3958,55 @@ function scheduledUploadIds(actionJson: string) {
   )
 }
 
+function orderChatsForInsert<
+  T extends { id: string; parent_chat_id: string | null },
+>(chats: T[]) {
+  const pending = [...chats]
+  const ordered: T[] = []
+  const seen = new Set<string>()
+  while (pending.length) {
+    const index = pending.findIndex(
+      (chat) => !chat.parent_chat_id || seen.has(chat.parent_chat_id)
+    )
+    if (index < 0) {
+      ordered.push(...pending)
+      break
+    }
+    const chat = pending.splice(index, 1)[0]!
+    ordered.push(chat)
+    seen.add(chat.id)
+  }
+  return ordered
+}
+
+async function insertRestoredChats(
+  trx: Transaction<DB>,
+  chats: Backup["chats"],
+  userId: string
+) {
+  for (const chat of orderChatsForInsert(chats)) {
+    await trx
+      .insertInto("chats")
+      .values({
+        id: chat.id,
+        user_id: userId,
+        title: chat.title,
+        selected_root_node_id: chat.selected_root_node_id,
+        settings_json: chat.settings_json,
+        view_state_json: chat.view_state_json,
+        space_id: chat.space_id ?? null,
+        kind: chat.kind,
+        parent_chat_id: chat.parent_chat_id,
+        parent_node_id: chat.parent_node_id,
+        parent_tool_call_id: chat.parent_tool_call_id,
+        agent_config_json: chat.agent_config_json,
+        created_at: chat.created_at,
+        updated_at: chat.updated_at,
+      })
+      .execute()
+  }
+}
+
 function preferenceInsertValues(
   prefs: Backup["userPreferences"][number],
   userId: string
@@ -3613,6 +4018,8 @@ function preferenceInsertValues(
     theme_mode: prefs.theme_mode,
     builtin_tools_json: prefs.builtin_tools_json,
     pdf_image_page_limit: prefs.pdf_image_page_limit,
+    agent_depth: prefs.agent_depth,
+    max_model_steps: prefs.max_model_steps,
     chat_defaults_json: prefs.chat_defaults_json,
     created_at: prefs.created_at,
     updated_at: prefs.updated_at,
@@ -3660,6 +4067,34 @@ async function restoreOwnerBackup(
         .execute()
     }
   }
+  if (backup.helperProfiles.length)
+    await trx
+      .deleteFrom("helper_profiles")
+      .where("user_id", "=", userId)
+      .execute()
+  for (const profile of backup.helperProfiles) {
+    await trx
+      .insertInto("helper_profiles")
+      .values({
+        ...profile,
+        user_id: userId,
+        allow_task: toDbBool(profile.allow_task),
+      })
+      .onConflict((oc) =>
+        oc.column("id").doUpdateSet({
+          key: profile.key,
+          name: profile.name,
+          description: profile.description,
+          prompt_stack_id: profile.prompt_stack_id,
+          model_json: profile.model_json,
+          mcp_mode: profile.mcp_mode,
+          allow_task: toDbBool(profile.allow_task),
+          context_mode: profile.context_mode,
+          updated_at: profile.updated_at,
+        })
+      )
+      .execute()
+  }
   for (const book of backup.contextBooks) {
     await trx
       .insertInto("context_books")
@@ -3702,22 +4137,7 @@ async function restoreOwnerBackup(
       .execute()
   }
 
-  for (const chat of backup.chats) {
-    await trx
-      .insertInto("chats")
-      .values({
-        id: chat.id,
-        user_id: userId,
-        title: chat.title,
-        selected_root_node_id: chat.selected_root_node_id,
-        settings_json: chat.settings_json,
-        view_state_json: chat.view_state_json,
-        space_id: chat.space_id ?? null,
-        created_at: chat.created_at,
-        updated_at: chat.updated_at,
-      })
-      .execute()
-  }
+  await insertRestoredChats(trx, backup.chats, userId)
   for (const receipt of backup.importReceipts) {
     await trx
       .insertInto("import_receipts")
@@ -3794,7 +4214,7 @@ async function restoreOwnerBackup(
         })
         .execute()
 
-  await insertRestoredMessageNodes(trx, backup.nodes)
+  await insertRestoredMessageNodes(trx, backup.nodes, backup.chats)
   for (const run of backup.scheduledRuns)
     await trx.insertInto("scheduled_job_runs").values(run).execute()
   for (const link of backup.chatContextBooks)
@@ -4174,9 +4594,98 @@ function validateMultiUserBackup(
 
 async function insertRestoredMessageNodes(
   trx: Transaction<DB>,
-  nodes: Backup["nodes"]
+  nodes: Backup["nodes"],
+  chats: Backup["chats"]
 ) {
+  const chatById = new Map(chats.map((chat) => [chat.id, chat]))
+  const childrenByParent = new Map<string, Backup["chats"]>()
+  for (const chat of chats) {
+    if (
+      chat.kind !== "agent_run" ||
+      !chat.parent_node_id ||
+      !chat.parent_tool_call_id
+    )
+      continue
+    const children = childrenByParent.get(chat.parent_node_id) ?? []
+    children.push(chat)
+    childrenByParent.set(chat.parent_node_id, children)
+  }
   for (const node of orderNodesForInsert(nodes)) {
+    const childRuns = childrenByParent.get(node.id) ?? []
+    const parts = parseJson<Parts>(node.parts_json, [])
+    for (const child of childRuns) {
+      const callId = child.parent_tool_call_id!
+      const index = parts.findIndex(
+        (part) => part.type === "tool-invocation" && part.toolCallId === callId
+      )
+      if (index >= 0) {
+        const part = parts[index]!
+        if (
+          part.type === "tool-invocation" &&
+          (part.state === "input-streaming" || part.state === "input-available")
+        )
+          parts[index] = {
+            ...part,
+            state: "output-available",
+            output: {
+              task_id: child.id,
+              status: "error",
+              answer: "",
+              error: "This helper was interrupted by backup restore.",
+            },
+          }
+      } else if (node.role === "assistant") {
+        parts.push({
+          type: "tool-invocation",
+          toolName: "task",
+          toolCallId: callId,
+          state: "output-available",
+          input: { prompt: child.title ?? "Task" },
+          output: {
+            task_id: child.id,
+            status: "error",
+            answer: "",
+            error: "This helper was interrupted by backup restore.",
+          },
+        })
+      }
+    }
+    for (let index = 0; index < parts.length; index++) {
+      const part = parts[index]!
+      if (
+        part.type !== "tool-invocation" ||
+        (part.toolName !== "task" && part.toolName !== "continue_task") ||
+        (part.state !== "input-streaming" && part.state !== "input-available")
+      )
+        continue
+      const progress = part.metadata?.task as { runId?: unknown } | undefined
+      const taskInput = part.input as { task_id?: unknown } | undefined
+      const taskId =
+        typeof progress?.runId === "string"
+          ? progress.runId
+          : typeof taskInput?.task_id === "string"
+            ? taskInput.task_id
+            : ""
+      parts[index] = {
+        ...part,
+        state: "output-available",
+        output: {
+          task_id: taskId,
+          status: "error",
+          answer: "",
+          error: "This helper was interrupted by backup restore.",
+        },
+      }
+    }
+    const interrupted =
+      node.status === "streaming" ||
+      (chatById.get(node.chat_id)?.kind === "agent_run" &&
+        node.status === "awaiting_input")
+    const restoredStatus = interrupted
+      ? chatById.get(node.chat_id)?.kind === "agent_run"
+        ? "stopped"
+        : "error"
+      : node.status
     await trx
       .insertInto("message_nodes")
       .values({
@@ -4187,12 +4696,14 @@ async function insertRestoredMessageNodes(
         sort_key: node.sort_key,
         revision: node.revision,
         role: node.role,
-        parts_json: node.parts_json,
-        search_text: node.search_text,
+        parts_json: JSON.stringify(parts),
+        search_text: childRuns.length
+          ? searchTextFromParts(parts)
+          : node.search_text,
         metadata_json: node.metadata_json,
         branch_index: node.branch_index ?? null,
         excluded_from_context: toDbBool(node.excluded_from_context),
-        status: node.status,
+        status: restoredStatus,
         created_at: node.created_at,
         updated_at: node.updated_at,
       })
@@ -4254,6 +4765,9 @@ async function restoreMultiUserBackup(
     promptStacks: backup.promptStacks
       .filter((stack) => stack.user_id === sourceOwner.id)
       .map((stack) => ({ ...stack, user_id: ownerId })),
+    helperProfiles: backup.helperProfiles
+      .filter((profile) => profile.user_id === sourceOwner.id)
+      .map((profile) => ({ ...profile, user_id: ownerId })),
     contextBooks: backup.contextBooks
       .filter((book) => book.user_id === sourceOwner.id)
       .map((book) => ({ ...book, user_id: ownerId })),
@@ -4378,6 +4892,16 @@ async function restoreMultiUserBackup(
             updated_at: stack.updated_at,
           })
           .execute()
+      for (const profile of backup.helperProfiles.filter(
+        (profile) => profile.user_id === sourceUser.id
+      ))
+        await trx
+          .insertInto("helper_profiles")
+          .values({
+            ...profile,
+            allow_task: toDbBool(profile.allow_task),
+          })
+          .execute()
       for (const book of backup.contextBooks.filter(
         (book) => book.user_id === sourceUser.id
       ))
@@ -4418,23 +4942,8 @@ async function restoreMultiUserBackup(
           .insertInto("user_preferences")
           .values(preferenceInsertValues(prefs, sourceUser.id))
           .execute()
-      for (const chat of userChats) {
-        await trx
-          .insertInto("chats")
-          .values({
-            id: chat.id,
-            user_id: sourceUser.id,
-            title: chat.title,
-            selected_root_node_id: chat.selected_root_node_id,
-            settings_json: chat.settings_json,
-            view_state_json: chat.view_state_json,
-            space_id: chat.space_id ?? null,
-            created_at: chat.created_at,
-            updated_at: chat.updated_at,
-          })
-          .execute()
-      }
-      await insertRestoredMessageNodes(trx, userNodes)
+      await insertRestoredChats(trx, userChats, sourceUser.id)
+      await insertRestoredMessageNodes(trx, userNodes, userChats)
       for (const link of backup.chatContextBooks.filter((link) =>
         userChats.some((chat) => chat.id === link.chat_id)
       ))
@@ -4539,6 +5048,10 @@ export async function createBackup() {
   }))
   const promptStacks = await db
     .selectFrom("prompt_stacks")
+    .selectAll()
+    .execute()
+  const helperProfiles = await db
+    .selectFrom("helper_profiles")
     .selectAll()
     .execute()
   const contextBooks = await db
@@ -4651,6 +5164,7 @@ export async function createBackup() {
     createdAt: new Date().toISOString(),
     instance: { titleModelConfig, titleSettings },
     promptStacks: normalizedStacks,
+    helperProfiles,
     contextBooks: contextBooks.map((row) => ({
       ...row,
       book_json: contextBookToJson(

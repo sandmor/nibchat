@@ -15,6 +15,7 @@ import { UsersSettings } from "./users"
 import { ConversationImportSettings } from "./conversation-import"
 import { ChatTemplateSettings } from "./chat-templates"
 import { ScheduleSettings } from "./schedules"
+import { HelperSettings } from "./helpers"
 
 export function SettingsPanel({
   providers,
@@ -53,6 +54,7 @@ export function SettingsPanel({
           <TitleModelSettings providers={providers} isOwner={isOwner} />
           <PdfImageSettings />
           <PromptStackSettings />
+          <HelperSettings providers={providers} />
           <ContextBookSettings />
           <ChatTemplateSettings />
           <ScheduleSettings />

@@ -6,6 +6,7 @@ import { toast } from "sonner"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { ArrowDown01Icon } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
+import { MetaLine } from "@/components/ui/inline-separator"
 import { AppearanceJsonEditor } from "./appearance-json-editor"
 import {
   Collapsible,
@@ -274,19 +275,25 @@ export function ThemeDocumentEditor({
       >
         <CollapsibleTrigger className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm font-medium outline-none hover:bg-muted/60 focus-visible:ring-[3px] focus-visible:ring-ring/50">
           <span>
-            Advanced · Theme JSON
-            <span
-              className={cn(
-                "ml-2 text-[11px] font-normal",
-                invalid
-                  ? "text-danger"
-                  : dirty
-                    ? "text-amber-700"
-                    : "text-muted-foreground"
-              )}
-            >
-              {jsonStatus}
-            </span>
+            <MetaLine
+              items={[
+                "Advanced",
+                "Theme JSON",
+                <span
+                  key="status"
+                  className={cn(
+                    "text-[11px] font-normal",
+                    invalid
+                      ? "text-danger"
+                      : dirty
+                        ? "text-amber-700"
+                        : "text-muted-foreground"
+                  )}
+                >
+                  {jsonStatus}
+                </span>,
+              ]}
+            />
           </span>
           <HugeiconsIcon
             icon={ArrowDown01Icon}

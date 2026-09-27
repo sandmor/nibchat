@@ -729,7 +729,7 @@ function PromptVariablesEditor({
         open={focusVariable !== null}
         title={
           focusVariable?.name.trim()
-            ? `Default · ${focusVariable.name}`
+            ? `Default for ${focusVariable.name}`
             : "Default value"
         }
         description={focusVariable?.description}

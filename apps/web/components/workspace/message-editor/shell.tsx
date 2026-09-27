@@ -81,7 +81,7 @@ export function EditorShell({
   onCancel?: () => void
   onStop?: () => void
   streaming?: boolean
-  hint?: string
+  hint?: ReactNode
   expandable?: boolean
   expanded?: boolean
   onToggleExpanded?: () => void

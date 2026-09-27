@@ -36,6 +36,7 @@ export async function workspaceHomePath(userId: string) {
     .selectFrom("chats")
     .select("id")
     .where("user_id", "=", userId)
+    .where("kind", "=", "conversation")
     .where("id", "not in", db.selectFrom("template_chats").select("chat_id"))
     .orderBy("updated_at", "desc")
     .executeTakeFirst()

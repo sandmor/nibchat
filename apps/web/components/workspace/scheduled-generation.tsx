@@ -13,6 +13,7 @@ import {
 import { toast } from "sonner"
 import { useTRPC } from "@/lib/trpc-react"
 import { formatRunInstant } from "@/lib/schedules/cadence"
+import { MetaLine } from "@/components/ui/inline-separator"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -81,14 +82,16 @@ export function scheduledGenerationMenuLabel() {
   return "Generate later…"
 }
 
-export function scheduledGenerationLabel(
+export function scheduledGenerationParts(
   nextRunAt: string,
   timeZone: string,
   verb: ScheduledGenerationVerb = "Generates",
   replyCount = 1
 ) {
   const when = formatRunInstant(nextRunAt, timeZone)
-  return replyCount > 1 ? `${verb} ${replyCount} replies · ${when}` : `${verb} ${when}`
+  return replyCount > 1
+    ? [`${verb} ${replyCount} replies`, when]
+    : [`${verb} ${when}`]
 }
 
 function scheduleActionClass(captions: boolean, destructive = false) {
@@ -122,7 +125,7 @@ export function ScheduledGenerationLane({
   const index = found === -1 ? 0 : found
   const current = items[index]
   if (!current) return null
-  const label = scheduledGenerationLabel(
+  const parts = scheduledGenerationParts(
     current.nextRunAt,
     current.timeZone,
     verb,
@@ -139,7 +142,7 @@ export function ScheduledGenerationLane({
           strokeWidth={2}
           className="size-3.5 shrink-0"
         />
-        <span className="min-w-0">{label}</span>
+        <MetaLine items={parts} />
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1">
         {items.length > 1 ? (
@@ -239,7 +242,8 @@ export function ScheduledGenerationCard({
   verb?: ScheduledGenerationVerb
   className?: string
 }) {
-  const label = scheduledGenerationLabel(nextRunAt, timeZone, verb, replyCount)
+  const parts = scheduledGenerationParts(nextRunAt, timeZone, verb, replyCount)
+  const label = parts.join(", ")
   return (
     <div className={cn("relative h-full min-h-0 w-full", className)}>
       <button
@@ -254,7 +258,10 @@ export function ScheduledGenerationCard({
           strokeWidth={2}
           className="size-3.5 shrink-0"
         />
-        <span className="truncate">{label}</span>
+        <MetaLine
+          className="min-w-0 flex-nowrap overflow-hidden"
+          items={parts}
+        />
       </button>
       {onCancel ? (
         <Button

@@ -6,11 +6,11 @@ import {
   normalizeBuiltInToolsDisabled,
   parseBuiltInToolsJson,
 } from "./catalog"
-import { nibchatTools, selectNibchatTools } from "./index"
+import { createNibchatTools } from "./index"
 
 describe("built-in tool catalog", () => {
-  it("lists the same ids as nibchatTools", () => {
-    expect([...builtInToolIds].sort()).toEqual(Object.keys(nibchatTools).sort())
+  it("lists the helper tools in the catalog", () => {
+    expect([...builtInToolIds].sort()).toEqual(["continue_task", "question", "task"])
   })
 
   it("parses a stored disabled list", () => {
@@ -40,11 +40,8 @@ describe("built-in tool catalog", () => {
     )
   })
 
-  it("selectNibchatTools omits disabled tools and keeps others", () => {
-    expect(Object.keys(selectNibchatTools([]))).toEqual(
-      Object.keys(nibchatTools)
-    )
-    expect(selectNibchatTools(["unknown"])).toEqual(nibchatTools)
-    expect(Object.keys(selectNibchatTools(["question"]))).toEqual([])
+  it("omits disabled client tools", async () => {
+    expect(Object.keys(await createNibchatTools({}))).toEqual(["question"])
+    expect(Object.keys(await createNibchatTools({ disabled: ["question"] }))).toEqual([])
   })
 })

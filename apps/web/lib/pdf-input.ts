@@ -5,16 +5,15 @@ type DocumentAnalysis = Extract<
   { kind: "document" }
 >["analysis"]
 
-export function pdfAttachmentCaption(analysis: DocumentAnalysis): string {
+export function pdfAttachmentCaption(analysis: DocumentAnalysis): string[] {
   const pages =
     analysis.pageCount != null
       ? `${analysis.pageCount} page${analysis.pageCount === 1 ? "" : "s"}`
       : null
-  if (analysis.status === "ready") return pages ?? "PDF"
+  if (analysis.status === "ready") return [pages ?? "PDF"]
   const unread =
     analysis.status === "no-text" ? "Couldn't read text" : "Text unavailable"
-  if (!pages) return unread
-  return `${pages} · ${unread.charAt(0).toLowerCase()}${unread.slice(1)}`
+  return pages ? [pages, unread] : [unread]
 }
 
 export function assertPdfFallbackAvailable(parts: Parts) {

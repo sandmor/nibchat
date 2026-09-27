@@ -90,7 +90,10 @@ export async function startGenerationAction(input: {
   const settings = await resolveSettingsForChat(chat, user.id)
   let config = await withModelFallback(user.id, settings.effective.model)
   let responsesReplay = await responsesReplayTargetFor(user.id, config)
-  let assistantMeta = generationAssistantMeta(config, responsesReplay)
+  let assistantMeta = {
+    ...generationAssistantMeta(config, responsesReplay),
+    timeZone: body.timeZone,
+  }
   const replyCount = body.intent === "resume" ? 1 : (body.replyCount ?? 1)
   const batchId = body.actionId
   const generationIds = Array.from({ length: replyCount }, () =>
@@ -210,7 +213,10 @@ export async function startGenerationAction(input: {
       // provenance, so retain the original selection.
       config = priorConfig
       responsesReplay = await responsesReplayTargetFor(user.id, config)
-      assistantMeta = generationAssistantMeta(config, responsesReplay)
+      assistantMeta = {
+        ...generationAssistantMeta(config, responsesReplay),
+        timeZone: body.timeZone,
+      }
     }
     // A resumed tool turn may be finished after the chat selection changed.
     // Keep its old metadata identity so provider-native replay is disabled

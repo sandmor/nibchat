@@ -62,6 +62,13 @@ import {
 } from "@/lib/schedules/cadence"
 
 async function assertSchedulableChat(chatId: string) {
+  const chat = await db
+    .selectFrom("chats")
+    .select("kind")
+    .where("id", "=", chatId)
+    .executeTakeFirst()
+  if (chat?.kind === "agent_run")
+    throw new Error("Agent runs cannot be scheduled")
   const linked = await db
     .selectFrom("template_chats")
     .select("template_id")
@@ -115,7 +122,7 @@ function parseAction(value: string) {
   return scheduleActionSchema.parse(JSON.parse(value))
 }
 function assertUserLeaf(
-  document: ReturnType<typeof parseChatTemplateDocument>
+  document: ChatTemplateDocument
 ) {
   if (templateActiveLeaf(document)?.role !== "user") throw new Error(USER_LEAF)
 }
@@ -1130,6 +1137,7 @@ export async function sendAndScheduleTemplate(input: {
         role: "user",
         parts: preparedParts,
         excludedFromContext: false,
+        branchIndex: null,
       })
       let childId = nodeId
       let parentId = source.parentId

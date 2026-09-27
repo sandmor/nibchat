@@ -5,6 +5,17 @@ export const builtInToolCatalog = [
     description:
       "Pause generation to ask multiple-choice or freeform questions instead of guessing.",
   },
+  {
+    id: "task",
+    title: "Delegate tasks",
+    description:
+      "Ask a configurable helper to complete a focused task.",
+  },
+  {
+    id: "continue_task",
+    title: "Continue helper tasks",
+    description: "Send a follow-up assignment to a helper chat.",
+  },
 ] as const
 
 export type BuiltInToolId = (typeof builtInToolCatalog)[number]["id"]

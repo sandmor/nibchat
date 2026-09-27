@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { MetaLine } from "@/components/ui/inline-separator"
 import {
   Card,
   CardContent,
@@ -609,18 +610,20 @@ export function ContextBookSettings() {
               />
               {testText.trim() ? (
                 <p className="text-xs text-muted-foreground">
-                  {
-                    [...testByEntry.values()].filter(
-                      (item) => item.status === "included"
-                    ).length
-                  }{" "}
-                  included ·{" "}
-                  {
-                    [...testByEntry.values()].filter(
-                      (item) => item.status !== "included"
-                    ).length
-                  }{" "}
-                  skipped
+                  <MetaLine
+                    items={[
+                      `${
+                        [...testByEntry.values()].filter(
+                          (item) => item.status === "included"
+                        ).length
+                      } included`,
+                      `${
+                        [...testByEntry.values()].filter(
+                          (item) => item.status !== "included"
+                        ).length
+                      } skipped`,
+                    ]}
+                  />
                 </p>
               ) : (
                 <p className="text-xs text-muted-foreground">

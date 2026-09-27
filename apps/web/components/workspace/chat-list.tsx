@@ -11,6 +11,7 @@ import {
   Tick02Icon,
 } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
+import { InlineSeparator } from "@/components/ui/inline-separator"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -210,10 +211,16 @@ export function ChatListItem({
           <ChatSelectMark selected={selected} visible={selecting} />
           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
             <span className="truncate text-sm font-medium">{title}</span>
-            <span className="text-xs text-muted-foreground">
-              {spaceName
-                ? `${spaceName} · ${new Date(chat.updated_at).toLocaleDateString()}`
-                : new Date(chat.updated_at).toLocaleDateString()}
+            <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+              {spaceName ? (
+                <>
+                  <span className="truncate">{spaceName}</span>
+                  <InlineSeparator />
+                </>
+              ) : null}
+              <span className="shrink-0">
+                {new Date(chat.updated_at).toLocaleDateString()}
+              </span>
             </span>
           </span>
         </span>

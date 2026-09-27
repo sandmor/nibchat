@@ -14,6 +14,7 @@ import {
 } from "@hugeicons/core-free-icons"
 import { Badge } from "@/components/ui/badge"
 import { Button, buttonVariants } from "@/components/ui/button"
+import { MetaLine } from "@/components/ui/inline-separator"
 import {
   Collapsible,
   CollapsibleContent,
@@ -83,12 +84,14 @@ function bookTriggerLabel(
   books: Array<{ id: string; name: string }>,
   effectiveIds: string[]
 ) {
-  if (effectiveIds.length === 0) return "Books"
+  if (effectiveIds.length === 0) return { text: "Books", parts: ["Books"] }
   if (effectiveIds.length === 1) {
     const name = books.find((book) => book.id === effectiveIds[0])?.name
-    return name ?? "Books"
+    const text = name ?? "Books"
+    return { text, parts: [text] }
   }
-  return `Books · ${effectiveIds.length}`
+  const count = String(effectiveIds.length)
+  return { text: `${count} books`, parts: ["Books", count] }
 }
 
 export function ContextBookPicker({
@@ -148,7 +151,7 @@ export function ContextBookPicker({
     })
   )
   const effectiveIds = [...new Set([...inherited.keys(), ...attachedIds])]
-  const label = bookTriggerLabel(books, effectiveIds)
+  const trigger = bookTriggerLabel(books, effectiveIds)
 
   function commit(next: string[]) {
     if (chatId) mutation.mutate({ chatId, bookIds: next })
@@ -192,12 +195,19 @@ export function ContextBookPicker({
               variant="ghost"
               size="sm"
               className="max-w-[min(9rem,24vw)] min-w-0 truncate"
-              title={label}
-              aria-label={`Context books: ${label}`}
+              title={trigger.text}
+              aria-label={`Context books: ${trigger.text}`}
             />
           }
         >
-          <span className="truncate">{label}</span>
+          {trigger.parts.length > 1 ? (
+            <MetaLine
+              className="max-w-full flex-nowrap"
+              items={trigger.parts}
+            />
+          ) : (
+            <span className="truncate">{trigger.text}</span>
+          )}
         </PopoverTrigger>
         <PopoverContent align="end" className="w-80 p-3">
           {listBody}
@@ -214,8 +224,8 @@ export function ContextBookPicker({
         size="sm"
         className="max-w-[7rem] min-w-0 truncate px-2"
         onClick={() => setOpen(true)}
-        title={label}
-        aria-label={`Context books: ${label}`}
+        title={trigger.text}
+        aria-label={`Context books: ${trigger.text}`}
       >
         <span className="truncate">Books</span>
       </Button>
@@ -448,9 +458,16 @@ export function SpaceContextBooksCard({
                 variant="outline"
                 className="max-w-full gap-1 border-dashed opacity-70"
               >
-                <span className="truncate">
-                  {book.name ?? "Missing book"} · excluded
-                </span>
+                <MetaLine
+                  items={[
+                    <span key="name" className="truncate">
+                      {book.name ?? "Missing book"}
+                    </span>,
+                    <span key="state" className="text-muted-foreground">
+                      excluded
+                    </span>,
+                  ]}
+                />
                 {onExclude ? (
                   <Button
                     type="button"

@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/popover"
 import { TooltipProvider, WithTooltip } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
+import { MetaLine } from "@/components/ui/inline-separator"
 import {
   assembleContextPreview,
   formatCompactNumber,
@@ -257,12 +258,16 @@ const LAYER_BAR_CLASS: Record<ContextPreviewLayer["id"], string> = {
   draft: "bg-primary",
 }
 
+function layerFacts(layer: ContextPreviewLayer) {
+  return [
+    `${layer.messageCount} ${layer.messageCount === 1 ? "message" : "messages"}`,
+    `~${formatCompactNumber(layer.charCount)} chars`,
+    `~${formatCompactNumber(layer.estimatedTokens)} tokens (est.)`,
+  ]
+}
+
 function layerCaption(layer: ContextPreviewLayer) {
-  return `${layer.messageCount} ${
-    layer.messageCount === 1 ? "message" : "messages"
-  } · ~${formatCompactNumber(layer.charCount)} chars · ~${formatCompactNumber(
-    layer.estimatedTokens
-  )} tokens (est.)`
+  return layerFacts(layer).join(", ")
 }
 
 function sourceLabel(source: AssembledContextPreviewData["source"]) {
@@ -303,9 +308,13 @@ function ContextPreviewCompose({
   return (
     <div className="space-y-3 text-sm">
       <p className="text-[11px] text-muted-foreground">
-        {sourceLabel(data.source)}
-        {data.missingStackId ? " · previous stack missing" : ""}
-        {` · ~${formatCompactNumber(merged.estimatedTokens)} tokens (est.)`}
+        <MetaLine
+          items={[
+            sourceLabel(data.source),
+            data.missingStackId ? "Previous stack missing" : null,
+            `~${formatCompactNumber(merged.estimatedTokens)} tokens (est.)`,
+          ]}
+        />
       </p>
 
       <div className="flex h-1.5 overflow-hidden rounded-full bg-muted">
@@ -336,8 +345,11 @@ function ContextPreviewCompose({
             <span className="min-w-16 font-medium text-foreground">
               {layer.label}
             </span>
-            <span className="min-w-0 flex-1 truncate">
-              {layerCaption(layer)}
+            <span className="flex min-w-0 flex-1 items-center overflow-hidden">
+              <MetaLine
+                className="min-w-0 flex-nowrap overflow-hidden"
+                items={layerFacts(layer)}
+              />
             </span>
           </li>
         ))}
@@ -426,29 +438,36 @@ function ContextPreviewCompose({
 
       {hasDraft ? (
         <p className="text-xs text-muted-foreground">
-          Draft
-          {draft?.text
-            ? ` · ~${formatCompactNumber(draft.text.length)} chars`
-            : ""}
-          {draftAttachments.length > 0
-            ? ` · ${draftAttachments.length} ${
-                draftAttachments.length === 1 ? "attachment" : "attachments"
-              }`
-            : ""}
+          <MetaLine
+            items={[
+              "Draft",
+              draft?.text
+                ? `~${formatCompactNumber(draft.text.length)} chars`
+                : null,
+              draftAttachments.length > 0
+                ? `${draftAttachments.length} ${
+                    draftAttachments.length === 1 ? "attachment" : "attachments"
+                  }`
+                : null,
+            ]}
+          />
         </p>
       ) : null}
 
       {merged.imageCount > 0 || fileCount > 0 ? (
         <p className="text-xs text-muted-foreground">
-          {merged.imageCount > 0
-            ? `${merged.imageCount} ${
-                merged.imageCount === 1 ? "image" : "images"
-              } (not counted in token estimate)`
-            : null}
-          {merged.imageCount > 0 && fileCount > 0 ? " · " : null}
-          {fileCount > 0
-            ? `${fileCount} ${fileCount === 1 ? "file" : "files"} in char count`
-            : null}
+          <MetaLine
+            items={[
+              merged.imageCount > 0
+                ? `${merged.imageCount} ${
+                    merged.imageCount === 1 ? "image" : "images"
+                  } (not counted in token estimate)`
+                : null,
+              fileCount > 0
+                ? `${fileCount} ${fileCount === 1 ? "file" : "files"} in char count`
+                : null,
+            ]}
+          />
         </p>
       ) : null}
     </div>
@@ -488,13 +507,15 @@ function ContextEntriesPreview({
                   className="space-y-0.5 text-xs"
                 >
                   <p className="font-medium">
-                    {entry.bookName} · {entry.entryTitle}
+                    <MetaLine items={[entry.bookName, entry.entryTitle]} />
                   </p>
                   <p className="text-[11px] text-muted-foreground">
-                    {entry.reason}
-                    {entry.namespace !== "default"
-                      ? ` · ${entry.namespace}`
-                      : ""}
+                    <MetaLine
+                      items={[
+                        entry.reason,
+                        entry.namespace !== "default" ? entry.namespace : null,
+                      ]}
+                    />
                   </p>
                   {entry.content ? (
                     <p className="line-clamp-3 text-[11px] whitespace-pre-wrap text-muted-foreground">
@@ -522,10 +543,15 @@ function ContextEntriesPreview({
                       key={`${entry.bookId}:${entry.entryId}`}
                       className="text-[11px] text-muted-foreground"
                     >
-                      <span className="font-medium text-foreground">
-                        {entry.entryTitle}
-                      </span>
-                      {` · ${ENTRY_STATUS_LABEL[entry.status]} · ${entry.reason}`}
+                      <MetaLine
+                        items={[
+                          <span className="font-medium text-foreground">
+                            {entry.entryTitle}
+                          </span>,
+                          ENTRY_STATUS_LABEL[entry.status],
+                          entry.reason,
+                        ]}
+                      />
                     </li>
                   ))}
                 </ul>
@@ -603,14 +629,13 @@ export function ContextPreviewStrip({
   const includedEntries = data.contextEntries.filter(
     (entry) => entry.status === "included"
   ).length
-  const summaryLabel = [
+  const summaryItems = [
     ...segments.map((segment) => segment.text),
     includedEntries
       ? `${includedEntries} ${includedEntries === 1 ? "entry" : "entries"}`
       : null,
-  ]
-    .filter(Boolean)
-    .join(" · ")
+  ].filter((item): item is string => Boolean(item))
+  const summaryLabel = summaryItems.join(", ")
   const title = overlay ? "This branch" : "Next send"
 
   const panel = (
@@ -636,7 +661,7 @@ export function ContextPreviewStrip({
 
   const triggerClass = cn(
     "w-full rounded-md px-2 py-1 text-left text-[11px] text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-    pdfNotice ? "flex flex-col gap-0.5" : "truncate",
+    pdfNotice ? "flex flex-col gap-0.5" : "flex items-center overflow-hidden",
     pdfNotice?.kind === "limit" &&
       "bg-destructive/5 text-destructive hover:bg-destructive/10 hover:text-destructive"
   )
@@ -647,10 +672,16 @@ export function ContextPreviewStrip({
   const triggerBody = pdfNotice ? (
     <>
       <span className="truncate">{pdfNotice.strip}</span>
-      <span className="truncate">{summaryLabel}</span>
+      <MetaLine
+        className="min-w-0 flex-nowrap overflow-hidden"
+        items={summaryItems}
+      />
     </>
   ) : (
-    summaryLabel
+    <MetaLine
+      className="min-w-0 flex-nowrap overflow-hidden"
+      items={summaryItems}
+    />
   )
 
   function setPreviewOpen(nextOpen: boolean) {

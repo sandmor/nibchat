@@ -43,6 +43,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
+import { MetaLine } from "@/components/ui/inline-separator"
 import { Switch } from "@/components/ui/switch"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "@/lib/utils"
@@ -794,16 +795,21 @@ export function ConversationImportSettings() {
                               </span>
                               <Badge variant="outline">book</Badge>
                             </span>
-                            <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                              {book.book.entries.length.toLocaleString()}{" "}
-                              {book.book.entries.length === 1
-                                ? "entry"
-                                : "entries"}{" "}
-                              · {book.source}
-                              {book.issues.length
-                                ? ` · ${book.issues.length} need review`
-                                : ""}
-                              {bookImportHint(book, saved)}
+                            <span className="mt-0.5 block text-xs text-muted-foreground">
+                              <MetaLine
+                                items={[
+                                  `${book.book.entries.length.toLocaleString()} ${
+                                    book.book.entries.length === 1
+                                      ? "entry"
+                                      : "entries"
+                                  }`,
+                                  book.source,
+                                  book.issues.length
+                                    ? `${book.issues.length} need review`
+                                    : null,
+                                  bookImportHint(book, saved),
+                                ]}
+                              />
                             </span>
                             {book.issues
                               .filter((issue) => issue.entryId === "*")
@@ -1144,15 +1150,17 @@ export function ConversationImportSettings() {
                                         {item.entity.kind}
                                       </Badge>
                                     </span>
-                                    <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                                      {item.chatCount
-                                        ? `${item.visibleChats.length.toLocaleString()} of ${item.chatCount.toLocaleString()} chats match this filter`
-                                        : "No chats in this export"}
-                                      {destination.override
-                                        ? ""
-                                        : saved
-                                          ? ` · Will update ${saved.spaceName}`
-                                          : ""}
+                                    <span className="mt-0.5 block text-xs text-muted-foreground">
+                                      <MetaLine
+                                        items={[
+                                          item.chatCount
+                                            ? `${item.visibleChats.length.toLocaleString()} of ${item.chatCount.toLocaleString()} chats match this filter`
+                                            : "No chats in this export",
+                                          !destination.override && saved
+                                            ? `Will update ${saved.spaceName}`
+                                            : null,
+                                        ]}
+                                      />
                                     </span>
                                     {item.entity.chatTemplate?.warnings.map(
                                       (warning) => (
@@ -1531,8 +1539,13 @@ function ChatImportRow({
         <span className="min-w-0 flex-1">
           <span className="block truncate font-medium">{record.title}</span>
           <span className="text-xs text-muted-foreground">
-            {record.nodeCount} messages · {record.assetCount} attachments
-            {record.entityLabel ? ` · ${record.entityLabel}` : ""}
+            <MetaLine
+              items={[
+                `${record.nodeCount} messages`,
+                `${record.assetCount} attachments`,
+                record.entityLabel,
+              ]}
+            />
           </span>
         </span>
       </label>
@@ -1557,15 +1570,15 @@ function bookImportHint(
   book: DiscoveredBook,
   saved?: { bookName: string; fingerprint: string }
 ) {
-  if (!saved) return ""
-  if (book.replace) return ` · Will replace ${saved.bookName}`
+  if (!saved) return null
+  if (book.replace) return `Will replace ${saved.bookName}`
   if (
     saved.fingerprint &&
     saved.fingerprint === contextBookFingerprint(book.book)
   )
-    return ` · Will reuse ${saved.bookName}`
-  if (!saved.fingerprint) return ` · Already imported as ${saved.bookName}`
-  return ` · Export changed · ${saved.bookName}`
+    return `Will reuse ${saved.bookName}`
+  if (!saved.fingerprint) return `Already imported as ${saved.bookName}`
+  return `Export changed for ${saved.bookName}`
 }
 
 function groupImportRows(

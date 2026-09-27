@@ -5,6 +5,7 @@ import { isProviderModelsJson } from "@/lib/provider-models"
 import { chatViewStateSchema } from "@/lib/chat-view-state"
 import { providerConnectionConfigSchema } from "@/lib/provider-config"
 import { cadenceSchema } from "@/lib/schedules/cadence"
+import { MAX_COLLECTION, MAX_SPACE_DEPTH } from "@/lib/limits"
 
 const chatRowSchema = z
   .object({
@@ -21,6 +22,14 @@ const chatRowSchema = z
       }
     }, "Invalid chat view state"),
     space_id: z.string().nullable().optional().default(null),
+    kind: z
+      .enum(["conversation", "agent_run"])
+      .optional()
+      .default("conversation"),
+    parent_chat_id: z.string().nullable().optional().default(null),
+    parent_node_id: z.string().nullable().optional().default(null),
+    parent_tool_call_id: z.string().nullable().optional().default(null),
+    agent_config_json: z.string().nullable().optional().default(null),
     created_at: z.string(),
     updated_at: z.string(),
   })
@@ -186,6 +195,20 @@ const userPreferencesSchema = z.object({
   theme_mode: z.enum(["system", "light", "dark"]),
   builtin_tools_json: z.string(),
   pdf_image_page_limit: z.number().int().positive().default(8),
+  agent_depth: z
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_SPACE_DEPTH)
+    .optional()
+    .default(1),
+  max_model_steps: z
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_COLLECTION)
+    .optional()
+    .default(20),
   chat_defaults_json: z.string().default("{}"),
   created_at: z.string(),
   updated_at: z.string(),
@@ -227,6 +250,23 @@ const chatTemplateSchema = z.object({
 const templateChatSchema = z.object({
   template_id: z.string(),
   chat_id: z.string(),
+})
+const helperProfileSchema = z.object({
+  id: z.string(),
+  user_id: z.string(),
+  key: z.string(),
+  name: z.string(),
+  description: z.string(),
+  prompt_stack_id: z.string(),
+  model_json: z.string().nullable(),
+  mcp_mode: z.enum(["inherit", "none"]),
+  allow_task: z
+    .union([z.boolean(), z.number().transform(Boolean)])
+    .optional()
+    .default(true),
+  context_mode: z.enum(["conversation", "task"]),
+  created_at: z.string(),
+  updated_at: z.string(),
 })
 const scheduledGenerationSchema = z.object({
   id: z.string(),
@@ -272,6 +312,7 @@ export const backupSchema = z.object({
   providerProfiles: z.array(providerProfileSchema).optional().default([]),
   mcpServerProfiles: z.array(mcpServerProfileSchema).optional().default([]),
   promptStacks: z.array(promptStackRowSchema).optional().default([]),
+  helperProfiles: z.array(helperProfileSchema).optional().default([]),
   contextBooks: z.array(contextBookRowSchema).optional().default([]),
   chatContextBooks: z.array(chatContextBookRowSchema).optional().default([]),
   spaces: z.array(spaceRowSchema).optional().default([]),

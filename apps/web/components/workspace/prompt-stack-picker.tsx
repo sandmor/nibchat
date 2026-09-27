@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation"
 import { useMutation, useQuery } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import { InlineSeparator, MetaLine } from "@/components/ui/inline-separator"
 import {
   Dialog,
   DialogContent,
@@ -76,12 +77,12 @@ export function PromptStackPicker({
   )
 
   const label = inherits
-    ? inheritedStack
-      ? `Stack · ${inheritedStack.name}`
-      : "Prompt stack"
+    ? (inheritedStack?.name ?? "Prompt stack")
     : isOrphan
       ? "Missing stack"
       : (selectedStack?.name ?? "Prompt stack")
+  const visibleParts =
+    inherits && inheritedStack ? ["Stack", inheritedStack.name] : [label]
 
   const setMut = useMutation(
     trpc.workspace.setChatPromptStack.mutationOptions({
@@ -127,13 +128,15 @@ export function PromptStackPicker({
             )}
             onClick={() => void selectStack(null)}
           >
-            <span className="min-w-0 flex-1 truncate">
-              Use default
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              <span>Use default</span>
               {defaultStack ? (
-                <span className="text-muted-foreground">
-                  {" "}
-                  · {defaultStack.name}
-                </span>
+                <>
+                  <InlineSeparator />
+                  <span className="truncate text-muted-foreground">
+                    {defaultStack.name}
+                  </span>
+                </>
               ) : null}
             </span>
           </button>
@@ -211,7 +214,11 @@ export function PromptStackPicker({
             />
           }
         >
-          <span className="truncate">{label}</span>
+          {visibleParts.length > 1 ? (
+            <MetaLine className="max-w-full flex-nowrap" items={visibleParts} />
+          ) : (
+            <span className="truncate">{label}</span>
+          )}
         </PopoverTrigger>
         <PopoverContent align="end" className="w-80 p-3">
           {listBody}

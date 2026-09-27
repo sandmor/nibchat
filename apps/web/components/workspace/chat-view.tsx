@@ -19,6 +19,7 @@ import { toast } from "sonner"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { HierarchySquare02Icon, ListViewIcon } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
+import { MetaLine } from "@/components/ui/inline-separator"
 import { Input } from "@/components/ui/input"
 import {
   Dialog,
@@ -133,6 +134,7 @@ import { composeLayoutAnchor, composeLayoutId } from "./tree-layout"
 import { ConversationFindLayer } from "./conversation-find"
 import { ConversationFindBar } from "./conversation-find-bar"
 import { useConversationFindSession } from "./conversation-find-session"
+import { AgentRunSubtitle } from "./agent-run-bar"
 import { SessionMessageEditor } from "./message-editor"
 import { type MessageEditorBindings } from "./message"
 import { ContextPreviewProvider } from "./context-preview"
@@ -280,7 +282,7 @@ function draftRowsFromTemplate(document: ChatTemplateDocument): NodeRow[] {
     selected_child_id: node.selectedChildId,
     sort_key: node.sortKey,
     revision: 0,
-    branch_index: node.branchIndex,
+    branch_index: node.branchIndex ?? null,
     role: node.role,
     parts_json: JSON.stringify(node.parts),
     search_text: "",
@@ -2923,6 +2925,8 @@ export function ChatView({
                   <p className="truncate">{templateUsageLabel}</p>
                 ) : null}
               </div>
+            ) : data.chat?.kind === "agent_run" ? (
+              <AgentRunSubtitle chat={data.chat} />
             ) : (
               <p className="hidden truncate text-xs text-muted-foreground sm:block">
                 {!data.chat &&
@@ -3052,7 +3056,9 @@ export function ChatView({
                 ...(showTemplatePicker
                   ? [
                       {
-                        label: `Template · ${templatePickerLabel}`,
+                        label: (
+                          <MetaLine items={["Template", templatePickerLabel]} />
+                        ),
                         onSelect: () => {
                           if (settingLocks.chatTemplate) {
                             router.push(
@@ -3086,11 +3092,16 @@ export function ChatView({
                 ...(!template
                   ? [
                       {
-                        label: `Space · ${
-                          (data.spaces ?? []).find(
-                            (space) => space.id === spaceId
-                          )?.name ?? "Ungrouped"
-                        }`,
+                        label: (
+                          <MetaLine
+                            items={[
+                              "Space",
+                              (data.spaces ?? []).find(
+                                (space) => space.id === spaceId
+                              )?.name ?? "Ungrouped",
+                            ]}
+                          />
+                        ),
                         onSelect: () => setSpaceOpen(true),
                       },
                     ]

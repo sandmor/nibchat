@@ -1,5 +1,6 @@
 "use client"
 
+import type { ReactNode } from "react"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { CircleEllipsisIcon } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
@@ -12,7 +13,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 
 export type ChatHeaderMoreItem = {
-  label: string
+  label: ReactNode
   onSelect: () => void
 }
 
@@ -43,9 +44,9 @@ export function ChatHeaderMore({
         />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-52">
-        {compactItems.map((item) => (
+        {compactItems.map((item, index) => (
           <DropdownMenuItem
-            key={item.label}
+            key={`compact-${index}`}
             className="md:hidden"
             onClick={item.onSelect}
           >
@@ -55,8 +56,8 @@ export function ChatHeaderMore({
         {compactItems.length > 0 ? (
           <DropdownMenuSeparator className="md:hidden" />
         ) : null}
-        {items.map((item) => (
-          <DropdownMenuItem key={item.label} onClick={item.onSelect}>
+        {items.map((item, index) => (
+          <DropdownMenuItem key={`item-${index}`} onClick={item.onSelect}>
             {item.label}
           </DropdownMenuItem>
         ))}

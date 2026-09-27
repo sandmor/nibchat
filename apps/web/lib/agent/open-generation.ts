@@ -3,7 +3,10 @@ import {
   startGenerationProducer,
   type GenerationSetup,
 } from "@/lib/agent/run-generation"
+import type { AgentGenerationOptions } from "@/lib/agent/generation-options"
 import type { Parts } from "@/lib/agent/parts"
+import { readStackJson, type PromptStackDocument } from "@/lib/prompt-stack"
+import { branchIdOf, parseJson } from "@/lib/domain"
 import {
   resolveSettingsForChat,
   resolveStackForChat,
@@ -16,7 +19,6 @@ import {
   type ResolvedSettings,
 } from "@/lib/chat-settings"
 import { db } from "@/lib/db"
-import { branchIdOf } from "@/lib/domain"
 import { formatSpaceRules } from "@/lib/spaces"
 import {
   modelFor,
@@ -55,13 +57,25 @@ export async function startChatGeneration(input: {
   assistant: NodeRow
   contextLeafId: string | null
   seedParts?: Parts
+  replaySeedParts?: boolean
   timeZone: string
   generationId: string
   afterFinalize?: GenerationSetup["afterFinalize"]
   previousMetadata?: Record<string, unknown>
   resumeClaim?: GenerationSetup["resumeClaim"]
+  agent?: AgentGenerationOptions
 }) {
   const resolved = await resolveStackForChat(input.chat, input.userId)
+  const agentConfig = await db
+    .selectFrom("chats")
+    .select("agent_config_json")
+    .where("id", "=", input.chat.id)
+    .where("user_id", "=", input.userId)
+    .executeTakeFirst()
+  const snapshot = parseJson<{ stack?: PromptStackDocument }>(
+    agentConfig?.agent_config_json ?? "{}",
+    {}
+  )
   const allNodes = await db
     .selectFrom("message_nodes")
     .selectAll()
@@ -74,6 +88,7 @@ export async function startChatGeneration(input: {
     assistant: input.assistant,
     contextLeafId: input.contextLeafId,
     seedParts: input.seedParts,
+    replaySeedParts: input.replaySeedParts,
     config,
     languageModel: input.languageModel,
     responsesReplay: input.responsesReplay,
@@ -87,7 +102,9 @@ export async function startChatGeneration(input: {
               protocol as "responses" | "chat"
             )
         : undefined,
-    promptStack: resolved.stack,
+    promptStack: snapshot.stack
+      ? readStackJson(JSON.stringify(snapshot.stack))
+      : resolved.stack,
     variableOverrides: input.settings.effective.variables,
     spaceRulesText: formatSpaceRules(input.settings.effective.rules),
     timeZone: input.timeZone,
@@ -96,6 +113,7 @@ export async function startChatGeneration(input: {
     resumeClaim: input.resumeClaim,
     afterFinalize: input.afterFinalize,
     generationId: input.generationId,
+    ...input.agent,
   })
 }
 
@@ -110,8 +128,9 @@ export async function continueChatGeneration(input: {
   settingsJson?: string
   afterFinalize?: GenerationSetup["afterFinalize"]
   onStarted?: (assistantId: string) => Promise<void>
+  agent?: AgentGenerationOptions
   batch?: { id: string; index: number; size: number }
-  existing?: { assistant: NodeRow; generationId: string }
+  existing?: { assistant: NodeRow; generationId: string; seedParts?: Parts }
 }) {
   const chat = await db
     .selectFrom("chats")
@@ -144,11 +163,35 @@ export async function continueChatGeneration(input: {
     chat.settings_json = settingValuesToJson(next)
   }
   const settings = await resolveSettingsForChat(chat, input.userId)
-  const config = await withModelFallback(input.userId, settings.effective.model)
+  const agentSnapshot = parseJson<{ model?: ModelConfig }>(
+    chat.agent_config_json ?? "{}",
+    {}
+  )
+  const config = await withModelFallback(
+    input.userId,
+    agentSnapshot.model ?? settings.effective.model
+  )
+  const helperPolicy =
+    chat.kind === "agent_run"
+      ? ({
+          question: true,
+          task:
+            parseJson<{ allowTask?: boolean }>(
+              chat.agent_config_json ?? "{}",
+              {}
+            ).allowTask !== false,
+          mcp:
+            parseJson<{ mcpMode?: "inherit" | "none" }>(
+              chat.agent_config_json ?? "{}",
+              {}
+            ).mcpMode ?? "inherit",
+        } as const)
+      : undefined
   const responsesReplay = await responsesReplayTargetFor(input.userId, config)
   const generationId = input.existing?.generationId ?? crypto.randomUUID()
   const assistantMeta = {
     ...generationAssistantMeta(config, responsesReplay),
+    timeZone: input.timeZone,
     ...(input.batch
       ? {
           batchId: input.batch.id,
@@ -191,5 +234,11 @@ export async function continueChatGeneration(input: {
     generationId,
     afterFinalize: input.afterFinalize,
     previousMetadata: assistantMeta,
+    seedParts: input.existing?.seedParts,
+    replaySeedParts: Boolean(input.existing),
+    agent: {
+      ...input.agent,
+      toolPolicy: helperPolicy ?? input.agent?.toolPolicy,
+    },
   })
 }

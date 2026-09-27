@@ -15,6 +15,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button, buttonVariants } from "@/components/ui/button"
+import { MetaLine } from "@/components/ui/inline-separator"
 import {
   Card,
   CardContent,
@@ -37,11 +38,12 @@ function templateScheduleLabel(rows: { enabled: boolean; cadence: Cadence }[]) {
   if (rows.length === 0) return null
   if (rows.length === 1) {
     const row = rows[0]!
-    const cadence = formatCadence(row.cadence)
-    return row.enabled ? cadence : `${cadence} · paused`
+    return { detail: formatCadence(row.cadence), paused: !row.enabled }
   }
-  const count = `${rows.length} schedules`
-  return rows.every((row) => !row.enabled) ? `${count} · paused` : count
+  return {
+    detail: `${rows.length} schedules`,
+    paused: rows.every((row) => !row.enabled),
+  }
 }
 
 function TemplateName({
@@ -198,9 +200,14 @@ export function ChatTemplateSettings() {
                   className="line-clamp-2 text-xs text-muted-foreground"
                   suppressHydrationWarning
                 >
-                  {nodeCountLabel(template.document.nodes.length)}
-                  {template.document.expandMessageMacros ? " · macros" : ""}
-                  {scheduleLabel ? ` · ${scheduleLabel}` : ""}
+                  <MetaLine
+                    items={[
+                      nodeCountLabel(template.document.nodes.length),
+                      template.document.expandMessageMacros ? "macros" : null,
+                      scheduleLabel?.detail,
+                      scheduleLabel?.paused ? "paused" : null,
+                    ]}
+                  />
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-1">

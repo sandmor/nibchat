@@ -51,10 +51,7 @@ import {
 import type { PromptStackDocument } from "@/lib/prompt-stack"
 import { SETTING_LABELS } from "@/lib/chat-settings"
 import type { BuiltInToolsPrefs } from "@/lib/agent/tools/catalog"
-import {
-  isAppearanceDirty,
-  useAppearanceStore,
-} from "@/lib/appearance-store"
+import { isAppearanceDirty, useAppearanceStore } from "@/lib/appearance-store"
 import { activeThemeId } from "@/lib/theme-slot"
 import { resolveSpaceAppearance } from "@/lib/spaces/appearance"
 import { spaceFromRow } from "@/lib/spaces/tree"
@@ -135,6 +132,8 @@ type InstanceSettings = {
   userTitleSettings: import("@/lib/chat-settings").TitleSettings
   builtInTools: BuiltInToolsPrefs
   pdfImagePageLimit: number
+  agentDepth: number
+  maxModelSteps: number
 }
 
 export function WorkspaceShell({
@@ -268,8 +267,8 @@ export function WorkspaceShell({
     themes.find((theme) => theme.id === currentThemeId)?.document ?? null
   const appearanceCustomized = Boolean(
     appearanceSpaceId &&
-      (resolvedAppearance.themeId !== currentThemeId ||
-        isAppearanceDirty(resolvedAppearance.document, userThemeDocument))
+    (resolvedAppearance.themeId !== currentThemeId ||
+      isAppearanceDirty(resolvedAppearance.document, userThemeDocument))
   )
   // Color-only edits retain these nested references, so consumers of chrome do
   // not rerender while the picker is dragged.

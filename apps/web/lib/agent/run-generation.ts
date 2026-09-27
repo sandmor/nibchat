@@ -1,4 +1,4 @@
-import { stepCountIs, streamText, type LanguageModel } from "ai"
+import type { LanguageModel } from "ai"
 import { generationStreamStore } from "@/lib/generation-streams/default-port"
 import { generationExecutor } from "@/lib/generation-streams/default-port"
 import {
@@ -9,13 +9,22 @@ import type { GenerationProducer } from "@/lib/generation-streams/ports"
 import { startProducerGuards } from "@/lib/generation-streams/producer-session"
 import { activateGenerationRun } from "@/lib/generation-runs"
 import { buildEmbeddedModelMessages } from "@/lib/agent/build-messages-embed"
+import { buildModelMessages } from "@/lib/agent/build-messages"
+import {
+  continueTaskInputSchema,
+  taskInputSchema,
+} from "@/lib/agent/tools/task-shared"
 import {
   partsHavePendingClientTools,
   resolveStreamTerminalOutcome,
   type Parts,
 } from "@/lib/agent/parts"
-import { reservedBuiltInToolNames, selectNibchatTools } from "@/lib/agent/tools"
+import { runModelLoop } from "@/lib/agent/model-loop"
+import { type AgentGenerationOptions } from "@/lib/agent/generation-options"
+import { createNibchatTools, reservedBuiltInToolNames } from "@/lib/agent/tools"
 import { getBuiltInToolsPrefs } from "@/lib/user-settings"
+import { getAgentLimits } from "@/lib/user-settings"
+import { taskDepth } from "@/lib/agent/task-depth"
 import { effectiveContextBooks } from "@/lib/chat-service"
 import {
   resolveContextEntries,
@@ -23,6 +32,7 @@ import {
 } from "@/lib/context-books"
 import {
   beginResumeAssistant,
+  checkpointStreamingAssistant,
   finalizeStreamingAssistantWithSnapshot,
   restoreAwaitingInput,
 } from "@/lib/chat-service"
@@ -62,8 +72,6 @@ import { getPdfImagePageLimit } from "@/lib/user-settings"
 import type { NodeRow, ToolInvocationPart } from "@/lib/types"
 import { db } from "@/lib/db"
 
-const MAX_STEPS = 20
-
 function withoutTransientStreamIds(parts: Parts): Parts {
   return parts.map((part) => {
     if (part.type !== "text" && part.type !== "reasoning") return part
@@ -90,6 +98,8 @@ export type GenerationSetup = {
   contextLeafId: string | null
   /** Base parts already on the assistant (resume after tools). */
   seedParts?: Parts
+  /** Replay durable parts from an interrupted assistant after its parent context. */
+  replaySeedParts?: boolean
   config: ModelConfig
   languageModel: LanguageModel
   responsesReplay?: ResponsesReplayTarget
@@ -127,7 +137,7 @@ export type GenerationSetup = {
     parts: Parts
   }) => Promise<void>
   generationId: string
-}
+} & AgentGenerationOptions
 
 /**
  * Run streamText with nibchat tools, stream UI events to the client, and persist
@@ -141,6 +151,7 @@ export async function startGenerationProducer(
     assistant,
     contextLeafId,
     seedParts = [],
+    replaySeedParts,
     config,
     languageModel,
     responsesReplay,
@@ -155,9 +166,21 @@ export async function startGenerationProducer(
     resumeClaim,
     afterFinalize,
     generationId,
+    maxSteps: requestedMaxSteps,
+    toolPolicy,
+    onLiveText,
+    externalAbort,
+    whenSettled,
   } = setup
 
   const generation = new AbortController()
+  if (externalAbort) {
+    if (externalAbort.aborted) generation.abort()
+    else
+      externalAbort.addEventListener("abort", () => generation.abort(), {
+        once: true,
+      })
+  }
   registerGeneration(assistant.id, generation)
   let registered = true
   const dropRegistration = () => {
@@ -167,6 +190,19 @@ export async function startGenerationProducer(
   }
 
   let claimSucceeded = false
+  let settledNotified = false
+  const notifySettled = (
+    outcome: "complete" | "awaiting_input" | "aborted" | "error",
+    parts: Parts
+  ) => {
+    if (settledNotified) return
+    settledNotified = true
+    try {
+      whenSettled?.({ outcome, parts })
+    } catch (error) {
+      console.warn("[nibchat/generation-settled]", error)
+    }
+  }
   let producerHandle: GenerationProducer | null = null
   let producerGuards: { stop: () => void } | null = null
   let terminalPublished = false
@@ -239,6 +275,7 @@ export async function startGenerationProducer(
       await publishTerminal(terminal).catch((error) =>
         console.warn("[nibchat/generation-terminal]", error)
       )
+      notifySettled("aborted", seedParts)
       producerGuards.stop()
       producerGuards = null
       if (!terminalPublished) await generationStreamStore.close(producerHandle)
@@ -283,14 +320,17 @@ export async function startGenerationProducer(
             : []
         )
       )
-    const mcpServerInstructionsEnabled = promptStack.modules.some(
-      (module) => module.kind === "mcp-instructions" && module.enabled
-    )
+    const includeMcp = toolPolicy?.mcp !== "none"
+    const mcpServerInstructionsEnabled =
+      includeMcp &&
+      promptStack.modules.some(
+        (module) => module.kind === "mcp-instructions" && module.enabled
+      )
     // Tools always register from global MCP profiles; this stack module only
     // injects server initialize instructions (if any) at its stack position.
     const chat = await db
       .selectFrom("chats")
-      .select(["id", "created_at", "settings_json"])
+      .select(["id", "created_at", "settings_json", "kind"])
       .where("id", "=", assistant.chat_id)
       .where("user_id", "=", userId)
       .executeTakeFirst()
@@ -357,48 +397,79 @@ export async function startGenerationProducer(
           pdfImagePageLimit,
         })
       : []
+    const assignmentMessages =
+      !historyEnabled && chat?.kind === "agent_run"
+        ? await buildEmbeddedModelMessages({
+            nodes: modelNodes.filter((node) => node.role === "user").slice(-1),
+            replayReasoning: false,
+            responsesReplay,
+            pdfInputMode,
+            pdfImagePageLimit,
+          })
+        : []
     const [mcp, builtInPrefs] = await Promise.all([
-      prepareMcpTools({
-        includeInstructionsText: mcpServerInstructionsEnabled,
-        reservedToolNames: reservedBuiltInToolNames,
-        macroContext: macroContextWithBooks,
-      }),
+      includeMcp
+        ? prepareMcpTools({
+            includeInstructionsText: mcpServerInstructionsEnabled,
+            reservedToolNames: reservedBuiltInToolNames,
+            macroContext: macroContextWithBooks,
+          })
+        : Promise.resolve({
+            tools: {},
+            warnings: [] as string[],
+            instructionsText: "",
+          }),
       getBuiltInToolsPrefs(userId),
     ])
-    const builtInTools = selectNibchatTools(builtInPrefs.disabled)
     for (const warning of mcp.warnings ?? [])
       console.warn("[nibchat/mcp]", warning)
-    const { system: systemPrompt, messages } = assemblePromptContext({
+    const assembled = assemblePromptContext({
       stack: promptStack,
       pathMessages,
-      mcpServerInstructionsText: mcp.instructionsText,
+      mcpServerInstructionsText: includeMcp ? mcp.instructionsText : undefined,
       macroContext: macroContextWithBooks,
       spaceRulesText,
     })
+    const systemPrompt = assembled.system
+    const messages = [...assembled.messages, ...assignmentMessages]
 
     let orderedParts: Parts = [...seedParts]
-    let nextPartId = 0
-    const activePartIds = new Map<string, string>()
     let settled = false
     // HTTP readers are subscribers only. Explicit server-side cancellation is
     // the sole signal that may stop the provider request.
     const abortSignal = generation.signal
 
-    const appendEvent = async (event: GenerationPayload) => {
-      if (!producerHandle) throw new Error("Generation stream was not opened")
-      orderedParts = reduceGenerationPayload(orderedParts, event)
-      await generationStreamStore.append(producerHandle, event)
-    }
-    const localPartId = (type: "text" | "reasoning", providerId: string) => {
-      const key = `${type}\0${providerId}`
-      const current = activePartIds.get(key)
-      if (current) return current
-      const id = `${type}-${++nextPartId}`
-      activePartIds.set(key, id)
-      return id
-    }
-    const closePartId = (type: "text" | "reasoning", providerId: string) => {
-      activePartIds.delete(`${type}\0${providerId}`)
+    let appendChain = Promise.resolve()
+    const appendEvent = (event: GenerationPayload) => {
+      const run = appendChain.then(async () => {
+        if (!producerHandle) throw new Error("Generation stream was not opened")
+        orderedParts = reduceGenerationPayload(orderedParts, event)
+        await generationStreamStore.append(producerHandle, event)
+        if (
+          event.type === "tool-upsert" &&
+          (event.tool.state === "output-available" ||
+            event.tool.state === "output-error" ||
+            Boolean(event.tool.metadata?.task))
+        )
+          await checkpointStreamingAssistant({
+            nodeId: assistant.id,
+            generationId,
+            parts: withoutTransientStreamIds(
+              orderedParts.filter(
+                (part) =>
+                  part.type !== "tool-invocation" ||
+                  part.state === "output-available" ||
+                  part.state === "output-error" ||
+                  Boolean(part.metadata?.task)
+              )
+            ),
+          })
+      })
+      appendChain = run.then(
+        () => undefined,
+        () => undefined
+      )
+      return run
     }
     const cancellationWasRequested = async () => {
       if (generation.signal.aborted) return true
@@ -450,6 +521,7 @@ export async function startGenerationProducer(
       await publishTerminal(terminal).catch((error) =>
         console.warn("[nibchat/generation-terminal]", error)
       )
+      notifySettled(resolved, parts)
       if (
         rememberProtocol &&
         (resolved === "complete" || resolved === "awaiting_input") &&
@@ -465,154 +537,127 @@ export async function startGenerationProducer(
       }
     }
 
-    const result = streamText({
+    const { agentDepth, maxModelSteps } = await getAgentLimits(userId)
+    const maxSteps = requestedMaxSteps ?? maxModelSteps
+    const disabledTools = new Set(builtInPrefs.disabled)
+    if (toolPolicy?.question === false) disabledTools.add("question")
+    if (
+      toolPolicy?.task === false ||
+      (await taskDepth(userId, assistant.chat_id)) >= agentDepth
+    )
+      disabledTools.add("task")
+    if (toolPolicy?.task === false) disabledTools.add("continue_task")
+    const builtInTools = await createNibchatTools({
+      disabled: disabledTools,
+      task:
+        disabledTools.has("task") && disabledTools.has("continue_task")
+          ? null
+          : {
+              userId,
+              parentChatId: assistant.chat_id,
+              parentNodeId: assistant.id,
+              generationId,
+              timeZone,
+              abortSignal,
+              publish: async (tool) => {
+                await appendEvent({ type: "tool-upsert", tool })
+              },
+            },
+    })
+    if (replaySeedParts) {
+      const pending = orderedParts.filter(
+        (part): part is ToolInvocationPart =>
+          part.type === "tool-invocation" &&
+          part.state === "input-available" &&
+          (part.toolName === "task" || part.toolName === "continue_task")
+      )
+      if (pending.length) {
+        const { runAgentTask } = await import("@/lib/agent/task-run")
+        await Promise.all(
+          pending.map(async (part) => {
+            const parsed =
+              part.toolName === "task"
+                ? taskInputSchema.safeParse(part.input)
+                : continueTaskInputSchema.safeParse(part.input)
+            try {
+              if (!parsed.success)
+                throw new Error(
+                  "The interrupted task input could not be replayed."
+                )
+              const output = await runAgentTask({
+                context: {
+                  userId,
+                  parentChatId: assistant.chat_id,
+                  parentNodeId: assistant.id,
+                  generationId,
+                  timeZone,
+                  abortSignal,
+                  publish: async (tool) => {
+                    await appendEvent({ type: "tool-upsert", tool })
+                  },
+                },
+                toolCallId: part.toolCallId,
+                input: parsed.data,
+              })
+              const latest = orderedParts.find(
+                (item): item is ToolInvocationPart =>
+                  item.type === "tool-invocation" &&
+                  item.toolCallId === part.toolCallId
+              )
+              await appendEvent({
+                type: "tool-upsert",
+                tool: {
+                  ...(latest ?? part),
+                  state: "output-available",
+                  output,
+                },
+              })
+            } catch (error) {
+              await appendEvent({
+                type: "tool-upsert",
+                tool: {
+                  ...part,
+                  state: "output-error",
+                  errorText: formatProviderError(error),
+                },
+              })
+            }
+          })
+        )
+      }
+      messages.push(
+        ...buildModelMessages({
+          nodes: [
+            {
+              ...assistant,
+              parts_json: JSON.stringify(orderedParts),
+            },
+          ],
+          replayReasoning,
+          responsesReplay,
+        })
+      )
+    }
+    let completedSteps = 0
+    const result = runModelLoop({
       model: languageModel,
       system: systemPrompt,
-      allowSystemInMessages: true,
       messages,
       tools: { ...mcp.tools, ...builtInTools },
-      stopWhen: stepCountIs(MAX_STEPS),
+      maxSteps,
       abortSignal,
-      temperature: config.temperature,
-      maxOutputTokens: config.maxOutputTokens,
-      topP: config.topP,
-      frequencyPenalty: config.frequencyPenalty,
-      presencePenalty: config.presencePenalty,
-      stopSequences: config.stopSequences,
-      providerOptions: config.providerOptions as never,
-      onChunk: async ({ chunk }) => {
-        if (chunk.type === "text-start") {
-          const providerMetadata = chunk.providerMetadata as
-            | Record<string, unknown>
-            | undefined
-          const id = localPartId("text", chunk.id)
-          await appendEvent({
-            type: "text-start",
-            id,
-            ...(providerMetadata ? { providerMetadata } : {}),
-          })
-        }
-        if (chunk.type === "text-delta") {
-          const providerMetadata = chunk.providerMetadata as
-            | Record<string, unknown>
-            | undefined
-          await appendEvent({
-            type: "text-delta",
-            id: localPartId("text", chunk.id),
-            delta: chunk.text,
-            ...(providerMetadata ? { providerMetadata } : {}),
-          })
-        }
-        if (chunk.type === "text-end") {
-          const providerMetadata = chunk.providerMetadata as
-            | Record<string, unknown>
-            | undefined
-          const id = localPartId("text", chunk.id)
-          await appendEvent({
-            type: "text-end",
-            id,
-            ...(providerMetadata ? { providerMetadata } : {}),
-          })
-          closePartId("text", chunk.id)
-        }
-        if (chunk.type === "reasoning-start") {
-          const providerMetadata = chunk.providerMetadata as
-            | Record<string, unknown>
-            | undefined
-          const id = localPartId("reasoning", chunk.id)
-          await appendEvent({
-            type: "reasoning-start",
-            id,
-            ...(providerMetadata ? { providerMetadata } : {}),
-          })
-        }
-        if (chunk.type === "reasoning-delta") {
-          const providerMetadata = chunk.providerMetadata as
-            | Record<string, unknown>
-            | undefined
-          await appendEvent({
-            type: "reasoning-delta",
-            id: localPartId("reasoning", chunk.id),
-            delta: chunk.text,
-            ...(providerMetadata ? { providerMetadata } : {}),
-          })
-        }
-        if (chunk.type === "reasoning-end") {
-          const providerMetadata = chunk.providerMetadata as
-            | Record<string, unknown>
-            | undefined
-          const id = localPartId("reasoning", chunk.id)
-          await appendEvent({
-            type: "reasoning-end",
-            id,
-            ...(providerMetadata ? { providerMetadata } : {}),
-          })
-          closePartId("reasoning", chunk.id)
-        }
-        if (chunk.type === "tool-input-start") {
-          const tool = {
-            type: "tool-invocation",
-            toolCallId: chunk.id,
-            toolName: chunk.toolName,
-            state: "input-streaming",
-            input: {},
-            providerMetadata: chunk.providerMetadata as
-              | Record<string, unknown>
-              | undefined,
-          } satisfies ToolInvocationPart
-          await appendEvent({ type: "tool-upsert", tool })
-        }
-        if (chunk.type === "tool-call") {
-          const tool = {
-            type: "tool-invocation",
-            toolCallId: chunk.toolCallId,
-            toolName: chunk.toolName,
-            state: "input-available",
-            input: chunk.input,
-            providerMetadata: (
-              chunk as { providerMetadata?: Record<string, unknown> }
-            ).providerMetadata,
-          } satisfies ToolInvocationPart
-          await appendEvent({ type: "tool-upsert", tool })
-        }
-        if (chunk.type === "tool-result") {
-          const existing = orderedParts.find(
-            (p): p is ToolInvocationPart =>
-              p.type === "tool-invocation" && p.toolCallId === chunk.toolCallId
-          )
-          const tool = {
-            type: "tool-invocation",
-            toolCallId: chunk.toolCallId,
-            toolName: existing?.toolName ?? chunk.toolName,
-            state: "output-available",
-            input: existing?.input ?? chunk.input ?? {},
-            output: chunk.output,
-            providerMetadata:
-              (chunk as { providerMetadata?: Record<string, unknown> })
-                .providerMetadata ?? existing?.providerMetadata,
-          } satisfies ToolInvocationPart
-          await appendEvent({ type: "tool-upsert", tool })
-        }
-        if (chunk.type === "tool-error") {
-          const existing = orderedParts.find(
-            (p): p is ToolInvocationPart =>
-              p.type === "tool-invocation" && p.toolCallId === chunk.toolCallId
-          )
-          const errorText = formatProviderError(chunk.error)
-          console.warn("[nibchat/mcp-tool]", chunk.toolName, errorText)
-          const tool = {
-            type: "tool-invocation",
-            toolCallId: chunk.toolCallId,
-            toolName: existing?.toolName ?? chunk.toolName,
-            state: "output-error",
-            input: existing?.input ?? chunk.input ?? {},
-            errorText,
-            providerMetadata:
-              (chunk as { providerMetadata?: Record<string, unknown> })
-                .providerMetadata ?? existing?.providerMetadata,
-          } satisfies ToolInvocationPart
-          await appendEvent({ type: "tool-upsert", tool })
-        }
+      config,
+      appendEvent,
+      getParts: () => orderedParts,
+      onLiveText,
+      onStepEnd: async () => {
+        completedSteps++
+        await appendChain
+        await checkpointStreamingAssistant({
+          nodeId: assistant.id,
+          generationId,
+          parts: withoutTransientStreamIds(orderedParts),
+        })
       },
       onFinish: async ({ usage, finishReason }) => {
         try {
@@ -623,7 +668,15 @@ export async function startGenerationProducer(
             return
           }
           if (abortSignal.aborted) return
-          await finalizeOnce("complete", { usage, finishReason })
+          if (finishReason === "tool-calls" && completedSteps >= maxSteps) {
+            await finalizeOnce("error", {
+              error: `Model step limit (${maxSteps}) reached before a final answer.`,
+              usage,
+              finishReason,
+            })
+          } else {
+            await finalizeOnce("complete", { usage, finishReason })
+          }
         } finally {
           dropRegistration()
         }
@@ -637,7 +690,7 @@ export async function startGenerationProducer(
           dropRegistration()
         }
       },
-      onError: async ({ error }) => {
+      onError: async (error) => {
         try {
           if (await cancellationWasRequested()) {
             generation.abort()
@@ -723,6 +776,7 @@ export async function startGenerationProducer(
         console.error("[nibchat/stream] setup finalization", finalizeError)
       }
     }
+    notifySettled("error", seedParts)
     dropRegistration()
     producerGuards?.stop()
     if (producerHandle && !terminalPublished)

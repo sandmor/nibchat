@@ -5,11 +5,13 @@ import { HugeiconsIcon } from "@hugeicons/react"
 import { ArrowUp02Icon, Pdf02Icon } from "@hugeicons/core-free-icons"
 import { Markdown } from "@/components/markdown"
 import { QuestionToolView } from "@/components/workspace/tools/question-tool"
+import { TaskToolView } from "@/components/workspace/tools/task-tool"
 import { ImageViewer } from "@/components/workspace/image-viewer"
 import { pdfAttachmentCaption } from "@/lib/pdf-input"
 import type { QuestionAnswers } from "@/lib/agent/tools/question-shared"
 import { coalesceAdjacentTextParts } from "@/lib/agent/parts"
 import type { Parts, ToolInvocationPart } from "@/lib/types"
+import { MetaLine } from "@/components/ui/inline-separator"
 import { cn } from "@/lib/utils"
 import { BookmarkTab, useBlockOverflow } from "./long-block-nav"
 import {
@@ -120,7 +122,9 @@ export function MessageParts({
                           <span className="sr-only"> (opens in a new tab)</span>
                         </span>
                         <span className="text-[11px] text-muted-foreground">
-                          {pdfAttachmentCaption(part.content.analysis)}
+                          <MetaLine
+                            items={pdfAttachmentCaption(part.content.analysis)}
+                          />
                         </span>
                       </span>
                     </a>
@@ -199,6 +203,8 @@ function ToolPart({
     output: unknown
   ) => void | Promise<void>
 }) {
+  if (part.toolName === "task" || part.toolName === "continue_task")
+    return <TaskToolView part={part} />
   if (part.toolName === "question") {
     return (
       <QuestionToolView
@@ -218,7 +224,7 @@ function ToolPart({
   return (
     <div className="rounded-lg border bg-muted/40 p-3 text-sm">
       <div className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-        Tool · {part.toolName} · {part.state}
+        <MetaLine items={["Tool", part.toolName, part.state]} />
       </div>
       {part.state === "output-available" ? (
         <pre className="mt-2 text-xs break-words whitespace-pre-wrap">
@@ -299,8 +305,9 @@ function ActivitySection({
           setOpen((current) => !current)
         }}
       >
-        {activitySummary(parts)}
-        {live && busy ? " · Working…" : null}
+        <MetaLine
+          items={[...activitySummary(parts), live && busy ? "Working…" : null]}
+        />
       </summary>
       <div className="flex flex-col gap-3 px-3 pb-3">
         {parts.map((part, index) =>

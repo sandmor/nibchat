@@ -29,7 +29,7 @@ export const metadata: Metadata = {
   metadataBase: metadataBase(),
   title: {
     default: "Nibchat",
-    template: "%s · Nibchat",
+    template: "%s — Nibchat",
   },
   description: siteDescription,
   applicationName: "Nibchat",

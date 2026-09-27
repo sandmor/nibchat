@@ -4,6 +4,7 @@ import { useCallback, useState } from "react"
 import { toast } from "sonner"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { Button } from "@/components/ui/button"
+import { MetaLine } from "@/components/ui/inline-separator"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -220,17 +221,21 @@ export function ProviderSettings({
                       {providerKindLabel(provider.kind)}
                     </Badge>
                   </div>
-                  <p className="truncate text-xs text-muted-foreground">
-                    {enabled.length
-                      ? `${enabled.length} in chats${
-                          enabled[0]
-                            ? ` · ${enabled
-                                .slice(0, 3)
-                                .map((model) => model.label)
-                                .join(", ")}${enabled.length > 3 ? "…" : ""}`
-                            : ""
-                        }`
-                      : "no models enabled"}
+                  <p className="min-w-0 text-xs text-muted-foreground">
+                    {enabled.length ? (
+                      <MetaLine
+                        className="max-w-full flex-nowrap overflow-hidden"
+                        items={[
+                          `${enabled.length} in chats`,
+                          enabled
+                            .slice(0, 3)
+                            .map((model) => model.label)
+                            .join(", ") + (enabled.length > 3 ? "…" : ""),
+                        ]}
+                      />
+                    ) : (
+                      "no models enabled"
+                    )}
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-1">

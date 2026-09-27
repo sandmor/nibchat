@@ -19,6 +19,7 @@ import {
 import { motionTransition, shouldAnimate } from "@/lib/appearance"
 import { siblingSort } from "@/lib/sort-key"
 import { Button } from "@/components/ui/button"
+import { MetaLine } from "@/components/ui/inline-separator"
 import {
   Collapsible,
   CollapsibleContent,
@@ -661,97 +662,99 @@ export function SpaceView({
                   </RevealItem>
                 ) : null}
                 {showBooks ? (
-                <RevealItem
-                  key="contextBooks"
-                  itemKey="contextBooks"
-                  animate={animate}
-                  transition={transition}
-                >
-                  <SpaceContextBooksCard
-                    onRemove={
-                      settings.books
-                        ? () =>
-                            patchSettings((current) => {
-                              const next = { ...current }
-                              delete next.books
-                              return next
-                            })
-                        : undefined
-                    }
-                    books={contextBooks}
-                    attachedIds={Object.entries(
-                      settings.books?.decisions ?? {}
-                    ).flatMap(([id, decision]) =>
-                      decision === "include" ? [id] : []
-                    )}
-                    inherited={
-                      settings.books?.reset ? new Map() : inheritedBooks
-                    }
-                    reset={settings.books?.reset ?? false}
-                    excludedIds={Object.entries(
-                      settings.books?.decisions ?? {}
-                    ).flatMap(([id, decision]) =>
-                      decision === "exclude" ? [id] : []
-                    )}
-                    entryDecisions={settings.books?.entries ?? {}}
-                    onChange={(nextBooks) =>
-                      patchSettings((current) => ({
-                        ...current,
-                        books: {
-                          reset: current.books?.reset ?? false,
-                          decisions: {
-                            ...Object.fromEntries(
-                              Object.entries(
-                                current.books?.decisions ?? {}
-                              ).filter(([, decision]) => decision === "exclude")
-                            ),
-                            ...Object.fromEntries(
-                              nextBooks.map((id) => [id, "include" as const])
-                            ),
-                          },
-                          entries: current.books?.entries,
-                        },
-                      }))
-                    }
-                    onExclude={(id, excluded) =>
-                      patchSettings((current) => {
-                        const decisions = {
-                          ...current.books?.decisions,
-                        }
-                        if (excluded) decisions[id] = "exclude"
-                        else delete decisions[id]
-                        return {
+                  <RevealItem
+                    key="contextBooks"
+                    itemKey="contextBooks"
+                    animate={animate}
+                    transition={transition}
+                  >
+                    <SpaceContextBooksCard
+                      onRemove={
+                        settings.books
+                          ? () =>
+                              patchSettings((current) => {
+                                const next = { ...current }
+                                delete next.books
+                                return next
+                              })
+                          : undefined
+                      }
+                      books={contextBooks}
+                      attachedIds={Object.entries(
+                        settings.books?.decisions ?? {}
+                      ).flatMap(([id, decision]) =>
+                        decision === "include" ? [id] : []
+                      )}
+                      inherited={
+                        settings.books?.reset ? new Map() : inheritedBooks
+                      }
+                      reset={settings.books?.reset ?? false}
+                      excludedIds={Object.entries(
+                        settings.books?.decisions ?? {}
+                      ).flatMap(([id, decision]) =>
+                        decision === "exclude" ? [id] : []
+                      )}
+                      entryDecisions={settings.books?.entries ?? {}}
+                      onChange={(nextBooks) =>
+                        patchSettings((current) => ({
                           ...current,
                           books: {
                             reset: current.books?.reset ?? false,
-                            decisions,
+                            decisions: {
+                              ...Object.fromEntries(
+                                Object.entries(
+                                  current.books?.decisions ?? {}
+                                ).filter(
+                                  ([, decision]) => decision === "exclude"
+                                )
+                              ),
+                              ...Object.fromEntries(
+                                nextBooks.map((id) => [id, "include" as const])
+                              ),
+                            },
                             entries: current.books?.entries,
                           },
-                        }
-                      })
-                    }
-                    onReset={(reset) =>
-                      patchSettings((current) => ({
-                        ...current,
-                        books: {
-                          reset,
-                          decisions: current.books?.decisions ?? {},
-                          entries: current.books?.entries,
-                        },
-                      }))
-                    }
-                    onEntryChange={(entries) =>
-                      patchSettings((current) => ({
-                        ...current,
-                        books: {
-                          reset: current.books?.reset ?? false,
-                          decisions: current.books?.decisions ?? {},
-                          entries,
-                        },
-                      }))
-                    }
-                  />
-                </RevealItem>
+                        }))
+                      }
+                      onExclude={(id, excluded) =>
+                        patchSettings((current) => {
+                          const decisions = {
+                            ...current.books?.decisions,
+                          }
+                          if (excluded) decisions[id] = "exclude"
+                          else delete decisions[id]
+                          return {
+                            ...current,
+                            books: {
+                              reset: current.books?.reset ?? false,
+                              decisions,
+                              entries: current.books?.entries,
+                            },
+                          }
+                        })
+                      }
+                      onReset={(reset) =>
+                        patchSettings((current) => ({
+                          ...current,
+                          books: {
+                            reset,
+                            decisions: current.books?.decisions ?? {},
+                            entries: current.books?.entries,
+                          },
+                        }))
+                      }
+                      onEntryChange={(entries) =>
+                        patchSettings((current) => ({
+                          ...current,
+                          books: {
+                            reset: current.books?.reset ?? false,
+                            decisions: current.books?.decisions ?? {},
+                            entries,
+                          },
+                        }))
+                      }
+                    />
+                  </RevealItem>
                 ) : null}
                 <TitleSpaceFields
                   settings={settings}
@@ -1235,7 +1238,7 @@ const POLICY_ACTION_LABELS: Record<string, string> = {
   replace: "replaced",
 }
 
-function decisionLabel(
+function decisionParts(
   decision: SpaceResolutionDecision,
   books: Array<{
     id: string
@@ -1244,19 +1247,20 @@ function decisionLabel(
   }>,
   ruleTitles: Map<string, string>
 ) {
+  const action = POLICY_ACTION_LABELS[decision.action] ?? decision.action
   if (decision.kind === "setting") {
     const name = decision.key.startsWith("variable:")
       ? decision.key.slice("variable:".length)
       : decision.key in SETTING_LABELS
         ? SETTING_LABELS[decision.key as keyof typeof SETTING_LABELS]
         : decision.key
-    return `${name} · ${POLICY_ACTION_LABELS[decision.action] ?? decision.action}`
+    return [name, action]
   }
   if (decision.kind === "book") {
-    if (decision.key === "*") return "Ignore parent books"
+    if (decision.key === "*") return ["Ignore parent books"]
     const name =
       books.find((book) => book.id === decision.key)?.name ?? "Missing book"
-    return `${name} · ${POLICY_ACTION_LABELS[decision.action] ?? decision.action}`
+    return [name, action]
   }
   if (decision.kind === "entry") {
     const [bookId, entryId] = decision.key.split(":")
@@ -1264,10 +1268,9 @@ function decisionLabel(
     const title =
       book?.book?.entries.find((entry) => entry.id === entryId)?.title ??
       "Entry"
-    return `${title} · ${POLICY_ACTION_LABELS[decision.action] ?? decision.action}`
+    return [title, action]
   }
-  const title = ruleTitles.get(decision.key) ?? "Rule"
-  return `${title} · ${POLICY_ACTION_LABELS[decision.action] ?? decision.action}`
+  return [ruleTitles.get(decision.key) ?? "Rule", action]
 }
 
 function PolicyResolutionTrace({
@@ -1310,7 +1313,7 @@ function PolicyResolutionTrace({
               className="flex flex-wrap items-baseline justify-between gap-x-3 rounded-lg px-2.5 py-1.5 text-xs hover:bg-muted/60"
             >
               <span className="font-medium">
-                {decisionLabel(decision, books, ruleTitles)}
+                <MetaLine items={decisionParts(decision, books, ruleTitles)} />
               </span>
               <span className="text-muted-foreground">
                 {decision.source.spaceName}
@@ -1467,10 +1470,14 @@ function SpaceRulesCard({
                   {replacing ? (exception.title ?? rule.title) : rule.title}
                 </p>
                 <p className="text-[11px] text-muted-foreground">
-                  From {rule.source.spaceName}
-                  {exception
-                    ? ` · ${POLICY_ACTION_LABELS[exception.operation] ?? exception.operation} here`
-                    : ""}
+                  <MetaLine
+                    items={[
+                      `From ${rule.source.spaceName}`,
+                      exception
+                        ? `${POLICY_ACTION_LABELS[exception.operation] ?? exception.operation} here`
+                        : null,
+                    ]}
+                  />
                 </p>
               </div>
               <div className="flex flex-wrap gap-1">
@@ -1737,37 +1744,41 @@ function TitleSpaceFields({
           animate={animate}
           transition={transition}
         >
-        <DefinitionRow
-          title="Title strategy"
-          mode={strategy.mode}
-          onMode={(mode) =>
-            onChange((s) => ({ ...s, titleStrategy: { ...strategy, mode } }))
-          }
-          onRemove={() => onChange((s) => ({ ...s, titleStrategy: undefined }))}
-        >
-          {strategy.mode !== "release" && (
-            <Select
-              value={strategy.value}
-              onValueChange={(value) =>
-                onChange((s) => ({
-                  ...s,
-                  titleStrategy: {
-                    ...strategy,
-                    value: value as "first-message" | "generate",
-                  },
-                }))
-              }
-            >
-              <SelectTrigger aria-label="Space title strategy">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="first-message">First message</SelectItem>
-                <SelectItem value="generate">Generate with a model</SelectItem>
-              </SelectContent>
-            </Select>
-          )}
-        </DefinitionRow>
+          <DefinitionRow
+            title="Title strategy"
+            mode={strategy.mode}
+            onMode={(mode) =>
+              onChange((s) => ({ ...s, titleStrategy: { ...strategy, mode } }))
+            }
+            onRemove={() =>
+              onChange((s) => ({ ...s, titleStrategy: undefined }))
+            }
+          >
+            {strategy.mode !== "release" && (
+              <Select
+                value={strategy.value}
+                onValueChange={(value) =>
+                  onChange((s) => ({
+                    ...s,
+                    titleStrategy: {
+                      ...strategy,
+                      value: value as "first-message" | "generate",
+                    },
+                  }))
+                }
+              >
+                <SelectTrigger aria-label="Space title strategy">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="first-message">First message</SelectItem>
+                  <SelectItem value="generate">
+                    Generate with a model
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            )}
+          </DefinitionRow>
         </RevealItem>
       )}
       {model && (
@@ -1777,36 +1788,36 @@ function TitleSpaceFields({
           animate={animate}
           transition={transition}
         >
-        <DefinitionRow
-          title="Title model"
-          mode={model.mode}
-          canEnable={Boolean(model.value.providerId && model.value.model)}
-          onMode={(mode) =>
-            onChange((s) => ({ ...s, titleModel: { ...model, mode } }))
-          }
-          onRemove={() => onChange((s) => ({ ...s, titleModel: undefined }))}
-        >
-          {model.mode !== "release" && (
-            <ModelPicker
-              config={model.value}
-              providers={providers}
-              successToast="Space title model updated"
-              onChange={async (config) => {
-                if (!config.providerId || !config.model) return
-                onChange((s) => ({
-                  ...s,
-                  titleModel: {
-                    ...model,
-                    value: {
-                      providerId: config.providerId!,
-                      model: config.model!,
+          <DefinitionRow
+            title="Title model"
+            mode={model.mode}
+            canEnable={Boolean(model.value.providerId && model.value.model)}
+            onMode={(mode) =>
+              onChange((s) => ({ ...s, titleModel: { ...model, mode } }))
+            }
+            onRemove={() => onChange((s) => ({ ...s, titleModel: undefined }))}
+          >
+            {model.mode !== "release" && (
+              <ModelPicker
+                config={model.value}
+                providers={providers}
+                successToast="Space title model updated"
+                onChange={async (config) => {
+                  if (!config.providerId || !config.model) return
+                  onChange((s) => ({
+                    ...s,
+                    titleModel: {
+                      ...model,
+                      value: {
+                        providerId: config.providerId!,
+                        model: config.model!,
+                      },
                     },
-                  },
-                }))
-              }}
-            />
-          )}
-        </DefinitionRow>
+                  }))
+                }}
+              />
+            )}
+          </DefinitionRow>
         </RevealItem>
       )}
       {instructions && (
@@ -1816,31 +1827,31 @@ function TitleSpaceFields({
           animate={animate}
           transition={transition}
         >
-        <DefinitionRow
-          title="Title instructions"
-          mode={instructions.mode}
-          onMode={(mode) =>
-            onChange((s) => ({
-              ...s,
-              titleInstructions: { ...instructions, mode },
-            }))
-          }
-          onRemove={() =>
-            onChange((s) => ({ ...s, titleInstructions: undefined }))
-          }
-        >
-          {instructions.mode !== "release" && (
-            <TitleInstructionsField
-              value={instructions.value}
-              onCommit={(value) =>
-                onChange((s) => ({
-                  ...s,
-                  titleInstructions: { ...instructions, value },
-                }))
-              }
-            />
-          )}
-        </DefinitionRow>
+          <DefinitionRow
+            title="Title instructions"
+            mode={instructions.mode}
+            onMode={(mode) =>
+              onChange((s) => ({
+                ...s,
+                titleInstructions: { ...instructions, mode },
+              }))
+            }
+            onRemove={() =>
+              onChange((s) => ({ ...s, titleInstructions: undefined }))
+            }
+          >
+            {instructions.mode !== "release" && (
+              <TitleInstructionsField
+                value={instructions.value}
+                onCommit={(value) =>
+                  onChange((s) => ({
+                    ...s,
+                    titleInstructions: { ...instructions, value },
+                  }))
+                }
+              />
+            )}
+          </DefinitionRow>
         </RevealItem>
       )}
     </>

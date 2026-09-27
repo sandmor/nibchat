@@ -61,6 +61,8 @@ export function ModelPicker({
   providers,
   showIds = false,
   successToast,
+  quiet = false,
+  emptyLabel,
   lockedBy,
   onChange,
 }: {
@@ -69,6 +71,10 @@ export function ModelPicker({
   providers: ProviderSummary[]
   showIds?: boolean
   successToast?: string
+  /** Skip the success toast. Used when the choice is only staged in a form. */
+  quiet?: boolean
+  /** Label shown before a model is chosen, instead of suggesting the first one. */
+  emptyLabel?: string
   lockedBy?: SpaceLockSource
   onChange: (config: ModelConfigLocal) => void | Promise<void>
 }) {
@@ -78,7 +84,8 @@ export function ModelPicker({
   const [query, setQuery] = useState("")
   const [pending, setPending] = useState(false)
 
-  const suggested = !existing.providerId ? firstAvailableModel(providers) : null
+  const suggested =
+    !existing.providerId && !emptyLabel ? firstAvailableModel(providers) : null
   const selectedProvider = providers.find(
     (p) => p.id === (existing.providerId ?? suggested?.providerId)
   )
@@ -88,7 +95,8 @@ export function ModelPicker({
       parseProviderModelsJson(selectedProvider?.models_json ?? "[]"),
       modelId
     ) ?? modelId
-  const fullLabel = joinLabel([selectedProvider?.name, displayName]) || "Model"
+  const fullLabel =
+    joinLabel([selectedProvider?.name, displayName]) || emptyLabel || "Model"
   const tooltipLabel =
     showIds && modelId && displayName && modelId !== displayName
       ? joinLabel([fullLabel, modelId])
@@ -127,10 +135,11 @@ export function ModelPicker({
       await onChange({ ...existing, providerId, model })
       setOpen(false)
       setQuery("")
-      toast.success(
-        successToast ??
-          (chatId ? "Model applied" : "Model set for this conversation")
-      )
+      if (!quiet)
+        toast.success(
+          successToast ??
+            (chatId ? "Model applied" : "Model set for this conversation")
+        )
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Could not apply model"

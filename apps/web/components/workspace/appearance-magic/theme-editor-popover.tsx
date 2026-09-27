@@ -1,7 +1,14 @@
 "use client"
 
-import { useEffect, useRef, useState, type CSSProperties } from "react"
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react"
 import { Button } from "@/components/ui/button"
+import { MetaLine } from "@/components/ui/inline-separator"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Switch } from "@/components/ui/switch"
@@ -160,7 +167,7 @@ function sourceCaption(
   selection: ThemeSelection,
   stored: ColorValue,
   surface: ReturnType<typeof tokenById>
-): { linkedRef: string | null; caption: string } {
+): { linkedRef: string | null; caption: ReactNode } {
   const overridden =
     selection.kind === "group"
       ? Boolean(doc.groups[selection.groupId]?.fill)
@@ -175,12 +182,17 @@ function sourceCaption(
     if (binding.kind === "surface") {
       return {
         linkedRef: null,
-        caption: `Auto · ${SURFACE_STEP_LABELS[binding.step]}`,
+        caption: (
+          <MetaLine items={["Auto", SURFACE_STEP_LABELS[binding.step]]} />
+        ),
       }
     }
     if (paletteCaption) return { linkedRef, caption: paletteCaption }
     if (surface?.role === "border" || surface?.role === "hover") {
-      return { linkedRef: null, caption: "Auto · from fill" }
+      return {
+        linkedRef: null,
+        caption: <MetaLine items={["Auto", "from fill"]} />,
+      }
     }
     return { linkedRef: null, caption: "Auto" }
   }

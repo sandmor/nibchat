@@ -1,4 +1,5 @@
 import { withReasoning } from "@/lib/reasoning"
+import type { Parts } from "@/lib/types"
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import {
   beginResumeAssistant,
@@ -2628,6 +2629,62 @@ describe("multi-user restore", () => {
       .where("user_id", "=", userId)
       .executeTakeFirstOrThrow()
     expect(ownerPrefs.builtin_tools_json).toBe(JSON.stringify({ disabled: [] }))
+  })
+
+  it("restores unfinished helper work as an interrupted visible task", async () => {
+    await db.deleteFrom("chats").execute()
+    await db.deleteFrom("user").where("id", "!=", userId).execute()
+    const backup = multiUserBackup("guest-helper-restore@test.local")
+    const parentAssistant = {
+      ...fixtureNode("oa", "oc"),
+      role: "assistant" as const,
+      parent_id: "on",
+      status: "streaming" as const,
+      parts_json: JSON.stringify([
+        {
+          type: "tool-invocation",
+          toolCallId: "call-h",
+          toolName: "task",
+          state: "input-available",
+          input: { prompt: "Help" },
+        },
+      ]),
+    }
+    const childChat = {
+      ...fixtureChat("hc", "src-owner"),
+      kind: "agent_run" as const,
+      parent_chat_id: "oc",
+      parent_node_id: "oa",
+      parent_tool_call_id: "call-h",
+      agent_config_json: "{}",
+    }
+    const childAssistant = {
+      ...fixtureNode("ha", "hc"),
+      role: "assistant" as const,
+      status: "streaming" as const,
+      parts_json: JSON.stringify([{ type: "text", text: "Partial work" }]),
+    }
+    await restoreBackup(userId, {
+      ...backup,
+      chats: [...backup.chats, childChat],
+      nodes: [...backup.nodes, parentAssistant, childAssistant],
+    })
+    const parent = await db
+      .selectFrom("message_nodes")
+      .selectAll()
+      .where("id", "=", "oa")
+      .executeTakeFirstOrThrow()
+    const child = await db
+      .selectFrom("message_nodes")
+      .select("status")
+      .where("id", "=", "ha")
+      .executeTakeFirstOrThrow()
+    expect(parent.status).toBe("error")
+    expect(parseJson<Parts>(parent.parts_json, [])[0]).toMatchObject({
+      state: "output-available",
+      output: { task_id: "hc", status: "error" },
+    })
+    expect(child.status).toBe("stopped")
   })
 
   it("rejects a space whose parent belongs to another user", async () => {

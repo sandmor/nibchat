@@ -12,6 +12,8 @@ import {
   type MouseEvent,
 } from "react"
 import { toast } from "sonner"
+import { useQuery } from "@tanstack/react-query"
+import { useTRPC } from "@/lib/trpc-react"
 import { expandPromptMacros, type MacroContext } from "@/lib/prompt-macros"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
@@ -445,6 +447,13 @@ export const Message = memo(function Message({
     "replies"
   )
   const [deleteOpen, setDeleteOpen] = useState(false)
+  const trpc = useTRPC()
+  const helperImpact = useQuery({
+    ...trpc.workspace.helperDeletionImpact.queryOptions({ nodeId: node.id }),
+    enabled: deleteOpen,
+  })
+  const withHelperCount = (label: string, count: number | undefined) =>
+    count ? `${label} (${count} helper${count === 1 ? "" : "s"})` : label
   const [teleportOpen, setTeleportOpen] = useState(false)
   const teleportTargets = useMemo(() => {
     if (!teleportOpen) return []
@@ -696,9 +705,7 @@ export const Message = memo(function Message({
       : null
 
   const generationIdle =
-    node.status !== "streaming" &&
-    node.status !== "awaiting_input" &&
-    !streamId
+    node.status !== "streaming" && node.status !== "awaiting_input" && !streamId
   const canGenerateReplies = Boolean(onGenerateReplies) && generationIdle
   const canRegenerate =
     node.role === "assistant" && Boolean(onRegenerate) && generationIdle
@@ -781,6 +788,12 @@ export const Message = memo(function Message({
           <AlertDialogDescription>
             This destructively replaces the current message. If it is still
             generating, generation stops and its current output is replaced.
+            {parts.some(
+              (part) =>
+                part.type === "tool-invocation" && part.toolName === "task"
+            )
+              ? " Removing task cards also stops and deletes their helper chats."
+              : null}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -1296,6 +1309,9 @@ export const Message = memo(function Message({
                 ]
                   .filter(Boolean)
                   .join(" ")}
+                {
+                  " Helpers started by removed task cards, including nested helpers, are also stopped and deleted."
+                }
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
@@ -1319,7 +1335,7 @@ export const Message = memo(function Message({
                     )
                   }
                 >
-                  Keep replies
+                  {withHelperCount("Keep replies", helperImpact.data?.reparent)}
                 </Button>
               ) : null}
               <AlertDialogAction
@@ -1340,7 +1356,7 @@ export const Message = memo(function Message({
                   )
                 }
               >
-                Delete subtree
+                {withHelperCount("Delete subtree", helperImpact.data?.subtree)}
               </AlertDialogAction>
               {showDeleteSiblings ? (
                 <Button
@@ -1361,7 +1377,10 @@ export const Message = memo(function Message({
                     )
                   }
                 >
-                  Delete all versions
+                  {withHelperCount(
+                    "Delete all versions",
+                    helperImpact.data?.siblings
+                  )}
                 </Button>
               ) : null}
             </AlertDialogFooter>

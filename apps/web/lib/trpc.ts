@@ -19,6 +19,7 @@ import {
   finishSetup,
   deleteChats,
   deleteNode,
+  helperDeletionImpact,
   deletePromptStack,
   deleteContextBook,
   deleteProvider,
@@ -90,6 +91,7 @@ import {
   MAX_ID,
   MAX_IMPORT_NODES,
   MAX_NAME,
+  MAX_SPACE_DEPTH,
   MAX_UPLOAD_CHUNK_BYTES,
 } from "@/lib/limits"
 import { spaceSettingsSchema } from "@/lib/spaces"
@@ -118,6 +120,7 @@ import {
   setBuiltInToolsPrefs,
   setChatDefaults,
   setPdfImagePageLimit,
+  setAgentLimits,
   setUserPromptStack,
 } from "@/lib/user-settings"
 import {
@@ -137,6 +140,13 @@ import {
   upsertSillyTavernCharacterTemplate,
 } from "@/lib/chat-template-service"
 import { chatTemplateDocumentSchema } from "@/lib/chat-template"
+import {
+  helperProfileInput,
+  listHelperProfiles,
+  saveHelperProfile,
+  deleteHelperProfile,
+} from "@/lib/agent/helper-profiles"
+import { listTaskTree } from "@/lib/agent/task-tree"
 import { cadenceInputSchema, timeZoneSchema } from "@/lib/schedules/cadence"
 import {
   createChatSchedule,
@@ -272,7 +282,7 @@ function formatZodIssues(error: ZodError): string {
       }
       return raw.includes(label) ? raw : `${label}: ${raw}`
     })
-    .join(" · ")
+    .join("; ")
 }
 
 function humanizeError(error: unknown): string {
@@ -790,6 +800,11 @@ export const appRouter = t.router({
           mapError(error)
         }
       }),
+    helperDeletionImpact: userProcedure
+      .input(z.object({ nodeId: z.string() }))
+      .query(({ ctx, input }) =>
+        helperDeletionImpact(ctx.user.id, input.nodeId)
+      ),
     listProviders: userProcedure.query(({ ctx }) =>
       ctx.isOwner ? listProviders() : listAvailableProviders()
     ),
@@ -863,7 +878,7 @@ export const appRouter = t.router({
           arguments: z.record(z.string(), z.string()).optional(),
         })
       )
-      .mutation(async ({ ctx, input }) => {
+      .mutation(async ({ input }) => {
         try {
           return await getMcpPrompt(
             input.profileId,
@@ -1210,11 +1225,33 @@ export const appRouter = t.router({
       .mutation(async ({ ctx, input }) => {
         return await setBuiltInToolsPrefs(ctx.user.id, input.disabled)
       }),
+    listHelperProfiles: userProcedure.query(({ ctx }) =>
+      listHelperProfiles(ctx.user.id)
+    ),
+    taskTree: userProcedure
+      .input(z.object({ runId: z.string().uuid() }))
+      .query(({ ctx, input }) => listTaskTree(ctx.user.id, input.runId)),
+    saveHelperProfile: userProcedure
+      .input(helperProfileInput.extend({ id: z.string().optional() }))
+      .mutation(({ ctx, input }) => saveHelperProfile(ctx.user.id, input)),
+    deleteHelperProfile: userProcedure
+      .input(z.object({ id: z.string() }))
+      .mutation(({ ctx, input }) => deleteHelperProfile(ctx.user.id, input.id)),
     setPdfImagePageLimit: userProcedure
       .input(z.object({ pageLimit: z.number().int().positive() }))
       .mutation(async ({ ctx, input }) => {
         return await setPdfImagePageLimit(ctx.user.id, input.pageLimit)
       }),
+    setAgentLimits: userProcedure
+      .input(
+        z.object({
+          agentDepth: z.number().int().min(1).max(MAX_SPACE_DEPTH),
+          maxModelSteps: z.number().int().min(1).max(MAX_COLLECTION),
+        })
+      )
+      .mutation(({ ctx, input }) =>
+        setAgentLimits(ctx.user.id, input.agentDepth, input.maxModelSteps)
+      ),
     listPromptStacks: userProcedure.query(({ ctx }) =>
       listPromptStacks(ctx.user.id)
     ),

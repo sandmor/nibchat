@@ -26,6 +26,7 @@ import {
   type PromptStackDocument,
 } from "@/lib/prompt-stack"
 import { readContextBook } from "@/lib/context-books"
+import { MAX_COLLECTION, MAX_SPACE_DEPTH } from "@/lib/limits"
 import {
   builtInToolsToJson,
   defaultBuiltInToolsPrefs,
@@ -86,6 +87,8 @@ export async function ensureUserSettings(userId: string) {
       theme_mode: "system" as const,
       builtin_tools_json: builtInToolsToJson(defaultBuiltInToolsPrefs),
       pdf_image_page_limit: 8,
+      agent_depth: 1,
+      max_model_steps: 20,
       chat_defaults_json: userSettingValuesToJson(
         seededUserDefaults(defaultPromptStackId)
       ),
@@ -313,6 +316,49 @@ export async function setPdfImagePageLimit(userId: string, pageLimit: number) {
     .where("user_id", "=", userId)
     .execute()
   return { pdfImagePageLimit: pageLimit }
+}
+
+export async function getAgentLimits(userId: string) {
+  await ensureUserSettings(userId)
+  const prefs = await db
+    .selectFrom("user_preferences")
+    .select(["agent_depth", "max_model_steps"])
+    .where("user_id", "=", userId)
+    .executeTakeFirstOrThrow()
+  return {
+    agentDepth: Number(prefs.agent_depth),
+    maxModelSteps: Number(prefs.max_model_steps),
+  }
+}
+
+export async function setAgentLimits(
+  userId: string,
+  agentDepth: number,
+  maxModelSteps: number
+) {
+  if (
+    !Number.isInteger(agentDepth) ||
+    agentDepth < 1 ||
+    agentDepth > MAX_SPACE_DEPTH
+  )
+    throw new Error(`Helper depth must be between 1 and ${MAX_SPACE_DEPTH}`)
+  if (
+    !Number.isInteger(maxModelSteps) ||
+    maxModelSteps < 1 ||
+    maxModelSteps > MAX_COLLECTION
+  )
+    throw new Error(`Model steps must be between 1 and ${MAX_COLLECTION}`)
+  await ensureUserSettings(userId)
+  await db
+    .updateTable("user_preferences")
+    .set({
+      agent_depth: agentDepth,
+      max_model_steps: maxModelSteps,
+      updated_at: now(),
+    })
+    .where("user_id", "=", userId)
+    .execute()
+  return { agentDepth, maxModelSteps }
 }
 
 export async function getPdfImagePageLimit(userId: string) {

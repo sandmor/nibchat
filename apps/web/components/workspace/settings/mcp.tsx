@@ -34,6 +34,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Separator } from "@/components/ui/separator"
+import { MetaLine } from "@/components/ui/inline-separator"
 import { Switch } from "@/components/ui/switch"
 import { TooltipProvider, WithTooltip } from "@/components/ui/tooltip"
 import {
@@ -601,24 +602,24 @@ export function McpSettings() {
                     {profile.enabled ? "Enabled" : "Disabled"}
                   </div>
 
-                  <div className="mt-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                    <span>
-                      {(profile.catalog.resources ?? []).length} resource
-                      {(profile.catalog.resources ?? []).length === 1
-                        ? ""
-                        : "s"}
-                    </span>
-                    <span>·</span>
-                    <span>
-                      {(profile.catalog.prompts ?? []).length} prompt
-                      {(profile.catalog.prompts ?? []).length === 1 ? "" : "s"}
-                    </span>
-                    {profile.catalog.instructions?.trim() ? (
-                      <>
-                        <span>·</span>
-                        <span>has server instructions</span>
-                      </>
-                    ) : null}
+                  <div className="mt-3 text-xs text-muted-foreground">
+                    <MetaLine
+                      items={[
+                        `${(profile.catalog.resources ?? []).length} resource${
+                          (profile.catalog.resources ?? []).length === 1
+                            ? ""
+                            : "s"
+                        }`,
+                        `${(profile.catalog.prompts ?? []).length} prompt${
+                          (profile.catalog.prompts ?? []).length === 1
+                            ? ""
+                            : "s"
+                        }`,
+                        profile.catalog.instructions?.trim()
+                          ? "has server instructions"
+                          : null,
+                      ]}
+                    />
                   </div>
 
                   {approved.length > 0 ? (

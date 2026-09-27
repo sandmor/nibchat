@@ -5,6 +5,8 @@ export function isActivityPart(part: Part) {
     part.type === "reasoning" ||
     (part.type === "tool-invocation" &&
       part.toolName !== "question" &&
+      part.toolName !== "task" &&
+      part.toolName !== "continue_task" &&
       part.state !== "output-error")
   )
 }
@@ -36,7 +38,7 @@ export function activitySummary(parts: Parts) {
     ...Array.from(tools, ([name, count]) =>
       count > 1 ? `${name} × ${count}` : name
     ),
-  ].join(" · ")
+  ]
 }
 
 export function isActivityGroupBusy(parts: Parts) {

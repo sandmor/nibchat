@@ -33,15 +33,19 @@ describe("message activity", () => {
     expect(groups.flatMap((group) => group.parts)).toEqual(parts)
   })
 
-  it("keeps questions and errors outside collapsed activity", () => {
+  it("keeps questions, tasks, follow-ups, and errors outside collapsed activity", () => {
     const groups = groupMessageActivity([
       tool("search"),
       tool("question", "input-available"),
+      tool("task"),
+      tool("continue_task"),
       tool("read_file", "output-error"),
       tool("search"),
     ])
     expect(groups.map((group) => group.activity)).toEqual([
       true,
+      false,
+      false,
       false,
       false,
       true,
@@ -56,7 +60,7 @@ describe("message activity", () => {
         tool("search"),
         tool("read_file"),
       ])
-    ).toBe("Reasoning · search × 2 · read file")
+    ).toEqual(["Reasoning", "search × 2", "read file"])
   })
 
   it("treats in-flight tools as busy and completed tools as idle", () => {

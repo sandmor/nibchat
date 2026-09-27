@@ -198,7 +198,7 @@ describe("parts helpers", () => {
     expect(findText).toContain("Attached: Usage Guide")
     expect(findText).toContain("help://usage-guide")
     expect(findText).toContain("Call tools carefully.")
-    expect(findText).toContain("Tool · web_search")
+    expect(findText).toContain("Tool web_search")
     expect(findText).toContain("result blob")
     expect(findText).toContain("Scope")
     expect(findText).toContain("What is the scope?")

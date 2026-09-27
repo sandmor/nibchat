@@ -55,7 +55,7 @@ describe("pdfAttachmentCaption", () => {
         pageCount: 12,
         markdown: "ok",
       })
-    ).toBe("12 pages")
+    ).toEqual(["12 pages"])
     expect(
       pdfAttachmentCaption({
         status: "ready",
@@ -63,10 +63,13 @@ describe("pdfAttachmentCaption", () => {
         pageCount: 1,
         markdown: "ok",
       })
-    ).toBe("1 page")
-    expect(pdfAttachmentCaption({ status: "no-text", pageCount: 3 })).toBe(
-      "3 pages · couldn't read text"
-    )
-    expect(pdfAttachmentCaption({ status: "failed" })).toBe("Text unavailable")
+    ).toEqual(["1 page"])
+    expect(pdfAttachmentCaption({ status: "no-text", pageCount: 3 })).toEqual([
+      "3 pages",
+      "Couldn't read text",
+    ])
+    expect(pdfAttachmentCaption({ status: "failed" })).toEqual([
+      "Text unavailable",
+    ])
   })
 })

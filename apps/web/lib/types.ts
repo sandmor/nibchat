@@ -45,6 +45,8 @@ export type ToolInvocationPart = {
   output?: unknown
   errorText?: string
   providerMetadata?: ProviderPartMetadata
+  /** App-owned progress for a tool call. Not sent to the provider. */
+  metadata?: Record<string, unknown>
 }
 
 /** A source selected in the composer, before the server snapshots its content. */
@@ -124,6 +126,8 @@ export type Part =
   | AttachmentPart
 export type Parts = Part[]
 
+export type ChatKind = "conversation" | "agent_run"
+
 export interface ChatsTable {
   id: string
   user_id: string
@@ -136,6 +140,13 @@ export interface ChatsTable {
   view_state_json: string
   /** Innermost space; null = ungrouped. */
   space_id: string | null
+  /** `agent_run` chats are hidden child conversations spawned by the task tool. */
+  kind: ChatKind
+  parent_chat_id: string | null
+  parent_node_id: string | null
+  parent_tool_call_id: string | null
+  /** Frozen helper setup for this run: stack, model, and context mode. */
+  agent_config_json: string | null
   created_at: string
   updated_at: string
 }
@@ -421,6 +432,26 @@ export interface McpServerProfilesTable {
   updated_at: string
 }
 export interface DB {
+  helper_task_invocations: {
+    tool_call_id: string
+    parent_node_id: string
+    root_node_id: string
+    chat_id: string | null
+    input_json: string | null
+    result_json: string | null
+    created_at: string
+    replay_claim_id: string | null
+    generation_id: string | null
+  }
+  helper_task_messages: {
+    id: string
+    chat_id: string
+    user_id: string
+    content: string
+    created_at: string
+    claimed_at: string | null
+    delivered_at: string | null
+  }
   chats: ChatsTable
   chat_templates: ChatTemplatesTable
   template_chats: TemplateChatsTable
@@ -443,6 +474,20 @@ export interface DB {
   import_space_mappings: ImportSpaceMappingsTable
   import_book_mappings: ImportBookMappingsTable
   prompt_stacks: PromptStacksTable
+  helper_profiles: {
+    id: string
+    user_id: string
+    key: string
+    name: string
+    description: string
+    prompt_stack_id: string
+    model_json: string | null
+    mcp_mode: "inherit" | "none"
+    allow_task: boolean
+    context_mode: "conversation" | "task"
+    created_at: string
+    updated_at: string
+  }
   context_books: ContextBooksTable
   chat_context_books: ChatContextBooksTable
   themes: ThemesTable
@@ -505,6 +550,9 @@ export interface DB {
     /** `{ disabled: string[] }` JSON. Empty disabled list means all tools on. */
     builtin_tools_json: string
     pdf_image_page_limit: number | string
+    /** How many nested template spawns are allowed. 1 means a chat can start a template that cannot start another. */
+    agent_depth: number
+    max_model_steps: number
     chat_defaults_json: string
     created_at: string
     updated_at: string

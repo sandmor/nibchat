@@ -10,6 +10,7 @@ import {
   Search01Icon,
 } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
+import { InlineSeparator } from "@/components/ui/inline-separator"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
 
@@ -171,11 +172,11 @@ export function ConversationFindBar({
             className="overflow-hidden"
           >
             <div className="mt-2 flex items-center gap-1.5 rounded-lg px-0.5 text-xs">
-              <span className="text-muted-foreground whitespace-nowrap">
+              <span className="whitespace-nowrap text-muted-foreground">
                 {pathCount} on this path
               </span>
-              <span aria-hidden className="h-3 w-px shrink-0 bg-border" />
-              <span className="text-muted-foreground whitespace-nowrap">
+              <InlineSeparator />
+              <span className="whitespace-nowrap text-muted-foreground">
                 {offPathCount} on other branches
               </span>
               <Button

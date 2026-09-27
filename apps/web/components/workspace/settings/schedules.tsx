@@ -15,6 +15,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button, buttonVariants } from "@/components/ui/button"
+import { MetaLine } from "@/components/ui/inline-separator"
 import {
   Card,
   CardContent,
@@ -106,7 +107,7 @@ function scheduleMeta(
   parts.push(schedule.action.kind === "template" ? spaceName : chatLabel)
   parts.push(formatCadence(schedule.cadence))
   if (schedule.cadence.timeZone !== here) parts.push(schedule.cadence.timeZone)
-  return parts.join(" · ")
+  return parts
 }
 
 export function ScheduleSettings() {
@@ -199,7 +200,7 @@ export function ScheduleSettings() {
           const cancelChat = schedule.action.kind !== "template"
           const statusText =
             schedule.lastStatus === "skipped" && schedule.enabled
-              ? `${status.text} · the previous run was still going`
+              ? `${status.text} — the previous run was still going`
               : status.text
           const statusClass =
             status.tone === "danger"
@@ -218,8 +219,14 @@ export function ScheduleSettings() {
                   className="line-clamp-2 text-xs text-muted-foreground"
                   suppressHydrationWarning
                 >
-                  {scheduleMeta(schedule, spaceName, here, chatLabel)}
-                  <span className={statusClass}> · {statusText}</span>
+                  <MetaLine
+                    items={[
+                      ...scheduleMeta(schedule, spaceName, here, chatLabel),
+                      <span key="status" className={statusClass}>
+                        {statusText}
+                      </span>,
+                    ]}
+                  />
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-1">

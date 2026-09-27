@@ -72,7 +72,7 @@ export const chatTemplateDocumentSchema = z
     for (const id of ids) visit(id)
   })
 
-export type ChatTemplateDocument = z.infer<typeof chatTemplateDocumentSchema>
+export type ChatTemplateDocument = z.input<typeof chatTemplateDocumentSchema>
 export type ChatTemplateNode = ChatTemplateDocument["nodes"][number]
 
 /** Parent-first order for inserting a template graph with foreign keys enabled. */
@@ -122,6 +122,7 @@ export function templateActiveLeaf(document: {
   )
   return resolveActivePath(nodes, document.selectedRootId).at(-1)
 }
+
 export const chatTemplateNameSchema = z.string().trim().min(1).max(MAX_NAME)
 
 function portableParts(parts: Parts): Parts {

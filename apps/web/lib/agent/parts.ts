@@ -131,6 +131,7 @@ export const messagePartSchema = z.discriminatedUnion("type", [
       output: z.unknown().optional(),
       errorText: z.string().optional(),
       providerMetadata: z.record(z.string(), z.unknown()).optional(),
+      metadata: z.record(z.string(), z.unknown()).optional(),
     })
     .strict(),
   attachmentPartSchema,
@@ -276,7 +277,7 @@ function toolSearchSnippet(part: ToolInvocationPart): string {
 
 function toolFindText(part: ToolInvocationPart): string {
   if (part.toolName === "question") return questionFindText(part)
-  const chunks = [`Tool · ${part.toolName} · ${part.state}`]
+  const chunks = [`Tool ${part.toolName} ${part.state}`]
   if (part.state === "output-available" && part.output != null) {
     chunks.push(stringifyToolOutput(part.output))
   }
@@ -479,6 +480,7 @@ export function coalesceAdjacentTextParts(parts: Parts): Parts {
 }
 
 export function canEditMessage(status: MessageStatus, _parts?: Parts): boolean {
+  void _parts
   return status !== "awaiting_input"
 }
 
@@ -626,10 +628,8 @@ export function roleConversionLosses(
   const reasoning = parts.filter((part) => part.type === "reasoning").length
   const tools = parts.filter((part) => part.type === "tool-invocation").length
   const extras = parts.length > 1
-  if (extras)
-    losses.push("Blocks will collapse into a single text message.")
-  if (reasoning)
-    losses.push("Reasoning becomes ordinary text.")
+  if (extras) losses.push("Blocks will collapse into a single text message.")
+  if (reasoning) losses.push("Reasoning becomes ordinary text.")
   if (tools)
     losses.push(
       tools === 1
@@ -690,8 +690,13 @@ export function upsertToolInvocation(
       p.type === "tool-invocation" && p.toolCallId === invocation.toolCallId
   )
   if (index === -1) return [...parts, invocation]
+  const previous = parts[index] as ToolInvocationPart
   const next = parts.slice()
-  next[index] = invocation
+  next[index] = {
+    ...invocation,
+    metadata: invocation.metadata ?? previous.metadata,
+    providerMetadata: invocation.providerMetadata ?? previous.providerMetadata,
+  }
   return next
 }
 

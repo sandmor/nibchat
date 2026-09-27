@@ -14,6 +14,7 @@ import {
   Pdf02Icon,
 } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
+import { InlineSeparator, MetaLine } from "@/components/ui/inline-separator"
 import {
   Popover,
   PopoverContent,
@@ -196,14 +197,16 @@ export function UserTurnEditor({
                 {draft.attachments.some(
                   (item) => item.reference.kind === "mcp-resource"
                 ) ? (
-                  <span className="ml-1 text-muted-foreground">
-                    ·{" "}
-                    {
-                      draft.attachments.filter(
-                        (item) => item.reference.kind === "mcp-resource"
-                      ).length
-                    }
-                  </span>
+                  <>
+                    <InlineSeparator />
+                    <span className="text-muted-foreground">
+                      {
+                        draft.attachments.filter(
+                          (item) => item.reference.kind === "mcp-resource"
+                        ).length
+                      }
+                    </span>
+                  </>
                 ) : null}
               </PopoverTrigger>
               <PopoverContent
@@ -263,11 +266,15 @@ export function UserTurnEditor({
       onStop={onStop}
       streaming={streaming}
       hint={
-        expandable && !inline
-          ? expanded
-            ? "Esc to collapse · Enter to send"
-            : "Enter to send · Shift + Enter for a new line"
-          : undefined
+        expandable && !inline ? (
+          <MetaLine
+            items={
+              expanded
+                ? ["Esc to collapse", "Enter to send"]
+                : ["Enter to send", "Shift + Enter for a new line"]
+            }
+          />
+        ) : undefined
       }
       expandable={expandable}
       expanded={expanded}

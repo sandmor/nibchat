@@ -12,6 +12,7 @@ import { AnimatePresence, motion } from "motion/react"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
+import { MetaLine } from "@/components/ui/inline-separator"
 import { reasoningSupportSchema, type ReasoningSupport } from "@/lib/reasoning"
 import {
   Select,
@@ -570,9 +571,13 @@ export function ProviderModelsEditor({
             </Label>
           </div>
           <p className="text-xs text-muted-foreground">
-            {enabledCount} on
-            {models.length ? ` · ${models.length} listed` : ""}
-            {catalog.length ? ` · ${catalog.length} in catalog` : ""}
+            <MetaLine
+              items={[
+                `${enabledCount} on`,
+                models.length ? `${models.length} listed` : null,
+                catalog.length ? `${catalog.length} in catalog` : null,
+              ]}
+            />
           </p>
         </div>
       </div>
@@ -651,7 +656,9 @@ export function ProviderModelsEditor({
         </div>
         {(query.trim() || visibility !== "all") && (
           <p className="text-[11px] text-muted-foreground">
-            {filtered.length} matching · {filteredOn} on
+            <MetaLine
+              items={[`${filtered.length} matching`, `${filteredOn} on`]}
+            />
           </p>
         )}
 

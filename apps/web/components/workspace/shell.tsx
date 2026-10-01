@@ -41,7 +41,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { cn } from "@/lib/utils"
-import type { ChatRow, SpaceRow } from "@/lib/types"
 import type { Appearance, ThemeRecord } from "@/lib/appearance"
 import {
   defaultAppearance,
@@ -137,16 +136,14 @@ type InstanceSettings = {
 }
 
 export function WorkspaceShell({
-  initialChats,
-  initialSpaces,
+  initialWorkspace,
   providers: initialProviders,
   initialSettings,
   user,
   isOwner,
   children,
 }: {
-  initialChats: ChatRow[]
-  initialSpaces: SpaceRow[]
+  initialWorkspace: WorkspaceData
   providers: ProviderSummary[]
   initialSettings: InstanceSettings
   user: { id: string; name: string; email: string }
@@ -190,13 +187,9 @@ export function WorkspaceShell({
 
   const chatsQuery = useQuery({
     ...trpc.workspace.get.queryOptions({ draft: true }),
-    initialData: {
-      chats: initialChats,
-      spaces: initialSpaces,
-      chat: null,
-      nodes: [],
-      activeGenerations: [],
-    } satisfies WorkspaceData,
+    // This key is shared with ChatView. Seed the complete server snapshot so
+    // every consumer sees the same defaults before the first refetch.
+    initialData: initialWorkspace,
   })
 
   // Seed the shared getSettings cache with the full SSR payload. Partial
@@ -212,8 +205,8 @@ export function WorkspaceShell({
   const lightId =
     settingsQuery.data.lightThemeId || initialSettings.lightThemeId
   const darkId = settingsQuery.data.darkThemeId || initialSettings.darkThemeId
-  const chats = chatsQuery.data?.chats ?? initialChats
-  const spaces = chatsQuery.data?.spaces ?? initialSpaces
+  const chats = chatsQuery.data.chats
+  const spaces = chatsQuery.data.spaces
   const routeChatId = pathname.startsWith("/chat/")
     ? pathname.slice("/chat/".length).split("/")[0]
     : null
@@ -349,7 +342,7 @@ export function WorkspaceShell({
     }
   }, [chats, spaceById, spaceIdToDelete, spaces])
   const results = searchQuery.data ?? []
-  const providers = providersQuery.data ?? initialProviders
+  const providers = providersQuery.data
   const onSettings = pathname.startsWith("/settings")
   const activeChatId = pathname.startsWith("/chat/")
     ? (pathname.slice("/chat/".length).split(/[/?#]/)[0] ?? null)

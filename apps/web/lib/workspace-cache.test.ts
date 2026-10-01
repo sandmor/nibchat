@@ -17,6 +17,8 @@ const conversation = {
 
 function sample(chatId: string, title: string): WorkspaceData {
   return {
+    chatDefaults: {},
+    defaultPromptStackId: "default-stack",
     chats: [
       {
         id: chatId,
@@ -304,6 +306,8 @@ describe("patchChatTitle", () => {
 
   it("leaves other chats alone", () => {
     const data: WorkspaceData = {
+      chatDefaults: {},
+      defaultPromptStackId: "default-stack",
       chats: [
         {
           id: "c1",

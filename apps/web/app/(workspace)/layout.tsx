@@ -37,8 +37,7 @@ export default async function WorkspaceLayout({
       />
       <ThemeProvider userId={user.id} initialMode={settings.themeMode}>
         <WorkspaceShell
-          initialChats={workspace.chats}
-          initialSpaces={workspace.spaces}
+          initialWorkspace={workspace}
           providers={providers}
           initialSettings={visibleSettings}
           user={user}

@@ -428,6 +428,8 @@ describe("shouldFollowGeneration", () => {
 describe("applyStoppingStreamPatches", () => {
   it("paints aborted parts and keeps activeGenerations", () => {
     const data: WorkspaceData = {
+      chatDefaults: {},
+      defaultPromptStackId: "default-stack",
       chats: [],
       spaces: [],
       chat: null,

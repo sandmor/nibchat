@@ -8,8 +8,8 @@ import { chatViewStateToJson, type ChatViewState } from "@/lib/chat-view-state"
 import { SORT_KEY_STEP, sortKeyAfter } from "@/lib/sort-key"
 
 export type WorkspaceData = {
-  chatDefaults?: import("@/lib/providers").ModelConfig
-  defaultPromptStackId?: string
+  chatDefaults: import("@/lib/providers").ModelConfig
+  defaultPromptStackId: string
   chats: ChatRow[]
   spaces: SpaceRow[]
   chat: ChatRow | null
@@ -21,6 +21,11 @@ export type WorkspaceData = {
     parentNodeId: string | null
     startedAt: string
   }>
+}
+
+/** Clear conversation state while preserving the complete shared workspace. */
+export function toDraftWorkspace(data: WorkspaceData): WorkspaceData {
+  return { ...data, chat: null, nodes: [], activeGenerations: [] }
 }
 
 /** Query key payload for workspace.get — null chatId + draft clears auto-select. */

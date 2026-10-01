@@ -90,6 +90,7 @@ import {
   patchNodeFromStreamParts,
   patchSelection,
   patchTerminalGeneration,
+  toDraftWorkspace,
   workspaceInput,
   type WorkspaceData,
 } from "@/lib/workspace-cache"
@@ -318,7 +319,7 @@ function isPdfFile(file: File) {
 }
 
 function userSettingsFromWorkspace(data: WorkspaceData): SettingValues {
-  const values = modelConfigToSettingValues(data.chatDefaults ?? {})
+  const values = modelConfigToSettingValues(data.chatDefaults)
   if (data.defaultPromptStackId) values.promptStack = data.defaultPromptStackId
   return values
 }
@@ -782,7 +783,7 @@ export function ChatView({
       selectedChatIdRef.current = null
     }
   }, [data.chat, mode, pendingChatId])
-  const providers = providersQuery.data ?? chromeProviders
+  const providers = providersQuery.data
   const knownChats = data.chats
   const templateUsageLabel = useMemo(() => {
     if (!template) return null
@@ -1746,19 +1747,13 @@ export function ChatView({
             nodes: createdNodes,
             activeGenerations: [],
           }
-          queryClient.setQueryData(
+          queryClient.setQueryData<WorkspaceData>(
             trpc.workspace.get.queryKey({ chatId: chat.id }),
             payload
           )
-          queryClient.setQueryData(
+          queryClient.setQueryData<WorkspaceData>(
             trpc.workspace.get.queryKey({ draft: true }),
-            {
-              chats: payload.chats,
-              spaces: payload.spaces,
-              chat: null,
-              nodes: [],
-              activeGenerations: [],
-            }
+            toDraftWorkspace(payload)
           )
           return chat.id
         })

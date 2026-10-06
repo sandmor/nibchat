@@ -5,6 +5,7 @@ import {
   ensureWorkspace,
   expectAssistantText,
   openNewChat,
+  openSettingsTab,
   sendMessage,
   streamingMarkers,
 } from "./helpers/workspace"
@@ -176,6 +177,7 @@ test.describe("helper tool", () => {
 
   test("shows a clear error when the configured model-step limit is reached", async () => {
     await page.goto("/settings")
+    await openSettingsTab(page, "Libraries")
     const limit = page.getByLabel("Model steps per reply")
     await expect(limit).toBeVisible()
     await limit.fill("1")

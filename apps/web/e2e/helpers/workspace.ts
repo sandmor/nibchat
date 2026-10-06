@@ -42,17 +42,23 @@ export async function ensureMockProvider(page: Page, baseUrl: string) {
   await ensureMockProviderViaSettingsUi(page, baseUrl)
 }
 
+export async function openSettingsTab(page: Page, name: string) {
+  await page.getByRole("tab", { name, exact: true }).click()
+}
+
 async function ensureMockProviderViaSettingsUi(page: Page, baseUrl: string) {
   await page.goto("/settings")
-  await expect(page.getByText("Model providers")).toBeVisible({
+  await openSettingsTab(page, "Connections")
+  const providersCard = page.locator("#providers")
+  await expect(providersCard.getByText("Model providers")).toBeVisible({
     timeout: 15_000,
   })
 
-  const editInMockRow = page
+  const editInMockRow = providersCard
     .locator("div.flex.flex-wrap")
     .filter({ hasText: "E2E Mock" })
     .getByRole("button", { name: "Edit", exact: true })
-  const providerEditButtons = page.getByRole("button", {
+  const providerEditButtons = providersCard.getByRole("button", {
     name: "Edit",
     exact: true,
   })

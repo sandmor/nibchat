@@ -7,6 +7,7 @@ import {
   openChatParameters,
   openChatReasoning,
   openNewChat,
+  openSettingsTab,
   sendMessage,
   streamingMarkers,
 } from "./helpers/workspace"
@@ -19,7 +20,9 @@ test("configures compatible reasoning, persists the choice, and sends it through
     await ensureWorkspace(page)
     await ensureMockProvider(page, llm.baseUrl)
     await page.goto("/settings")
+    await openSettingsTab(page, "Connections")
     await page
+      .locator("#providers")
       .getByRole("button", { name: "Edit", exact: true })
       .first()
       .click()

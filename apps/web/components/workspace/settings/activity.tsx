@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useMemo, useState } from "react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
@@ -269,10 +269,6 @@ export function ActivitySettings({
   const retentionOperation = useMutation(
     trpc.workspace.activity.setRetentionDays.mutationOptions()
   )
-  useEffect(() => {
-    if (window.location.hash !== "#activity") return
-    document.getElementById("activity")?.scrollIntoView({ block: "start" })
-  }, [chatId])
 
   const exportHistory = async () => {
     try {
@@ -333,7 +329,7 @@ export function ActivitySettings({
     })
 
   return (
-    <Card id="activity">
+    <Card id="activity" className="scroll-mt-4">
       <CardHeader>
         <CardTitle>Activity</CardTitle>
         <CardDescription>

@@ -1,4 +1,5 @@
 import { expect, test, type BrowserContext, type Page } from "@playwright/test"
+import { openSettingsTab } from "./helpers/workspace"
 
 test.describe.configure({ mode: "serial" })
 
@@ -137,6 +138,7 @@ test.describe("owner flow", () => {
 
   test("owner creates an isolated regular account", async ({ browser }) => {
     await page.goto("/settings")
+    await openSettingsTab(page, "Instance")
     await expect(page.getByText("Users", { exact: true })).toBeVisible()
     await page.locator("#new-user-name").fill("Regular User")
     await page.locator("#new-user-email").fill("regular@example.com")
@@ -158,7 +160,7 @@ test.describe("owner flow", () => {
     await expect(
       regularPage.getByText("Providers", { exact: true })
     ).toHaveCount(0)
-
+    await openSettingsTab(regularPage, "Appearance")
     await regularPage.getByRole("button", { name: "Ink Dark" }).click()
     const previewThemeId = await regularPage
       .locator("html")

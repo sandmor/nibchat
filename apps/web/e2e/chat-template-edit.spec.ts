@@ -5,6 +5,7 @@ import {
   ensureWorkspace,
   expectAssistantText,
   openChatHeaderMore,
+  openSettingsTab,
   sendMessage,
 } from "./helpers/workspace"
 
@@ -29,6 +30,7 @@ test("edits a template in place and uses the updated tree", async ({
     await expect(save).toBeHidden()
 
     await page.goto("/settings")
+    await openSettingsTab(page, "Libraries")
     const row = page.locator("div.rounded-lg").filter({
       has: page.getByRole("button", { name: `Rename ${name}` }),
     })
@@ -48,6 +50,7 @@ test("edits a template in place and uses the updated tree", async ({
     await expect(page.getByText("Second template prompt")).toBeVisible()
 
     await page.goto("/settings")
+    await openSettingsTab(page, "Libraries")
     await row.getByRole("link", { name: "Use" }).click()
     await expect(page).toHaveURL(/\/chat\/new\?template=/)
     await expect(page.getByText("Second template prompt")).toBeVisible()

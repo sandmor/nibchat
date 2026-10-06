@@ -3,6 +3,7 @@ import {
   ensureWorkspace,
   openBranchNext,
   openBranchPrev,
+  openSettingsTab,
 } from "./helpers/workspace"
 
 function pngCard(card: unknown) {
@@ -51,6 +52,7 @@ test("imports a SillyTavern JSONL with its selected swipe as a branch", async ({
     .join("\n")
 
   await page.goto("/settings")
+  await openSettingsTab(page, "Instance")
   await expect(
     page.getByText("Import conversations", { exact: true })
   ).toBeVisible()
@@ -92,6 +94,7 @@ test("imports a SillyTavern character card with no chats", async ({ page }) => {
   })
 
   await page.goto("/settings")
+  await openSettingsTab(page, "Instance")
   await page.getByRole("button", { name: "SillyTavern" }).click()
   await expect(
     page.getByText("Import from SillyTavern", { exact: true })
@@ -157,6 +160,7 @@ test("imports a SillyTavern world info JSON as a context book", async ({
   }
 
   await page.goto("/settings")
+  await openSettingsTab(page, "Instance")
   await page.getByRole("button", { name: "SillyTavern" }).click()
   await expect(
     page.getByText("Import from SillyTavern", { exact: true })

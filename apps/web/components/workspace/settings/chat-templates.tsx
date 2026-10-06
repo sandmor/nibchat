@@ -160,12 +160,6 @@ export function ChatTemplateSettings() {
     })
   )
   const rows = templates.data ?? []
-  useEffect(() => {
-    if (window.location.hash !== "#chat-templates") return
-    document
-      .getElementById("chat-templates")
-      ?.scrollIntoView({ block: "start" })
-  }, [])
   return (
     <Card id="chat-templates" className="scroll-mt-4">
       <CardHeader>

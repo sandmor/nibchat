@@ -9,6 +9,7 @@ import {
   type RedisGenerationMeta,
 } from "@/lib/generation-streams/adapters/redis-subscribe"
 import { collectPages } from "@/lib/generation-streams/pages"
+import { logDiagnosticFailure } from "@/lib/diagnostics"
 import {
   GENERATION_LEASE_MS,
   GENERATION_LEASE_RENEW_MS,
@@ -79,11 +80,18 @@ export class RedisGenerationStreamPort implements GenerationStreamPort {
   private startLease(producer: GenerationProducer) {
     this.stopLease(producer.generationId)
     void this.heartbeat(producer).catch((error) =>
-      console.error("[nibchat/generation-heartbeat]", error)
+      logDiagnosticFailure("generation.redis_heartbeat_failed", error, "warn", {
+        generationId: producer.generationId,
+      })
     )
     const timer = setInterval(() => {
       void this.heartbeat(producer).catch((error) =>
-        console.error("[nibchat/generation-heartbeat]", error)
+        logDiagnosticFailure(
+          "generation.redis_heartbeat_failed",
+          error,
+          "warn",
+          { generationId: producer.generationId }
+        )
       )
     }, GENERATION_LEASE_RENEW_MS)
     timer.unref?.()

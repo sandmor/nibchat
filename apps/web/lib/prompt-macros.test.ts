@@ -25,6 +25,35 @@ const context = defaultMacroContext({
 })
 
 describe("prompt macros", () => {
+  it("expands request purpose in expressions and conditions", () => {
+    const template = '{{concat(chatId, "|", branchId, "|", requestKind)}}'
+    for (const requestKind of ["reply", "title"] as const) {
+      const scoped = defaultMacroContext({
+        ...context,
+        branchId: "",
+        requestKind,
+      })
+      expect(expandPromptMacros(template, scoped)).toBe(
+        `chat-1||${requestKind}`
+      )
+      expect(
+        expandPromptMacros(
+          '{{if requestKind == "title"}}title{{else}}reply{{/if}}',
+          scoped
+        )
+      ).toBe(requestKind)
+    }
+    expect(expandPromptMacros("{{requestKind}}", context)).toBe(
+      "{{requestKind}}"
+    )
+    expect(catalogMacroContext("UTC").requestKind).toBe("reply")
+    const group = groupedMacroPickerEntries(builtInMacroDefinitions).find(
+      (group) => group.id === "chat"
+    )!
+    const entry = group.entries.find((entry) => entry.name === "requestKind")!
+    expect(entry.snippet).toBe("{{requestKind}}")
+    expect(macroPickerPreview(entry, catalogMacroContext("UTC"))).toBe("reply")
+  })
   it("renders context-book namespaces", () => {
     expect(
       expandPromptMacros(
@@ -112,9 +141,9 @@ describe("prompt macros", () => {
     expect(composed).not.toContain("{")
     expect(expandPromptMacros("{{concat()}}", context)).toBe("{{concat()}}")
     expect(expandPromptMacros('{{len("\u{1F44D}")}}', context)).toBe("1")
-    expect(
-      expandPromptMacros('{{slice("\u{1F44D}!", 0, 1)}}', context)
-    ).toBe("\u{1F44D}")
+    expect(expandPromptMacros('{{slice("\u{1F44D}!", 0, 1)}}', context)).toBe(
+      "\u{1F44D}"
+    )
     expect(expandPromptMacros('{{lower("Chat-1")}}', context)).toBe("chat-1")
     expect(expandPromptMacros('{{upper("Chat-1")}}', context)).toBe("CHAT-1")
   })

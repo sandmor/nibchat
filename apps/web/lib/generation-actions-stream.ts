@@ -11,6 +11,7 @@ import type { NodeRow } from "@/lib/types"
 import { MAX_HEADER_VALUE_CHARS, MAX_ID } from "@/lib/limits"
 import type { getGenerationAction } from "@/lib/generation-actions"
 import type { ActionStreamEvent } from "@/lib/generation-start"
+import { logDiagnosticFailure } from "@/lib/diagnostics"
 
 type Action = NonNullable<Awaited<ReturnType<typeof getGenerationAction>>>
 const encoder = new TextEncoder()
@@ -142,7 +143,11 @@ export function generationActionSseResponse(
               await reconcileChatGenerationRuns(action.chatId)
           } catch (error) {
             if (!signal.signal.aborted)
-              console.warn("[nibchat/action-stream] retry", error)
+              logDiagnosticFailure(
+                "generation.action_stream_retry",
+                error,
+                "warn"
+              )
           }
           await new Promise<void>((resolve) =>
             setTimeout(resolve, GENERATION_ATTACH_POLL_MS)

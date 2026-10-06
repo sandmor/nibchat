@@ -593,6 +593,28 @@ describe("scheduled generations", () => {
     )
     expect(failedResult?.lastStatus).toBe("error")
     expect(waitingResult?.lastStatus).toBe("awaiting_input")
+    const waitingActivity = await db
+      .selectFrom("diagnostic_operations")
+      .selectAll()
+      .where("kind", "=", "schedule.execute")
+      .where("chat_id", "=", chat.id)
+      .where("outcome", "=", "awaiting_input")
+      .executeTakeFirstOrThrow()
+    expect(JSON.parse(waitingActivity.metadata_json)).toMatchObject({
+      scheduleId: waiting.id,
+      status: "awaiting_input",
+    })
+    const failedActivity = await db
+      .selectFrom("diagnostic_operations")
+      .selectAll()
+      .where("kind", "=", "schedule.execute")
+      .where("chat_id", "=", chat.id)
+      .where("outcome", "=", "error")
+      .executeTakeFirstOrThrow()
+    expect(JSON.parse(failedActivity.metadata_json)).toMatchObject({
+      scheduleId: failed.id,
+      reason: "replies_failed",
+    })
     expect(
       (await listSchedules(userId)).schedules
         .filter((row) => row.id === failed.id || row.id === waiting.id)

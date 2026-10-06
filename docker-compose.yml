@@ -45,6 +45,11 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
   postgres:
     image: postgres:18-alpine
     profiles: ["postgres"]

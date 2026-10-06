@@ -4,6 +4,7 @@ import {
   repairOrphanedAgentRuns,
 } from "@/lib/chat-service"
 import { db, migrate } from "@/lib/db"
+import { logDiagnosticFailure } from "@/lib/diagnostics"
 
 const TICK_MS = 30_000
 const globalForRecovery = globalThis as typeof globalThis & {
@@ -55,7 +56,9 @@ export function startAgentRecoveryRunner() {
           repairPending ?? undefined
         )
     })()
-      .catch((error) => console.error("[nibchat/agent-recovery]", error))
+      .catch((error) =>
+        logDiagnosticFailure("agent.recovery_runner_failed", error)
+      )
       .finally(() => {
         running = false
       })

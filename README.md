@@ -13,6 +13,8 @@ Chats are trees. Messages have sibling branches. You pick the path you want, ret
 - Built-in tools, and MCP servers. You approve a tool once in settings, before the model can call it.
 - Appearance is a JSON theme that you can visually edit: CSS variables, density, motion, and even an optional remote stylesheet. Spaces can select base themes and layer shared or light/dark overrides over them.
 - Chat titles can use the first message or an enabled model. Admin, personal, and space settings can choose the title strategy, model, and instructions independently.
+- Provider headers can use `{{requestKind}}` (`reply` or `title`) to separate generation sessions. For example, `{{concat(chatId, "|", branchId, "|", requestKind)}}` gives titles their own session within a chat branch. Headers using request kind are omitted when listing models or testing connections.
+- Activity history records outcomes for replies, tools, scheduled work, import publish attempts, attachments, and backups, including work awaiting user input or interrupted during recovery. Users can inspect and clear their own records; instance owners manage retention and instance diagnostics.
 - Import ChatGPT exports, or SillyTavern archives. Character cards become spaces, with their chats and context books.
 - Send or schedule several sibling replies from one prompt, or generate them beneath an existing message. Each reply streams and finishes independently.
 - SQLite by default, PostgreSQL if you set `DATABASE_URL`. Backup and restore omit passwords and sessions. The first signup owns the instance and can add other users.
@@ -56,6 +58,7 @@ Open the printed URL (or `/reset-password?token=…`).
 | `GENERATION_STREAM_BACKEND` | `memory` (default) or shared `redis` stream storage                 |
 | `REDIS_URL`                 | Redis for generation streams (`redis://` TCP or `https://` HTTP)    |
 | `REDIS_TOKEN`               | Optional Bearer token for HTTP Redis                                |
+| `LOG_LEVEL`                 | Pino server log level (`info` by default; `debug` enables debug logs) |
 
 Copy [`.env.example`](./.env.example) to `.env` and fill secrets.
 

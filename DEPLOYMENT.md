@@ -64,6 +64,34 @@ envelope. Set `REDIS_TOKEN` (or put the token in the URL userinfo) for Bearer
 auth. Prefer HTTP Redis on serverless hosts that cannot hold extra TCP
 connections.
 
+## Activity history and server logs
+
+Structured application logs are written to stdout as JSON. Collect and rotate
+them through Docker or the hosting platform; Nibchat does not keep log files or
+send logs to a third party. The Compose service uses Docker's rotating `local`
+logging driver, and recent output remains available through `docker compose
+logs nibchat`.
+
+Activity history is stored in the configured application database. Owners set
+its retention period, and users can clear their own history. It is excluded
+from Nibchat's normal backup archives. Stateful deployments stream activity
+snapshots while the Activity view is open. Stateless deployments load a
+snapshot and support manual refresh; they do not keep a streaming request
+open. A terminated serverless invocation
+may leave an operation marked as running until authoritative generation or
+schedule reconciliation can confirm interruption; elapsed time alone does not
+mark it failed. Imports record each publish attempt rather than browser staging
+sessions. PDF analysis-save entries measure persistence and display the submitted
+analysis status, not browser processing time.
+
+Set `LOG_LEVEL` to configure stdout logging; the default is `info`. Successful
+ordinary API queries use `debug`; mutations and queries taking at least one second
+use `info`. Expected request failures use `warn`, and internal failures use `error`.
+Recurring polling and heartbeat failures are throttled per scope for 60 seconds;
+the next emitted record includes the suppressed count. Operation records carry
+safe correlation IDs, reasons, usage, and timings, never conversation text, tool
+inputs/outputs, raw error messages, credentials, or request bodies.
+
 For local Redis, enable the optional profile and set
 `REDIS_URL=redis://redis:6379`:
 

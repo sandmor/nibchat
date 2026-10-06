@@ -50,6 +50,10 @@ import {
 import { withModelFallback } from "@/lib/providers"
 import type { NodeRow, Parts } from "@/lib/types"
 import type { GenerationStartBody } from "@/lib/generation-start"
+import {
+  logDiagnosticFailure,
+  startDiagnosticOperation,
+} from "@/lib/diagnostics"
 
 /** Create the durable action and start its producers. HTTP parsing lives in the route. */
 export async function startGenerationAction(input: {
@@ -101,6 +105,7 @@ export async function startGenerationAction(input: {
   )
 
   let assistants: NodeRow[] = []
+  let branchId: Promise<string> | undefined
   let contextLeafId: string | null
   let seedParts: Parts = []
 
@@ -152,9 +157,14 @@ export async function startGenerationAction(input: {
       })
     assistants = generationAssistants
     contextLeafId = userMessage.id
+    branchId = branchNodesFor(chat.id).then((nodes) =>
+      branchIdOf(nodes, generationAssistants[0]!.id)
+    )
     if (titleAction !== "skip") {
       const titleTask = maybeAssignChatTitle({
         chatId: chat.id,
+        branchId: await branchId,
+        timeZone: body.timeZone,
         userId: user.id,
         userText: message,
         attachmentNames,
@@ -164,7 +174,12 @@ export async function startGenerationAction(input: {
             ? { providerId: titleModel.providerId, model: titleModel.model }
             : null,
         titleInstructions: settings.effective.title.instructions,
-      }).catch((error) => console.warn("[nibchat/title]", error))
+      }).catch((error) =>
+        logDiagnosticFailure("chat.title.task_error", error, "warn", {
+          userId: user.id,
+          chatId: chat.id,
+        })
+      )
       if (titleAction === "seed") await titleTask
       else generationLifetime.retain(titleTask)
     }
@@ -289,15 +304,36 @@ export async function startGenerationAction(input: {
     contextLeafId = assistant.id
     seedParts = nextParts
     assistants = [assistant]
-    const languageModel = await modelFor(user.id, config, {
-      chatId: chat.id,
-      timeZone: body.timeZone,
-      requireConfiguredModel: Boolean(priorConfig),
-      branchId: branchIdOf(await branchNodesFor(chat.id), assistant.id),
+    const diagnostic = await startDiagnosticOperation({
+      id: generationIds[0]!,
+      kind: "chat.reply.generate",
+      context: {
+        userId: user.id,
+        chatId: chat.id,
+        generationId: generationIds[0]!,
+        actionId: body.actionId,
+        providerId: config.providerId,
+        model: config.model,
+      },
     })
-
     try {
+      for (const invocation of pending) {
+        await diagnostic.event("tool.finished", "info", {
+          toolCallId: invocation.toolCallId,
+          toolName: invocation.toolName,
+          source: "client",
+          outcome: "complete",
+        })
+      }
+      const languageModel = await modelFor(user.id, config, {
+        requestKind: "reply",
+        chatId: chat.id,
+        timeZone: body.timeZone,
+        requireConfiguredModel: Boolean(priorConfig),
+        branchId: branchIdOf(await branchNodesFor(chat.id), assistant.id),
+      })
       await startChatGeneration({
+        diagnostic,
         userId: user.id,
         chat,
         settings,
@@ -324,6 +360,15 @@ export async function startGenerationAction(input: {
       if (!receipt) throw new Error("Action receipt was not saved")
       return generationActionSseResponse(receipt, null)
     } catch (error) {
+      await diagnostic.finish(
+        error instanceof ResumeClaimError ? "skipped" : "error",
+        {
+          phase: "setup",
+          reason:
+            error instanceof ResumeClaimError ? error.kind : "setup_failed",
+        },
+        error instanceof ResumeClaimError ? undefined : error
+      )
       if (error instanceof ResumeClaimError) {
         const raced = await getGenerationAction(body.actionId, user.id)
         if (raced && actionMatchesRequest(raced, retry))
@@ -337,18 +382,32 @@ export async function startGenerationAction(input: {
 
   // Assistant siblings share a parent, so they share a branch id. Read the
   // graph once and reuse that result across the batch.
-  const branchId = branchNodesFor(chat.id).then((nodes) =>
+  branchId ??= branchNodesFor(chat.id).then((nodes) =>
     branchIdOf(nodes, assistants[0]!.id)
   )
   const startup = Promise.allSettled(
     assistants.map(async (assistant, index) => {
+      const diagnostic = await startDiagnosticOperation({
+        id: generationIds[index]!,
+        kind: "chat.reply.generate",
+        context: {
+          userId: user.id,
+          chatId: chat.id,
+          generationId: generationIds[index]!,
+          actionId: body.actionId,
+          providerId: config.providerId,
+          model: config.model,
+        },
+      })
       try {
         const siblingModel = await modelFor(user.id, config, {
+          requestKind: "reply",
           chatId: chat.id,
           timeZone: body.timeZone,
           branchId: await branchId,
         })
         await startChatGeneration({
+          diagnostic,
           userId: user.id,
           chat,
           settings,
@@ -368,7 +427,21 @@ export async function startGenerationAction(input: {
           generationId: generationIds[index]!,
         })
       } catch (error) {
-        console.error("[nibchat/generation-start] sibling", error)
+        await diagnostic.finish(
+          "error",
+          { phase: "setup", reason: "setup_failed" },
+          error
+        )
+        logDiagnosticFailure(
+          "generation.sibling_start_failed",
+          error,
+          "error",
+          {
+            userId: user.id,
+            chatId: chat.id,
+            generationId: generationIds[index],
+          }
+        )
         await finalizeStreamingAssistantWithSnapshot({
           nodeId: assistant.id,
           generationId: generationIds[index],

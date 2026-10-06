@@ -3,6 +3,7 @@ import type {
   GenerationExecutorPort,
   GenerationLifetimePort,
 } from "@/lib/generation-streams/ports"
+import { logDiagnosticFailure } from "@/lib/diagnostics"
 
 /**
  * The local executor starts work in this Node process and delegates only its
@@ -18,10 +19,9 @@ export class InProcessGenerationExecutor implements GenerationExecutorPort {
     run: () => Promise<void>
   }) {
     const task = input.run().catch((error) => {
-      console.error(
-        `[nibchat/generation-executor] ${input.generationId} (${input.nodeId})`,
-        error
-      )
+      logDiagnosticFailure("generation.executor_failed", error, "error", {
+        generationId: input.generationId,
+      })
     })
     this.lifetime.retain(task)
   }

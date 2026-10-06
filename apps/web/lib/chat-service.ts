@@ -51,6 +51,11 @@ import type {
 } from "@/lib/types"
 import { generateChatTitle } from "@/lib/agent/generate-title"
 import { seedChatTitle } from "@/lib/chat-title"
+import {
+  logDiagnosticFailure,
+  finishDiagnosticOperationById,
+  startDiagnosticOperation,
+} from "@/lib/diagnostics"
 import { type ModelConfig } from "@/lib/providers"
 import { orderNodesForInsert, parseBackup, type Backup } from "@/lib/backup"
 import {
@@ -263,11 +268,20 @@ async function requestCancelGenerationRuns(runIds: Iterable<string>) {
   const ids = [...runIds]
   await Promise.all(
     ids.map((runId) =>
+      finishDiagnosticOperationById(runId, "cancelled", {
+        reason: "cancel_requested",
+      })
+    )
+  )
+  await Promise.all(
+    ids.map((runId) =>
       generationStreamStore.requestCancel(runId).catch((error) => {
         // Database deletion is authoritative and cascades the run, fencing
         // later terminal writes. Stream-store cancellation is only a prompt
         // best-effort signal to a still-running producer.
-        console.warn("[nibchat/generation-cancel]", runId, error)
+        logDiagnosticFailure("generation.cancel_signal_failed", error, "warn", {
+          generationId: runId,
+        })
       })
     )
   )
@@ -1495,17 +1509,20 @@ async function titleModelIsAvailable(config: TitleModelConfig) {
 /** Write a title only while the chat is still unnamed. */
 export async function assignChatTitleIfUnnamed(chatId: string, title: string) {
   const trimmed = title.trim()
-  if (!trimmed) return
-  await db
+  if (!trimmed) return false
+  const result = await db
     .updateTable("chats")
     .set({ title: trimmed, updated_at: now() })
     .where("id", "=", chatId)
     .where("title", "is", null)
     .execute()
+  return Number(result[0]?.numUpdatedRows ?? 0) > 0
 }
 
 export async function maybeAssignChatTitle(input: {
   chatId: string
+  branchId?: string
+  timeZone?: string
   userId: string
   userText: string
   attachmentNames: string[]
@@ -1516,26 +1533,76 @@ export async function maybeAssignChatTitle(input: {
 }) {
   const seed = seedChatTitle(input.userText, input.attachmentNames)
   if (input.allowLlm) {
-    const config =
-      input.titleModel === undefined
-        ? await getTitleModelConfig()
-        : input.titleModel
-    if (config) {
-      try {
+    const operation = await startDiagnosticOperation({
+      kind: "chat.title.generate",
+      context: { userId: input.userId, chatId: input.chatId },
+      metadata: {
+        ...(input.titleModel?.providerId
+          ? { providerId: input.titleModel.providerId }
+          : {}),
+        ...(input.titleModel?.model ? { model: input.titleModel.model } : {}),
+      },
+    })
+    let fallbackReason = "model_unavailable"
+    let fallbackError: unknown
+    try {
+      const config =
+        input.titleModel === undefined
+          ? await getTitleModelConfig()
+          : input.titleModel
+      if (config) {
+        await operation.updateContext({
+          providerId: config.providerId,
+          model: config.model,
+        })
         const generated = await generateChatTitle({
           userId: input.userId,
           config,
           chatId: input.chatId,
+          branchId: input.branchId,
+          timeZone: input.timeZone,
           userText: input.userText.trim() || seed,
           assistantText: input.assistantText,
           instructions: input.titleInstructions,
         })
-        await assignChatTitleIfUnnamed(input.chatId, generated)
+        const updated = await assignChatTitleIfUnnamed(
+          input.chatId,
+          generated.title
+        )
+        await operation.finish("complete", {
+          modelDurationMs: generated.durationMs,
+          firstContentMs: generated.firstContentMs,
+          finishReason: generated.finishReason,
+          usage: generated.usage,
+          updated,
+          status: updated ? "complete" : "already_named",
+        })
         return
-      } catch (error) {
-        console.warn("[nibchat/title]", error)
       }
+    } catch (error) {
+      fallbackError = error
+      fallbackReason =
+        error instanceof Error &&
+        ["TimeoutError", "AbortError"].includes(error.name)
+          ? "timeout"
+          : "generation_failed"
     }
+    try {
+      const updated = await assignChatTitleIfUnnamed(input.chatId, seed)
+      await operation.finish(
+        "fallback",
+        { reason: fallbackReason, updated },
+        fallbackError
+      )
+    } catch (error) {
+      await operation.finish(
+        "error",
+        { phase: "fallback_save", reason: "fallback_save_failed" },
+        error
+      )
+      throw error
+    }
+    return
   }
   await assignChatTitleIfUnnamed(input.chatId, seed)
 }
@@ -2119,13 +2186,33 @@ async function restartInterruptedAgentGeneration(input: {
     return true
   })
   if (!claimed) return true
+  const recovery = await startDiagnosticOperation({
+    kind: "agent.recovery",
+    context: {
+      userId: chat.user_id,
+      chatId: chat.id,
+      generationId: input.runId,
+    },
+    metadata: {
+      count: seedParts.length,
+      originalGenerationId: input.runId,
+      replacementGenerationId: nextId,
+    },
+  })
+  await finishDiagnosticOperationById(input.runId, "interrupted", {
+    reason: "producer_lost",
+    replacementGenerationId: nextId,
+  })
   await generationStreamStore
     .discard(input.runId)
-    .catch((error) => console.warn("[nibchat/agent-recovery] discard", error))
+    .catch((error) =>
+      recovery.warn("discard_failed", { phase: "discard" }, error)
+    )
   try {
     const { continueChatGeneration } =
       await import("@/lib/agent/open-generation")
     await continueChatGeneration({
+      originalGenerationId: input.runId,
       userId: chat.user_id,
       chatId: chat.id,
       parentId: assistant.parent_id,
@@ -2137,8 +2224,13 @@ async function restartInterruptedAgentGeneration(input: {
         seedParts,
       },
     })
+    await recovery.finish("complete", { status: "restarted" })
   } catch (error) {
-    console.error("[nibchat/agent-recovery] restart", error)
+    await recovery.finish(
+      "error",
+      { reason: "restart_failed", phase: "restart" },
+      error
+    )
     await finalizeStreamingAssistantWithSnapshot({
       nodeId: assistant.id,
       generationId: nextId,
@@ -2162,7 +2254,12 @@ export async function reconcileChatGenerationRuns(chatId: string) {
     try {
       snapshot = await generationStreamStore.inspect(run.id)
     } catch (error) {
-      console.warn("[nibchat/generation-reconcile] store unavailable", error)
+      logDiagnosticFailure(
+        "generation.reconcile_store_unavailable",
+        error,
+        "warn",
+        { generationId: run.id, chatId }
+      )
       continue
     }
     if (
@@ -2190,7 +2287,12 @@ export async function reconcileChatGenerationRuns(chatId: string) {
       for (const event of await generationStreamStore.replay(run.id))
         parts = reduceGenerationPayload(parts, event.payload)
     } catch (error) {
-      console.warn("[nibchat/generation-reconcile] replay unavailable", error)
+      logDiagnosticFailure(
+        "generation.reconcile_replay_unavailable",
+        error,
+        "warn",
+        { generationId: run.id, chatId }
+      )
       await restoreGenerationRunState(
         run.id,
         revertRecoveryState(run.state as GenerationRunState)
@@ -2207,6 +2309,16 @@ export async function reconcileChatGenerationRuns(chatId: string) {
           ? undefined
           : "Generation interrupted before completion.",
     })
+    await finishDiagnosticOperationById(
+      run.id,
+      run.state === "cancel_requested" ? "cancelled" : "interrupted",
+      {
+        reason:
+          run.state === "cancel_requested"
+            ? "cancel_requested"
+            : "producer_lost",
+      }
+    )
     await generationStreamStore.discard(run.id).catch(() => {})
   }
 }

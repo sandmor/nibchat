@@ -8,6 +8,11 @@ import {
 import type { GenerationPayload } from "@/lib/generation-streams/events"
 import { textFromParts, type Parts } from "@/lib/agent/parts"
 import { formatProviderError } from "@/lib/provider-errors"
+import type { DiagnosticOperationHandle } from "@/lib/diagnostics"
+import {
+  instrumentTools,
+  type ToolDiagnostics,
+} from "@/lib/agent/tool-diagnostics"
 import {
   compactModelContext,
   contextCompactionSource,
@@ -28,6 +33,9 @@ export function runModelLoop(input: {
   getParts: () => Parts
   onLiveText?: (text: string) => void
   onStepEnd?: () => Promise<void>
+  diagnostic: DiagnosticOperationHandle
+  toolDiagnostics: ToolDiagnostics
+  onFirstContent?: (elapsedMs: number) => void
   onFinish: (event: {
     usage: unknown
     finishReason: string | undefined
@@ -56,12 +64,14 @@ export function runModelLoop(input: {
           part.type === "tool-invocation" && part.toolCallId === toolCallId
       )
   const summaryCache: ContextSummaryCache = { source: "", summary: "" }
+  const startedAt = Date.now()
+  let firstContent = false
   return streamText({
     model: input.model,
     system: input.system,
     allowSystemInMessages: true,
     messages: input.messages,
-    tools: input.tools,
+    tools: instrumentTools(input.tools, input.toolDiagnostics),
     stopWhen: Number.isFinite(input.maxSteps)
       ? stepCountIs(input.maxSteps)
       : () => false,
@@ -79,7 +89,11 @@ export function runModelLoop(input: {
         return compacted ? { messages: compacted } : undefined
       } catch (error) {
         if (!input.abortSignal.aborted)
-          console.warn("[nibchat/context-compaction]", error)
+          await input.diagnostic.warn(
+            "compaction_failed",
+            { phase: "context" },
+            error
+          )
         return undefined
       }
     },
@@ -92,6 +106,14 @@ export function runModelLoop(input: {
     stopSequences: input.config.stopSequences,
     providerOptions: input.config.providerOptions as never,
     onChunk: async ({ chunk }) => {
+      if (
+        !firstContent &&
+        (chunk.type === "text-delta" || chunk.type === "reasoning-delta") &&
+        chunk.text.length > 0
+      ) {
+        firstContent = true
+        input.onFirstContent?.(Date.now() - startedAt)
+      }
       if (chunk.type === "text-start") {
         const providerMetadata = chunk.providerMetadata as
           | Record<string, unknown>
@@ -176,6 +198,16 @@ export function runModelLoop(input: {
         await input.appendEvent({ type: "tool-upsert", tool })
       }
       if (chunk.type === "tool-call") {
+        if (
+          input.tools[chunk.toolName] &&
+          !input.tools[chunk.toolName]?.execute
+        )
+          await input.diagnostic.event("tool.requested", "info", {
+            toolName: chunk.toolName,
+            toolCallId: chunk.toolCallId,
+            source: "client",
+            outcome: "awaiting_input",
+          })
         const tool = {
           type: "tool-invocation",
           toolCallId: chunk.toolCallId,
@@ -207,7 +239,11 @@ export function runModelLoop(input: {
       if (chunk.type === "tool-error") {
         const existing = existingTool(chunk.toolCallId)
         const errorText = formatProviderError(chunk.error)
-        console.warn("[nibchat/mcp-tool]", chunk.toolName, errorText)
+        await input.toolDiagnostics.validationFailure(
+          chunk.toolName,
+          chunk.toolCallId,
+          chunk.error
+        )
         const tool = {
           type: "tool-invocation",
           toolCallId: chunk.toolCallId,

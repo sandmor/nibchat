@@ -25,6 +25,12 @@ import { createNibchatTools, reservedBuiltInToolNames } from "@/lib/agent/tools"
 import { getBuiltInToolsPrefs } from "@/lib/user-settings"
 import { getAgentLimits } from "@/lib/user-settings"
 import { taskDepth } from "@/lib/agent/task-depth"
+import {
+  logDiagnosticFailure,
+  diagnosticErrorFields,
+  type DiagnosticOperationHandle,
+  startDiagnosticOperation,
+} from "@/lib/diagnostics"
 import { effectiveContextBooks } from "@/lib/chat-service"
 import {
   resolveContextEntries,
@@ -69,6 +75,11 @@ import {
 import { prepareMcpTools } from "@/lib/mcp"
 import { assertPdfFallbackAvailable } from "@/lib/pdf-input"
 import { getPdfImagePageLimit } from "@/lib/user-settings"
+import { createToolDiagnostics } from "@/lib/agent/tool-diagnostics"
+import type {
+  DiagnosticMetadata,
+  DiagnosticTerminalOutcome,
+} from "@/lib/diagnostic-contract"
 import type { NodeRow, ToolInvocationPart } from "@/lib/types"
 import { db } from "@/lib/db"
 
@@ -92,6 +103,7 @@ export class ResumeClaimError extends Error {
 }
 
 export type GenerationSetup = {
+  diagnostic?: DiagnosticOperationHandle
   userId: string
   assistant: NodeRow
   /** Context ends at this node (inclusive). */
@@ -173,6 +185,24 @@ export async function startGenerationProducer(
     whenSettled,
   } = setup
 
+  const diagnostic =
+    setup.diagnostic ??
+    (await startDiagnosticOperation({
+      id: generationId,
+      kind: "chat.reply.generate",
+      context: {
+        userId,
+        chatId: assistant.chat_id,
+        generationId,
+        providerId: config.providerId,
+        model: config.model,
+      },
+      metadata: {
+        providerId: config.providerId,
+        model: config.model,
+      },
+    }))
+
   const generation = new AbortController()
   if (externalAbort) {
     if (externalAbort.aborted) generation.abort()
@@ -191,16 +221,34 @@ export async function startGenerationProducer(
 
   let claimSucceeded = false
   let settledNotified = false
-  const notifySettled = (
+  const notifySettled = async (
     outcome: "complete" | "awaiting_input" | "aborted" | "error",
-    parts: Parts
+    parts: Parts,
+    metadata: DiagnosticMetadata = {},
+    diagnosticOutcome: DiagnosticTerminalOutcome = outcome === "aborted"
+      ? generation.signal.aborted
+        ? "cancelled"
+        : "interrupted"
+      : outcome
   ) => {
     if (settledNotified) return
     settledNotified = true
+    await diagnostic.finish(diagnosticOutcome, {
+      status: outcome,
+      ...(outcome === "aborted" ? { reason: "aborted" } : {}),
+      ...metadata,
+    })
     try {
       whenSettled?.({ outcome, parts })
     } catch (error) {
-      console.warn("[nibchat/generation-settled]", error)
+      logDiagnosticFailure(
+        "generation.settled_callback_failed",
+        error,
+        "warn",
+        {
+          generationId,
+        }
+      )
     }
   }
   let producerHandle: GenerationProducer | null = null
@@ -273,9 +321,21 @@ export async function startGenerationProducer(
         },
       })
       await publishTerminal(terminal).catch((error) =>
-        console.warn("[nibchat/generation-terminal]", error)
+        logDiagnosticFailure(
+          "generation.terminal_publish_failed",
+          error,
+          "warn",
+          {
+            generationId,
+          }
+        )
       )
-      notifySettled("aborted", seedParts)
+      await notifySettled(
+        "aborted",
+        seedParts,
+        { reason: "claim_lost" },
+        "skipped"
+      )
       producerGuards.stop()
       producerGuards = null
       if (!terminalPublished) await generationStreamStore.close(producerHandle)
@@ -336,6 +396,7 @@ export async function startGenerationProducer(
       .executeTakeFirst()
     const chatIdentity = chatIdentityFromRow(chat)
     const macroContext = {
+      requestKind: "reply" as const,
       now: new Date(),
       timeZone: normalizeTimeZone(timeZone),
       idleSince: idleSinceFromPath(contextNodes),
@@ -421,8 +482,11 @@ export async function startGenerationProducer(
           }),
       getBuiltInToolsPrefs(userId),
     ])
-    for (const warning of mcp.warnings ?? [])
-      console.warn("[nibchat/mcp]", warning)
+    if (mcp.warnings?.length)
+      await diagnostic.warn("mcp_configuration", {
+        count: mcp.warnings.length,
+        phase: "setup",
+      })
     const assembled = assemblePromptContext({
       stack: promptStack,
       pathMessages,
@@ -476,17 +540,21 @@ export async function startGenerationProducer(
       try {
         return await generationStreamStore.isCancelled(generationId)
       } catch (error) {
-        console.warn("[nibchat/generation-cancel-check]", error)
+        logDiagnosticFailure("generation.cancel_check_failed", error, "warn", {
+          generationId,
+        })
         return false
       }
     }
 
+    let firstContentMs: number | undefined
     const finalizeOnce = async (
       outcome: "complete" | "awaiting_input" | "aborted" | "error",
       payload: {
         usage?: unknown
         finishReason?: string
         error?: string
+        diagnostic?: DiagnosticMetadata
       } = {}
     ) => {
       if (settled) return
@@ -519,20 +587,68 @@ export async function startGenerationProducer(
         },
       })
       await publishTerminal(terminal).catch((error) =>
-        console.warn("[nibchat/generation-terminal]", error)
+        logDiagnosticFailure(
+          "generation.terminal_publish_failed",
+          error,
+          "warn",
+          {
+            generationId,
+          }
+        )
       )
-      notifySettled(resolved, parts)
+      const diagnosticOutcome =
+        terminal.result === "missing" || terminal.result === "superseded"
+          ? "skipped"
+          : terminal.result === "deleted"
+            ? "cancelled"
+            : resolved === "aborted"
+              ? generation.signal.aborted
+                ? "cancelled"
+                : "interrupted"
+              : resolved
+      await notifySettled(
+        resolved,
+        parts,
+        {
+          usage: payload.usage,
+          finishReason: payload.finishReason,
+          firstContentMs,
+          ...payload.diagnostic,
+          ...(terminal.result === "missing" ||
+          terminal.result === "superseded" ||
+          terminal.result === "deleted"
+            ? { reason: terminal.result }
+            : {}),
+        },
+        diagnosticOutcome
+      )
       if (
         rememberProtocol &&
         (resolved === "complete" || resolved === "awaiting_input") &&
         selectedProtocol?.()
       )
         void rememberProtocol(selectedProtocol()!).catch((error) =>
-          console.warn("[nibchat/protocol-learning]", error)
+          logDiagnosticFailure(
+            "provider.protocol_learning_failed",
+            error,
+            "warn",
+            {
+              providerId: config.providerId,
+              model: config.model,
+            }
+          )
         )
       if (afterFinalize) {
         void afterFinalize({ outcome: resolved, parts }).catch((error) => {
-          console.warn("[nibchat/generation]", error)
+          logDiagnosticFailure(
+            "generation.after_finalize_failed",
+            error,
+            "warn",
+            {
+              generationId,
+              chatId: assistant.chat_id,
+            }
+          )
         })
       }
     }
@@ -564,6 +680,7 @@ export async function startGenerationProducer(
               },
             },
     })
+    const toolDiagnostics = createToolDiagnostics(diagnostic)
     if (replaySeedParts) {
       const pending = orderedParts.filter(
         (part): part is ToolInvocationPart =>
@@ -584,21 +701,28 @@ export async function startGenerationProducer(
                 throw new Error(
                   "The interrupted task input could not be replayed."
                 )
-              const output = await runAgentTask({
-                context: {
-                  userId,
-                  parentChatId: assistant.chat_id,
-                  parentNodeId: assistant.id,
-                  generationId,
-                  timeZone,
-                  abortSignal,
-                  publish: async (tool) => {
-                    await appendEvent({ type: "tool-upsert", tool })
-                  },
-                },
-                toolCallId: part.toolCallId,
-                input: parsed.data,
-              })
+              const output = await toolDiagnostics.run(
+                part.toolName,
+                part.toolCallId,
+                () =>
+                  runAgentTask({
+                    context: {
+                      userId,
+                      parentChatId: assistant.chat_id,
+                      parentNodeId: assistant.id,
+                      generationId,
+                      timeZone,
+                      abortSignal,
+                      publish: async (tool) => {
+                        await appendEvent({ type: "tool-upsert", tool })
+                      },
+                    },
+                    toolCallId: part.toolCallId,
+                    input: parsed.data,
+                  }),
+                { source: "builtin", replay: true },
+                abortSignal
+              )
               const latest = orderedParts.find(
                 (item): item is ToolInvocationPart =>
                   item.type === "tool-invocation" &&
@@ -613,6 +737,11 @@ export async function startGenerationProducer(
                 },
               })
             } catch (error) {
+              await toolDiagnostics.validationFailure(
+                part.toolName,
+                part.toolCallId,
+                error
+              )
               await appendEvent({
                 type: "tool-upsert",
                 tool: {
@@ -650,6 +779,11 @@ export async function startGenerationProducer(
       appendEvent,
       getParts: () => orderedParts,
       onLiveText,
+      diagnostic,
+      toolDiagnostics,
+      onFirstContent: (elapsed) => {
+        firstContentMs = elapsed
+      },
       onStepEnd: async () => {
         completedSteps++
         await appendChain
@@ -673,6 +807,7 @@ export async function startGenerationProducer(
               error: `Model step limit (${maxSteps}) reached before a final answer.`,
               usage,
               finishReason,
+              diagnostic: { reason: "step_limit", phase: "model" },
             })
           } else {
             await finalizeOnce("complete", { usage, finishReason })
@@ -697,13 +832,17 @@ export async function startGenerationProducer(
             await finalizeOnce("aborted")
             return
           }
-          console.error("[nibchat/stream]", error)
           await appendEvent({
             type: "error",
             errorText: formatProviderError(error),
           }).catch(() => {})
           await finalizeOnce("error", {
             error: formatProviderError(error),
+            diagnostic: {
+              ...diagnosticErrorFields(error),
+              reason: "stream_failed",
+              phase: "stream",
+            },
           })
         } finally {
           dropRegistration()
@@ -733,7 +872,16 @@ export async function startGenerationProducer(
               .catch(() => {})
           await finalizeOnce(
             cancelled ? "aborted" : "error",
-            cancelled ? {} : { error: formatProviderError(error) }
+            cancelled
+              ? { diagnostic: { reason: "cancel_requested" } }
+              : {
+                  error: formatProviderError(error),
+                  diagnostic: {
+                    ...diagnosticErrorFields(error),
+                    reason: "consume_failed",
+                    phase: "consume",
+                  },
+                }
           )
         } finally {
           producerGuards?.stop()
@@ -757,7 +905,12 @@ export async function startGenerationProducer(
           resumeClaim.action?.id
         )
       } catch (restoreError) {
-        console.error("[nibchat/stream] restoreAwaitingInput", restoreError)
+        logDiagnosticFailure(
+          "generation.restore_awaiting_input_failed",
+          restoreError,
+          "error",
+          { generationId, chatId: assistant.chat_id }
+        )
       }
     }
     if (!claimSucceeded) {
@@ -770,13 +923,29 @@ export async function startGenerationProducer(
           error: formatProviderError(error),
         })
         await publishTerminal(terminal).catch((terminalError) =>
-          console.warn("[nibchat/generation-terminal]", terminalError)
+          logDiagnosticFailure(
+            "generation.terminal_publish_failed",
+            terminalError,
+            "warn",
+            { generationId }
+          )
         )
       } catch (finalizeError) {
-        console.error("[nibchat/stream] setup finalization", finalizeError)
+        logDiagnosticFailure(
+          "generation.setup_finalization_failed",
+          finalizeError,
+          "error",
+          { generationId, chatId: assistant.chat_id }
+        )
       }
     }
-    notifySettled("error", seedParts)
+    if (error instanceof ResumeClaimError)
+      await diagnostic.finish("skipped", { reason: error.kind, phase: "claim" })
+    await notifySettled("error", seedParts, {
+      ...diagnosticErrorFields(error),
+      reason: "setup_failed",
+      phase: "setup",
+    })
     dropRegistration()
     producerGuards?.stop()
     if (producerHandle && !terminalPublished)

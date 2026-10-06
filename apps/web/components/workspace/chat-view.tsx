@@ -1331,6 +1331,7 @@ export function ChatView({
         ? branchIdForContinuation(nodes, leaf.id)
         : (branchIds.get(leaf.id) ?? "")
     const baseMacroContext = {
+      requestKind: "reply" as const,
       now,
       timeZone,
       idleSince: idleSinceFromPath(literalPath),
@@ -3103,6 +3104,17 @@ export function ChatView({
                   : []),
               ]}
               items={[
+                ...(data.chat && !template
+                  ? [
+                      {
+                        label: "Activity",
+                        onSelect: () =>
+                          router.push(
+                            `/settings?activityChat=${encodeURIComponent(data.chat!.id)}#activity`
+                          ),
+                      },
+                    ]
+                  : []),
                 ...(data.chat && !template
                   ? [
                       {

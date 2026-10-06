@@ -27,7 +27,7 @@ const ENV_TEMPLATE_HELP =
   "Embed ${ENV_NAME} in a value to resolve it from the server environment at connect time."
 
 const HEADER_TEMPLATE_HELP =
-  "Embed ${ENV_NAME} for server environment values, or prompt macros such as {{date}} and {{chatId}}. Macros resolve when a request is sent."
+  "Embed ${ENV_NAME} for server environment values, or prompt macros such as {{date}}, {{chatId}}, and {{requestKind}}. Request kind is reply for replies and title for chat titles. Macros resolve when a request is sent."
 
 export function KvEntriesEditor({
   label,
@@ -193,7 +193,12 @@ function HeaderEntryRow({
     preview?.expanded && preview.expanded !== entry.value
       ? `header-preview-${index}`
       : null,
-    preview?.omittedWithoutChat ? `header-chat-${index}` : null,
+    preview?.titleExpanded !== undefined
+      ? `header-title-preview-${index}`
+      : null,
+    preview?.omittedWithoutChat || preview?.omittedWithoutRequest
+      ? `header-chat-${index}`
+      : null,
     preview?.unresolved ? `header-unresolved-${index}` : null,
     headerInvalid ? `header-invalid-${index}` : null,
   ]
@@ -252,18 +257,30 @@ function HeaderEntryRow({
               className="line-clamp-2 text-xs text-muted-foreground"
             >
               <span className="mr-1 text-[11px] tracking-wide text-muted-foreground/80 uppercase">
-                Sends as
+                {preview.omittedWithoutRequest ? "Reply preview" : "Sends as"}
               </span>
               {preview.expanded}
             </p>
           ) : null}
-          {preview?.omittedWithoutChat ? (
+          {preview?.titleExpanded !== undefined ? (
+            <p
+              id={`header-title-preview-${index}`}
+              className="line-clamp-2 text-xs text-muted-foreground"
+            >
+              <span className="mr-1 text-[11px] tracking-wide text-muted-foreground/80 uppercase">
+                Title preview
+              </span>
+              {preview.titleExpanded}
+            </p>
+          ) : null}
+          {preview?.omittedWithoutChat || preview?.omittedWithoutRequest ? (
             <p
               id={`header-chat-${index}`}
               className="text-xs text-muted-foreground"
             >
-              Sent with chat requests; omitted when listing models or testing a
-              connection.
+              {preview.omittedWithoutRequest
+                ? "Request kind is reply for replies and title for chat titles. Omitted when listing models or testing a connection."
+                : "Sent with chat requests; omitted when listing models or testing a connection."}
             </p>
           ) : null}
           {preview?.unresolved ? (

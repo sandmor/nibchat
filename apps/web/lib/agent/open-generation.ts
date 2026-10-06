@@ -30,6 +30,11 @@ import {
   type ModelConfig,
   type ResponsesReplayTarget,
 } from "@/lib/providers"
+import {
+  startDiagnosticOperation,
+  type DiagnosticOperationHandle,
+} from "@/lib/diagnostics"
+import type { DiagnosticContext } from "@/lib/diagnostic-contract"
 import type { ChatRow, NodeRow } from "@/lib/types"
 
 export function generationAssistantMeta(
@@ -48,6 +53,8 @@ export function generationAssistantMeta(
 }
 
 export async function startChatGeneration(input: {
+  diagnostic?: DiagnosticOperationHandle
+  diagnosticContext?: DiagnosticContext
   userId: string
   chat: Pick<ChatRow, "id" | "settings_json" | "space_id">
   settings: ResolvedSettings
@@ -65,60 +72,86 @@ export async function startChatGeneration(input: {
   resumeClaim?: GenerationSetup["resumeClaim"]
   agent?: AgentGenerationOptions
 }) {
-  const resolved = await resolveStackForChat(input.chat, input.userId)
-  const agentConfig = await db
-    .selectFrom("chats")
-    .select("agent_config_json")
-    .where("id", "=", input.chat.id)
-    .where("user_id", "=", input.userId)
-    .executeTakeFirst()
-  const snapshot = parseJson<{ stack?: PromptStackDocument }>(
-    agentConfig?.agent_config_json ?? "{}",
-    {}
-  )
-  const allNodes = await db
-    .selectFrom("message_nodes")
-    .selectAll()
-    .where("chat_id", "=", input.chat.id)
-    .orderBy("created_at")
-    .execute()
-  const config = input.config
-  return startGenerationProducer({
-    userId: input.userId,
-    assistant: input.assistant,
-    contextLeafId: input.contextLeafId,
-    seedParts: input.seedParts,
-    replaySeedParts: input.replaySeedParts,
-    config,
-    languageModel: input.languageModel,
-    responsesReplay: input.responsesReplay,
-    selectedProtocol: () => selectedProtocolFor(input.languageModel),
-    rememberProtocol:
-      config.providerId && config.model
-        ? (protocol) =>
-            rememberCatalogProtocol(
-              config.providerId!,
-              config.model!,
-              protocol as "responses" | "chat"
-            )
-        : undefined,
-    promptStack: snapshot.stack
-      ? readStackJson(JSON.stringify(snapshot.stack))
-      : resolved.stack,
-    variableOverrides: input.settings.effective.variables,
-    spaceRulesText: formatSpaceRules(input.settings.effective.rules),
-    timeZone: input.timeZone,
-    allNodes,
-    previousMetadata: input.previousMetadata,
-    resumeClaim: input.resumeClaim,
-    afterFinalize: input.afterFinalize,
-    generationId: input.generationId,
-    ...input.agent,
-  })
+  const diagnostic =
+    input.diagnostic ??
+    (await startDiagnosticOperation({
+      id: input.generationId,
+      kind: "chat.reply.generate",
+      context: {
+        ...input.diagnosticContext,
+        userId: input.userId,
+        chatId: input.chat.id,
+        generationId: input.generationId,
+        providerId: input.config.providerId,
+        model: input.config.model,
+      },
+    }))
+  try {
+    const resolved = await resolveStackForChat(input.chat, input.userId)
+    const agentConfig = await db
+      .selectFrom("chats")
+      .select("agent_config_json")
+      .where("id", "=", input.chat.id)
+      .where("user_id", "=", input.userId)
+      .executeTakeFirst()
+    const snapshot = parseJson<{ stack?: PromptStackDocument }>(
+      agentConfig?.agent_config_json ?? "{}",
+      {}
+    )
+    const allNodes = await db
+      .selectFrom("message_nodes")
+      .selectAll()
+      .where("chat_id", "=", input.chat.id)
+      .orderBy("created_at")
+      .execute()
+    const config = input.config
+    return await startGenerationProducer({
+      diagnostic,
+      userId: input.userId,
+      assistant: input.assistant,
+      contextLeafId: input.contextLeafId,
+      seedParts: input.seedParts,
+      replaySeedParts: input.replaySeedParts,
+      config,
+      languageModel: input.languageModel,
+      responsesReplay: input.responsesReplay,
+      selectedProtocol: () => selectedProtocolFor(input.languageModel),
+      rememberProtocol:
+        config.providerId && config.model
+          ? (protocol) =>
+              rememberCatalogProtocol(
+                config.providerId!,
+                config.model!,
+                protocol as "responses" | "chat"
+              )
+          : undefined,
+      promptStack: snapshot.stack
+        ? readStackJson(JSON.stringify(snapshot.stack))
+        : resolved.stack,
+      variableOverrides: input.settings.effective.variables,
+      spaceRulesText: formatSpaceRules(input.settings.effective.rules),
+      timeZone: input.timeZone,
+      allNodes,
+      previousMetadata: input.previousMetadata,
+      resumeClaim: input.resumeClaim,
+      afterFinalize: input.afterFinalize,
+      generationId: input.generationId,
+      ...input.agent,
+    })
+  } catch (error) {
+    await diagnostic.finish(
+      "error",
+      { phase: "setup", reason: "setup_failed" },
+      error
+    )
+    throw error
+  }
 }
 
 /** Continue an existing chat from a parent node and retain the producer. */
 export async function continueChatGeneration(input: {
+  diagnosticContext?: DiagnosticContext
+  originalGenerationId?: string
   userId: string
   chatId: string
   parentId: string | null
@@ -139,106 +172,133 @@ export async function continueChatGeneration(input: {
     .where("user_id", "=", input.userId)
     .executeTakeFirst()
   if (!chat) throw new Error("Chat not found")
-  if (input.settingsJson) chat.settings_json = input.settingsJson
-  const stored = parseSettingValues(chat.settings_json)
-  const storedModel = stored.model
-  const normalizedModel = storedModel
-    ? await resolveModelConfig(input.userId, storedModel)
-    : storedModel
-  if (
-    !input.settingsJson &&
-    storedModel &&
-    normalizedModel &&
-    !valuesEqual(storedModel, normalizedModel)
-  ) {
-    const next = { ...stored, model: normalizedModel }
-    await db
-      .updateTable("chats")
-      .set({
-        settings_json: settingValuesToJson(next),
-        updated_at: new Date().toISOString(),
-      })
-      .where("id", "=", chat.id)
-      .execute()
-    chat.settings_json = settingValuesToJson(next)
-  }
-  const settings = await resolveSettingsForChat(chat, input.userId)
-  const agentSnapshot = parseJson<{ model?: ModelConfig }>(
-    chat.agent_config_json ?? "{}",
-    {}
-  )
-  const config = await withModelFallback(
-    input.userId,
-    agentSnapshot.model ?? settings.effective.model
-  )
-  const helperPolicy =
-    chat.kind === "agent_run"
-      ? ({
-          question: true,
-          task:
-            parseJson<{ allowTask?: boolean }>(
-              chat.agent_config_json ?? "{}",
-              {}
-            ).allowTask !== false,
-          mcp:
-            parseJson<{ mcpMode?: "inherit" | "none" }>(
-              chat.agent_config_json ?? "{}",
-              {}
-            ).mcpMode ?? "inherit",
-        } as const)
-      : undefined
-  const responsesReplay = await responsesReplayTargetFor(input.userId, config)
   const generationId = input.existing?.generationId ?? crypto.randomUUID()
-  const assistantMeta = {
-    ...generationAssistantMeta(config, responsesReplay),
-    timeZone: input.timeZone,
-    ...(input.batch
-      ? {
-          batchId: input.batch.id,
-          batchIndex: input.batch.index,
-          batchSize: input.batch.size,
-        }
-      : {}),
-  }
-  const { assistant, contextLeafId } = input.existing
-    ? { assistant: input.existing.assistant, contextLeafId: input.parentId }
-    : await startGeneration({
-        userId: input.userId,
-        chatId: chat.id,
-        parentId: input.parentId,
-        generationId,
-        assistantMetadata: assistantMeta,
-        attachSelection: input.attachSelection,
-      })
-  const branchNodes = await db
-    .selectFrom("message_nodes")
-    .select(["id", "parent_id", "branch_index"])
-    .where("chat_id", "=", chat.id)
-    .execute()
-  const languageModel = await modelFor(input.userId, config, {
-    chatId: chat.id,
-    timeZone: input.timeZone,
-    branchId: branchIdOf(branchNodes, assistant.id),
-  })
-  await input.onStarted?.(assistant.id)
-  return startChatGeneration({
-    userId: input.userId,
-    chat,
-    settings,
-    config,
-    languageModel,
-    responsesReplay,
-    assistant,
-    contextLeafId,
-    timeZone: input.timeZone,
-    generationId,
-    afterFinalize: input.afterFinalize,
-    previousMetadata: assistantMeta,
-    seedParts: input.existing?.seedParts,
-    replaySeedParts: Boolean(input.existing),
-    agent: {
-      ...input.agent,
-      toolPolicy: helperPolicy ?? input.agent?.toolPolicy,
+  const diagnostic = await startDiagnosticOperation({
+    id: generationId,
+    kind: "chat.reply.generate",
+    context: {
+      ...input.diagnosticContext,
+      actionId: input.batch?.id ?? input.diagnosticContext?.actionId,
+      userId: input.userId,
+      chatId: chat.id,
+      generationId,
     },
+    metadata: { originalGenerationId: input.originalGenerationId },
   })
+  try {
+    if (input.settingsJson) chat.settings_json = input.settingsJson
+    const stored = parseSettingValues(chat.settings_json)
+    const storedModel = stored.model
+    const normalizedModel = storedModel
+      ? await resolveModelConfig(input.userId, storedModel)
+      : storedModel
+    if (
+      !input.settingsJson &&
+      storedModel &&
+      normalizedModel &&
+      !valuesEqual(storedModel, normalizedModel)
+    ) {
+      const next = { ...stored, model: normalizedModel }
+      await db
+        .updateTable("chats")
+        .set({
+          settings_json: settingValuesToJson(next),
+          updated_at: new Date().toISOString(),
+        })
+        .where("id", "=", chat.id)
+        .execute()
+      chat.settings_json = settingValuesToJson(next)
+    }
+    const settings = await resolveSettingsForChat(chat, input.userId)
+    const agentSnapshot = parseJson<{ model?: ModelConfig }>(
+      chat.agent_config_json ?? "{}",
+      {}
+    )
+    const config = await withModelFallback(
+      input.userId,
+      agentSnapshot.model ?? settings.effective.model
+    )
+    const helperPolicy =
+      chat.kind === "agent_run"
+        ? ({
+            question: true,
+            task:
+              parseJson<{ allowTask?: boolean }>(
+                chat.agent_config_json ?? "{}",
+                {}
+              ).allowTask !== false,
+            mcp:
+              parseJson<{ mcpMode?: "inherit" | "none" }>(
+                chat.agent_config_json ?? "{}",
+                {}
+              ).mcpMode ?? "inherit",
+          } as const)
+        : undefined
+    const responsesReplay = await responsesReplayTargetFor(input.userId, config)
+    await diagnostic.updateContext({
+      providerId: config.providerId,
+      model: config.model,
+    })
+    const assistantMeta = {
+      ...generationAssistantMeta(config, responsesReplay),
+      timeZone: input.timeZone,
+      ...(input.batch
+        ? {
+            batchId: input.batch.id,
+            batchIndex: input.batch.index,
+            batchSize: input.batch.size,
+          }
+        : {}),
+    }
+    const { assistant, contextLeafId } = input.existing
+      ? { assistant: input.existing.assistant, contextLeafId: input.parentId }
+      : await startGeneration({
+          userId: input.userId,
+          chatId: chat.id,
+          parentId: input.parentId,
+          generationId,
+          assistantMetadata: assistantMeta,
+          attachSelection: input.attachSelection,
+        })
+    const branchNodes = await db
+      .selectFrom("message_nodes")
+      .select(["id", "parent_id", "branch_index"])
+      .where("chat_id", "=", chat.id)
+      .execute()
+    const languageModel = await modelFor(input.userId, config, {
+      requestKind: "reply",
+      chatId: chat.id,
+      timeZone: input.timeZone,
+      branchId: branchIdOf(branchNodes, assistant.id),
+    })
+    await input.onStarted?.(assistant.id)
+    return await startChatGeneration({
+      diagnostic,
+      userId: input.userId,
+      chat,
+      settings,
+      config,
+      languageModel,
+      responsesReplay,
+      assistant,
+      contextLeafId,
+      timeZone: input.timeZone,
+      generationId,
+      afterFinalize: input.afterFinalize,
+      previousMetadata: assistantMeta,
+      seedParts: input.existing?.seedParts,
+      replaySeedParts: Boolean(input.existing),
+      agent: {
+        ...input.agent,
+        toolPolicy: helperPolicy ?? input.agent?.toolPolicy,
+      },
+    })
+  } catch (error) {
+    await diagnostic.finish(
+      "error",
+      { phase: "setup", reason: "setup_failed" },
+      error
+    )
+    throw error
+  }
 }

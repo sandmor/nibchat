@@ -17,7 +17,11 @@ import { parseJson } from "@/lib/domain"
 import { ollamaApiUrl } from "@/lib/ollama"
 import { providerConfigFromJson } from "@/lib/provider-config"
 import { resolveHeaderEntries } from "@/lib/config-entries"
-import { chatIdentityFromRow, normalizeTimeZone } from "@/lib/prompt-macros"
+import {
+  chatIdentityFromRow,
+  normalizeTimeZone,
+  type RequestKind,
+} from "@/lib/prompt-macros"
 import {
   firstAvailableModel,
   firstEnabledModelId,
@@ -189,6 +193,7 @@ export async function modelFor(
     timeZone?: string
     /** Branch id of the message this request is generating. */
     branchId?: string
+    requestKind?: RequestKind
   }
 ): Promise<LanguageModel> {
   const profile = config.providerId
@@ -229,6 +234,7 @@ export async function modelFor(
     macroContext: {
       now: new Date(),
       timeZone: normalizeTimeZone(options?.timeZone),
+      requestKind: options?.requestKind ?? "reply",
       ...(chatIdentity ? { chat: chatIdentity } : {}),
       ...(options?.branchId != null ? { branchId: options.branchId } : {}),
     },

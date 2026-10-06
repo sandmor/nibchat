@@ -4,6 +4,7 @@ import {
   expandPromptMacros,
   expansionLooksUnresolved,
   valueNeedsChatContext,
+  valueNeedsRequestContext,
   type MacroContext,
 } from "@/lib/prompt-macros"
 
@@ -78,15 +79,27 @@ export function previewHeaderEntry(
   context: MacroContext
 ): {
   expanded: string
+  titleExpanded?: string
   omittedWithoutChat: boolean
+  omittedWithoutRequest: boolean
   unresolved: boolean
   invalid: boolean
 } {
   const expanded = expandPromptMacros(entry.value, context)
   const unresolved = expansionLooksUnresolved(expanded)
+  const omittedWithoutRequest = valueNeedsRequestContext(entry.value)
   return {
     expanded,
+    ...(omittedWithoutRequest
+      ? {
+          titleExpanded: expandPromptMacros(entry.value, {
+            ...context,
+            requestKind: "title",
+          }),
+        }
+      : {}),
     omittedWithoutChat: valueNeedsChatContext(entry.value),
+    omittedWithoutRequest,
     unresolved,
     invalid:
       Boolean(entry.name) &&
@@ -111,6 +124,11 @@ export function resolveHeaderEntries(
     const templated = resolveTemplateValue(entry.value, options.env)
     if (templated == null) continue
     if (!options.macroContext?.chat && valueNeedsChatContext(templated))
+      continue
+    if (
+      !options.macroContext?.requestKind &&
+      valueNeedsRequestContext(templated)
+    )
       continue
     const value = expandPromptMacros(templated, options.macroContext)
     // Prompt rendering intentionally keeps unknown macros literal. Header

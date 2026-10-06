@@ -3,6 +3,7 @@ import type {
   GenerationProducer,
   GenerationStreamPort,
 } from "@/lib/generation-streams/ports"
+import { logDiagnosticFailure } from "@/lib/diagnostics"
 
 const CANCEL_POLL_MS = 250
 
@@ -23,7 +24,11 @@ export function startProducerGuards(
       .then((cancelled) => {
         if (!stopped && cancelled) onCancel()
       })
-      .catch((error) => console.error("[nibchat/generation-cancel]", error))
+      .catch((error) =>
+        logDiagnosticFailure("generation.cancel_poll_failed", error, "warn", {
+          generationId: producer.generationId,
+        })
+      )
   }
   poll()
   const timer = setInterval(poll, CANCEL_POLL_MS)

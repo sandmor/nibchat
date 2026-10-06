@@ -16,15 +16,18 @@ import { ConversationImportSettings } from "./conversation-import"
 import { ChatTemplateSettings } from "./chat-templates"
 import { ScheduleSettings } from "./schedules"
 import { HelperSettings } from "./helpers"
+import { ActivitySettings } from "./activity"
 
 export function SettingsPanel({
   providers,
   onProvidersChange,
   isOwner,
+  activityChatId,
 }: {
   providers: ProviderSummary[]
   onProvidersChange: () => void
   isOwner: boolean
+  activityChatId?: string
 }) {
   return (
     <section className="flex h-full min-h-0 flex-col overflow-hidden">
@@ -67,6 +70,11 @@ export function SettingsPanel({
             </>
           )}
           <AppearanceSettings />
+          <ActivitySettings
+            isOwner={isOwner}
+            chatId={activityChatId}
+            providers={providers}
+          />
         </div>
       </div>
     </section>

@@ -10,6 +10,7 @@ import {
 } from "@/lib/generation-streams/policy"
 import { requestGenerationCancellation } from "@/lib/generation-runs"
 import { abortGenerations } from "@/lib/active-generations"
+import { logDiagnosticFailure } from "@/lib/diagnostics"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -58,7 +59,14 @@ export async function GET(
     try {
       snapshot = await generationStreamStore.inspect(generationId)
     } catch (error) {
-      console.warn("[nibchat/generation-attach] store unavailable", error)
+      logDiagnosticFailure(
+        "generation.attach_store_unavailable",
+        error,
+        "warn",
+        {
+          generationId,
+        }
+      )
       if (Date.now() >= deadline)
         return new Response(null, {
           status: 425,
@@ -115,9 +123,11 @@ export async function DELETE(
   const run = await ownedRun(generationId, user.id)
   if (!run) return new Response(null, { status: 404 })
   await requestGenerationCancellation(generationId)
-  await generationStreamStore
-    .requestCancel(generationId)
-    .catch((error) => console.error("[nibchat/generation-cancel]", error))
+  await generationStreamStore.requestCancel(generationId).catch((error) =>
+    logDiagnosticFailure("generation.cancel_request_failed", error, "error", {
+      generationId,
+    })
+  )
   abortGenerations([run.node_id])
   return new Response(null, { status: 202 })
 }

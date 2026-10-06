@@ -413,6 +413,7 @@ export function assembleContextPreview(
   })
   const chat = chatIdentityFromRow(input.chat)
   const macroContext = {
+    requestKind: "reply" as const,
     now: input.now ?? new Date(),
     timeZone: normalizeTimeZone(input.timeZone),
     idleSince: idleSinceFromPath(contextNodes),

@@ -7,6 +7,7 @@ import {
   insertNode,
   reconcileChatGenerationRuns,
 } from "@/lib/chat-service"
+import { startDiagnosticOperation } from "@/lib/diagnostics"
 import { prepareAgentRun } from "@/lib/agent/task-run"
 
 const { continueChatGeneration } = vi.hoisted(() => ({
@@ -80,6 +81,11 @@ describe("agent generation recovery", () => {
       .where("id", "=", oldId)
       .execute()
 
+    await startDiagnosticOperation({
+      id: oldId,
+      kind: "chat.reply.generate",
+      context: { userId, chatId: child.run.id, generationId: oldId },
+    })
     await reconcileChatGenerationRuns(child.run.id)
 
     const restarted = await db
@@ -89,6 +95,28 @@ describe("agent generation recovery", () => {
       .executeTakeFirstOrThrow()
     expect(restarted.id).not.toBe(oldId)
     expect(restarted.state).toBe("starting")
+    const original = await db
+      .selectFrom("diagnostic_operations")
+      .selectAll()
+      .where("id", "=", oldId)
+      .executeTakeFirstOrThrow()
+    expect(original.outcome).toBe("interrupted")
+    expect(JSON.parse(original.metadata_json)).toMatchObject({
+      reason: "producer_lost",
+      replacementGenerationId: restarted.id,
+    })
+    const recovery = await db
+      .selectFrom("diagnostic_operations")
+      .selectAll()
+      .where("kind", "=", "agent.recovery")
+      .where("chat_id", "=", child.run.id)
+      .executeTakeFirstOrThrow()
+    expect(recovery.outcome).toBe("complete")
+    expect(JSON.parse(recovery.metadata_json)).toMatchObject({
+      originalGenerationId: oldId,
+      replacementGenerationId: restarted.id,
+      status: "restarted",
+    })
     expect(continueChatGeneration).toHaveBeenCalledWith(
       expect.objectContaining({
         chatId: child.run.id,

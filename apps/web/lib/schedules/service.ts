@@ -38,10 +38,16 @@ import { spaceFromRow } from "@/lib/spaces"
 import { id, now, resolveActivePath } from "@/lib/domain"
 import { GENERATION_STARTING_HANDOFF_MS } from "@/lib/generation-streams/policy"
 import {
-  MAX_DESCRIPTION,
-  MAX_COLLECTION,
-  MAX_NAME,
-} from "@/lib/limits"
+  finishDiagnosticOperationById,
+  logDiagnosticFailure,
+  startDiagnosticOperation,
+} from "@/lib/diagnostics"
+import type {
+  DiagnosticContext,
+  DiagnosticMetadata,
+  DiagnosticTerminalOutcome,
+} from "@/lib/diagnostic-contract"
+import { MAX_DESCRIPTION, MAX_COLLECTION, MAX_NAME } from "@/lib/limits"
 import type {
   AttachmentReference,
   DB,
@@ -87,24 +93,14 @@ const templateActionSchema = z.object({
   templateId: z.string(),
   spaceId: z.string().nullable(),
   chatOverridesJson: z.string().optional(),
-  replyCount: z
-    .number()
-    .int()
-    .min(1)
-    .max(MAX_COLLECTION)
-    .optional(),
+  replyCount: z.number().int().min(1).max(MAX_COLLECTION).optional(),
 })
 const chatGenerateActionSchema = z.object({
   kind: z.literal("chat_generate"),
   chatId: z.string(),
   parentId: z.string().nullable(),
   settingsJson: z.string(),
-  replyCount: z
-    .number()
-    .int()
-    .min(1)
-    .max(MAX_COLLECTION)
-    .optional(),
+  replyCount: z.number().int().min(1).max(MAX_COLLECTION).optional(),
 })
 export const scheduleActionSchema = z.discriminatedUnion("kind", [
   templateActionSchema,
@@ -121,9 +117,7 @@ function assertSchedulesAvailable() {
 function parseAction(value: string) {
   return scheduleActionSchema.parse(JSON.parse(value))
 }
-function assertUserLeaf(
-  document: ChatTemplateDocument
-) {
+function assertUserLeaf(document: ChatTemplateDocument) {
   if (templateActiveLeaf(document)?.role !== "user") throw new Error(USER_LEAF)
 }
 function errorText(error: unknown) {
@@ -661,11 +655,27 @@ async function settleScheduledAction(run: {
       "generation_runs.id",
       "generation_action_items.generation_id"
     )
-    .select(["message_nodes.status", "generation_runs.id as activeRunId"])
+    .leftJoin(
+      "diagnostic_operations",
+      "diagnostic_operations.id",
+      "generation_action_items.generation_id"
+    )
+    .select([
+      "message_nodes.status",
+      "generation_runs.id as activeRunId",
+      "diagnostic_operations.outcome as diagnosticOutcome",
+    ])
     .where("generation_action_items.action_id", "=", actionId)
     .execute()
   if (!items.length) {
-    await recordFinish(run.id, "error", INTERRUPTED, run.chat_id ?? undefined)
+    await recordFinish(
+      run.id,
+      "error",
+      INTERRUPTED,
+      run.chat_id ?? undefined,
+      undefined,
+      { outcome: "interrupted", fields: { reason: "producer_lost" } }
+    )
     return true
   }
   if (items.some((item) => item.activeRunId)) return true
@@ -677,11 +687,30 @@ async function settleScheduledAction(run: {
       item.status === "streaming"
   )
   const waiting = items.some((item) => item.status === "awaiting_input")
+  const diagnosticOutcome = failed
+    ? items.every((item) => item.status === "stopped")
+      ? "cancelled"
+      : items.some((item) => item.diagnosticOutcome === "interrupted")
+        ? "interrupted"
+        : "error"
+    : waiting
+      ? "awaiting_input"
+      : "complete"
+  const reason =
+    diagnosticOutcome === "cancelled"
+      ? "replies_cancelled"
+      : diagnosticOutcome === "interrupted"
+        ? "producer_lost"
+        : diagnosticOutcome === "error"
+          ? "replies_failed"
+          : undefined
   await recordFinish(
     run.id,
     failed ? "error" : waiting ? "awaiting_input" : "complete",
     failed ? "One or more replies failed." : null,
-    run.chat_id ?? undefined
+    run.chat_id ?? undefined,
+    undefined,
+    { outcome: diagnosticOutcome, fields: { reason } }
   )
   return true
 }
@@ -710,7 +739,10 @@ export async function reconcileInterruptedSchedules() {
       Date.now() - Date.parse(row.started_at) < GENERATION_STARTING_HANDOFF_MS
     )
       continue
-    await recordFinish(row.id, "error", INTERRUPTED)
+    await recordFinish(row.id, "error", INTERRUPTED, undefined, undefined, {
+      outcome: "interrupted",
+      fields: { reason: "producer_lost" },
+    })
   }
 }
 export async function claimSchedule(
@@ -757,7 +789,12 @@ async function recordFinish(
   status: ScheduleRunStatus,
   error: string | null,
   chatId?: string,
-  messageId?: string
+  messageId?: string,
+  diagnostic: {
+    fields?: DiagnosticMetadata
+    error?: unknown
+    outcome?: DiagnosticTerminalOutcome
+  } = {}
 ) {
   const finishedAt = now()
   await db.transaction().execute(async (trx) => {
@@ -825,9 +862,17 @@ async function recordFinish(
         .where("id", "=", run.schedule_id)
         .execute()
   })
+  if (status !== "running")
+    await finishDiagnosticOperationById(
+      runId,
+      diagnostic.outcome ?? status,
+      { status, ...diagnostic.fields },
+      diagnostic.error
+    )
 }
 
 export type ScheduleContinuation = (input: {
+  diagnosticContext?: DiagnosticContext
   userId: string
   chatId: string
   parentId: string | null
@@ -853,6 +898,11 @@ export async function fireSchedule(
     .where("id", "=", scheduleId)
     .executeTakeFirst()
   if (!row) return
+  const operation = await startDiagnosticOperation({
+    id: runId,
+    kind: "schedule.execute",
+    context: { userId: row.user_id, scheduleId },
+  })
   try {
     const action = parseAction(row.action_json)
     const cadence = parseCadence(row.cadence_json)
@@ -883,6 +933,7 @@ export async function fireSchedule(
     } else {
       throw new Error(USER_PARENT)
     }
+    await operation.updateContext({ chatId })
     await recordFinish(runId, "running", null, chatId)
     const replyCount = action.replyCount ?? 1
     // The run ID links recovery directly to every sibling in this action.
@@ -907,6 +958,7 @@ export async function fireSchedule(
       Array.from({ length: replyCount }, async (_, index) => {
         try {
           await continuation({
+            diagnosticContext: { scheduleId, actionId: runId },
             userId: row.user_id,
             chatId,
             parentId,
@@ -943,7 +995,12 @@ export async function fireSchedule(
             parts: [],
             error: errorText(error),
           }).catch((finalizeError) =>
-            console.error("[nibchat/schedule-finalize]", finalizeError)
+            logDiagnosticFailure(
+              "schedule.reply_finalize_failed",
+              finalizeError,
+              "error",
+              { userId: row.user_id, chatId, scheduleId }
+            )
           )
           await settleScheduledAction({
             id: runId,
@@ -954,7 +1011,10 @@ export async function fireSchedule(
       })
     )
   } catch (error) {
-    await recordFinish(runId, "error", errorText(error))
+    await recordFinish(runId, "error", errorText(error), undefined, undefined, {
+      fields: { reason: "setup_failed", phase: "setup" },
+      error,
+    })
   }
 }
 

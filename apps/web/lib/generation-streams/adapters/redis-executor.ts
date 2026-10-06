@@ -1,4 +1,6 @@
 /** One Redis command as a RESP array. Both TCP and HTTP executors speak this. */
+import { logDiagnosticFailure } from "@/lib/diagnostics"
+
 export type RedisCommandExecutor = {
   send(args: readonly string[]): Promise<unknown>
 }
@@ -34,7 +36,8 @@ export class HttpRedisCommandExecutor implements RedisCommandExecutor {
     private readonly token?: string
   ) {
     const parsed = new URL(url)
-    const path = parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/$/, "")
+    const path =
+      parsed.pathname === "/" ? "" : parsed.pathname.replace(/\/$/, "")
     this.endpoint = `${parsed.protocol}//${parsed.host}${path}`
   }
 
@@ -51,7 +54,8 @@ export class HttpRedisCommandExecutor implements RedisCommandExecutor {
     const body: unknown = await response.json().catch(() => null)
     if (!response.ok) {
       const message =
-        unwrapRedisHttpError(body) ?? `${response.status} ${response.statusText}`
+        unwrapRedisHttpError(body) ??
+        `${response.status} ${response.statusText}`
       throw new Error(message)
     }
     return unwrapRedisHttpReply(body)
@@ -91,7 +95,7 @@ class TcpRedisCommandExecutor implements RedisCommandExecutor {
     this.clientPromise ??= import("redis").then(async ({ createClient }) => {
       const client = createClient({ url: this.url })
       client.on("error", (error) =>
-        console.error("[nibchat/generation-redis]", error)
+        logDiagnosticFailure("generation.redis_client_error", error)
       )
       await client.connect()
       return client

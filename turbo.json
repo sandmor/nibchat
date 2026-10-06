@@ -17,6 +17,7 @@
     "GENERATION_STREAM_BACKEND",
     "REDIS_URL",
     "REDIS_TOKEN",
+    "LOG_LEVEL",
     "E2E_BASE_URL",
     "CI"
   ],

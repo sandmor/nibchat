@@ -11,6 +11,7 @@ import { generationStartSchema } from "@/lib/generation-start"
 import { startGenerationAction } from "@/lib/generation-actions/start"
 import { jsonError, statusFromError } from "@/lib/http-error"
 import { formatProviderError } from "@/lib/provider-errors"
+import { logDiagnosticFailure } from "@/lib/diagnostics"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -66,7 +67,11 @@ export async function POST(request: Request) {
         return generationActionSseResponse(existing, null)
       }
     }
-    console.error("[nibchat/generation-start] setup", error)
+    logDiagnosticFailure("generation.setup_failed", error, "error", {
+      userId: retry?.userId,
+      chatId: retry?.chatId,
+      actionId: retry?.actionId,
+    })
     if (statusFromError(error) !== 400) return jsonError(error)
     return Response.json({ error: formatProviderError(error) }, { status: 400 })
   }

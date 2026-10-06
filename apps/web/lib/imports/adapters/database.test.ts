@@ -75,7 +75,35 @@ describe("database import adapter", () => {
         excluded: false,
       },
     ])
+    expect(
+      await db
+        .selectFrom("diagnostic_operations")
+        .select("id")
+        .where("kind", "=", "conversation.import.publish")
+        .execute()
+    ).toHaveLength(0)
     const first = await publishImport(scope, manifest.fingerprint)
+    const diagnostic = await db
+      .selectFrom("diagnostic_operations")
+      .selectAll()
+      .where("kind", "=", "conversation.import.publish")
+      .executeTakeFirstOrThrow()
+    expect(diagnostic.outcome).toBe("complete")
+    expect(diagnostic.chat_id).toBe(first.chatId)
+    expect(await publishImport(scope, manifest.fingerprint)).toMatchObject({
+      status: "skipped",
+    })
+    const attempts = await db
+      .selectFrom("diagnostic_operations")
+      .selectAll()
+      .where("kind", "=", "conversation.import.publish")
+      .execute()
+    expect(attempts).toHaveLength(2)
+    expect(attempts.map((row) => row.outcome).sort()).toEqual([
+      "complete",
+      "skipped",
+    ])
+
     expect(first.status).toBe("imported")
     expect(
       await db
@@ -138,6 +166,16 @@ describe("database import adapter", () => {
     await expect(publishImport(invalid, "b".repeat(64))).rejects.toThrow(
       "unknown parent"
     )
+    const attempt = await db
+      .selectFrom("diagnostic_operations")
+      .selectAll()
+      .where("kind", "=", "conversation.import.publish")
+      .where("outcome", "=", "error")
+      .executeTakeFirstOrThrow()
+    expect(JSON.parse(attempt.metadata_json)).toMatchObject({
+      phase: "publish",
+      errorType: "Error",
+    })
     expect(
       await db
         .selectFrom("chats")

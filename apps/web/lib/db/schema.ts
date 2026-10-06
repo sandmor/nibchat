@@ -2,6 +2,13 @@ import type { Kysely } from "kysely"
 import { sql } from "kysely"
 import type { DbKind } from "@/lib/db/port"
 import type { DB } from "@/lib/types"
+import {
+  DEFAULT_DIAGNOSTIC_RETENTION_DAYS,
+  DIAGNOSTIC_KINDS,
+  DIAGNOSTIC_OUTCOMES,
+  DIAGNOSTIC_EVENTS,
+  DIAGNOSTIC_LEVELS,
+} from "@/lib/diagnostic-contract"
 
 /**
  * Apply the current schema for a fresh installation. `kind` selects dialect-specific
@@ -132,6 +139,7 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
   await sql`create table if not exists import_book_mappings (user_id text not null references "user"(id) on delete cascade, source text not null, entity_id text not null, context_book_id text not null references context_books(id) on delete cascade, source_fingerprint text not null default '', created_at text not null, primary key(user_id, source, entity_id))`.execute(
     db
   )
+  await createDiagnosticTables(db)
   await sql`create index if not exists import_sessions_updated_idx on import_sessions(updated_at)`.execute(
     db
   )
@@ -208,4 +216,41 @@ export async function applySchema(db: Kysely<DB>, kind: DbKind) {
       )
     )
     .execute()
+}
+
+async function createDiagnosticTables(db: Kysely<DB>) {
+  const retentionDefault = sql.raw(String(DEFAULT_DIAGNOSTIC_RETENTION_DAYS))
+  await sql`create table if not exists diagnostic_settings (id integer primary key check (id = 1), retention_days integer not null default ${retentionDefault})`.execute(
+    db
+  )
+  await sql`insert into diagnostic_settings (id, retention_days) values (1, ${retentionDefault}) on conflict (id) do nothing`.execute(
+    db
+  )
+  await sql`create table if not exists diagnostic_operations (id text primary key, user_id text references "user"(id) on delete cascade, chat_id text references chats(id) on delete set null, kind text not null check (kind in (${sql.join(DIAGNOSTIC_KINDS.map((value) => sql.lit(value)))})), outcome text not null check (outcome in (${sql.join(DIAGNOSTIC_OUTCOMES.map((value) => sql.lit(value)))})), started_at text not null, finished_at text, duration_ms integer, metadata_json text not null default '{}')`.execute(
+    db
+  )
+  await sql`create table if not exists diagnostic_events (id text primary key, operation_id text references diagnostic_operations(id) on delete cascade, user_id text references "user"(id) on delete cascade, chat_id text references chats(id) on delete set null, level text not null check (level in (${sql.join(DIAGNOSTIC_LEVELS.map((value) => sql.lit(value)))})), event text not null check (event in (${sql.join(DIAGNOSTIC_EVENTS.map((value) => sql.lit(value)))})), created_at text not null, metadata_json text not null default '{}')`.execute(
+    db
+  )
+  await sql`create index if not exists diagnostic_operations_page_idx on diagnostic_operations(started_at desc, id desc)`.execute(
+    db
+  )
+  await sql`create index if not exists diagnostic_operations_user_page_idx on diagnostic_operations(user_id, started_at desc, id desc)`.execute(
+    db
+  )
+  await sql`create index if not exists diagnostic_operations_chat_page_idx on diagnostic_operations(chat_id, started_at desc, id desc)`.execute(
+    db
+  )
+  await sql`create index if not exists diagnostic_events_user_idx on diagnostic_events(user_id, created_at desc)`.execute(
+    db
+  )
+  await sql`create index if not exists diagnostic_events_operation_idx on diagnostic_events(operation_id, created_at)`.execute(
+    db
+  )
+  await sql`create index if not exists diagnostic_events_created_idx on diagnostic_events(created_at)`.execute(
+    db
+  )
+  await sql`create index if not exists diagnostic_events_chat_idx on diagnostic_events(chat_id)`.execute(
+    db
+  )
 }

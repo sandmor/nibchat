@@ -1,6 +1,7 @@
 import "server-only"
 import { createHash } from "node:crypto"
 import { db, toDbBool } from "@/lib/db"
+import { startDiagnosticOperation } from "@/lib/diagnostics"
 import { id, now, parseJson } from "@/lib/domain"
 import {
   AttachmentValidationError,
@@ -759,6 +760,52 @@ export async function publishImport(
   scope: Scope,
   fingerprint: string
 ): Promise<ImportOutcome> {
+  const operation = await startDiagnosticOperation({
+    kind: "conversation.import.publish",
+    context: { userId: scope.userId },
+    metadata: {
+      source: scope.source,
+    },
+  })
+  try {
+    const active = await session(scope)
+    await operation.updateContext(
+      {},
+      { importSessionId: active?.id, count: active?.node_count }
+    )
+    const assets = active
+      ? await db
+          .selectFrom("import_assets")
+          .select("byte_size")
+          .where("session_id", "=", active.id)
+          .execute()
+      : []
+    const byteCount = assets.reduce(
+      (total, asset) => total + asset.byte_size,
+      0
+    )
+    const imported = await publishImportSession(scope, fingerprint)
+    if (imported.chatId)
+      await operation.updateContext({ chatId: imported.chatId })
+    await operation.finish(
+      imported.status === "imported" ? "complete" : "skipped",
+      {
+        status: imported.status,
+        byteCount,
+        updated: imported.status === "imported",
+      }
+    )
+    return imported
+  } catch (error) {
+    await operation.finish("error", { phase: "publish" }, error)
+    throw error
+  }
+}
+
+async function publishImportSession(
+  scope: Scope,
+  fingerprint: string
+): Promise<ImportOutcome> {
   const prior = await receipt(scope)
   if (prior?.chat_id) return outcome(prior, fingerprint)
   if (prior) await deleteReceipt(scope)
@@ -817,7 +864,7 @@ export async function publishImport(
   const attachments = new Map(
     stagedAssets.map((asset) => [asset.source_asset_id, asset])
   )
-  return db.transaction().execute(async (trx) => {
+  const imported = await db.transaction().execute(async (trx) => {
     const concurrent = await trx
       .selectFrom("import_receipts")
       .select(["chat_id", "source_fingerprint"])
@@ -922,8 +969,9 @@ export async function publishImport(
       .deleteFrom("import_sessions")
       .where("id", "=", active.id)
       .execute()
-    return { status: "imported", chatId: chat.id }
+    return { status: "imported" as const, chatId: chat.id }
   })
+  return imported
 }
 
 function partsFor(json: string, assets: Map<string, ImportAssetsTable>): Parts {

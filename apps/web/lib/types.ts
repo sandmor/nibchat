@@ -260,6 +260,43 @@ export interface GenerationActionItemsTable {
   assistant_node_id: string
   parent_node_id: string | null
 }
+export {
+  DEFAULT_DIAGNOSTIC_RETENTION_DAYS,
+  DIAGNOSTIC_RETENTION_DAYS,
+  DIAGNOSTIC_OUTCOMES,
+} from "@/lib/diagnostic-contract"
+import type {
+  DiagnosticKind,
+  DiagnosticOutcome,
+  DiagnosticEvent,
+  DiagnosticLevel,
+} from "@/lib/diagnostic-contract"
+export type { DiagnosticOutcome } from "@/lib/diagnostic-contract"
+export interface DiagnosticOperationsTable {
+  id: string
+  user_id: string | null
+  chat_id: string | null
+  kind: DiagnosticKind
+  outcome: DiagnosticOutcome
+  started_at: string
+  finished_at: string | null
+  duration_ms: number | null
+  metadata_json: string
+}
+export interface DiagnosticEventsTable {
+  id: string
+  operation_id: string | null
+  user_id: string | null
+  chat_id: string | null
+  level: DiagnosticLevel
+  event: DiagnosticEvent
+  created_at: string
+  metadata_json: string
+}
+export interface DiagnosticSettingsTable {
+  id: number
+  retention_days: number
+}
 export interface AttachmentsTable {
   id: string
   user_id: string
@@ -464,6 +501,9 @@ export interface DB {
   generation_runs: GenerationRunsTable
   generation_actions: GenerationActionsTable
   generation_action_items: GenerationActionItemsTable
+  diagnostic_operations: DiagnosticOperationsTable
+  diagnostic_events: DiagnosticEventsTable
+  diagnostic_settings: DiagnosticSettingsTable
   attachments: AttachmentsTable
   message_attachments: MessageAttachmentsTable
   attachment_derivations: AttachmentDerivationsTable

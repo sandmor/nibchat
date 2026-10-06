@@ -8,6 +8,7 @@ import {
 import { dynamicTool, jsonSchema, type ToolSet } from "ai"
 import { z } from "zod"
 import { db, fromDbBool, toDbBool } from "@/lib/db"
+import { startDiagnosticOperation } from "@/lib/diagnostics"
 import { id, now, parseJson } from "@/lib/domain"
 import { MAX_COLLECTION } from "@/lib/limits"
 import {
@@ -509,10 +510,24 @@ export async function refreshMcpCatalog(userId: string, profileId: string) {
     throw new Error(
       "This profile is not available in the current MCP runtime mode."
     )
-  const client = await createClient(profile)
+  const operation = await startDiagnosticOperation({
+    kind: "mcp.catalog.refresh",
+    context: { userId },
+    metadata: { profileId },
+  })
   try {
-    const catalog = await listCatalogFromClient(client)
+    const client = await createClient(profile)
+    let catalog: Awaited<ReturnType<typeof listCatalogFromClient>>
+    try {
+      catalog = await listCatalogFromClient(client)
+    } finally {
+      await client.close()
+    }
     const previous = profile.catalog
+    await operation.finish("complete", {
+      profileId,
+      count: catalog.tools.length,
+    })
     return {
       catalog,
       previous,
@@ -522,8 +537,13 @@ export async function refreshMcpCatalog(userId: string, profileId: string) {
         catalog
       ),
     }
-  } finally {
-    await client.close()
+  } catch (error) {
+    await operation.finish(
+      "error",
+      { profileId, phase: "catalog_refresh" },
+      error
+    )
+    throw error
   }
 }
 

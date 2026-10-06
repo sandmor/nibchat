@@ -132,6 +132,20 @@ import { chatViewStateSchema } from "@/lib/chat-view-state"
 import { providerConnectionConfigSchema } from "@/lib/provider-config"
 import { db } from "@/lib/db"
 import {
+  DIAGNOSTIC_OUTCOMES,
+  DIAGNOSTIC_RETENTION_DAYS,
+  DIAGNOSTIC_KINDS,
+  DIAGNOSTIC_LEVELS,
+} from "@/lib/diagnostic-contract"
+import {
+  clearDiagnosticHistory,
+  exportDiagnosticEvents,
+  getDiagnosticRetentionDays,
+  listDiagnosticOperations,
+  logDiagnosticProcedure,
+  setDiagnosticRetentionDays,
+} from "@/lib/diagnostics"
+import {
   deleteChatTemplate,
   listChatTemplates,
   materializeChatTemplate,
@@ -207,7 +221,31 @@ const t = initTRPC.context<typeof createContext>().create({
     return shape
   },
 })
-const ownerProcedure = t.procedure.use(({ ctx, next }) => {
+const REQUEST_ID = new RegExp(`^[A-Za-z0-9-]{1,${MAX_ID}}$`)
+const diagnosticRetentionDays = z
+  .number()
+  .int()
+  .refine((days): days is (typeof DIAGNOSTIC_RETENTION_DAYS)[number] =>
+    (DIAGNOSTIC_RETENTION_DAYS as readonly number[]).includes(days)
+  )
+const logProcedure = t.middleware(async ({ ctx, path, type, next }) => {
+  const startedAt = Date.now()
+  const result = await next()
+  const rawRequestId = ctx.headers.get("x-request-id")
+  const requestId =
+    rawRequestId && REQUEST_ID.test(rawRequestId) ? rawRequestId : undefined
+  logDiagnosticProcedure({
+    procedure: path,
+    procedureType: type,
+    durationMs: Date.now() - startedAt,
+    result: result.ok ? "ok" : result.error.code,
+    userId: ctx.user?.id,
+    requestId,
+  })
+  return result
+})
+
+const ownerProcedure = t.procedure.use(logProcedure).use(({ ctx, next }) => {
   if (!ctx.user) {
     throw new TRPCError({ code: "UNAUTHORIZED" })
   }
@@ -219,7 +257,7 @@ const ownerProcedure = t.procedure.use(({ ctx, next }) => {
   return next({ ctx: { ...ctx, user: ctx.user } })
 })
 
-const userProcedure = t.procedure.use(({ ctx, next }) => {
+const userProcedure = t.procedure.use(logProcedure).use(({ ctx, next }) => {
   if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED" })
   return next({ ctx: { ...ctx, user: ctx.user } })
 })
@@ -597,6 +635,62 @@ export const appRouter = t.router({
           mapError(error)
         }
       }),
+    activity: t.router({
+      streamAvailable: userProcedure.query(
+        () => process.env.GENERATION_RUNTIME_MODE !== "stateless"
+      ),
+      list: userProcedure
+        .input(
+          z
+            .object({
+              cursor: z.string().max(MAX_ID).optional(),
+              limit: z.number().int().min(1).max(MAX_COLLECTION).optional(),
+              kind: z.enum(DIAGNOSTIC_KINDS).optional(),
+              outcome: z.enum(DIAGNOSTIC_OUTCOMES).optional(),
+              chatId: z.string().max(MAX_ID).optional(),
+              since: z.string().datetime().optional(),
+              level: z.enum(DIAGNOSTIC_LEVELS).optional(),
+            })
+            .optional()
+        )
+        .query(({ ctx, input }) =>
+          listDiagnosticOperations({
+            userId: ctx.isOwner ? "*" : ctx.user.id,
+            isOwner: ctx.isOwner,
+            ...input,
+          })
+        ),
+      retentionDays: userProcedure.query(() => getDiagnosticRetentionDays()),
+      setRetentionDays: ownerProcedure
+        .input(z.object({ retentionDays: diagnosticRetentionDays }))
+        .mutation(({ input }) =>
+          setDiagnosticRetentionDays(input.retentionDays)
+        ),
+      clear: userProcedure.mutation(({ ctx }) =>
+        clearDiagnosticHistory(ctx.user.id, ctx.isOwner).then(() => ({
+          ok: true as const,
+        }))
+      ),
+      export: userProcedure
+        .input(
+          z
+            .object({
+              chatId: z.string().max(MAX_ID).optional(),
+              kind: z.enum(DIAGNOSTIC_KINDS).optional(),
+              outcome: z.enum(DIAGNOSTIC_OUTCOMES).optional(),
+              since: z.string().datetime().optional(),
+              level: z.enum(DIAGNOSTIC_LEVELS).optional(),
+            })
+            .optional()
+        )
+        .query(({ ctx, input }) =>
+          exportDiagnosticEvents({
+            userId: ctx.isOwner ? "*" : ctx.user.id,
+            isOwner: ctx.isOwner,
+            ...input,
+          })
+        ),
+    }),
     deleteChats: userProcedure
       .input(z.object({ chatIds: z.array(z.string()).min(1) }))
       .mutation(async ({ ctx, input }) => {

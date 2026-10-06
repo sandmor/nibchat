@@ -12,7 +12,24 @@ describe("applySchema", () => {
       dialect: new SqliteDialect({ database: sqlite }),
     })
     await applySchema(db, "sqlite")
+    await applySchema(db, "sqlite")
     await db.selectFrom("chats").select("id").limit(1).execute()
+    await db
+      .selectFrom("diagnostic_operations")
+      .select(["id", "outcome"])
+      .limit(1)
+      .execute()
+    await db
+      .selectFrom("diagnostic_events")
+      .select(["id", "event"])
+      .limit(1)
+      .execute()
+    const diagnosticsSettings = await db
+      .selectFrom("diagnostic_settings")
+      .select("retention_days")
+      .where("id", "=", 1)
+      .executeTakeFirst()
+    expect(diagnosticsSettings?.retention_days).toBe(7)
     await db.selectFrom("message_nodes").select("id").limit(1).execute()
     await db.selectFrom("scheduled_jobs").select("id").limit(1).execute()
     await db.selectFrom("scheduled_job_runs").select("id").limit(1).execute()

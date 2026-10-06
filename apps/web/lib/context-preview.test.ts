@@ -550,7 +550,7 @@ describe("assembleContextPreview", () => {
     expect(preview.summary.charCount).toBe(preview.system.length)
   })
 
-  it("expands chat macros in the previewed system prompt", () => {
+  it("expands chat and request macros in the previewed system prompt", () => {
     const preview = assembleContextPreview({
       nodes: [],
       contextParentId: null,
@@ -565,7 +565,7 @@ describe("assembleContextPreview", () => {
               kind: "prompt",
               name: "Sys",
               enabled: true,
-              body: "Chat {{chatId}}",
+              body: "Chat {{chatId}} {{requestKind}}",
               placement: "relative",
               role: "system",
             },
@@ -575,7 +575,7 @@ describe("assembleContextPreview", () => {
       replayReasoning: false,
       chat: { id: "chat-preview", created_at: "2026-04-16T08:00:00.000Z" },
     })
-    expect(preview.system).toBe("Chat chat-preview")
+    expect(preview.system).toBe("Chat chat-preview reply")
   })
 
   it("uses an explicit stack id as the chat stack", () => {

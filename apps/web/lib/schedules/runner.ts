@@ -1,5 +1,6 @@
 import "server-only"
 import { schedulesAvailable, runScheduleTick } from "@/lib/schedules/service"
+import { logDiagnosticFailure } from "@/lib/diagnostics"
 
 const TICK_MS = 30_000
 
@@ -17,7 +18,7 @@ export function startScheduleRunner() {
     running = true
     void runScheduleTick()
       .catch((error) => {
-        console.error("[nibchat/schedules]", error)
+        logDiagnosticFailure("schedule.runner_failed", error)
       })
       .finally(() => {
         running = false

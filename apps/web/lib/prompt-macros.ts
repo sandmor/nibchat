@@ -30,6 +30,7 @@ const COMPARE_OPS = new Set(["==", "!=", "<", "<=", ">", ">="])
 const FALSY_STRING = /^(false|off|0)$/i
 
 export type PromptVariableValue = string | boolean
+export type RequestKind = "reply" | "title"
 
 export type MacroContext = {
   now: Date
@@ -40,6 +41,8 @@ export type MacroContext = {
   chat?: { id: string; createdAt: Date }
   /** Branch id of the message this expansion is about. Empty continues the main spine. */
   branchId?: string
+  /** Purpose of the generation, independent of its conversation branch. */
+  requestKind?: RequestKind
   /** Prompt-stack variables resolved for this conversation. */
   variables?: Readonly<Record<string, PromptVariableValue>>
   /** Context-book content, resolved once before prompt expansion. */
@@ -101,6 +104,10 @@ export function valueNeedsChatContext(value: string): boolean {
   return /\b(chatId|chatCreatedAt|branchId)\b/.test(value)
 }
 
+export function valueNeedsRequestContext(value: string): boolean {
+  return /\brequestKind\b/.test(value)
+}
+
 /** Header rendering treats leftover braces as an unresolved entry. */
 export function expansionLooksUnresolved(value: string): boolean {
   return value.includes("{{") || value.includes("}}")
@@ -126,6 +133,7 @@ export function catalogMacroContext(
     idleSince: new Date(now.getTime() - 2 * 60 * 60 * 1000),
     chat: SAMPLE_MACRO_CHAT,
     branchId: "/1",
+    requestKind: "reply",
     ...(variables ? { variables } : {}),
   })
 }
@@ -224,6 +232,7 @@ export function defaultMacroContext(
     ...(src.idleSince ? { idleSince: src.idleSince } : {}),
     ...(src.chat ? { chat: src.chat } : {}),
     ...(src.branchId != null ? { branchId: src.branchId } : {}),
+    ...(src.requestKind ? { requestKind: src.requestKind } : {}),
     ...(src.variables ? { variables: src.variables } : {}),
     ...(src.contextEntries ? { contextEntries: src.contextEntries } : {}),
   }
@@ -371,6 +380,13 @@ export const builtInMacroDefinitions: readonly MacroDefinition[] = [
     group: "chat",
     evaluate: (args, context) =>
       noArgs(args) && context.branchId != null ? context.branchId : null,
+  },
+  {
+    name: "requestKind",
+    summary: "Request purpose: reply or title",
+    group: "chat",
+    evaluate: (args, context) =>
+      noArgs(args) ? (context.requestKind ?? null) : null,
   },
   {
     name: "add",

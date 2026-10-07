@@ -42,8 +42,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
-import { Textarea } from "@/components/ui/textarea"
+import { MessageTextField } from "./text-field"
 import {
+  adjacentTextPartGroups,
   convertPart,
   createEditorPart,
   editorPartTypesForRole,
@@ -70,7 +71,7 @@ import {
 import { EditorShell } from "./shell"
 
 const sourceEditorClass =
-  "min-h-[4.5rem] resize-none rounded-none border-0 bg-transparent px-0 py-0 shadow-none focus-visible:ring-0"
+  "rounded-none border-0 bg-transparent px-0 py-0 shadow-none focus-visible:ring-0"
 
 const TYPE_LABEL: Record<EditorPartType, string> = {
   text: "Text",
@@ -112,10 +113,15 @@ export function PartsEditor({
   submitting?: boolean
   animate?: boolean
   showContextPreview?: boolean
-  onReplacePart: (index: number, part: Part) => void
+  onReplacePart: (index: number, part: Part, count?: number) => void
   onInsertPart: (index: number, part: Part) => void
-  onRemovePart: (index: number) => void
-  onMovePart: (from: number, to: number) => void
+  onRemovePart: (index: number, count?: number) => void
+  onMovePart: (
+    from: number,
+    to: number,
+    count?: number,
+    targetCount?: number
+  ) => void
   onConvertRole: (role: ConversationAuthorRole) => void
   onSend: () => void
   onCancel?: () => void
@@ -152,6 +158,15 @@ export function PartsEditor({
       )
   )
   const empty = parts.length === 0
+  const groups = useMemo(() => adjacentTextPartGroups(parts), [parts])
+  const firstTextIndex = parts.findIndex((part) => part.type === "text")
+  const userGroups =
+    firstTextIndex === -1
+      ? [
+          { part: { type: "text", text: "" } as Part, index: -1, count: 0 },
+          ...groups,
+        ]
+      : groups
   const ids =
     keys.length === parts.length ? keys : parts.map((_, i) => String(i))
   const sendDisabled =
@@ -198,7 +213,12 @@ export function PartsEditor({
     const from = keys.indexOf(String(active.id))
     const to = keys.indexOf(String(over.id))
     if (from < 0 || to < 0) return
-    onMovePart(from, to)
+    onMovePart(
+      from,
+      to,
+      groups.find((group) => group.index === from)?.count,
+      groups.find((group) => group.index === to)?.count
+    )
   }
 
   return (
@@ -275,74 +295,145 @@ export function PartsEditor({
             ))}
           </ul>
         ) : null}
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragEnd={onDragEnd}
-        >
-          <SortableContext items={ids} strategy={verticalListSortingStrategy}>
-            <ul className="flex flex-col gap-2">
-              {empty ? (
-                <li className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
-                  Empty message. Insert a block to start.
-                </li>
-              ) : (
-                parts.map((part, index) => (
-                  <SortablePartBlock
-                    key={ids[index] ?? index}
-                    id={ids[index] ?? String(index)}
-                    index={index}
-                    part={part}
-                    insertTypes={insertTypes}
+        {role === "user" ? (
+          <div className="flex flex-col gap-3">
+            {userGroups.map(({ part, index, count }) =>
+              part.type === "text" ? (
+                <MessageTextField
+                  // The empty field and its first real text part share this key.
+                  // Its EditorView survives the first character and IME updates.
+                  key={
+                    index === firstTextIndex ? "user-primary-text" : ids[index]
+                  }
+                  fieldKey={ids[index] ?? "new-text"}
+                  ariaLabel="Message text"
+                  autoFocus={index === firstTextIndex}
+                  value={part.text}
+                  disabled={submitting}
+                  onChange={(text) => {
+                    if (index === -1) {
+                      if (text) onInsertPart(0, { type: "text", text })
+                    } else onReplacePart(index, { ...part, text }, count)
+                  }}
+                  className={sourceEditorClass}
+                />
+              ) : part.type === "attachment" ? (
+                <div
+                  key={part.id}
+                  data-find-field={ids[index] ?? String(index)}
+                  className="relative rounded-lg border bg-background/40 p-2"
+                >
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    className="absolute top-2 right-2 z-10 text-muted-foreground"
+                    aria-label={`Remove ${part.name}`}
                     disabled={submitting}
-                    autoFocus={index === 0}
-                    onChange={(next) => onReplacePart(index, next)}
-                    onRemove={() => {
-                      if (part.type === "attachment" && onRemoveAttachment) {
-                        const match = attachments.find((item) =>
-                          attachmentMatchesPart(item, part)
-                        )
-                        if (match) onRemoveAttachment(match)
-                      }
+                    data-find-skip
+                    onClick={() => {
+                      const attachment = attachments.find((item) =>
+                        attachmentMatchesPart(item, part)
+                      )
+                      if (attachment) onRemoveAttachment?.(attachment)
                       onRemovePart(index)
                     }}
-                    onInsert={(at, type) =>
-                      onInsertPart(at, createEditorPart(type))
-                    }
-                    onConvert={(type) =>
-                      onReplacePart(index, convertPart(part, type))
-                    }
-                    onToolValidity={(valid) => {
-                      const id = ids[index] ?? String(index)
-                      setInvalidTools((current) => {
-                        if (!valid) {
-                          if (current[id]) return current
-                          return { ...current, [id]: true }
+                  >
+                    <HugeiconsIcon
+                      icon={Delete02Icon}
+                      strokeWidth={2}
+                      className="size-3.5"
+                    />
+                  </Button>
+                  <MessageParts parts={[part]} />
+                </div>
+              ) : null
+            )}
+          </div>
+        ) : (
+          <>
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={onDragEnd}
+            >
+              <SortableContext
+                items={groups.map(({ index }) => ids[index]!)}
+                strategy={verticalListSortingStrategy}
+              >
+                <ul className="flex flex-col gap-2">
+                  {empty ? (
+                    <li className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
+                      Empty message. Insert a block to start.
+                    </li>
+                  ) : (
+                    groups.map(({ part, index, count }) => (
+                      <SortablePartBlock
+                        key={ids[index] ?? index}
+                        id={ids[index] ?? String(index)}
+                        index={index}
+                        part={part}
+                        insertTypes={insertTypes}
+                        disabled={submitting}
+                        autoFocus={index === 0}
+                        onChange={(next) => onReplacePart(index, next, count)}
+                        onRemove={() => {
+                          if (
+                            part.type === "attachment" &&
+                            onRemoveAttachment
+                          ) {
+                            const match = attachments.find((item) =>
+                              attachmentMatchesPart(item, part)
+                            )
+                            if (match) onRemoveAttachment(match)
+                          }
+                          onRemovePart(index, count)
+                        }}
+                        onInsert={(at, type) =>
+                          onInsertPart(
+                            at === index + 1 ? index + count : at,
+                            createEditorPart(type)
+                          )
                         }
-                        if (!current[id]) return current
-                        const next = { ...current }
-                        delete next[id]
-                        return next
-                      })
-                    }}
-                    onRegisterToolCommit={(commit) =>
-                      registerToolCommit(ids[index] ?? String(index), commit)
-                    }
-                  />
-                ))
-              )}
-            </ul>
-          </SortableContext>
-        </DndContext>
-        <div className="pt-1">
-          <InsertPartMenu
-            types={insertTypes}
-            disabled={submitting}
-            onInsert={(type) =>
-              onInsertPart(parts.length, createEditorPart(type))
-            }
-          />
-        </div>
+                        onConvert={(type) =>
+                          onReplacePart(index, convertPart(part, type), count)
+                        }
+                        onToolValidity={(valid) => {
+                          const id = ids[index] ?? String(index)
+                          setInvalidTools((current) => {
+                            if (!valid) {
+                              if (current[id]) return current
+                              return { ...current, [id]: true }
+                            }
+                            if (!current[id]) return current
+                            const next = { ...current }
+                            delete next[id]
+                            return next
+                          })
+                        }}
+                        onRegisterToolCommit={(commit) =>
+                          registerToolCommit(
+                            ids[index] ?? String(index),
+                            commit
+                          )
+                        }
+                      />
+                    ))
+                  )}
+                </ul>
+              </SortableContext>
+            </DndContext>
+            <div data-find-skip className="pt-1">
+              <InsertPartMenu
+                types={insertTypes}
+                disabled={submitting}
+                onInsert={(type) =>
+                  onInsertPart(parts.length, createEditorPart(type))
+                }
+              />
+            </div>
+          </>
+        )}
       </PartsField>
       <AlertDialog open={convertOpen} onOpenChange={setConvertOpen}>
         <AlertDialogContent>
@@ -482,6 +573,9 @@ function SortablePartBlock({
   const convertTypes = insertTypes.filter((type) => type !== part.type)
   return (
     <li
+      data-find-field={
+        part.type === "text" || part.type === "reasoning" ? undefined : id
+      }
       ref={setNodeRef}
       style={{
         transform: CSS.Transform.toString(transform),
@@ -492,7 +586,7 @@ function SortablePartBlock({
         isDragging && "z-10 opacity-60"
       )}
     >
-      <div className="mb-1 flex items-center gap-1">
+      <div data-find-skip className="mb-1 flex items-center gap-1">
         <button
           type="button"
           className="cursor-grab touch-none text-muted-foreground active:cursor-grabbing"
@@ -552,6 +646,7 @@ function SortablePartBlock({
         </Button>
       </div>
       <PartBlockBody
+        fieldKey={id}
         part={part}
         disabled={disabled}
         autoFocus={autoFocus}
@@ -564,6 +659,7 @@ function SortablePartBlock({
 }
 
 function PartBlockBody({
+  fieldKey,
   part,
   disabled,
   autoFocus,
@@ -571,6 +667,7 @@ function PartBlockBody({
   onToolValidity,
   onRegisterToolCommit,
 }: {
+  fieldKey: string
   part: Part
   disabled: boolean
   autoFocus: boolean
@@ -580,15 +677,14 @@ function PartBlockBody({
 }) {
   if (part.type === "text" || part.type === "reasoning") {
     return (
-      <Textarea
+      <MessageTextField
+        fieldKey={fieldKey}
         autoFocus={autoFocus}
-        aria-label={part.type === "reasoning" ? "Reasoning" : "Message text"}
+        ariaLabel={part.type === "reasoning" ? "Reasoning" : "Message text"}
         value={part.text}
         disabled={disabled}
-        onChange={(event) =>
-          onChange({ type: part.type, text: event.target.value })
-        }
-        rows={part.type === "reasoning" ? 3 : 4}
+        onChange={(text) => onChange({ ...part, text })}
+        skipFind={part.type === "reasoning"}
         className={cn(
           sourceEditorClass,
           part.type === "reasoning" && "text-xs"
@@ -663,7 +759,7 @@ function PartsField({
         data-tree-scroll={inline ? "" : undefined}
         tabIndex={-1}
         onScroll={syncField}
-        onKeyDown={(event) => {
+        onKeyDownCapture={(event) => {
           if (event.defaultPrevented || event.nativeEvent.isComposing) return
           if (event.key === "Escape") {
             if (!onCancel) return

@@ -203,10 +203,14 @@ const SessionMessageEditorLeaf = memo(function SessionMessageEditorLeaf({
         allowAttachments={
           allowAttachments !== false && editSession.role === "user"
         }
-        onReplacePart={(index, part) => replacePart(slot, index, part)}
+        onReplacePart={(index, part, count) =>
+          replacePart(slot, index, part, count)
+        }
         onInsertPart={(index, part) => insertPart(slot, index, part)}
-        onRemovePart={(index) => removePart(slot, index)}
-        onMovePart={(from, to) => movePart(slot, from, to)}
+        onRemovePart={(index, count) => removePart(slot, index, count)}
+        onMovePart={(from, to, count, targetCount) =>
+          movePart(slot, from, to, count, targetCount)
+        }
         onConvertRole={actions.onConvertRole}
         onSend={actions.onSend}
         onCancel={actions.onCancel}

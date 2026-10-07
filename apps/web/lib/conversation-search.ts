@@ -2,11 +2,17 @@ export type SearchHit = {
   nodeId: string
   start: number
   onPath: boolean
+  editorKey?: string
+  fieldKey?: string
+  fieldIndex?: number
+  fieldCount?: number
+  editorStart?: number
 }
 
 export type SearchNode = {
   id: string
   findText: string
+  fields?: { key: string; start: number; end: number; editor?: boolean }[]
 }
 
 export function normalizeQuery(query: string): string {
@@ -51,8 +57,34 @@ export function buildHits(
     seen.add(id)
     const node = byId.get(id)
     if (!node) return
-    for (const start of findOccurrences(node.findText, needle)) {
-      hits.push({ nodeId: id, start, onPath: pathSet.has(id) })
+    const starts = findOccurrences(node.findText, needle)
+    const fieldStarts = new Map(
+      node.fields?.map((field) => [
+        field,
+        starts.filter(
+          (start) => start >= field.start && start + needle.length <= field.end
+        ),
+      ])
+    )
+    for (const start of starts) {
+      const field = node.fields?.find(
+        (field) => start >= field.start && start + needle.length <= field.end
+      )
+      hits.push({
+        nodeId: id,
+        start,
+        onPath: pathSet.has(id),
+        ...(field
+          ? {
+              fieldKey: field.key,
+              fieldIndex: fieldStarts.get(field)!.indexOf(start),
+              fieldCount: fieldStarts.get(field)!.length,
+              ...(field.editor
+                ? { editorKey: field.key, editorStart: start - field.start }
+                : {}),
+            }
+          : {}),
+      })
     }
   }
 

@@ -183,7 +183,7 @@ export function searchTextFromParts(parts: Parts): string {
  */
 export function conversationFindTextFromParts(parts: Parts): string {
   const chunks: string[] = []
-  for (const part of parts) {
+  for (const { part } of adjacentTextPartGroups(parts)) {
     if (part.type === "reasoning") continue
     if (part.type === "text" && part.text) chunks.push(part.text)
     else if (part.type === "attachment") {
@@ -462,21 +462,24 @@ export function assertPartsAllowedForRole(role: MessageRole, parts: Parts) {
     throw new Error("Assistant messages cannot contain attachments.")
 }
 
+/** Presentation groups retain source indices and never rewrite the stored parts. */
+export function adjacentTextPartGroups(parts: Parts) {
+  const groups: { part: Part; index: number; count: number }[] = []
+  parts.forEach((part, index) => {
+    const previous = groups.at(-1)
+    if (part.type === "text" && previous?.part.type === "text") {
+      previous.part = { ...previous.part, text: previous.part.text + part.text }
+      previous.count++
+    } else groups.push({ part, index, count: 1 })
+  })
+  return groups
+}
+
 /** Merge streamed text deltas so adjacent prose is one document. */
 export function coalesceAdjacentTextParts(parts: Parts): Parts {
-  const result: Parts = []
-  for (const part of parts) {
-    const previous = result.at(-1)
-    if (part.type === "text" && previous?.type === "text") {
-      result[result.length - 1] = {
-        type: "text",
-        text: previous.text + part.text,
-      }
-      continue
-    }
-    result.push(part)
-  }
-  return result
+  return adjacentTextPartGroups(parts).map(({ part, count }) =>
+    part.type === "text" && count > 1 ? { type: "text", text: part.text } : part
+  )
 }
 
 export function canEditMessage(status: MessageStatus, _parts?: Parts): boolean {

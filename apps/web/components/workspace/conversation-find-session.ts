@@ -10,7 +10,11 @@ import {
   type RefObject,
   type SetStateAction,
 } from "react"
-import { conversationFindTextFromParts } from "@/lib/agent/parts"
+import { useShallow } from "zustand/react/shallow"
+import {
+  adjacentTextPartGroups,
+  conversationFindTextFromParts,
+} from "@/lib/agent/parts"
 import {
   buildHits,
   distinctOffPathMessageCount,
@@ -34,37 +38,113 @@ import { conversationFindKeyAction } from "./conversation-find-keys"
 import type { ConversationFindLayerValue } from "./conversation-find"
 import type { FindResultRow } from "./conversation-find-bar"
 
+import {
+  messageEditSlotId,
+  useConversationSessionStore,
+  type MessageEditorSession,
+} from "./conversation-session-store"
+
 type SelectPathInput = { chatId: string; nodeId: string }
-type FindTextEntry = { partsJson: string; findText: string }
+type FindTextEntry = {
+  partsJson: string
+  session?: MessageEditorSession
+  findText: string
+  fields?: { key: string; start: number; end: number; editor: boolean }[]
+}
+
+function draftFindText(session: MessageEditorSession) {
+  let findText = ""
+  const fields: { key: string; start: number; end: number; editor: boolean }[] =
+    []
+  const append = (text: string, key: string, editor: boolean) => {
+    if (!text) return
+    if (findText) findText += "\n"
+    const start = findText.length
+    findText += text
+    fields.push({ key, start, end: findText.length, editor })
+  }
+  adjacentTextPartGroups(session.parts).forEach(({ part, index }) =>
+    append(
+      conversationFindTextFromParts([part]),
+      session.keys[index] ?? String(index),
+      part.type === "text"
+    )
+  )
+  return { findText, fields }
+}
 
 function nextFindTextCache(
   previous: Map<string, FindTextEntry>,
-  nodes: readonly NodeRow[]
+  nodes: readonly NodeRow[],
+  sessions: Record<string, MessageEditorSession>
 ) {
   const next = new Map<string, FindTextEntry>()
   let same = true
   for (const node of nodes) {
     if (node.status === "streaming") continue
+    const session = sessions[messageEditSlotId(node.chat_id, node.id)]
+    const partsJson = node.parts_json
     const cached = previous.get(node.id)
     const entry =
-      cached && cached.partsJson === node.parts_json
+      cached && cached.partsJson === partsJson && cached.session === session
         ? cached
         : {
-            partsJson: node.parts_json,
-            findText: conversationFindTextFromParts(
-              parseJson<Parts>(node.parts_json, [])
-            ),
+            partsJson,
+            session,
+            ...(session
+              ? draftFindText(session)
+              : {
+                  findText: conversationFindTextFromParts(
+                    parseJson<Parts>(partsJson, [])
+                  ),
+                }),
           }
     if (entry !== cached) same = false
     next.set(node.id, entry)
   }
-  if (same && next.size === previous.size) {
-    for (const id of previous.keys()) {
-      if (!next.has(id)) return next
-    }
+  if (same && next.size === previous.size) return previous
+  return next
+}
+
+function createFindTextCache() {
+  let previous = new Map<string, FindTextEntry>()
+  return (
+    nodes: readonly NodeRow[],
+    sessions: Record<string, MessageEditorSession>
+  ) => {
+    previous = nextFindTextCache(previous, nodes, sessions)
     return previous
   }
-  return next
+}
+
+const NO_FIND_SESSIONS: Record<string, MessageEditorSession> = {}
+
+function useFindEditSessions(nodes: readonly NodeRow[], open: boolean) {
+  const slots = useMemo(
+    () => nodes.map((node) => messageEditSlotId(node.chat_id, node.id)),
+    [nodes]
+  )
+  return useConversationSessionStore(
+    useShallow((state) => {
+      if (!open) return NO_FIND_SESSIONS
+      const sessions: Record<string, MessageEditorSession> = {}
+      for (const slot of slots) {
+        const session = state.sessions[slot]
+        if (session) sessions[slot] = session
+      }
+      return sessions
+    })
+  )
+}
+
+function useStableHitIds(hits: readonly { nodeId: string }[]) {
+  const signature = JSON.stringify(
+    [...new Set(hits.map((hit) => hit.nodeId))].sort()
+  )
+  return useMemo(
+    () => new Set(JSON.parse(signature) as string[]),
+    [signature]
+  )
 }
 
 export function useConversationFindSession({
@@ -96,6 +176,7 @@ export function useConversationFindSession({
   setScrollTargetId: (id: string | null) => void
 }) {
   const [findOpen, setFindOpen] = useState(false)
+  const sessions = useFindEditSessions(nodes, findOpen)
   const [findQuery, setFindQuery] = useState("")
   const [occurrenceIndex, setOccurrenceIndex] = useState(0)
   const [pendingPath, setPendingPath] = useState<{
@@ -109,9 +190,11 @@ export function useConversationFindSession({
   } | null>(null)
   const [locatedKey, setLocatedKey] = useState<string | null>(null)
   const restoreFocusRef = useRef<HTMLElement | null>(null)
-  const [findTextCache, setFindTextCache] = useState(
-    () => new Map<string, FindTextEntry>()
-  )
+  // Reading the chat id resets this cache when the open chat changes.
+  const readFindText = useMemo(() => {
+    void chatIdentity
+    return createFindTextCache()
+  }, [chatIdentity])
   const [boundIdentity, setBoundIdentity] = useState(chatIdentity)
   if (boundIdentity !== chatIdentity) {
     setBoundIdentity(chatIdentity)
@@ -121,18 +204,21 @@ export function useConversationFindSession({
     setPendingPath(null)
     setFindLocate(null)
     setLocatedKey(null)
-    setFindTextCache(new Map())
   }
-  if (findOpen) {
-    const next = nextFindTextCache(findTextCache, nodes)
-    if (next !== findTextCache) setFindTextCache(next)
-  }
+  const findTextCache = useMemo(
+    () =>
+      findOpen
+        ? readFindText(nodes, sessions)
+        : new Map<string, FindTextEntry>(),
+    [readFindText, findOpen, nodes, sessions]
+  )
 
   const searchNodes = useMemo(() => {
     if (!findOpen) return []
     return [...findTextCache.entries()].map(([id, entry]) => ({
       id,
       findText: entry.findText,
+      fields: entry.fields,
     }))
   }, [findOpen, findTextCache])
   const nodeById = useMemo(
@@ -166,31 +252,38 @@ export function useConversationFindSession({
   const pathCount = view === "linear" ? distinctPathMessageCount(allHits) : 0
   const currentHit = scopedHits[activeIndex]
   const needle = normalizeQuery(findQuery)
-  const searchHitIds = useMemo(
-    () => new Set(allHits.map((hit) => hit.nodeId)),
-    [allHits]
-  )
+  const searchHitIds = useStableHitIds(allHits)
   const activeFindCount = currentHit
     ? scopedHits.filter((hit) => hit.nodeId === currentHit.nodeId).length
     : 0
   const locateKey = findLocate?.key ?? 0
+  const activeIndexInNode = occurrenceIndexInNode(scopedHits, activeIndex)
   const layerValue = useMemo((): ConversationFindLayerValue | null => {
     if (!findOpen || !needle) return null
     return {
       query: needle,
       activeNodeId: currentHit?.nodeId ?? null,
-      activeIndexInNode: occurrenceIndexInNode(scopedHits, activeIndex),
+      activeIndexInNode,
       activeFindCount,
       locateKey,
+      activeEditorKey: currentHit?.editorKey,
+      activeEditorStart: currentHit?.editorStart,
+      activeFieldKey: currentHit?.fieldKey,
+      activeFieldIndex: currentHit?.fieldIndex,
+      activeFieldCount: currentHit?.fieldCount,
     }
   }, [
     activeFindCount,
-    activeIndex,
+    activeIndexInNode,
     currentHit?.nodeId,
+    currentHit?.editorKey,
+    currentHit?.editorStart,
+    currentHit?.fieldKey,
+    currentHit?.fieldIndex,
+    currentHit?.fieldCount,
     findOpen,
     locateKey,
     needle,
-    scopedHits,
   ])
   const findResults = useMemo((): FindResultRow[] | null => {
     if (view !== "tree" || !findOpen || !needle) return null
@@ -261,7 +354,9 @@ export function useConversationFindSession({
     setFindLocate(null)
     const restore = restoreFocusRef.current
     restoreFocusRef.current = null
-    requestAnimationFrame(() => restore?.focus())
+    requestAnimationFrame(() => {
+      if (restore?.isConnected) restore.focus()
+    })
   }, [])
 
   const onQueryChange = useCallback((value: string) => {
@@ -384,6 +479,7 @@ export function useConversationFindSession({
       )
       if (!action) return
       event.preventDefault()
+      event.stopPropagation()
       if (action === "open") openFind()
       else if (action === "close") closeFind()
       else if (action === "next") stepFind(1)

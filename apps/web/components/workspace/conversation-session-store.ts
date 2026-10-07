@@ -197,9 +197,10 @@ export function sessionFromMessage(input: {
   role: ConversationAuthorRole
   parts: Parts
 }): MessageEditorSession {
-  const coalesced = coalesceAdjacentTextParts(input.parts)
   const parts =
-    coalesced.length > 0 ? coalesced : ([{ type: "text", text: "" }] as Parts)
+    input.parts.length > 0
+      ? input.parts
+      : ([{ type: "text", text: "" }] as Parts)
   return {
     role: input.role,
     parts,
@@ -221,10 +222,16 @@ type ConversationSessionState = {
   update: (slot: string, update: Partial<ComposerDraft>) => void
   setSession: (slot: string, session: MessageEditorSession) => void
   setParts: (slot: string, parts: Parts) => void
-  replacePart: (slot: string, index: number, part: Part) => void
+  replacePart: (slot: string, index: number, part: Part, count?: number) => void
   insertPart: (slot: string, index: number, part: Part) => void
-  removePart: (slot: string, index: number) => void
-  movePart: (slot: string, from: number, to: number) => void
+  removePart: (slot: string, index: number, count?: number) => void
+  movePart: (
+    slot: string,
+    from: number,
+    to: number,
+    count?: number,
+    targetCount?: number
+  ) => void
   convertRole: (slot: string, role: ConversationAuthorRole) => void
   setSending: (slot: string, sending: boolean) => void
   clear: (slot: string) => void
@@ -283,16 +290,72 @@ export const useConversationSessionStore = create<ConversationSessionState>(
           },
         }
       }),
-    replacePart: (slot, index, part) =>
+    replacePart: (slot, index, part, count = 1) =>
       set((state) => {
         const current = state.sessions[slot]
         if (!current || index < 0 || index >= current.parts.length) return state
         const parts = current.parts.slice()
-        parts[index] = part
+        const keys = current.keys.slice()
+        const original = parts.slice(index, index + count)
+        if (count > 1 && part.type === "text") {
+          const text = original.map((item) => (item as TextPart).text).join("")
+          if (text === part.text) return state
+          // Apply the changed span to its source fragments. Untouched fragments,
+          // their metadata, and every part key retain their identity.
+          let from = 0
+          while (
+            from < text.length &&
+            from < part.text.length &&
+            text[from] === part.text[from]
+          )
+            from++
+          let suffix = 0
+          while (
+            suffix < text.length - from &&
+            suffix < part.text.length - from &&
+            text[text.length - 1 - suffix] ===
+              part.text[part.text.length - 1 - suffix]
+          )
+            suffix++
+          const to = text.length - suffix
+          const insert = part.text.slice(from, part.text.length - suffix)
+          let offset = 0
+          let inserted = false
+          original.forEach((item, i) => {
+            const fragment = item as TextPart
+            const end = offset + fragment.text.length
+            const before = fragment.text.slice(
+              0,
+              Math.max(0, Math.min(fragment.text.length, from - offset))
+            )
+            const after = fragment.text.slice(
+              Math.max(0, Math.min(fragment.text.length, to - offset))
+            )
+            const add = !inserted && from <= end
+            if (add) inserted = true
+            const nextText = before + (add ? insert : "") + after
+            if (nextText !== fragment.text)
+              parts[index + i] = { ...fragment, text: nextText }
+            offset = end
+          })
+          for (let i = count - 1; i >= 0; i--) {
+            const item = parts[index + i]
+            if (item?.type !== "text" || item.text !== "") continue
+            parts.splice(index + i, 1)
+            keys.splice(index + i, 1)
+          }
+          if (parts.length === 0) {
+            parts.push({ type: "text", text: "" })
+            keys.push(newBlockKey())
+          }
+        } else {
+          parts.splice(index, count, part)
+          keys.splice(index + 1, count - 1)
+        }
         return {
           sessions: {
             ...state.sessions,
-            [slot]: { ...current, parts },
+            [slot]: { ...current, parts, keys },
           },
         }
       }),
@@ -312,23 +375,24 @@ export const useConversationSessionStore = create<ConversationSessionState>(
           },
         }
       }),
-    removePart: (slot, index) =>
+    removePart: (slot, index, count = 1) =>
       set((state) => {
         const current = state.sessions[slot]
         if (!current || index < 0 || index >= current.parts.length) return state
-        const removed = current.parts[index]
+        const removed = current.parts.slice(index, index + count)
         const parts = current.parts.slice()
         const keys = current.keys.slice()
-        parts.splice(index, 1)
-        keys.splice(index, 1)
+        parts.splice(index, count)
+        keys.splice(index, count)
         const nextParts =
           parts.length > 0 ? parts : ([{ type: "text", text: "" }] as Parts)
-        const attachments =
-          removed?.type === "attachment"
-            ? current.attachments.filter(
-                (item) => !attachmentMatchesPart(item, removed)
-              )
-            : current.attachments
+        const attachments = current.attachments.filter(
+          (item) =>
+            !removed.some(
+              (part) =>
+                part.type === "attachment" && attachmentMatchesPart(item, part)
+            )
+        )
         return {
           sessions: {
             ...state.sessions,
@@ -341,20 +405,25 @@ export const useConversationSessionStore = create<ConversationSessionState>(
           },
         }
       }),
-    movePart: (slot, from, to) =>
+    movePart: (slot, from, to, count = 1, targetCount = 1) =>
       set((state) => {
         const current = state.sessions[slot]
         if (!current) return state
         if (from === to) return state
         if (from < 0 || from >= current.parts.length) return state
-        const target = Math.max(0, Math.min(to, current.parts.length - 1))
+        const target = Math.max(
+          0,
+          Math.min(
+            from < to ? to + targetCount - count : to,
+            current.parts.length - count
+          )
+        )
         const parts = current.parts.slice()
         const keys = current.keys.slice()
-        const [part] = parts.splice(from, 1)
-        const [key] = keys.splice(from, 1)
-        if (!part || !key) return state
-        parts.splice(target, 0, part)
-        keys.splice(target, 0, key)
+        const movedParts = parts.splice(from, count)
+        const movedKeys = keys.splice(from, count)
+        parts.splice(target, 0, ...movedParts)
+        keys.splice(target, 0, ...movedKeys)
         return {
           sessions: {
             ...state.sessions,

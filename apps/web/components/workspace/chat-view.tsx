@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -134,7 +135,10 @@ import { drainChatViewStateSaves } from "./chat-view-state-persistence"
 import { composeLayoutAnchor, composeLayoutId } from "./tree-layout"
 import { ConversationFindLayer } from "./conversation-find"
 import { ConversationFindBar } from "./conversation-find-bar"
-import { useConversationFindSession } from "./conversation-find-session"
+import {
+  ConversationFindProvider,
+  useConversationFind,
+} from "./conversation-find-provider"
 import { AgentRunSubtitle } from "./agent-run-bar"
 import { SessionMessageEditor } from "./message-editor"
 import { type MessageEditorBindings } from "./message"
@@ -329,17 +333,134 @@ function readChatViewState(raw: string | undefined): ChatViewState {
 }
 
 function MessageLayer(
-  props: ComponentProps<typeof ConversationFindLayer> & {
+  props: Omit<ComponentProps<typeof ConversationFindLayer>, "value"> & {
     resolveOperation?: (
       operation: MessageMutationOperation
     ) => Promise<MessageMutationOperation>
   }
 ) {
+  const find = useConversationFind()
   const { resolveOperation, ...layerProps } = props
   return (
     <MessageMutationProvider resolveOperation={resolveOperation}>
-      <ConversationFindLayer {...layerProps} />
+      <ConversationFindLayer {...layerProps} value={find.layerValue} />
     </MessageMutationProvider>
+  )
+}
+
+function FindChatTranscript(
+  props: Omit<ComponentProps<typeof ChatTranscript>, "findLocateKey">
+) {
+  const find = useConversationFind()
+  return useMemo(
+    () => <ChatTranscript {...props} findLocateKey={find.locateKey} />,
+    [props, find.locateKey]
+  )
+}
+
+function FindChatTree(
+  props: Omit<
+    ComponentProps<typeof ChatTree>,
+    "findQuery" | "searchHitIds" | "findLocate" | "onLocateHit"
+  >
+) {
+  const find = useConversationFind()
+  const locateRef = useRef(find.locateNode)
+  useLayoutEffect(() => {
+    locateRef.current = find.locateNode
+  }, [find.locateNode])
+  const onLocateHit = useCallback(
+    (nodeId: string) => locateRef.current(nodeId),
+    []
+  )
+  const searchHitIds = find.searchHitIds
+  const findQuery = find.findOpen ? find.findNeedle : ""
+  const findLocate = find.findOpen ? find.findLocate : null
+  return useMemo(
+    () => (
+      <ChatTree
+        {...props}
+        findQuery={findQuery}
+        searchHitIds={searchHitIds}
+        findLocate={findLocate}
+        onLocateHit={onLocateHit}
+      />
+    ),
+    [props, findQuery, searchHitIds, findLocate, onLocateHit]
+  )
+}
+
+function FindControls({
+  view,
+  animate,
+  transition,
+}: Pick<
+  ComponentProps<typeof ConversationFindBar>,
+  "view" | "animate" | "transition"
+>) {
+  const find = useConversationFind()
+  return (
+    <AnimatePresence>
+      {find.findOpen ? (
+        <ConversationFindBar
+          view={view}
+          query={find.findQuery}
+          onQueryChange={find.onQueryChange}
+          focusNonce={find.focusNonce}
+          current={find.current}
+          total={find.total}
+          onPrev={() => find.stepFind(-1)}
+          onNext={() => find.stepFind(1)}
+          onClose={find.closeFind}
+          pathCount={find.pathCount}
+          offPathCount={find.offPathCount}
+          onShowInTree={find.showOffPathInTree}
+          onJump={find.jumpToFirstOffPath}
+          showUseThisPath={find.showUseThisPath}
+          onUseThisPath={find.useThisPath}
+          results={find.results}
+          activeNodeId={find.activeNodeId}
+          onSelectResult={find.locateNode}
+          animate={animate}
+          transition={transition}
+        />
+      ) : null}
+    </AnimatePresence>
+  )
+}
+
+function FindPathDialog() {
+  const find = useConversationFind()
+  return (
+    <AlertDialog
+      open={find.pendingPathNodeId !== null}
+      onOpenChange={(open) => {
+        if (!open) find.dismissPathSwitch()
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Switch branch?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Jumping to this message changes the selected path. That updates the
+            conversation root and the selected child of each ancestor so Linear
+            can show this branch. This is not undoable from Find.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={find.pathSwitchPending}>
+            Cancel
+          </AlertDialogCancel>
+          <AlertDialogAction
+            variant="destructive"
+            disabled={find.pathSwitchPending}
+            onClick={find.confirmPathSwitch}
+          >
+            Switch path
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }
 
@@ -1424,7 +1545,7 @@ export function ChatView({
     [data.chat?.selected_root_node_id, draftTemplateRootId, renderNodes]
   )
   const pathIds = useMemo(() => activePath.map((node) => node.id), [activePath])
-  const find = useConversationFindSession({
+  const findOptions = {
     chatIdentity,
     view,
     setView: setPersistedView,
@@ -1433,10 +1554,13 @@ export function ChatView({
     pathChatId: data.chat?.id ?? chatId,
     renameOpen,
     paneRef,
-    selectPath: (input, options) => selectPathMutation.mutate(input, options),
+    selectPath: (
+      input: { chatId: string; nodeId: string },
+      options?: { onSuccess?: () => void }
+    ) => selectPathMutation.mutate(input, options),
     selectPathPending: selectPathMutation.isPending,
     setScrollTargetId,
-  })
+  }
 
   function ensureModelReady(config: ModelConfigLocal) {
     if (config.providerId && config.model) return true
@@ -2851,7 +2975,7 @@ export function ChatView({
     setRenameOpen(false)
   }
 
-  return (
+  const chatContent = (
     <ContextPreviewProvider
       nodes={renderNodes}
       chatStackId={effectivePromptStackId}
@@ -3238,12 +3362,9 @@ export function ChatView({
               : scheduledGeneration
           }
         >
-          <MessageLayer
-            value={find.layerValue}
-            resolveOperation={resolveDraftMessageOperation}
-          >
+          <MessageLayer resolveOperation={resolveDraftMessageOperation}>
             {view === "linear" ? (
-              <ChatTranscript
+              <FindChatTranscript
                 chatKey={chatKey}
                 density={density}
                 activePath={activePath}
@@ -3264,7 +3385,6 @@ export function ChatView({
                 editingNodeIds={editingNodeIds}
                 scrollTargetId={scrollTargetId}
                 onScrollTargetConsumed={consumeScrollTarget}
-                findLocateKey={find.locateKey}
                 onSelect={(parentId, childId) => {
                   if (!data.chat) {
                     if (parentId)
@@ -3295,7 +3415,7 @@ export function ChatView({
                 editor={messageEditor}
               />
             ) : (
-              <ChatTree
+              <FindChatTree
                 key={chatIdentity}
                 nodes={renderNodes}
                 activePath={activePath}
@@ -3309,10 +3429,6 @@ export function ChatView({
                 messageLayoutIds={composeMorphs}
                 focusTargetId={scrollTargetId}
                 onFocusTargetConsumed={consumeScrollTarget}
-                findQuery={find.findOpen ? find.findNeedle : ""}
-                searchHitIds={find.searchHitIds}
-                findLocate={find.findOpen ? find.findLocate : null}
-                onLocateHit={find.locateNode}
                 onHandoffComplete={finishComposeHandoff}
                 onSendDraft={streamTreeSend}
                 renderComposer={(anchor, options) => {
@@ -3411,32 +3527,11 @@ export function ChatView({
                 }}
               />
             )}
-            <AnimatePresence>
-              {find.findOpen ? (
-                <ConversationFindBar
-                  view={view}
-                  query={find.findQuery}
-                  onQueryChange={find.onQueryChange}
-                  focusNonce={find.focusNonce}
-                  current={find.current}
-                  total={find.total}
-                  onPrev={() => find.stepFind(-1)}
-                  onNext={() => find.stepFind(1)}
-                  onClose={find.closeFind}
-                  pathCount={find.pathCount}
-                  offPathCount={find.offPathCount}
-                  onShowInTree={find.showOffPathInTree}
-                  onJump={find.jumpToFirstOffPath}
-                  showUseThisPath={find.showUseThisPath}
-                  onUseThisPath={find.useThisPath}
-                  results={find.results}
-                  activeNodeId={find.activeNodeId}
-                  onSelectResult={find.locateNode}
-                  animate={animate}
-                  transition={transition}
-                />
-              ) : null}
-            </AnimatePresence>
+            <FindControls
+              view={view}
+              animate={animate}
+              transition={transition}
+            />
           </MessageLayer>
         </ScheduledGenerationProvider>
 
@@ -3755,7 +3850,9 @@ export function ChatView({
                               },
                             },
                           ]
-                          updateSessionDraft(pickerSlot, { attachments: next })
+                          updateSessionDraft(pickerSlot, {
+                            attachments: next,
+                          })
                           setResourcePickerOpen(false)
                           toast.success(`Attached ${resource.name}`)
                         }}
@@ -3841,35 +3938,7 @@ export function ChatView({
           </DialogContent>
         </Dialog>
 
-        <AlertDialog
-          open={find.pendingPathNodeId !== null}
-          onOpenChange={(open) => {
-            if (!open) find.dismissPathSwitch()
-          }}
-        >
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Switch branch?</AlertDialogTitle>
-              <AlertDialogDescription>
-                Jumping to this message changes the selected path. That updates
-                the conversation root and the selected child of each ancestor so
-                Linear can show this branch. This is not undoable from Find.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel disabled={find.pathSwitchPending}>
-                Cancel
-              </AlertDialogCancel>
-              <AlertDialogAction
-                variant="destructive"
-                disabled={find.pathSwitchPending}
-                onClick={find.confirmPathSwitch}
-              >
-                Switch path
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+        <FindPathDialog />
 
         <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
           <DialogContent>
@@ -4004,7 +4073,10 @@ export function ChatView({
                     clock={scheduleClock}
                     spaces={data.spaces ?? []}
                     onChange={(patch) =>
-                      setScheduleClock((current) => ({ ...current, ...patch }))
+                      setScheduleClock((current) => ({
+                        ...current,
+                        ...patch,
+                      }))
                     }
                   />
                   <GenerationCountField
@@ -4072,6 +4144,11 @@ export function ChatView({
         </AlertDialog>
       </section>
     </ContextPreviewProvider>
+  )
+  return (
+    <ConversationFindProvider options={findOptions}>
+      {chatContent}
+    </ConversationFindProvider>
   )
 }
 

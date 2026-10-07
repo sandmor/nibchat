@@ -1,3 +1,11 @@
+import {
+  mountedFindEditors,
+  editorFindStarts,
+  paintEditorFind,
+  clearEditorFind,
+  revealEditorFind,
+  type EditorFindTarget,
+} from "./find-editor"
 import { findOccurrences, normalizeQuery } from "@/lib/conversation-search"
 
 const SKIP_SELECTOR =
@@ -98,7 +106,7 @@ function highlightRegistry() {
       delete: (name: string) => boolean
     }
   }
-  return css.highlights ?? null
+  return css?.highlights ?? null
 }
 
 /** Visible matches as live Ranges. Does not mutate the DOM. */
@@ -149,6 +157,7 @@ export function publishFindHighlights(matches: Range[], current: Range | null) {
 }
 
 export function clearFindHighlights() {
+  clearEditorFind()
   const highlights = highlightRegistry()
   if (!highlights) return
   highlights.delete(FIND_HIGHLIGHT)
@@ -186,50 +195,143 @@ export type PaintedFind = {
   activeArticle: HTMLElement | null
   current: Range | null
   flash: boolean
+  editor?: EditorFindTarget
 }
 
-/** Highlight currently mounted `[data-find-node]` articles. */
-export function paintMountedFindHighlights(
-  root: HTMLElement,
-  value: {
-    query: string
-    activeNodeId: string | null
-    activeIndexInNode: number
-    activeFindCount: number
+export type FindPaintValue = {
+  query: string
+  activeNodeId: string | null
+  activeIndexInNode: number
+  activeFindCount: number
+  activeEditorKey?: string
+  activeEditorStart?: number
+  activeFieldKey?: string
+  activeFieldIndex?: number
+  activeFieldCount?: number
+}
+export type FindPaintCache = Map<
+  HTMLElement,
+  { ranges: Range[]; painted: PaintedFind }
+>
+
+function paintArticle(article: HTMLElement, value: FindPaintValue) {
+  const needle = normalizeQuery(value.query)
+  const active = article.getAttribute("data-find-node") === value.activeNodeId
+  const painted: PaintedFind = {
+    activeArticle: active ? article : null,
+    current: null,
+    flash: false,
   }
-): PaintedFind {
-  const matches: Range[] = []
-  let current: Range | null = null
-  let activeArticle: HTMLElement | null = null
-  let flash = false
-  for (const article of root.querySelectorAll<HTMLElement>(
-    "[data-find-node]"
-  )) {
-    article.removeAttribute("data-find-flash")
-    const { ranges } = collectFindRanges(article, value.query)
-    const nodeId = article.getAttribute("data-find-node")
-    if (nodeId === value.activeNodeId) {
-      activeArticle = article
+  const ranges: Range[] = []
+  article.removeAttribute("data-find-flash")
+  const views = mountedFindEditors(article)
+  const fields = new Map<string, HTMLElement>()
+  for (const field of article.querySelectorAll<HTMLElement>(
+    "[data-find-field]"
+  ))
+    fields.set(field.getAttribute("data-find-field")!, field)
+  for (const view of views) {
+    const key = view.dom
+      .closest("[data-find-editor-key]")
+      ?.getAttribute("data-find-editor-key")
+    const starts = editorFindStarts(view, needle)
+    let current = -1
+    if (active && key === value.activeEditorKey) {
+      current = value.activeFieldIndex ?? -1
+      if (
+        (value.activeFieldCount != null &&
+          starts.length !== value.activeFieldCount) ||
+        current < 0 ||
+        current >= starts.length ||
+        (value.activeEditorStart != null &&
+          starts[current] !== value.activeEditorStart)
+      ) {
+        current = -1
+        painted.flash = true
+      } else
+        painted.editor = {
+          view,
+          start: starts[current]!,
+          end: starts[current]! + needle.length,
+        }
+    }
+    paintEditorFind(view, starts, needle.length, current)
+  }
+  if (fields.size) {
+    for (const [key, field] of fields) {
+      // CodeMirror owns its document; never mix its matches with DOM ranges.
+      if (field.querySelector(".cm-editor")) continue
+      const fieldRanges = collectFindRanges(field, needle).ranges
+      ranges.push(...fieldRanges)
+      if (active && key === value.activeFieldKey && !value.activeEditorKey) {
+        const resolved = resolveCurrentFindRange(
+          fieldRanges,
+          value.activeFieldIndex ?? -1,
+          value.activeFieldCount ?? 0
+        )
+        painted.current = resolved.current
+        painted.flash = resolved.flash
+      }
+    }
+    if (
+      active &&
+      !painted.current &&
+      !painted.editor &&
+      value.activeIndexInNode >= 0
+    )
+      painted.flash = true
+  } else if (views.length === 0) {
+    const articleRanges = collectFindRanges(article, needle).ranges
+    ranges.push(...articleRanges)
+    if (active) {
       const resolved = resolveCurrentFindRange(
-        ranges,
+        articleRanges,
         value.activeIndexInNode,
         value.activeFindCount
       )
-      flash = resolved.flash
-      current = resolved.current
-      if (flash) article.setAttribute("data-find-flash", "")
+      painted.current = resolved.current
+      painted.flash = resolved.flash
     }
-    matches.push(...ranges)
   }
-  publishFindHighlights(matches, current)
-  return { activeArticle, current, flash }
+  if (painted.flash) article.setAttribute("data-find-flash", "")
+  return { ranges, painted }
+}
+
+/** Repaint specified messages; reuse all other mounted messages' live ranges. */
+export function paintMountedFindHighlights(
+  root: HTMLElement,
+  value: FindPaintValue,
+  cache: FindPaintCache = new Map(),
+  dirty?: Iterable<HTMLElement>
+): PaintedFind {
+  for (const article of cache.keys())
+    if (!root.contains(article)) cache.delete(article)
+  const articles =
+    dirty ?? root.querySelectorAll<HTMLElement>("[data-find-node]")
+  for (const article of articles) {
+    if (root.contains(article)) cache.set(article, paintArticle(article, value))
+  }
+  const ranges: Range[] = []
+  let painted: PaintedFind = {
+    activeArticle: null,
+    current: null,
+    flash: false,
+  }
+  for (const [article, entry] of cache) {
+    ranges.push(...entry.ranges)
+    if (article.getAttribute("data-find-node") === value.activeNodeId)
+      painted = entry.painted
+  }
+  publishFindHighlights(ranges, painted.current)
+  return painted
 }
 
 export function revealPaintedFind(
   article: HTMLElement,
-  painted: Pick<PaintedFind, "current" | "flash">
+  painted: Pick<PaintedFind, "current" | "flash" | "editor">
 ) {
-  if (painted.current) revealFindRange(painted.current, article)
+  if (painted.editor) revealEditorFind(painted.editor)
+  else if (painted.current) revealFindRange(painted.current, article)
   else if (painted.flash || article.hasAttribute("data-find-flash")) {
     revealFindFlash(article)
   }

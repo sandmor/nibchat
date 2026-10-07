@@ -116,8 +116,15 @@ export function EditorShell({
         </div>
       ) : null}
       {children}
-      {contextPreview ? <div className="shrink-0">{contextPreview}</div> : null}
-      <div className="flex shrink-0 items-center justify-between gap-2 px-2 pb-1">
+      {contextPreview ? (
+        <div data-find-skip className="shrink-0">
+          {contextPreview}
+        </div>
+      ) : null}
+      <div
+        data-find-skip
+        className="flex shrink-0 items-center justify-between gap-2 px-2 pb-1"
+      >
         <TooltipProvider delay={400}>
           <div className="flex flex-wrap items-center gap-1">
             {footerStart}

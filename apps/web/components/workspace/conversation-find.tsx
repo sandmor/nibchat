@@ -6,15 +6,11 @@ import {
   clearFindHighlights,
   paintMountedFindHighlights,
   revealPaintedFind,
+  type FindPaintCache,
+  type FindPaintValue,
 } from "./find-highlight"
 
-export type ConversationFindLayerValue = {
-  query: string
-  activeNodeId: string | null
-  activeIndexInNode: number
-  activeFindCount: number
-  locateKey: number
-}
+export type ConversationFindLayerValue = FindPaintValue & { locateKey: number }
 
 export function ConversationFindLayer({
   value,
@@ -25,69 +21,113 @@ export function ConversationFindLayer({
 }) {
   const rootRef = useRef<HTMLDivElement>(null)
   const valueRef = useRef(value)
+  const previousRef = useRef<ConversationFindLayerValue | null>(null)
   const pendingRevealRef = useRef(0)
-  const locateKeyRef = useRef(0)
+  const cacheRef = useRef<FindPaintCache>(new Map())
+  const dirtyRef = useRef(new Set<HTMLElement>())
+  const fullRef = useRef(true)
   const rafRef = useRef(0)
   const findActive = value != null
 
-  const syncHighlights = useCallback((reveal: boolean) => {
-    const root = rootRef.current
-    const currentValue = valueRef.current
-    if (!root || !currentValue?.query) {
-      clearFindHighlights()
-      pendingRevealRef.current = 0
-      return
-    }
-    const painted = paintMountedFindHighlights(root, currentValue)
-    const pending = pendingRevealRef.current
-    if (
-      (reveal || pending === currentValue.locateKey) &&
-      pending > 0 &&
-      painted.activeArticle
-    ) {
-      pendingRevealRef.current = 0
-      revealPaintedFind(painted.activeArticle, painted)
-    }
+  const schedule = useCallback(() => {
+    if (rafRef.current) return
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = 0
+      const root = rootRef.current
+      const current = valueRef.current
+      if (!root || !current) return
+      const painted = paintMountedFindHighlights(
+        root,
+        current,
+        cacheRef.current,
+        fullRef.current ? undefined : dirtyRef.current
+      )
+      fullRef.current = false
+      dirtyRef.current.clear()
+      if (pendingRevealRef.current > 0 && painted.activeArticle) {
+        pendingRevealRef.current = 0
+        revealPaintedFind(painted.activeArticle, painted)
+      }
+    })
   }, [])
 
   useLayoutEffect(() => {
+    const previous = previousRef.current
+    previousRef.current = value
     valueRef.current = value
-    const locateKey = value?.locateKey ?? 0
     pendingRevealRef.current = nextFindRevealPending(
-      locateKeyRef.current,
-      locateKey,
+      previous?.locateKey ?? 0,
+      value?.locateKey ?? 0,
       pendingRevealRef.current
     )
-    locateKeyRef.current = locateKey
-    if (!value?.query) {
-      pendingRevealRef.current = 0
+    if (!value) {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current)
+      rafRef.current = 0
+      cacheRef.current.clear()
+      dirtyRef.current.clear()
+      fullRef.current = true
       clearFindHighlights()
       return
     }
-    syncHighlights(true)
-    return () => clearFindHighlights()
-  }, [syncHighlights, value])
+    if (previous?.query !== value.query) fullRef.current = true
+    // Navigation and index changes affect the old and new active messages only.
+    for (const id of [previous?.activeNodeId, value.activeNodeId]) {
+      if (!id) continue
+      const article = [...cacheRef.current.keys()].find(
+        (element) => element.getAttribute("data-find-node") === id
+      )
+      if (article) dirtyRef.current.add(article)
+    }
+    schedule()
+  }, [value, schedule])
 
   useLayoutEffect(() => {
     const root = rootRef.current
     if (!root || !findActive) return
-    const observer = new MutationObserver(() => {
-      if (rafRef.current) return
-      rafRef.current = requestAnimationFrame(() => {
-        rafRef.current = 0
-        syncHighlights(false)
-      })
-    })
-    observer.observe(root, { childList: true, subtree: true })
-    return () => {
-      observer.disconnect()
-      if (rafRef.current) {
-        cancelAnimationFrame(rafRef.current)
-        rafRef.current = 0
-      }
+    const markArticle = (target: Node) => {
+      const element = target instanceof Element ? target : target.parentElement
+      const article = element?.closest<HTMLElement>("[data-find-node]")
+      if (article) dirtyRef.current.add(article)
     }
-  }, [findActive, syncHighlights])
+    const onEditor = (event: Event) => {
+      if (event.target instanceof Node) markArticle(event.target)
+      schedule()
+    }
+    root.addEventListener("conversation-find-editor-update", onEditor)
+    const observer = new MutationObserver((records) => {
+      let changed = false
+      for (const record of records) {
+        const element =
+          record.target instanceof Element
+            ? record.target
+            : record.target.parentElement
+        if (element?.closest(".cm-editor,[data-find-skip]")) continue
+        markArticle(record.target)
+        changed = true
+        for (const node of [...record.addedNodes, ...record.removedNodes]) {
+          if (!(node instanceof HTMLElement)) continue
+          if (node.matches("[data-find-node]")) dirtyRef.current.add(node)
+          for (const article of node.querySelectorAll<HTMLElement>(
+            "[data-find-node]"
+          ))
+            dirtyRef.current.add(article)
+        }
+      }
+      if (changed) schedule()
+    })
+    observer.observe(root, {
+      childList: true,
+      subtree: true,
+    })
+    return () => {
+      root.removeEventListener("conversation-find-editor-update", onEditor)
+      observer.disconnect()
+      if (rafRef.current) cancelAnimationFrame(rafRef.current)
+      rafRef.current = 0
+    }
+  }, [findActive, schedule])
 
+  useLayoutEffect(() => () => clearFindHighlights(), [])
   return (
     <div ref={rootRef} className="relative flex min-h-0 flex-1 flex-col">
       {children}

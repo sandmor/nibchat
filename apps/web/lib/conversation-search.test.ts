@@ -188,3 +188,44 @@ describe("snippet", () => {
     expect(snippet(text, start, "unique-token", 4)).toMatch(/^…/)
   })
 })
+
+describe("editable occurrence offsets", () => {
+  it("maps matches to stable blocks with offsets relative to each editor", () => {
+    const hits = buildHits(
+      [
+        {
+          id: "draft",
+          findText: "first token\nsecond TOKEN",
+          fields: [
+            { key: "block-a", start: 0, end: 11, editor: true },
+            { key: "block-b", start: 12, end: 24, editor: true },
+          ],
+        },
+      ],
+      "token",
+      { pathIds: ["draft"], layoutIds: ["draft"] }
+    )
+    expect(hits).toEqual([
+      {
+        nodeId: "draft",
+        start: 6,
+        onPath: true,
+        fieldKey: "block-a",
+        fieldIndex: 0,
+        fieldCount: 1,
+        editorKey: "block-a",
+        editorStart: 6,
+      },
+      {
+        nodeId: "draft",
+        start: 19,
+        onPath: true,
+        fieldKey: "block-b",
+        fieldIndex: 0,
+        fieldCount: 1,
+        editorKey: "block-b",
+        editorStart: 7,
+      },
+    ])
+  })
+})

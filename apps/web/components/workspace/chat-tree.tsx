@@ -84,7 +84,7 @@ import {
 } from "./tree-camera"
 
 const CHROME_SELECTOR =
-  "button,a,input,textarea,select,[role=dialog],[data-tree-chrome]"
+  "button,a,input,textarea,select,[contenteditable=true],[role=dialog],[data-tree-chrome]"
 
 const EMPTY_HIT_IDS: ReadonlySet<string> = new Set()
 const EMPTY_VISIBLE: ReadonlySet<string> = new Set()

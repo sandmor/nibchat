@@ -365,6 +365,21 @@ HANDOFF_END`
     expect(scrollAfter).toBeGreaterThan(80)
   })
 
+  test("stops a message before its first token without a composer Stop", async () => {
+    await openNewChat(page)
+    llm.enqueue({ text: "SHOULD_NOT_ARRIVE", hold: true })
+    await sendMessage(page, "stop before output")
+    const message = streamingMarkers(page)
+    await expect(message).toHaveCount(1)
+    await expect(
+      page.getByRole("button", { name: "Stop", exact: true })
+    ).toHaveCount(0)
+    await message.getByRole("button", { name: "Stop generation" }).click()
+    await expect(streamingMarkers(page)).toHaveCount(0)
+    await expect(page.getByText("SHOULD_NOT_ARRIVE")).toHaveCount(0)
+    llm.release()
+  })
+
   test("edit forks an in-flight assistant as a sibling", async () => {
     await openNewChat(page)
     llm.enqueue({ text: "LIVE_PARTIAL_REPLY", holdAfterText: true })

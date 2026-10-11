@@ -95,6 +95,34 @@ export function editorFindStarts(view: EditorView, query: string) {
   occurrences.set(view, { doc: view.state.doc, query, starts })
   return starts
 }
+type ScrollAnchor = { element: HTMLElement; top: number; left: number }
+
+function scrollAnchors(start: HTMLElement) {
+  const anchors: ScrollAnchor[] = []
+  for (let node: HTMLElement | null = start; node; node = node.parentElement)
+    anchors.push({
+      element: node,
+      top: node.scrollTop,
+      left: node.scrollLeft,
+    })
+  return anchors
+}
+
+function applyScrollAnchors(anchors: readonly ScrollAnchor[]) {
+  for (const anchor of anchors) {
+    if (!anchor.element.isConnected) continue
+    if (anchor.element.scrollTop !== anchor.top)
+      anchor.element.scrollTop = anchor.top
+    if (anchor.element.scrollLeft !== anchor.left)
+      anchor.element.scrollLeft = anchor.left
+  }
+}
+
+/** Decoration rewrites can scroll the caret into view. Hold the prior offsets. */
+const heldEditorScroll: ScrollAnchor[][] = []
+let heldScrollVersion = 0
+let heldScrollInputController: AbortController | null = null
+
 export function paintEditorFind(
   view: EditorView,
   starts: number[],
@@ -110,12 +138,56 @@ export function paintEditorFind(
     starts.every((start, index) => start === previous.starts[index])
   )
     return
+  const anchors = scrollAnchors(view.scrollDOM)
   painted.set(view, { doc: view.state.doc, starts, length, current })
   view.dispatch({ effects: setMatches.of({ starts, length, current }) })
   view.dom.toggleAttribute("data-find-editor-current", current >= 0)
+  applyScrollAnchors(anchors)
+  heldEditorScroll.push(anchors)
 }
+
+/**
+ * Put held editor scroll back after the browser's post-layout caret scroll.
+ * Skip this when a deliberate reveal owns the position.
+ */
+export function settleHeldEditorScroll() {
+  const pending = heldEditorScroll.splice(0)
+  if (pending.length === 0) return
+  discardHeldEditorScroll()
+  const version = heldScrollVersion
+  const controller = new AbortController()
+  heldScrollInputController = controller
+  for (const event of ["wheel", "touchstart", "pointerdown", "keydown"])
+    document.addEventListener(event, discardHeldEditorScroll, {
+      capture: true,
+      passive: true,
+      signal: controller.signal,
+    })
+  const restore = () => {
+    if (version !== heldScrollVersion) return
+    for (const anchors of pending) applyScrollAnchors(anchors)
+  }
+  requestAnimationFrame(() => {
+    restore()
+    requestAnimationFrame(() => {
+      restore()
+      controller.abort()
+      if (heldScrollInputController === controller)
+        heldScrollInputController = null
+    })
+  })
+}
+
+export function discardHeldEditorScroll() {
+  heldScrollVersion++
+  heldScrollInputController?.abort()
+  heldScrollInputController = null
+  heldEditorScroll.length = 0
+}
+
 export function clearEditorFind() {
   for (const view of editors.values()) paintEditorFind(view, [], 0, -1)
+  settleHeldEditorScroll()
 }
 export type EditorFindTarget = { view: EditorView; start: number; end: number }
 export function revealEditorFind({ view, start, end }: EditorFindTarget) {

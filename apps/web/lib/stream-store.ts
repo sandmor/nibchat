@@ -1,5 +1,6 @@
 "use client"
 import { create } from "zustand"
+import { toast } from "sonner"
 import {
   reduceGenerationPayload,
   type GenerationPayload,
@@ -12,7 +13,7 @@ export type StreamMeta = {
   /** Structural parent of the streaming assistant (tree placement). */
   parentNodeId: string | null
   startedAt: number
-  /** User cancelled the producer; overlay hides while the reader waits for SSE end. */
+  /** Cancellation is pending; keep painting until the terminal event confirms it. */
   stopping?: boolean
   /** Reader reached a terminal endpoint; hide it and block stale rediscovery. */
   settled?: boolean
@@ -37,6 +38,15 @@ const emptyBuffer = (): StreamBuffer => ({
 /** Read-only fallback so missing ids do not look like buffer updates. */
 export const EMPTY_STREAM_BUFFER: StreamBuffer = emptyBuffer()
 
+const cancellations = new Map<string, AbortController>()
+
+function clearCancellation(streamId: string) {
+  const controller = cancellations.get(streamId)
+  if (!controller) return
+  cancellations.delete(streamId)
+  controller.abort()
+}
+
 type StreamState = {
   streams: Record<string, StreamMeta>
   buffers: Record<string, StreamBuffer>
@@ -50,7 +60,7 @@ type StreamState = {
   /** Drop this reader without clearing the token buffer. */
   detachController: (streamId: string, controller?: AbortController) => void
   /** Cancel the producer. Local abort is only for leaving a chat. */
-  stop: (streamId: string) => void
+  stop: (streamId: string) => Promise<void>
   /** Preserve the final overlay and block rediscovery until workspace confirms it. */
   settle: (streamId: string) => void
   /** Permanently collect stream metadata and payload. */
@@ -123,21 +133,44 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       delete controllers[streamId]
       return { controllers }
     }),
-  stop: (streamId) => {
+  stop: async (streamId) => {
     const meta = get().streams[streamId]
-    if (meta && !meta.stopping) {
+    if (!meta || meta.stopping || meta.settled) return
+    set((state) => ({
+      streams: {
+        ...state.streams,
+        [streamId]: { ...meta, stopping: true },
+      },
+    }))
+    const controller = new AbortController()
+    cancellations.set(streamId, controller)
+    const recover = () => {
+      if (cancellations.get(streamId) !== controller) return
+      cancellations.delete(streamId)
+      const stream = get().streams[streamId]
+      if (!stream || stream.settled) return
       set((state) => ({
         streams: {
           ...state.streams,
-          [streamId]: { ...meta, stopping: true },
+          [streamId]: { ...stream, stopping: false },
         },
       }))
+      toast.error("Could not stop generation")
     }
-    void fetch(`/api/chat/stream/${encodeURIComponent(streamId)}`, {
-      method: "DELETE",
-    })
+    try {
+      const response = await fetch(
+        `/api/chat/stream/${encodeURIComponent(streamId)}`,
+        { method: "DELETE", signal: controller.signal }
+      )
+      if (cancellations.get(streamId) !== controller) return
+      if (!response.ok) throw new Error("Could not stop generation")
+      cancellations.delete(streamId)
+    } catch {
+      recover()
+    }
   },
-  settle: (streamId) =>
+  settle: (streamId) => {
+    clearCancellation(streamId)
     set((state) => {
       const meta = state.streams[streamId]
       if (!meta || meta.settled) return state
@@ -153,8 +186,10 @@ export const useStreamStore = create<StreamState>((set, get) => ({
         controllers,
         cursors,
       }
-    }),
-  finish: (streamId) =>
+    })
+  },
+  finish: (streamId) => {
+    clearCancellation(streamId)
     set((state) => {
       const streams = { ...state.streams }
       const buffers = { ...state.buffers }
@@ -165,7 +200,8 @@ export const useStreamStore = create<StreamState>((set, get) => ({
       delete controllers[streamId]
       delete cursors[streamId]
       return { streams, buffers, controllers, cursors }
-    }),
+    })
+  },
 }))
 
 export function useStreamBuffer(streamId: string): StreamBuffer {
@@ -182,9 +218,7 @@ export function chatStreamEntries(
   for (const id of chatIds) {
     if (id) wanted.add(id)
   }
-  return Object.entries(streams).filter(
-    ([, meta]) => wanted.has(meta.chatId) && !meta.stopping
-  )
+  return Object.entries(streams).filter(([, meta]) => wanted.has(meta.chatId))
 }
 
 export function hasLiveStreamReader(
@@ -215,17 +249,4 @@ export function abortChatStreamReaders(
     controller?.abort()
     if (controller) detachController(streamId, controller)
   }
-}
-
-/** Buffers for cancelled overlays; used so Stop can keep painting late tokens. */
-export function collectStoppingBuffers(
-  streams: Record<string, StreamMeta>,
-  buffers: Record<string, StreamBuffer>
-): Record<string, StreamBuffer> {
-  const next: Record<string, StreamBuffer> = {}
-  for (const [id, meta] of Object.entries(streams)) {
-    if (!meta.stopping) continue
-    next[id] = buffers[id] ?? EMPTY_STREAM_BUFFER
-  }
-  return next
 }

@@ -1,5 +1,7 @@
 "use client"
 
+import { reportActionError } from "@/lib/action-errors"
+
 import { useCallback, useId, useMemo, useState } from "react"
 import { AnimatePresence, motion } from "motion/react"
 import { useMutation } from "@tanstack/react-query"
@@ -329,7 +331,10 @@ function ProviderFlow({
   const finish = useMutation(
     trpc.workspace.finishSetup.mutationOptions({
       onSuccess: () => window.location.assign("/"),
-      onError: (err) => setError(err.message || "Could not finish setup"),
+      onError: (err) => {
+        setError(err.message || "Could not finish setup")
+        reportActionError(err, "Could not finish setup")
+      },
     })
   )
   const busy =
@@ -385,6 +390,7 @@ function ProviderFlow({
       onStep("models")
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save provider")
+      reportActionError(err, "Could not save provider")
     }
   }
 

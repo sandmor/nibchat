@@ -141,10 +141,7 @@ function useStableHitIds(hits: readonly { nodeId: string }[]) {
   const signature = JSON.stringify(
     [...new Set(hits.map((hit) => hit.nodeId))].sort()
   )
-  return useMemo(
-    () => new Set(JSON.parse(signature) as string[]),
-    [signature]
-  )
+  return useMemo(() => new Set(JSON.parse(signature) as string[]), [signature])
 }
 
 export function useConversationFindSession({
@@ -189,6 +186,7 @@ export function useConversationFindSession({
     key: number
   } | null>(null)
   const [locatedKey, setLocatedKey] = useState<string | null>(null)
+  const locateNonceRef = useRef(0)
   const restoreFocusRef = useRef<HTMLElement | null>(null)
   // Reading the chat id resets this cache when the open chat changes.
   const readFindText = useMemo(() => {
@@ -308,10 +306,10 @@ export function useConversationFindSession({
   }, [allHits, findOpen, findQuery, findTextById, needle, nodeById, view])
 
   const bumpFindLocate = useCallback((nodeId: string) => {
-    setFindLocate((current) => ({
+    setFindLocate({
       nodeId,
-      key: (current?.key ?? 0) + 1,
-    }))
+      key: ++locateNonceRef.current,
+    })
   }, [])
 
   const goToOccurrence = useCallback(
@@ -355,7 +353,7 @@ export function useConversationFindSession({
     const restore = restoreFocusRef.current
     restoreFocusRef.current = null
     requestAnimationFrame(() => {
-      if (restore?.isConnected) restore.focus()
+      if (restore?.isConnected) restore.focus({ preventScroll: true })
     })
   }, [])
 

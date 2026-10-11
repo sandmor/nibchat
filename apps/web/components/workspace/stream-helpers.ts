@@ -7,15 +7,8 @@ import type {
   GenerationTerminalPayload,
 } from "@/lib/generation-streams/events"
 import { parseJson, resolveActivePath } from "@/lib/domain"
-import {
-  hasLiveStreamReader,
-  type StreamBuffer,
-  type StreamMeta,
-} from "@/lib/stream-store"
-import {
-  patchNodeFromStreamParts,
-  type WorkspaceData,
-} from "@/lib/workspace-cache"
+import { hasLiveStreamReader, type StreamMeta } from "@/lib/stream-store"
+import { type WorkspaceData } from "@/lib/workspace-cache"
 
 export function viewPathFromCache(
   queryClient: QueryClient,
@@ -145,37 +138,11 @@ export function shouldFollowGeneration(input: {
   return true
 }
 
-/**
- * Re-apply cancelled stream buffers onto workspace data so a refetch that still
- * lists the generation as live cannot flash the empty streaming shell.
- * Leaves `activeGenerations` intact so discovery can re-attach after leave.
- */
-export function applyStoppingStreamPatches(
-  data: WorkspaceData | undefined,
-  streams: Record<string, StreamMeta>,
-  buffers: Record<string, StreamBuffer>
-): WorkspaceData | undefined {
-  if (!data) return data
-  let next = data
-  for (const [streamId, meta] of Object.entries(streams)) {
-    if (!meta.stopping) continue
-    next =
-      patchNodeFromStreamParts(
-        next,
-        meta.nodeId,
-        buffers[streamId]?.parts ?? [],
-        "aborted",
-        { preserveActiveGenerations: true }
-      ) ?? next
-  }
-  return next
-}
-
 export type StreamEndReason = "aborted" | "gone" | "failed"
 
 export type StreamEndPlan = {
   keepStore: boolean
-  write: "none" | "aborted" | "hydrate"
+  write: "none" | "hydrate"
   dropOverlay: boolean
   invalidate: boolean
 }
@@ -186,7 +153,6 @@ export type StreamEndPlan = {
  */
 export function planStreamEnd(input: {
   reason: StreamEndReason
-  stopping: boolean
   nodeStatus: MessageStatus | undefined
   hasParts: boolean
 }): StreamEndPlan {
@@ -198,15 +164,7 @@ export function planStreamEnd(input: {
       invalidate: false,
     }
   }
-  if (input.stopping && input.nodeStatus === "streaming") {
-    return {
-      keepStore: false,
-      write: "aborted",
-      dropOverlay: true,
-      invalidate: true,
-    }
-  }
-  if (!input.stopping && input.nodeStatus === "streaming" && input.hasParts) {
+  if (input.nodeStatus === "streaming" && input.hasParts) {
     return {
       keepStore: false,
       write: "hydrate",

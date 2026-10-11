@@ -7,7 +7,6 @@ import {
   ArrowShrink01Icon,
   Loading03Icon,
   SentIcon,
-  StopIcon,
   ArrowDown01Icon,
   Clock01Icon,
   GitBranchIcon,
@@ -46,8 +45,6 @@ export function EditorShell({
   templateScheduleDisabled = false,
   scheduleLabel = "Generate later…",
   onCancel,
-  onStop,
-  streaming,
   hint,
   expandable = true,
   expanded = false,
@@ -79,8 +76,6 @@ export function EditorShell({
   templateScheduleDisabled?: boolean
   scheduleLabel?: string
   onCancel?: () => void
-  onStop?: () => void
-  streaming?: boolean
   hint?: ReactNode
   expandable?: boolean
   expanded?: boolean
@@ -168,20 +163,6 @@ export function EditorShell({
               disabled={submitting}
             >
               Cancel
-            </Button>
-          ) : streaming && onStop ? (
-            <Button
-              variant="destructive"
-              size="sm"
-              className="gap-1.5"
-              onClick={onStop}
-            >
-              <HugeiconsIcon
-                icon={StopIcon}
-                strokeWidth={2}
-                className="size-4"
-              />
-              Stop
             </Button>
           ) : null}
           {onReplace ? (

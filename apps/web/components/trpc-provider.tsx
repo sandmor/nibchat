@@ -5,16 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { createTRPCClient, httpBatchLink } from "@trpc/client"
 import type { AppRouter } from "@/lib/trpc"
 import { TRPCProvider } from "@/lib/trpc-react"
-
-function makeQueryClient() {
-  return new QueryClient({
-    defaultOptions: {
-      queries: {
-        staleTime: 30_000,
-      },
-    },
-  })
-}
+import { makeQueryClient } from "@/lib/query-client"
 
 let browserQueryClient: QueryClient | undefined
 

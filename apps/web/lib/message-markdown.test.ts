@@ -179,6 +179,16 @@ describe("pathToMarkdown", () => {
     expect(pathToMarkdown(nodes, "off-child")).not.toContain("selected reply")
   })
 
+  it("copies live target parts with its persisted ancestor context", () => {
+    const nodes = [
+      node("u1", "user", null, [{ type: "text", text: "ask" }]),
+      node("a1", "assistant", "u1", [{ type: "text", text: "old" }]),
+    ]
+    expect(
+      pathToMarkdown(nodes, "a1", [{ type: "text", text: "live reply" }])
+    ).toBe("**User**\n\nask\n\n**Assistant**\n\nlive reply")
+  })
+
   it("skips messages with nothing to copy", () => {
     const nodes = [
       node("u1", "user", null, [{ type: "text", text: "ask" }], "a1"),

@@ -18,7 +18,6 @@ import {
   MinusSignIcon,
   Navigation03Icon,
   PlusSignIcon,
-  StopIcon,
 } from "@hugeicons/core-free-icons"
 import { Button } from "@/components/ui/button"
 import { motion } from "motion/react"
@@ -173,7 +172,6 @@ export function ChatTree({
   onChanged,
   onGenerateReplies,
   onAnswerTools,
-  onStop,
   initialCamera = null,
   onCameraChange,
   editor,
@@ -212,7 +210,6 @@ export function ChatTree({
     id: string,
     results: Array<{ toolCallId: string; output: unknown }>
   ) => void
-  onStop: () => void
   initialCamera?: ChatViewCamera | null
   onCameraChange?: (camera: ChatViewCamera | null) => void
   editor?: MessageEditorBindings
@@ -413,11 +410,7 @@ export function ChatTree({
     })
   }
 
-  const beginSend = (
-    anchor: string | null,
-    rect: TreeRect,
-    count = 1
-  ) => {
+  const beginSend = (anchor: string | null, rect: TreeRect, count = 1) => {
     const layoutId = composeLayoutId(anchor)
     if (submittingLayoutsRef.current.has(layoutId)) return
     submittingLayoutsRef.current.add(layoutId)
@@ -725,10 +718,9 @@ export function ChatTree({
   }, [focusTargetId, layout, centerOn, onFocusTargetConsumed, viewportSize])
 
   useLayoutEffect(() => {
-    if (!findLocate) {
-      findLocateAppliedKeyRef.current = 0
-      return
-    }
+    // A closed Find passes null. Remember the key so reopening does not pan
+    // back to a hit the camera already framed.
+    if (!findLocate) return
     if (findLocateAppliedKeyRef.current === findLocate.key) return
     const viewport = viewportMetrics()
     if (
@@ -1276,16 +1268,6 @@ export function ChatTree({
         data-tree-chrome
         className="absolute right-3 bottom-3 z-20 flex gap-1 rounded-xl border bg-[var(--tree-chrome-background)] p-1 shadow-[var(--tree-shadow-sm)] backdrop-blur"
       >
-        {streamIdByNodeId.size ? (
-          <Button
-            size="icon-xs"
-            variant="destructive"
-            aria-label="Stop generation"
-            onClick={onStop}
-          >
-            <HugeiconsIcon icon={StopIcon} className="size-3.5" />
-          </Button>
-        ) : null}
         <Button
           size="icon-xs"
           variant="ghost"

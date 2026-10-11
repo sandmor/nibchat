@@ -59,6 +59,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { MessageShell } from "./message-shell"
+import { MessageStop } from "./message-stop"
 import { cn } from "@/lib/utils"
 import { copyText } from "@/lib/clipboard"
 import { partsToMarkdown, pathToMarkdown } from "@/lib/message-markdown"
@@ -555,7 +556,13 @@ export const Message = memo(function Message({
   const statusLabel = messageStatusLabel(displayStatus)
   const hasDetails =
     node.role === "assistant" &&
-    (Boolean(originLabel) || Object.keys(metadata).length > 0)
+    (Boolean(createdTime) ||
+      Boolean(originLabel) ||
+      generationLabel != null ||
+      metadata.usage != null ||
+      metadata.finishReason != null ||
+      metadata.finishedAt != null ||
+      Boolean(metadata.error))
 
   const [pendingMutation, setPendingMutation] = useState<
     MessageMutationOperation["kind"] | null
@@ -563,12 +570,14 @@ export const Message = memo(function Message({
   const contextExclusionPending = pendingMutation === "context"
 
   const copyMarkdown = async (kind: "message" | "path") => {
+    const currentParts = applyLocalToolResults(
+      overlayFor(parts, streamId),
+      toolResults
+    )
     const text =
       kind === "message"
-        ? partsToMarkdown(
-            applyLocalToolResults(overlayFor(parts, streamId), toolResults)
-          )
-        : pathToMarkdown(nodes, node.id)
+        ? partsToMarkdown(currentParts)
+        : pathToMarkdown(nodes, node.id, currentParts)
     try {
       await copyText(text)
       toast.success(kind === "path" ? "Copied path" : "Copied")
@@ -673,7 +682,6 @@ export const Message = memo(function Message({
   const confirmReplace = () => {
     const prepared = persistableParts()
     if (!prepared) return
-    if (streamId) useStreamStore.getState().stop(streamId)
     void runMessageMutation(
       {
         kind: "replace",
@@ -686,6 +694,7 @@ export const Message = memo(function Message({
         },
       },
       async () => {
+        if (streamId) useStreamStore.getState().finish(streamId)
         dismissReplacement()
         finishEdit("sent")
         await Promise.resolve(onChanged?.())
@@ -707,8 +716,7 @@ export const Message = memo(function Message({
   const generationIdle =
     node.status !== "streaming" && node.status !== "awaiting_input" && !streamId
   const canGenerateReplies = Boolean(onGenerateReplies) && generationIdle
-  const canRegenerate =
-    node.role === "assistant" && Boolean(onRegenerate) && generationIdle
+  const canRegenerate = node.role === "assistant" && Boolean(onRegenerate)
 
   const footerHtml = prepareMessageFooterHtml({
     captions: messageActionCaptions,
@@ -823,6 +831,14 @@ export const Message = memo(function Message({
           }
           style={layoutStyle}
         >
+          {streamId ? (
+            <div data-find-skip className="mb-1 flex justify-end">
+              <MessageStop
+                streamId={streamId}
+                captions={messageActionCaptions}
+              />
+            </div>
+          ) : null}
           <SessionMessageEditor
             slot={editSlot}
             variant="inline"
@@ -967,6 +983,16 @@ export const Message = memo(function Message({
           </span>
         ) : null}
         <span className="flex flex-wrap items-center gap-0.5">
+          {footerHtml.stepper.__html ? (
+            <span
+              className="contents"
+              data-message-footer-html="stepper"
+              dangerouslySetInnerHTML={footerHtml.stepper}
+            />
+          ) : null}
+          {streamId ? (
+            <MessageStop streamId={streamId} captions={messageActionCaptions} />
+          ) : null}
           <span
             className="contents"
             data-message-footer-html="actions"

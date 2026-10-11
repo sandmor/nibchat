@@ -44,8 +44,11 @@ describe("message footer HTML cache", () => {
       `data-message-footer-action="${MESSAGE_FOOTER_ACTION.copy}"`
     )
     expect(actions).toContain('data-static-tooltip="Copy"')
-    expect(actions).toContain("1/2")
+    expect(actions).not.toContain("1/2")
+    expect(first.stepper.__html).toContain("1/2")
+    expect(first.stepper.__html).toContain('aria-label="Previous branch"')
     expect(actions).toContain('aria-label="Another answer"')
+    expect(cache.get(footerModel({ siblingCount: 1 })).stepper.__html).toBe("")
   })
 
   it("escapes metadata and reflects disabled action state", () => {

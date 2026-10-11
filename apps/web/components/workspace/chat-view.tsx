@@ -11,7 +11,6 @@ import {
   type Dispatch,
   type SetStateAction,
 } from "react"
-import { useShallow } from "zustand/react/shallow"
 import { AnimatePresence } from "motion/react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
@@ -78,17 +77,16 @@ import { SpacePicker } from "./space-picker"
 import {
   abortChatStreamReaders,
   chatStreamEntries,
-  collectStoppingBuffers,
   hasLiveStreamReader,
   useStreamStore,
 } from "@/lib/stream-store"
 import { useTRPC } from "@/lib/trpc-react"
+import { reportActionError } from "@/lib/action-errors"
 import {
   hydrateStreamingNodeParts,
   seedGenerationBatch,
   patchChatTitle,
   patchChatViewState,
-  patchNodeFromStreamParts,
   patchSelection,
   patchTerminalGeneration,
   toDraftWorkspace,
@@ -192,7 +190,6 @@ import {
 import { analyzePdf } from "@/lib/pdf-analysis-client"
 import type { PdfAnalysis } from "@/lib/pdf-analysis"
 import {
-  applyStoppingStreamPatches,
   durablePartsForNode,
   followGenerationStream,
   generationRetryDelay,
@@ -697,14 +694,10 @@ export function ChatView({
   const setStreamCursor = useStreamStore((state) => state.setCursor)
   const attachController = useStreamStore((state) => state.attachController)
   const detachController = useStreamStore((state) => state.detachController)
-  const stopStream = useStreamStore((state) => state.stop)
   const settleStream = useStreamStore((state) => state.settle)
   const finishStream = useStreamStore((state) => state.finish)
   /** Placement only. Token text lives in buffers; Message reads those. */
   const streamMetas = useStreamStore((state) => state.streams)
-  const stoppingBuffers = useStreamStore(
-    useShallow((state) => collectStoppingBuffers(state.streams, state.buffers))
-  )
 
   const applyStreamEnd = useCallback(
     (
@@ -725,7 +718,6 @@ export function ChatView({
       const parts = store.buffers[streamId]?.parts ?? []
       const plan = planStreamEnd({
         reason,
-        stopping: Boolean(meta.stopping),
         nodeStatus: cached?.nodes.find((row) => row.id === meta.nodeId)?.status,
         hasParts: parts.length > 0,
       })
@@ -733,12 +725,7 @@ export function ChatView({
         detachController(streamId, controller)
         return
       }
-      if (plan.write === "aborted") {
-        queryClient.setQueriesData<WorkspaceData>(
-          trpc.workspace.get.queryFilter(),
-          (old) => patchNodeFromStreamParts(old, meta.nodeId, parts, "aborted")
-        )
-      } else if (plan.write === "hydrate") {
+      if (plan.write === "hydrate") {
         queryClient.setQueriesData<WorkspaceData>(
           trpc.workspace.get.queryFilter(),
           (old) => hydrateStreamingNodeParts(old, meta.nodeId, parts)
@@ -800,6 +787,18 @@ export function ChatView({
           })
       )
       finishStream(streamId)
+      if (terminal.result === "error") {
+        const metadata = parseJson<Record<string, unknown>>(
+          node?.metadata_json ?? "{}",
+          {}
+        )
+        toast.error(
+          typeof metadata.error === "string" && metadata.error.trim()
+            ? metadata.error
+            : "Generation failed",
+          { id: `generation-error-${streamId}` }
+        )
+      }
       if (
         !node ||
         terminal.result === "superseded" ||
@@ -889,12 +888,7 @@ export function ChatView({
     [draftTemplateId, selectDraftTemplate]
   )
   const workspace = workspaceQuery.data ?? initial
-  const data: WorkspaceData = useMemo(
-    () =>
-      applyStoppingStreamPatches(workspace, streamMetas, stoppingBuffers) ??
-      workspace,
-    [stoppingBuffers, streamMetas, workspace]
-  )
+  const data = workspace
   const nodes = data.chat ? data.nodes : draftTemplateNodes
   useEffect(() => {
     // Draft routes can be reused by the App Router without changing the
@@ -1261,6 +1255,8 @@ export function ChatView({
   const setChatViewStateMutation = useMutation({
     ...trpc.workspace.setChatViewState.mutationOptions(),
     retry: 2,
+    // The save queue reports one failure after retries and preserves pending work.
+    onError: () => {},
   })
   const persistViewStateRef = useRef(setChatViewStateMutation.mutateAsync)
   persistViewStateRef.current = setChatViewStateMutation.mutateAsync
@@ -1377,9 +1373,10 @@ export function ChatView({
         )
         return { previous, key }
       },
-      onError: (_error, _input, context) => {
+      onError: (error, _input, context) => {
         if (context?.previous)
           queryClient.setQueryData(context.key, context.previous)
+        reportActionError(error, "Could not switch branch")
       },
       onSettled: async () => {
         await invalidateWorkspace()
@@ -1399,9 +1396,10 @@ export function ChatView({
         )
         return { previous, key }
       },
-      onError: (_error, _input, context) => {
+      onError: (error, _input, context) => {
         if (context?.previous)
           queryClient.setQueryData(context.key, context.previous)
+        reportActionError(error, "Could not switch branch")
       },
       onSettled: async () => {
         await invalidateWorkspace()
@@ -1415,7 +1413,7 @@ export function ChatView({
         await invalidateWorkspace()
       },
       onError: (error) => {
-        toast.error(error.message || "Could not switch path")
+        reportActionError(error, "Could not switch path")
       },
     })
   )
@@ -1799,10 +1797,7 @@ export function ChatView({
       if (reconcile) await reconcile
     } catch (error) {
       failed = true
-      if (aliveRef.current)
-        toast.error(
-          error instanceof Error ? error.message : "Generation failed"
-        )
+      if (aliveRef.current) reportActionError(error, "Generation failed")
       await queryClient.invalidateQueries({
         queryKey: trpc.workspace.get.queryKey({ chatId: body.chatId }),
       })
@@ -2022,11 +2017,7 @@ export function ChatView({
       )
     } catch (error) {
       if (aliveRef.current) {
-        toast.error(
-          error instanceof Error
-            ? error.message
-            : "Could not start conversation"
-        )
+        reportActionError(error, "Could not start conversation")
       }
     }
   }
@@ -2120,9 +2111,7 @@ export function ChatView({
       setTemplateScheduleOpen(false)
       toast.success("Template and schedule created")
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Could not schedule template"
-      )
+      reportActionError(error, "Could not schedule template")
     }
   }
 
@@ -2195,9 +2184,7 @@ export function ChatView({
       toast.success("Generation scheduled")
       if (ensured.created) router.replace(`/chat/${ensured.chatId}`)
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Could not schedule message"
-      )
+      reportActionError(error, "Could not schedule message")
     }
   }
 
@@ -2309,9 +2296,7 @@ export function ChatView({
           )
           if (previewUrl) URL.revokeObjectURL(previewUrl)
           if (viewer?.src === previewUrl) setViewer(null)
-          toast.error(
-            error instanceof Error ? error.message : "File upload failed"
-          )
+          reportActionError(error, "File upload failed")
         }
       }
     }
@@ -2471,9 +2456,7 @@ export function ChatView({
           router.replace(`/chat/${ensured.chatId}`, { scroll: false })
         return true
       } catch (error) {
-        toast.error(
-          error instanceof Error ? error.message : "Could not save message"
-        )
+        reportActionError(error, "Could not save message")
         return false
       }
     }
@@ -2621,9 +2604,7 @@ export function ChatView({
         updateSessionDraft(slot, {
           attachments: pendingAttachments,
         })
-      toast.error(
-        error instanceof Error ? error.message : "Could not save and generate"
-      )
+      reportActionError(error, "Could not save and generate")
       return false
     } finally {
       if (hasComposerDraft(slot)) setSessionSending(slot, false)
@@ -3505,9 +3486,6 @@ export function ChatView({
                           setPickerSlot(slot)
                           setPromptPickerOpen(true)
                         }}
-                        onStop={() =>
-                          streamsForActiveChat.forEach(([id]) => stopStream(id))
-                        }
                         onRevealContextMessage={setScrollTargetId}
                       />
                     </div>
@@ -3518,9 +3496,6 @@ export function ChatView({
                 onGenerateReplies={streamTreeRepliesFromNode}
                 onAnswerTools={streamTreeResume}
                 editor={messageEditor}
-                onStop={() =>
-                  streamsForActiveChat.forEach(([id]) => stopStream(id))
-                }
                 initialCamera={renderedViewState.camera}
                 onCameraChange={(camera) => {
                   if (data.chat) persistTreeCamera(data.chat.id, camera)
@@ -3588,9 +3563,6 @@ export function ChatView({
                   setPickerSlot(linearComposerSlot)
                   setPromptPickerOpen(true)
                 }}
-                onStop={() =>
-                  streamsForActiveChat.forEach(([id]) => stopStream(id))
-                }
                 onRevealContextMessage={setScrollTargetId}
               />
             </div>

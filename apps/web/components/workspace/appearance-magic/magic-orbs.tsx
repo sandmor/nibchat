@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { AnimatePresence, animate, motion } from "motion/react"
 import { toast } from "sonner"
+import { reportActionError } from "@/lib/action-errors"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { HugeiconsIcon } from "@hugeicons/react"
 import {
@@ -137,9 +138,7 @@ export function AppearanceMagicChrome() {
       }
     } catch (error) {
       if (gen === actionGenRef.current) {
-        toast.error(
-          error instanceof Error ? error.message : "Could not save theme"
-        )
+        reportActionError(error, "Could not save theme")
       }
     } finally {
       if (gen === actionGenRef.current) {

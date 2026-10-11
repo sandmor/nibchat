@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { toast } from "sonner"
+import { reportActionError } from "@/lib/action-errors"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { ArrowDown01Icon } from "@hugeicons/core-free-icons"
 import {
@@ -267,7 +268,10 @@ export function ActivitySettings({
     trpc.workspace.activity.clear.mutationOptions()
   )
   const retentionOperation = useMutation(
-    trpc.workspace.activity.setRetentionDays.mutationOptions()
+    trpc.workspace.activity.setRetentionDays.mutationOptions({
+      onError: (error) =>
+        reportActionError(error, "Could not update activity retention"),
+    })
   )
 
   const exportHistory = async () => {
@@ -304,8 +308,8 @@ export function ActivitySettings({
       )
       setClearOpen(false)
       toast.success("Activity history cleared")
-    } catch {
-      toast.error("Could not clear activity history")
+    } catch (error) {
+      reportActionError(error, "Could not clear activity history")
     }
   }
   const chats = workspace.data?.chats ?? []
@@ -418,8 +422,6 @@ export function ActivitySettings({
                   { retentionDays: Number(value) },
                   {
                     onSuccess: () => void retention.refetch(),
-                    onError: () =>
-                      toast.error("Could not update activity retention"),
                   }
                 )
               }}

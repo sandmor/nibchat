@@ -1,6 +1,7 @@
 "use client"
 
 import { motion } from "motion/react"
+import { MessageStop } from "./message-stop"
 import { MessageParts } from "@/components/workspace/message-parts"
 import { LongBlockFrame } from "./long-block-nav"
 import { messageStatusLabel } from "@/lib/message-meta"
@@ -62,6 +63,9 @@ export function StreamingBubble({
         transition={transition}
       >
         {body}
+        <div data-find-skip className="flex justify-end px-2 py-1">
+          <MessageStop streamId={streamId} />
+        </div>
       </motion.article>
     ) : (
       <article
@@ -72,6 +76,9 @@ export function StreamingBubble({
         className={articleClass}
       >
         {body}
+        <div data-find-skip className="flex justify-end px-2 py-1">
+          <MessageStop streamId={streamId} />
+        </div>
       </article>
     )
 

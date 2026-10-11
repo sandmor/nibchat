@@ -3,6 +3,10 @@
 import { useCallback, useLayoutEffect, useRef, type ReactNode } from "react"
 import { nextFindRevealPending } from "@/lib/conversation-search"
 import {
+  discardHeldEditorScroll,
+  settleHeldEditorScroll,
+} from "./find-editor"
+import {
   clearFindHighlights,
   paintMountedFindHighlights,
   revealPaintedFind,
@@ -47,7 +51,9 @@ export function ConversationFindLayer({
       if (pendingRevealRef.current > 0 && painted.activeArticle) {
         pendingRevealRef.current = 0
         revealPaintedFind(painted.activeArticle, painted)
-      }
+        // Reveal owns the scroll. Restoring here would undo the jump to the hit.
+        discardHeldEditorScroll()
+      } else settleHeldEditorScroll()
     })
   }, [])
 

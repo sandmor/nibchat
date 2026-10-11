@@ -2790,8 +2790,8 @@ export async function moveNode(input: {
   })
 }
 
-/** Replace a durable message body. Setting a live node complete fences later
- * stream terminal writes; the caller has already requested producer cancel. */
+/** Replace a durable message body and cancel its generation. Setting the node
+ * complete fences later stream writes; revision protects concurrent authored edits. */
 export async function replaceMessage(input: {
   userId: string
   nodeId: string
@@ -2828,9 +2828,6 @@ export async function replaceMessage(input: {
         : []
     )
   )
-  const removedCalls = previousCalls.filter(
-    (callId) => !retainedCalls.has(callId)
-  )
   if (
     node.status === "streaming" &&
     previousCalls.some((callId) => retainedCalls.has(callId))
@@ -2842,6 +2839,16 @@ export async function replaceMessage(input: {
   }
   const deletion = await db.transaction().execute(async (trx) => {
     await lockChatMutation(trx, node.chat_id, input.userId)
+    // Cancellation can race with a final streamed task call. Read the calls
+    // under the mutation lock so cleanup covers the body being overwritten.
+    const current = await assertNodeOwner(node.id, input.userId, trx)
+    const removedCalls = nodeParts(current).flatMap((part) =>
+      part.type === "tool-invocation" &&
+      (part.toolName === "task" || part.toolName === "continue_task") &&
+      !retainedCalls.has(part.toolCallId)
+        ? [part.toolCallId]
+        : []
+    )
     await trx
       .deleteFrom("generation_runs")
       .where("node_id", "=", node.id)
@@ -2867,7 +2874,6 @@ export async function replaceMessage(input: {
       })
       .where("id", "=", node.id)
       .where("revision", "=", input.expectedRevision ?? node.revision)
-      .where("parts_json", "=", node.parts_json)
       .executeTakeFirst()
     if (Number(result.numUpdatedRows ?? 0) !== 1)
       throw new Error("Message changed before it could be replaced.")

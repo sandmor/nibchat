@@ -40,7 +40,6 @@ export type SessionMessageEditorProps = {
   onPreview?: (src: string, name: string) => void
   onOpenResources?: () => void
   onOpenPrompts?: () => void
-  onStop?: () => void
   onRevealContextMessage?: (nodeId: string) => void
   onReplace?: () => void
   onConvertRole?: (role: "user" | "assistant") => void
@@ -164,7 +163,6 @@ const SessionMessageEditorLeaf = memo(function SessionMessageEditorLeaf({
         latestRef.current.onPreview?.(src, name),
       onOpenResources: () => latestRef.current.onOpenResources?.(),
       onOpenPrompts: () => latestRef.current.onOpenPrompts?.(),
-      onStop: () => latestRef.current.onStop?.(),
       onRevealContextMessage: (nodeId: string) =>
         latestRef.current.onRevealContextMessage?.(nodeId),
       onConvertRole: (role: "user" | "assistant") => {
@@ -255,7 +253,6 @@ const SessionMessageEditorLeaf = memo(function SessionMessageEditorLeaf({
       onPreview={actions.onPreview}
       onOpenResources={actions.onOpenResources}
       onOpenPrompts={actions.onOpenPrompts}
-      onStop={actions.onStop}
       onRevealContextMessage={actions.onRevealContextMessage}
     />
   )

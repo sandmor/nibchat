@@ -7,6 +7,8 @@ import {
   useStreamStore,
 } from "./stream-store"
 
+vi.mock("sonner", () => ({ toast: { error: vi.fn() } }))
+
 describe("stream identity vs payload", () => {
   beforeEach(() => {
     useStreamStore.setState({
@@ -18,6 +20,9 @@ describe("stream identity vs payload", () => {
   })
 
   afterEach(() => {
+    for (const id of Object.keys(useStreamStore.getState().streams))
+      useStreamStore.getState().finish(id)
+    vi.clearAllMocks()
     vi.unstubAllGlobals()
   })
 
@@ -126,6 +131,21 @@ describe("stream identity vs payload", () => {
     ])
   })
 
+  it("allows retry after cancellation fails", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 500 }))
+      .mockResolvedValueOnce(new Response(null, { status: 202 }))
+    vi.stubGlobal("fetch", fetch)
+    const { start, stop } = useStreamStore.getState()
+    start("s1", { nodeId: "n1", chatId: "c1", parentNodeId: null, parts: [] })
+    await stop("s1")
+    expect(useStreamStore.getState().streams.s1?.stopping).toBe(false)
+    await stop("s1")
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(useStreamStore.getState().streams.s1?.stopping).toBe(true)
+  })
+
   it("lists only the requested chats and ignores token payload", () => {
     const { start, applyEvent } = useStreamStore.getState()
     start("a", { nodeId: "n1", chatId: "c1", parentNodeId: null, parts: [] })
@@ -138,7 +158,7 @@ describe("stream identity vs payload", () => {
     ).toEqual(["a"])
   })
 
-  it("omits stopping streams from overlay placement", () => {
+  it("keeps stopping streams visible until cancellation is confirmed", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(new Response(null, { status: 202 }))
@@ -150,7 +170,7 @@ describe("stream identity vs payload", () => {
       chatStreamEntries(useStreamStore.getState().streams, ["c1"]).map(
         ([id]) => id
       )
-    ).toEqual([])
+    ).toEqual(["a"])
   })
 
   it("returns the shared empty buffer until a stream is started", () => {

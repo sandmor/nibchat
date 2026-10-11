@@ -64,7 +64,6 @@ export function UserTurnEditor({
   onPreview,
   onOpenResources,
   onOpenPrompts,
-  onStop,
   onRevealContextMessage,
   sendLabel = "Send",
   purpose = "compose",
@@ -96,7 +95,6 @@ export function UserTurnEditor({
   onPreview: (src: string, name: string) => void
   onOpenResources: () => void
   onOpenPrompts: () => void
-  onStop?: () => void
   onRevealContextMessage?: (nodeId: string) => void
   sendLabel?: string
   purpose?: EditorPurpose
@@ -154,7 +152,7 @@ export function UserTurnEditor({
           <ContextPreviewStrip
             contextParentId={contextParentId}
             draft={draft}
-            streaming={Boolean(streaming && onStop)}
+            streaming={streaming}
             onRevealMessage={onRevealContextMessage}
           />
         ) : null
@@ -263,8 +261,6 @@ export function UserTurnEditor({
       onSend={send}
       onSendMultiple={onSendMultiple}
       onCancel={onCancel}
-      onStop={onStop}
-      streaming={streaming}
       hint={
         expandable && !inline ? (
           <MetaLine

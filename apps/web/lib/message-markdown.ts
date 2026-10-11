@@ -15,10 +15,17 @@ export function messageToMarkdown(node: NodeRow): string {
  * Uses parent pointers, not the chat's selected branch. Tree cards that sit
  * off the Linear path still copy the conversation that produced them.
  */
-export function pathToMarkdown(nodes: NodeRow[], nodeId: string): string {
+export function pathToMarkdown(
+  nodes: NodeRow[],
+  nodeId: string,
+  currentParts?: Parts
+): string {
   return ancestorPath(nodes, nodeId)
     .map((node) => {
-      const body = messageToMarkdown(node)
+      const body =
+        node.id === nodeId && currentParts
+          ? partsToMarkdown(currentParts)
+          : messageToMarkdown(node)
       if (!body) return null
       return `**${roleLabel(node.role)}**\n\n${body}`
     })

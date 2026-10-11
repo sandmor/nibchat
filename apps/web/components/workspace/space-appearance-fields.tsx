@@ -97,6 +97,9 @@ function previewFooter(role: "user" | "assistant", captions: boolean) {
   return (
     <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1">
       <span className="contents" dangerouslySetInnerHTML={html.identity} />
+      {html.stepper.__html ? (
+        <span className="contents" dangerouslySetInnerHTML={html.stepper} />
+      ) : null}
       <span className="contents" dangerouslySetInnerHTML={html.actions} />
     </div>
   )

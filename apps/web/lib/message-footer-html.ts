@@ -53,6 +53,8 @@ export type MessageFooterHtmlModel = {
 export type MessageFooterHtml = {
   actions: { __html: string }
   identity: { __html: string }
+  /** Empty when this message has no sibling versions. */
+  stepper: { __html: string }
 }
 
 const META_CLASS =
@@ -181,13 +183,17 @@ function renderIdentity(identity: FooterIdentity) {
   return `<button type="button" title="${escapeHtml(identity.title ?? identity.label)}" aria-label="Message details" data-message-footer-action="${MESSAGE_FOOTER_ACTION.details}" class="${META_CLASS}">${parts.join("")}</button>`
 }
 
+function renderStepper(model: MessageFooterHtmlModel) {
+  if (model.siblingCount > 1 && model.siblingIndex >= 0)
+    return { __html: siblingStepper(model.siblingIndex, model.siblingCount) }
+  return { __html: "" }
+}
+
 function renderActions(model: MessageFooterHtmlModel) {
   const actions: string[] = []
   const add = (options: ActionButtonOptions) => {
     actions.push(actionButton(options))
   }
-  if (model.siblingCount > 1 && model.siblingIndex >= 0)
-    actions.push(siblingStepper(model.siblingIndex, model.siblingCount))
   add({
     action: MESSAGE_FOOTER_ACTION.copy,
     captions: model.captions,
@@ -251,6 +257,7 @@ export class MessageFooterHtmlCache {
     const entry = {
       actions: renderActions(model),
       identity: { __html: renderIdentity(model.identity) },
+      stepper: renderStepper(model),
     }
     this.entries.set(key, entry)
     if (this.entries.size > this.limit) {

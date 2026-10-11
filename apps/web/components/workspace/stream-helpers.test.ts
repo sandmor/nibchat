@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
-  applyStoppingStreamPatches,
   followGenerationStream,
   isViewingChat,
   planStreamEnd,
@@ -11,8 +10,6 @@ import {
 } from "./stream-helpers"
 import type { GenerationStartBody } from "@/lib/generation-start"
 import type { NodeRow, ToolInvocationPart } from "@/lib/types"
-import type { StreamMeta } from "@/lib/stream-store"
-import type { WorkspaceData } from "@/lib/workspace-cache"
 
 function node(id: string): NodeRow {
   return {
@@ -286,7 +283,6 @@ describe("planStreamEnd", () => {
     expect(
       planStreamEnd({
         reason: "aborted",
-        stopping: false,
         nodeStatus: "streaming",
         hasParts: true,
       })
@@ -296,37 +292,12 @@ describe("planStreamEnd", () => {
       dropOverlay: false,
       invalidate: false,
     })
-    expect(
-      planStreamEnd({
-        reason: "aborted",
-        stopping: true,
-        nodeStatus: "streaming",
-        hasParts: true,
-      }).keepStore
-    ).toBe(true)
-  })
-
-  it("writes aborted when a stopping stream is gone and still streaming", () => {
-    expect(
-      planStreamEnd({
-        reason: "gone",
-        stopping: true,
-        nodeStatus: "streaming",
-        hasParts: true,
-      })
-    ).toEqual({
-      keepStore: false,
-      write: "aborted",
-      dropOverlay: true,
-      invalidate: true,
-    })
   })
 
   it("does not write when gone and the node is already terminal", () => {
     expect(
       planStreamEnd({
         reason: "gone",
-        stopping: false,
         nodeStatus: "complete",
         hasParts: true,
       })
@@ -342,7 +313,6 @@ describe("planStreamEnd", () => {
     expect(
       planStreamEnd({
         reason: "gone",
-        stopping: false,
         nodeStatus: "streaming",
         hasParts: true,
       })
@@ -358,7 +328,6 @@ describe("planStreamEnd", () => {
     expect(
       planStreamEnd({
         reason: "failed",
-        stopping: false,
         nodeStatus: "streaming",
         hasParts: false,
       }).write
@@ -422,45 +391,6 @@ describe("shouldFollowGeneration", () => {
         stream: undefined,
       })
     ).toBe(false)
-  })
-})
-
-describe("applyStoppingStreamPatches", () => {
-  it("paints aborted parts and keeps activeGenerations", () => {
-    const data: WorkspaceData = {
-      chatDefaults: {},
-      defaultPromptStackId: "default-stack",
-      chats: [],
-      spaces: [],
-      chat: null,
-      nodes: [{ ...node("a1"), role: "assistant", status: "streaming" }],
-      activeGenerations: [
-        {
-          generationId: "g1",
-          nodeId: "a1",
-          chatId: "c1",
-          parentNodeId: "u1",
-          startedAt: "",
-        },
-      ],
-    }
-    const streams: Record<string, StreamMeta> = {
-      g1: {
-        nodeId: "a1",
-        chatId: "c1",
-        parentNodeId: "u1",
-        startedAt: 1,
-        stopping: true,
-      },
-    }
-    const next = applyStoppingStreamPatches(data, streams, {
-      g1: { parts: [{ type: "text", text: "Hello" }] },
-    })
-    expect(next?.nodes[0]?.status).toBe("stopped")
-    expect(JSON.parse(next?.nodes[0]?.parts_json ?? "[]")).toEqual([
-      { type: "text", text: "Hello" },
-    ])
-    expect(next?.activeGenerations).toHaveLength(1)
   })
 })
 

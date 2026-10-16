@@ -132,6 +132,7 @@ import { ChatTree } from "./chat-tree"
 import { drainChatViewStateSaves } from "./chat-view-state-persistence"
 import { composeLayoutAnchor, composeLayoutId } from "./tree-layout"
 import { ConversationFindLayer } from "./conversation-find"
+import { prepareTranscriptCreation } from "./transcript-navigation"
 import { ConversationFindBar } from "./conversation-find-bar"
 import {
   ConversationFindProvider,
@@ -1796,6 +1797,9 @@ export function ChatView({
       }
       if (reconcile) await reconcile
     } catch (error) {
+      // Leaving a chat stops this reader, not the server-owned generation.
+      // Keep its overlay resumable instead of settling it as a failed reply.
+      if (controller.signal.aborted) return false
       failed = true
       if (aliveRef.current) reportActionError(error, "Generation failed")
       await queryClient.invalidateQueries({
@@ -1857,6 +1861,7 @@ export function ChatView({
           draftNodeIdMap.current = nodeIds
           // Track the new id before replace so stream UI still matches on /chat/new.
           selectedChatIdRef.current = chat.id
+          prepareTranscriptCreation(paneRef.current, chat.id)
           setPendingChatId(chat.id)
           const payload: WorkspaceData = {
             chats: [chat, ...knownChats.filter((c) => c.id !== chat.id)],
@@ -2703,28 +2708,39 @@ export function ChatView({
     window.history.replaceState(window.history.state, "", url)
   }
 
-  const streamsForActiveChat = chatStreamEntries(streamMetas, [
-    selectedChatId,
-    // On /chat/new after first create, selectedChatId is still null.
-    pendingChatId,
-    data.chat?.id,
-  ])
+  const streamsForActiveChat = useMemo(
+    () =>
+      chatStreamEntries(streamMetas, [
+        selectedChatId,
+        // On /chat/new after first create, selectedChatId is still null.
+        pendingChatId,
+        data.chat?.id,
+      ]),
+    [data.chat?.id, pendingChatId, selectedChatId, streamMetas]
+  )
 
   const pathVisibleStreams = streamsForActiveChat.filter(([, stream]) => {
     const place = streamPlacement(stream, activePath, nodes)
     return place === "inline" || place === "after-tip"
   })
 
-  const streamIdByNodeId = new Map<string, string>()
-  for (const [streamId, stream] of streamsForActiveChat) {
-    streamIdByNodeId.set(stream.nodeId, streamId)
-  }
+  const streamIdByNodeId = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const [streamId, stream] of streamsForActiveChat)
+      map.set(stream.nodeId, streamId)
+    return map
+  }, [streamsForActiveChat])
 
-  const afterTipStreams = streamsForActiveChat
-    .filter(
-      ([, stream]) => streamPlacement(stream, activePath, nodes) === "after-tip"
-    )
-    .map(([streamId, stream]) => ({ streamId, nodeId: stream.nodeId }))
+  const afterTipStreams = useMemo(
+    () =>
+      streamsForActiveChat
+        .filter(
+          ([, stream]) =>
+            streamPlacement(stream, activePath, nodes) === "after-tip"
+        )
+        .map(([streamId, stream]) => ({ streamId, nodeId: stream.nodeId })),
+    [activePath, nodes, streamsForActiveChat]
+  )
 
   const showEmpty =
     activePath.length === 0 &&
@@ -3347,6 +3363,7 @@ export function ChatView({
             {view === "linear" ? (
               <FindChatTranscript
                 chatKey={chatKey}
+                creatingChat={pendingChatId !== null && selectedChatId === null}
                 density={density}
                 activePath={activePath}
                 nodes={renderNodes}
@@ -3366,7 +3383,7 @@ export function ChatView({
                 editingNodeIds={editingNodeIds}
                 scrollTargetId={scrollTargetId}
                 onScrollTargetConsumed={consumeScrollTarget}
-                onSelect={(parentId, childId) => {
+                onSelect={async (parentId, childId) => {
                   if (!data.chat) {
                     if (parentId)
                       setDraftTemplateNodes((current) =>
@@ -3378,17 +3395,16 @@ export function ChatView({
                       )
                     else setDraftTemplateRootId(childId)
                   } else if (parentId)
-                    selectChildMutation.mutate({
+                    await selectChildMutation.mutateAsync({
                       nodeId: parentId,
                       childId,
                     })
                   else
-                    selectRootMutation.mutate({
+                    await selectRootMutation.mutateAsync({
                       chatId: data.chat.id,
                       nodeId: childId,
                     })
-                  // User-driven branch navigation — bring the selected tip into view.
-                  setScrollTargetId(childId)
+                  // The transcript aligns explicit version switches before paint.
                 }}
                 onChanged={() => invalidateWorkspace()}
                 onGenerateReplies={streamRepliesFromNode}

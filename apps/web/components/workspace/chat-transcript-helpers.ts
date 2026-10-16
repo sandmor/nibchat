@@ -13,7 +13,7 @@ export const TRANSCRIPT_OVERSCAN = 10
  * Dual identity for path rows (do not collapse these):
  * - slot index / {@link pathSlotKey} = virtualizer item key (depth). Stable
  *   across sibling branch switches so the row shell does not remount;
- *   SlotCrossfade owns content motion.
+ *   the body crossfade owns content motion. The article shell stays mounted.
  * - messageId = node (or stream) id for virtual scroll / jump lookup.
  *
  * Never use node id as the virtualizer item key for path rows.

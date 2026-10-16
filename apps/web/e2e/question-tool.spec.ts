@@ -5,6 +5,7 @@ import {
   ensureWorkspace,
   expectAssistantText,
   openNewChat,
+  presentArticles,
   sendMessage,
   streamingMarkers,
 } from "./helpers/workspace"
@@ -168,8 +169,7 @@ test.describe("question tool", () => {
       timeout: 30_000,
     })
 
-    const toolArticle = presentTranscript(page)
-      .locator("article")
+    const toolArticle = presentArticles(page, "message-assistant")
       .filter({ has: page.getByText("Questions answered") })
       .last()
     await toolArticle.getByRole("button", { name: "Edit", exact: true }).click()
@@ -190,8 +190,7 @@ test.describe("question tool", () => {
     await page.getByRole("button", { name: "Save branch" }).click()
     await expect(prompt).toHaveCount(0)
 
-    await presentTranscript(page)
-      .locator("article")
+    await presentArticles(page, "message-assistant")
       .filter({ has: page.getByText("Questions answered") })
       .last()
       .getByRole("button", { name: "Edit", exact: true })
@@ -202,7 +201,7 @@ test.describe("question tool", () => {
     await expect(
       page.getByRole("textbox", { name: "Choice label" })
     ).toHaveCount(3)
-    await page.getByRole("button", { name: "Cancel" }).click()
+    await page.getByRole("button", { name: "Cancel", exact: true }).click()
   })
 
   test("awaiting question survives tab close and continues after reopening", async () => {

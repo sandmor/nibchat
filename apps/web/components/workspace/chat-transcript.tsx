@@ -6,12 +6,14 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react"
 import { motion } from "motion/react"
 import {
   measureElement as measureVirtualElement,
   useVirtualizer,
+  type Virtualizer,
 } from "@tanstack/react-virtual"
 import { ArrowDown02Icon } from "@hugeicons/core-free-icons"
 import { HugeiconsIcon } from "@hugeicons/react"
@@ -34,7 +36,6 @@ import {
   TRANSCRIPT_COLUMN_MAX_WIDTH,
   TRANSCRIPT_SCROLL_TO_END_INSET,
   transcriptEstimatedRowHeight,
-  transcriptGeometryChanged,
   transcriptMeasurementLayoutKey,
   transcriptPeekPx,
   transcriptRangeExtractor,
@@ -49,7 +50,10 @@ import {
   transcriptHeightEdge,
   transcriptHeightIdentity,
 } from "./transcript-height-cache"
-import { SCROLLPORT_LIVE_EDGE_PX } from "./long-block-scroll"
+import {
+  useTranscriptViewport,
+  type TranscriptAtEnd,
+} from "./use-transcript-viewport"
 
 const EMPTY_EDITING_NODE_IDS: ReadonlySet<string> = new Set()
 
@@ -73,6 +77,8 @@ function transcriptRowSpacing(
 export type ChatTranscriptProps = {
   /** Remount the virtualizer when switching chats (not on a path tip). */
   chatKey: string
+  /** Persisting this draft retains its reader; opening another chat resets it. */
+  creatingChat: boolean
   density: "comfortable" | "compact"
   activePath: NodeRow[]
   nodes: NodeRow[]
@@ -87,11 +93,11 @@ export type ChatTranscriptProps = {
   messageActionCaptions: boolean
   /** Open edits stay mounted outside the visual range. */
   editingNodeIds?: ReadonlySet<string>
-  /** Explicit navigation target; streaming follow is virtualizer-owned. */
+  /** Explicit navigation target, resolved by the viewport controller. */
   scrollTargetId: string | null
   onScrollTargetConsumed: () => void
   findLocateKey?: number
-  onSelect: (parentId: string, childId: string) => void
+  onSelect: (parentId: string, childId: string) => void | Promise<void>
   onChanged: () => void | Promise<void>
   onGenerateReplies: (nodeId: string | null, count?: number) => void
   onAnswerTools?: (
@@ -106,6 +112,8 @@ export function ChatTranscript(props: ChatTranscriptProps) {
 }
 
 function VirtualChatTranscript({
+  chatKey,
+  creatingChat,
   density,
   activePath,
   nodes,
@@ -143,15 +151,13 @@ function VirtualChatTranscript({
       appearance.remoteStylesheet,
     ]
   )
-  const heightLayoutKeyRef = useRef(heightLayoutKey)
-  heightLayoutKeyRef.current = heightLayoutKey
   const transcriptCanvasRef = useRef<HTMLDivElement>(null)
-  const transcriptWidthRef = useRef(0)
-  const estimatedWithoutWidthRef = useRef(false)
   const didInitialScrollRef = useRef(false)
   const focusedIndexRef = useRef<number | null>(null)
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null)
-  const [atEnd, setAtEnd] = useState(true)
+  const notifyMeasurementsRef = useRef(() => {})
+  const contentSizeRef = useRef(-1)
+  const [retainedSlotKey, setRetainedSlotKey] = useState<string | null>(null)
 
   const scheduledGeneration = useScheduledGeneration()
   const rows = useMemo(() => {
@@ -170,13 +176,6 @@ function VirtualChatTranscript({
     () => transcriptSiblingsByNodeId(nodes),
     [nodes]
   )
-  const rowsRef = useRef(rows)
-  const previousRowsRef = useRef(rows)
-  const densityRef = useRef(density)
-  const messageActionCaptionsRef = useRef(messageActionCaptions)
-  rowsRef.current = rows
-  densityRef.current = density
-  messageActionCaptionsRef.current = messageActionCaptions
   const retainedIndexes = useMemo(() => {
     const retained = new Set<number>()
     for (const nodeId of editingNodeIds) {
@@ -188,8 +187,14 @@ function VirtualChatTranscript({
         retained.add(index)
     })
     if (focusedIndex != null) retained.add(focusedIndex)
+    if (retainedSlotKey) {
+      const index = rows.findIndex(
+        (_, index) => transcriptItemKey(rows, index) === retainedSlotKey
+      )
+      if (index >= 0) retained.add(index)
+    }
     return retained
-  }, [editingNodeIds, focusedIndex, rowIndexByMessageId, rows])
+  }, [editingNodeIds, focusedIndex, rowIndexByMessageId, rows, retainedSlotKey])
 
   const rangeExtractor = useCallback(
     (range: Parameters<typeof transcriptRangeExtractor>[0]) =>
@@ -201,35 +206,47 @@ function VirtualChatTranscript({
     [retainedIndexes]
   )
 
-  const virtualizer = useVirtualizer({
-    count: rows.length,
-    getScrollElement: () => viewportRef.current,
-    estimateSize: (index) => {
-      const row = rowsRef.current[index]
-      const width = transcriptWidthRef.current
-      const cached = transcriptHeightCache.get(
-        row ? transcriptHeightIdentity(row) : null,
-        {
-          width: width || null,
-          density: densityRef.current,
-          messageActionCaptions: messageActionCaptionsRef.current,
-          layoutKey: heightLayoutKeyRef.current,
-          edge: transcriptHeightEdge(index, rowsRef.current.length),
-        }
-      )
-      if (cached != null) {
-        if (!width) estimatedWithoutWidthRef.current = true
-        return cached
+  const rowsRef = useRef(rows)
+  const densityRef = useRef(density)
+  const messageActionCaptionsRef = useRef(messageActionCaptions)
+  const heightLayoutKeyRef = useRef(heightLayoutKey)
+  const widthRef = useRef(0)
+  rowsRef.current = rows
+  densityRef.current = density
+  messageActionCaptionsRef.current = messageActionCaptions
+  heightLayoutKeyRef.current = heightLayoutKey
+
+  // Stable identities keep TanStack's measurement memo intact across commits
+  // that do not change row count, padding, or measured sizes.
+  const estimateSize = useCallback((index: number) => {
+    const currentRows = rowsRef.current
+    const row = currentRows[index]
+    const width = widthRef.current
+    const cached = transcriptHeightCache.get(
+      row ? transcriptHeightIdentity(row) : null,
+      {
+        width: width || null,
+        density: densityRef.current,
+        messageActionCaptions: messageActionCaptionsRef.current,
+        layoutKey: heightLayoutKeyRef.current,
+        edge: transcriptHeightEdge(index, currentRows.length),
       }
-      if (!width) estimatedWithoutWidthRef.current = true
-      return transcriptEstimatedRowHeight(row, width)
-    },
-    measureElement: (element, entry, instance) => {
+    )
+    if (cached != null) return cached
+    return transcriptEstimatedRowHeight(row, width)
+  }, [])
+  const measureRow = useCallback(
+    (
+      element: HTMLDivElement,
+      entry: ResizeObserverEntry | undefined,
+      instance: Virtualizer<HTMLDivElement, HTMLDivElement>
+    ) => {
       const size = measureVirtualElement(element, entry, instance)
       if (!entry) return size
 
       const index = instance.indexFromElement(element)
-      const row = rowsRef.current[index]
+      const currentRows = rowsRef.current
+      const row = currentRows[index]
       const identity = row ? transcriptHeightIdentity(row) : null
       const box = entry.borderBoxSize?.[0]
       const width = Math.round(box?.inlineSize ?? element.clientWidth)
@@ -247,20 +264,36 @@ function VirtualChatTranscript({
             density: densityRef.current,
             messageActionCaptions: messageActionCaptionsRef.current,
             layoutKey: heightLayoutKeyRef.current,
-            edge: transcriptHeightEdge(index, rowsRef.current.length),
+            edge: transcriptHeightEdge(index, currentRows.length),
           },
           size
         )
       }
       return size
     },
+    []
+  )
+  const getItemKey = useCallback(
+    (index: number) => transcriptItemKey(rowsRef.current, index),
+    []
+  )
+
+  const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+    count: rows.length,
+    getScrollElement: () => viewportRef.current,
+    estimateSize,
+    measureElement: measureRow,
     // A path row stays keyed by depth when a scheduled sibling is inserted
     // above it. An after-tip stream keeps the slot it joins once promoted.
-    getItemKey: (index) => transcriptItemKey(rowsRef.current, index),
-    anchorTo: "end",
-    followOnAppend: true,
+    getItemKey,
+    // TanStack measures and places rows; the viewport model owns scroll policy.
+    // Re-enabling any virtualizer scroll writer violates the single-writer contract.
+    anchorTo: "start",
+    followOnAppend: false,
+    // Includes initialization and effect replay, which otherwise write offsets
+    // even with append following and resize compensation disabled.
+    scrollToFn: () => {},
     scrollPaddingStart: transcriptPeekPx(density),
-    scrollEndThreshold: SCROLLPORT_LIVE_EDGE_PX,
     overscan: TRANSCRIPT_OVERSCAN,
     rangeExtractor,
     directDomUpdates: true,
@@ -271,10 +304,39 @@ function VirtualChatTranscript({
     // disallows the adapter's default flushSync from those commit phases.
     useFlushSync: false,
     onChange: (instance) => {
-      const nextAtEnd = instance.isAtEnd(SCROLLPORT_LIVE_EDGE_PX)
-      setAtEnd((current) => (current === nextAtEnd ? current : nextAtEnd))
+      // Scroll notifications share this callback. Range movement leaves the
+      // total unchanged; a resize changes the public total and needs a pass.
+      const total = instance.getTotalSize()
+      if (total === contentSizeRef.current) return
+      contentSizeRef.current = total
+      notifyMeasurementsRef.current()
     },
   })
+  // Ref measurement runs before layout effects. The flag has to be in place
+  // during render or the first sizes also move the virtualizer's own offset.
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => false
+  const viewport = useTranscriptViewport({
+    chatKey,
+    creatingChat,
+    rows,
+    layoutKey:
+      heightLayoutKey +
+      transcriptMeasurementLayoutKey(density, messageActionCaptions),
+    viewportRef,
+    canvasRef: transcriptCanvasRef,
+    widthRef,
+    contentSizeRef,
+    virtualizer,
+    scrollTargetId,
+    findLocateKey,
+    onScrollTargetConsumed,
+    onSelect,
+    onRetainedSlotChange: setRetainedSlotKey,
+  })
+  notifyMeasurementsRef.current = viewport.notifyMeasurements
+  useLayoutEffect(() => {
+    didInitialScrollRef.current = true
+  }, [])
   const virtualItems = virtualizer.getVirtualItems()
 
   const setTranscriptCanvas = useCallback(
@@ -284,180 +346,6 @@ function VirtualChatTranscript({
     },
     [virtualizer]
   )
-
-  const measurePreservingVisibleAnchor = useCallback(
-    (resizing = false) => {
-      const viewport = viewportRef.current
-      const canvas = transcriptCanvasRef.current
-      if (!viewport || !canvas) {
-        virtualizer.measure()
-        return
-      }
-
-      const wasAtEnd = virtualizer.isAtEnd(SCROLLPORT_LIVE_EDGE_PX)
-      const scrollOffset = viewport.scrollTop
-      const visibleItem = wasAtEnd
-        ? undefined
-        : virtualizer.getVirtualItemForOffset(scrollOffset)
-      const visibleElement = visibleItem
-        ? canvas.querySelector<HTMLElement>(
-            `:scope > [data-index="${visibleItem.index}"]`
-          )
-        : null
-      const anchor = visibleItem
-        ? {
-            index: visibleItem.index,
-            // Preserve the painted position, including subpixel layout. The
-            // virtualizer's rounded measurement can already differ by 1–2px.
-            offsetWithinRow: visibleElement
-              ? viewport.getBoundingClientRect().top -
-                visibleElement.getBoundingClientRect().top
-              : scrollOffset - visibleItem.start,
-          }
-        : null
-
-      virtualizer.measure()
-
-      // A full reset discards even mounted sizes. Re-read them through the public
-      // measurement API so the restored anchor never waits for ResizeObserver.
-      for (const element of canvas.querySelectorAll<HTMLDivElement>(
-        ":scope > [data-index]"
-      )) {
-        virtualizer.measureElement(element)
-      }
-
-      if (wasAtEnd) {
-        virtualizer.scrollToEnd({ behavior: "auto" })
-        return
-      }
-
-      if (!anchor) return
-      // getVirtualItems rebuilds the full measurement list. The anchored row
-      // may have left the overscan window after offscreen estimates changed.
-      void virtualizer.getVirtualItems()
-      const nextAnchor = virtualizer.measurementsCache[anchor.index]
-      if (!nextAnchor) return
-      virtualizer.scrollToOffset(nextAnchor.start + anchor.offsetWithinRow, {
-        behavior: "auto",
-      })
-      // Correct against the painted row after ResizeObserver settles. Ordinary
-      // updates need rounding correction; a width reflow can move it farther.
-      requestAnimationFrame(() => {
-        // Outside a width reflow, the small-delta limit rejects stale
-        // navigation callbacks. Legitimate resize adjustments may change
-        // scrollTop before this frame, so don't compare absolute offsets.
-        if (!canvas.isConnected) return
-        const row = canvas.querySelector<HTMLElement>(
-          `:scope > [data-index="${anchor.index}"]`
-        )
-        if (!row) return
-        const actual =
-          row.getBoundingClientRect().top - viewport.getBoundingClientRect().top
-        const expected = -anchor.offsetWithinRow
-        const delta = actual - expected
-        // Larger corrections belong only to a settled transcript's width reflow.
-        if (Math.abs(delta) >= 0.5 && (resizing || Math.abs(delta) <= 2))
-          viewport.scrollTop += delta
-      })
-    },
-    [virtualizer]
-  )
-
-  // Cached heights are width-specific. Rebuild estimated geometry after a
-  // resize while keeping the reader on the same visible row.
-  useLayoutEffect(() => {
-    const canvas = transcriptCanvasRef.current
-    if (!canvas || typeof ResizeObserver === "undefined") return
-
-    const updateWidth = (width: number) => {
-      const nextWidth = Math.round(width)
-      if (nextWidth <= 0 || nextWidth === transcriptWidthRef.current) return
-      const previousWidth = transcriptWidthRef.current
-      transcriptWidthRef.current = nextWidth
-      if (previousWidth > 0 || estimatedWithoutWidthRef.current) {
-        estimatedWithoutWidthRef.current = false
-        // A settled transcript's width reflow can produce a second batch of
-        // row measurements. Keep its anchor through that batch; live streams
-        // retain the virtualizer's own follow/navigation behavior.
-        const settled = rowsRef.current.every(
-          (row) =>
-            row.kind === "path" &&
-            !row.liveStreamId &&
-            row.node.status !== "streaming"
-        )
-        measurePreservingVisibleAnchor(previousWidth > 0 && settled)
-      }
-    }
-
-    updateWidth(canvas.getBoundingClientRect().width)
-    const observer = new ResizeObserver((entries) => {
-      const entry = entries[0]
-      const box = entry?.borderBoxSize?.[0]
-      updateWidth(box?.inlineSize ?? entry?.contentRect.width ?? 0)
-    })
-    observer.observe(canvas)
-    return () => observer.disconnect()
-  }, [measurePreservingVisibleAnchor])
-
-  // Slot keys deliberately survive a sibling branch replacement. That avoids a
-  // content crossfade remount, but it also means TanStack cannot infer that an
-  // offscreen slot's old height belongs to a different message. Reset durable
-  // geometry before paint; streaming token growth remains ResizeObserver-owned.
-  useLayoutEffect(() => {
-    const previousRows = previousRowsRef.current
-    previousRowsRef.current = rows
-    if (!transcriptGeometryChanged(previousRows, rows)) return
-    measurePreservingVisibleAnchor()
-  }, [measurePreservingVisibleAnchor, rows])
-
-  // Density and action captions change every row. Path rewrites do not: the
-  // slot shell remeasures on contentKey so a scrolled-away viewport stays put.
-  const measurementLayoutSignature =
-    heightLayoutKey +
-    transcriptMeasurementLayoutKey(density, messageActionCaptions)
-  const previousMeasurementLayoutRef = useRef(measurementLayoutSignature)
-  useLayoutEffect(() => {
-    if (previousMeasurementLayoutRef.current === measurementLayoutSignature)
-      return
-    previousMeasurementLayoutRef.current = measurementLayoutSignature
-    measurePreservingVisibleAnchor()
-  }, [measurementLayoutSignature, measurePreservingVisibleAnchor])
-
-  // The virtualizer disconnects and reconnects during Strict Mode effect
-  // replay. Reapply the initial position after that reconnect as well.
-  useLayoutEffect(
-    () => () => {
-      didInitialScrollRef.current = false
-    },
-    []
-  )
-
-  // Start each chat at its latest row. The keyed child remounts only on chat
-  // change, not on path rewrites or streaming updates.
-  useLayoutEffect(() => {
-    if (didInitialScrollRef.current || rows.length === 0) return
-    virtualizer.scrollToEnd({ behavior: "auto" })
-    didInitialScrollRef.current = true
-  }, [rows.length, virtualizer])
-
-  // Targets may be offscreen: resolve the row index, scroll it into the
-  // virtual range, then let ConversationFindLayer paint after it mounts.
-  useLayoutEffect(() => {
-    if (!scrollTargetId) return
-    const targetIndex = rowIndexByMessageId.get(scrollTargetId)
-    if (targetIndex == null) return
-    virtualizer.scrollToIndex(targetIndex, {
-      align: "start",
-      behavior: "auto",
-    })
-    onScrollTargetConsumed()
-  }, [
-    findLocateKey,
-    onScrollTargetConsumed,
-    rowIndexByMessageId,
-    scrollTargetId,
-    virtualizer,
-  ])
 
   const syncFocusedIndex = useCallback((element: Element | null) => {
     const raw = element?.getAttribute("data-index")
@@ -480,6 +368,7 @@ function VirtualChatTranscript({
     <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
       <div
         ref={viewportRef}
+        data-transcript-viewport=""
         data-testid="chat-transcript-viewport"
         role="region"
         aria-label="Messages"
@@ -488,7 +377,7 @@ function VirtualChatTranscript({
         onFocusCapture={(event) =>
           syncFocusedIndex((event.target as Element).closest("[data-index]"))
         }
-        className="size-full min-h-0 min-w-0 scroll-fade-b scrollbar-thin scrollbar-gutter-stable overflow-y-auto overscroll-contain contain-content"
+        className="size-full min-h-0 min-w-0 scroll-fade-b scrollbar-thin scrollbar-gutter-stable overflow-y-auto overscroll-contain contain-content [overflow-anchor:none]"
       >
         <div
           ref={setTranscriptCanvas}
@@ -536,7 +425,9 @@ function VirtualChatTranscript({
                     animate={animate}
                     transition={transition}
                     messageActionCaptions={messageActionCaptions}
-                    onSelect={onSelect}
+                    slotKey={String(virtualItem.key)}
+                    registerStepper={viewport.registerStepper}
+                    onSelect={viewport.selectVersion}
                     onChanged={onChanged}
                     onGenerateReplies={onGenerateReplies}
                     onAnswerTools={onAnswerTools}
@@ -551,7 +442,9 @@ function VirtualChatTranscript({
                     animate={animate}
                     transition={transition}
                     messageActionCaptions={messageActionCaptions}
-                    onSelect={onSelect}
+                    slotKey={String(virtualItem.key)}
+                    registerStepper={viewport.registerStepper}
+                    onSelect={viewport.selectVersion}
                     onChanged={onChanged}
                     onGenerateReplies={onGenerateReplies}
                     onAnswerTools={onAnswerTools}
@@ -563,24 +456,40 @@ function VirtualChatTranscript({
           })}
         </div>
       </div>
-      <Button
-        type="button"
-        variant="secondary"
-        size="icon-sm"
-        data-testid="chat-scroll-to-end"
-        data-active={atEnd ? "false" : "true"}
-        aria-label="Scroll to end"
-        tabIndex={atEnd ? -1 : undefined}
-        inert={atEnd ? true : undefined}
-        // An explicit jump is a recovery action. Commit it immediately so a
-        // changing stream cannot keep a smooth-scroll target perpetually stale.
-        onClick={() => virtualizer.scrollToEnd({ behavior: "auto" })}
-        style={{ insetInlineEnd: TRANSCRIPT_SCROLL_TO_END_INSET }}
-        className="absolute bottom-3 z-10 border-border bg-background text-foreground shadow-[var(--tree-shadow-sm)] transition-[translate,scale,opacity] duration-200 hover:bg-muted hover:text-foreground data-[active=false]:pointer-events-none data-[active=false]:translate-y-full data-[active=false]:scale-95 data-[active=false]:opacity-0 data-[active=false]:duration-400 data-[active=false]:ease-[cubic-bezier(0.7,0,0.84,0)] data-[active=true]:translate-y-0 data-[active=true]:scale-100 data-[active=true]:opacity-100 data-[active=true]:ease-[cubic-bezier(0.23,1,0.32,1)] sm:bottom-4"
-      >
-        <HugeiconsIcon icon={ArrowDown02Icon} strokeWidth={2} />
-      </Button>
+      <TranscriptScrollToEnd
+        atEnd={viewport.atEnd}
+        onClick={viewport.jumpToEnd}
+      />
     </div>
+  )
+}
+
+function TranscriptScrollToEnd({
+  atEnd,
+  onClick,
+}: {
+  atEnd: TranscriptAtEnd
+  onClick: () => void
+}) {
+  const following = useSyncExternalStore(atEnd.subscribe, atEnd.get, atEnd.get)
+  return (
+    <Button
+      type="button"
+      variant="secondary"
+      size="icon-sm"
+      data-testid="chat-scroll-to-end"
+      data-active={following ? "false" : "true"}
+      aria-label="Scroll to end"
+      tabIndex={following ? -1 : undefined}
+      inert={following ? true : undefined}
+      // An explicit jump is a recovery action. Commit it immediately so a
+      // changing stream cannot keep a smooth-scroll target perpetually stale.
+      onClick={onClick}
+      style={{ insetInlineEnd: TRANSCRIPT_SCROLL_TO_END_INSET }}
+      className="absolute bottom-3 z-10 border-border bg-background text-foreground shadow-[var(--tree-shadow-sm)] transition-[translate,scale,opacity] duration-200 hover:bg-muted hover:text-foreground data-[active=false]:pointer-events-none data-[active=false]:translate-y-full data-[active=false]:scale-95 data-[active=false]:opacity-0 data-[active=false]:duration-400 data-[active=false]:ease-[cubic-bezier(0.7,0,0.84,0)] data-[active=true]:translate-y-0 data-[active=true]:scale-100 data-[active=true]:opacity-100 data-[active=true]:ease-[cubic-bezier(0.23,1,0.32,1)] sm:bottom-4"
+    >
+      <HugeiconsIcon icon={ArrowDown02Icon} strokeWidth={2} />
+    </Button>
   )
 }
 
@@ -592,6 +501,8 @@ function AfterTipSlot({
   animate,
   transition,
   messageActionCaptions,
+  slotKey,
+  registerStepper,
   onSelect,
   onChanged,
   onGenerateReplies,
@@ -605,7 +516,13 @@ function AfterTipSlot({
   animate: boolean
   transition: { duration: number; ease: [number, number, number, number] }
   messageActionCaptions: boolean
-  onSelect: (parentId: string, childId: string) => void
+  slotKey: string
+  registerStepper: (key: string, element: HTMLElement | null) => void
+  onSelect: (
+    slotKey: string,
+    parentId: string,
+    childId: string
+  ) => Promise<void>
   onChanged: () => void | Promise<void>
   onGenerateReplies: (nodeId: string | null, count?: number) => void
   onAnswerTools?: (
@@ -627,6 +544,16 @@ function AfterTipSlot({
     },
     [nodes, onGenerateReplies, row.messageId]
   )
+  const stepperRef = useCallback(
+    (element: HTMLSpanElement | null) => registerStepper(slotKey, element),
+    [registerStepper, slotKey]
+  )
+  const selectVersion = useCallback(
+    (parentId: string, childId: string) => {
+      void onSelect(slotKey, parentId, childId)
+    },
+    [onSelect, slotKey]
+  )
   const node = nodes.find((candidate) => candidate.id === row.messageId)
   if (!node) {
     return (
@@ -644,7 +571,10 @@ function AfterTipSlot({
       siblingNodes={siblingNodes}
       providers={providers}
       messageActionCaptions={messageActionCaptions}
-      onSelect={onSelect}
+      animate={animate}
+      transition={transition}
+      onSelect={selectVersion}
+      stepperRef={stepperRef}
       onChanged={onChanged}
       onGenerateReplies={handleGenerateReplies}
       onRegenerate={handleRegenerate}

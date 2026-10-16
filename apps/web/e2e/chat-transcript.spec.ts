@@ -1,4 +1,11 @@
-import { expect, test, type BrowserContext, type Page } from "@playwright/test"
+import {
+  expect,
+  test,
+  type BrowserContext,
+  type Page,
+  type Locator,
+} from "@playwright/test"
+import { TRANSCRIPT_LIVE_EDGE_PX } from "../components/workspace/transcript-viewport-model"
 import { startMockLlm, type MockLlm } from "./helpers/mock-llm"
 import {
   editUserAsBranch,
@@ -7,9 +14,118 @@ import {
   expectAssistantText,
   expectUserMessage,
   openNewChat,
+  presentArticles,
   sendMessage,
   streamingMarkers,
 } from "./helpers/workspace"
+
+type SeededMessage = { id: string }
+
+async function mutate<T>(
+  page: Page,
+  procedure: string,
+  data: unknown
+): Promise<T> {
+  const response = await page.request.post(`/api/trpc/workspace.${procedure}`, {
+    data,
+  })
+  expect(response.ok(), await response.text()).toBe(true)
+  return (await response.json()).result.data as T
+}
+
+async function settledTranscriptOffset(port: Locator) {
+  return port.evaluate(
+    (el) =>
+      new Promise<number>((resolve) => {
+        let previous = el.scrollTop
+        let stableFrames = 0
+        const frame = () => {
+          stableFrames =
+            Math.abs(el.scrollTop - previous) < 1 ? stableFrames + 1 : 0
+          previous = el.scrollTop
+          if (stableFrames >= 4) resolve(previous)
+          else requestAnimationFrame(frame)
+        }
+        requestAnimationFrame(frame)
+      })
+  )
+}
+
+async function wheelTranscript(page: Page, port: Locator, delta: number) {
+  await page.bringToFront()
+  await port.hover()
+  const before = await port.evaluate((el) => el.scrollTop)
+  await page.mouse.wheel(0, delta)
+  await expect
+    .poll(() =>
+      port.evaluate((el, old) => Math.abs(el.scrollTop - old), before)
+    )
+    .toBeGreaterThan(1)
+  return settledTranscriptOffset(port)
+}
+
+async function seedVersions(page: Page, prefixCount = 4, descendants = 4) {
+  const chat = await mutate<{ id: string }>(page, "createChat", {
+    title: "Viewport fixture",
+  })
+  const add = (
+    parentId: string | null,
+    role: "user" | "assistant",
+    text: string
+  ) =>
+    mutate<SeededMessage>(page, "createMessage", {
+      chatId: chat.id,
+      parentId,
+      role,
+      parts: [{ type: "text", text }],
+      attachSelection: true,
+    })
+  let previous: string | null = null
+  for (let index = 0; index < prefixCount; index++) {
+    previous = (
+      await add(
+        previous,
+        index % 2 ? "assistant" : "user",
+        `PREFIX_${index}\n\n` + "Earlier content.\n\n".repeat(8)
+      )
+    ).id
+  }
+  const parent = await add(previous, "user", "Compare these versions")
+  const first = await add(
+    parent.id,
+    "assistant",
+    "VERSION_A\n\n" + "First version content.\n\n".repeat(12)
+  )
+  let tip = first.id
+  for (let index = 0; index < descendants; index++)
+    tip = (
+      await add(
+        tip,
+        index % 2 ? "assistant" : "user",
+        `AFTER_A_${index}\n\n` + "Content after the version.\n\n".repeat(8)
+      )
+    ).id
+  const second = await add(
+    parent.id,
+    "assistant",
+    "VERSION_B\n\n" + "Second version content.\n\n".repeat(18)
+  )
+  tip = second.id
+  for (let index = 0; index < descendants; index++)
+    tip = (
+      await add(
+        tip,
+        index % 2 ? "assistant" : "user",
+        `AFTER_B_${index}\n\n` + "Content after the version.\n\n".repeat(8)
+      )
+    ).id
+  await mutate(page, "selectChild", { nodeId: parent.id, childId: first.id })
+  await page.goto(`/chat/${chat.id}`)
+  const port = page.getByTestId("chat-transcript-viewport")
+  const row = port.locator(`[data-index="${prefixCount + 1}"]`)
+  await expect(row.getByText("VERSION_A", { exact: true })).toBeAttached()
+  return { chat, port, row }
+}
 
 test.describe.configure({ mode: "serial" })
 
@@ -80,13 +196,16 @@ test.describe("chat transcript", () => {
     await sendMessage(page, "another tall turn")
     await expect(streamingMarkers(page)).toHaveCount(1, { timeout: 15_000 })
 
-    // Release live-edge follow with a real user wheel (scrollTop alone does not).
-    await viewport.dispatchEvent("wheel", { deltaY: -400 })
-    await viewport.evaluate((el) => {
-      el.scrollTop = 0
-    })
+    // Use the browser's wheel scrolling, including its asynchronous first frame.
+    await wheelTranscript(page, viewport, -500)
+    await expect
+      .poll(() =>
+        viewport.evaluate(
+          (el) => el.scrollHeight - el.clientHeight - el.scrollTop
+        )
+      )
+      .toBeGreaterThan(200)
     const topAfterScrollAway = await viewport.evaluate((el) => el.scrollTop)
-    expect(topAfterScrollAway).toBeLessThan(40)
 
     llm.release()
 
@@ -94,10 +213,7 @@ test.describe("chat transcript", () => {
     // Stream growth can shift max slightly; stay near the top, not live edge.
     await page.waitForTimeout(200)
     const duringStream = await viewport.evaluate((el) => el.scrollTop)
-    const maxDuring = await viewport.evaluate(
-      (el) => el.scrollHeight - el.clientHeight
-    )
-    expect(duringStream).toBeLessThan(Math.max(80, maxDuring * 0.25))
+    expect(duringStream).toBeCloseTo(topAfterScrollAway, 0)
 
     await expectAssistantText(page, /more-line-50/, { timeout: 30_000 })
 
@@ -116,6 +232,147 @@ test.describe("chat transcript", () => {
         })
       })
       .toBe(true)
+  })
+
+  test("small upward gestures release following inside the live-edge threshold", async () => {
+    for (const input of ["wheel", "ArrowUp"]) {
+      const { port } = await seedVersions(page)
+      const gap = () =>
+        port.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop)
+      await expect.poll(gap).toBeLessThan(2)
+      if (input === "wheel") await port.hover()
+      else await port.focus()
+      if (input === "wheel") await page.mouse.wheel(0, -12)
+      else await page.keyboard.press("ArrowUp")
+      await expect.poll(gap, { message: input }).toBeGreaterThan(4)
+      await settledTranscriptOffset(port)
+      await expect.poll(gap, { message: input }).toBeGreaterThan(4)
+      expect(await gap()).toBeLessThan(TRANSCRIPT_LIVE_EDGE_PX)
+      const parked = await port.evaluate((el) => el.scrollTop)
+      await port
+        .locator('[data-slot-layer="present"]')
+        .last()
+        .evaluate((el) => {
+          ;(el as HTMLElement).style.minHeight =
+            `${el.getBoundingClientRect().height + 200}px`
+        })
+      await expect.poll(gap).toBeGreaterThan(200)
+      expect(await port.evaluate((el) => el.scrollTop)).toBeCloseTo(parked, 0)
+    }
+  })
+
+  test("non-scrolling input at the live edge keeps following", async () => {
+    for (const input of [
+      "background click",
+      "ArrowDown",
+      "PageDown",
+      "End",
+      "touch",
+    ]) {
+      const { port } = await seedVersions(page)
+      const gap = () =>
+        port.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop)
+      await expect.poll(gap).toBeLessThan(2)
+      if (input === "background click") {
+        // The space beside the centered message column belongs to the port.
+        await port.click({ position: { x: 2, y: 30 } })
+      } else if (input === "touch") {
+        await port.dispatchEvent("touchmove")
+      } else {
+        await port.focus()
+        await page.keyboard.press(input)
+      }
+      const last = port.locator('[data-slot-layer="present"]').last()
+      await last.evaluate((el) => {
+        ;(el as HTMLElement).style.minHeight =
+          `${el.getBoundingClientRect().height + 200}px`
+      })
+      await expect.poll(gap, { message: input }).toBeLessThan(2)
+    }
+  })
+
+  test("nested wheel scrolling leaves outer following enabled", async () => {
+    const { port } = await seedVersions(page)
+    const last = port.locator('[data-slot-layer="present"]').last()
+    await last.evaluate((el) => {
+      const nested = document.createElement("div")
+      nested.dataset.testid = "nested-scroll-fixture"
+      nested.style.cssText =
+        "position:relative;z-index:50;height:100px;overflow-y:auto;overscroll-behavior:contain"
+      const content = document.createElement("div")
+      content.style.height = "600px"
+      nested.append(content)
+      el.append(nested)
+      nested.scrollTop = 200
+    })
+    const gap = () =>
+      port.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop)
+    await expect.poll(gap).toBeLessThan(2)
+    const nested = port.getByTestId("nested-scroll-fixture")
+    await expect.poll(() => nested.evaluate((el) => el.scrollTop)).toBe(200)
+    await nested.hover()
+    await page.mouse.wheel(0, -40)
+    await expect
+      .poll(() => nested.evaluate((el) => el.scrollTop))
+      .toBeLessThan(190)
+    await last.evaluate((el) => {
+      ;(el as HTMLElement).style.minHeight =
+        `${el.getBoundingClientRect().height + 200}px`
+    })
+    await expect.poll(gap).toBeLessThan(2)
+  })
+
+  test("resizing preserves the reading point and following remains explicit", async () => {
+    const original = page.viewportSize()!
+    try {
+      const { port } = await seedVersions(page)
+      await expect
+        .poll(() => port.evaluate((el) => el.scrollHeight - el.clientHeight))
+        .toBeGreaterThan(500)
+      await expect
+        .poll(() =>
+          port.evaluate(
+            (el) => el.scrollHeight - el.clientHeight - el.scrollTop
+          )
+        )
+        .toBeLessThan(2)
+      await wheelTranscript(page, port, -500)
+      const anchor = await port.evaluate((el) => {
+        const top = el.getBoundingClientRect().top
+        const row = [
+          ...el.querySelectorAll<HTMLElement>(
+            ":scope > [role=list] > [data-index]"
+          ),
+        ].find((row) => row.getBoundingClientRect().bottom > top)!
+        return {
+          index: row.dataset.index!,
+          y: row.getBoundingClientRect().top - top,
+        }
+      })
+      const row = port.locator(`[data-index="${anchor.index}"]`)
+      await page.setViewportSize({ width: 1000, height: 650 })
+      await expect
+        .poll(() =>
+          row.evaluate(
+            (el) =>
+              el.getBoundingClientRect().top -
+              el.closest("[data-transcript-viewport]")!.getBoundingClientRect()
+                .top
+          )
+        )
+        .toBeCloseTo(anchor.y, 0)
+      await page.getByTestId("chat-scroll-to-end").click()
+      await page.setViewportSize({ width: 1100, height: 750 })
+      await expect
+        .poll(() =>
+          port.evaluate(
+            (el) => el.scrollHeight - el.clientHeight - el.scrollTop
+          )
+        )
+        .toBeLessThan(2)
+    } finally {
+      await page.setViewportSize(original)
+    }
   })
 
   test("hands a completed stream to static Markdown without an intermediate frame", async () => {
@@ -173,7 +430,7 @@ HANDOFF_END`
 
       const sample = (at: number) => {
         const assistants = document.querySelectorAll<HTMLElement>(
-          '[data-slot-layer="present"] article[data-theme-target="message-assistant"]'
+          'article[data-theme-target="message-assistant"]:has([data-slot-layer="present"])'
         )
         const assistant = assistants.item(assistants.length - 1)
         const renderer =
@@ -343,11 +600,9 @@ HANDOFF_END`
     await editUserAsBranch(page, "edited third question")
     await expectUserMessage(page, "edited third question")
 
-    const edited = page
-      .locator(
-        '[data-slot-layer="present"] article[data-theme-target="message-user"]'
-      )
-      .filter({ hasText: "edited third question" })
+    const edited = presentArticles(page, "message-user").filter({
+      hasText: "edited third question",
+    })
     await expect(edited).toBeVisible()
 
     const editedInView = await edited.evaluate((el) => {
@@ -389,9 +644,7 @@ HANDOFF_END`
       timeout: 15_000,
     })
 
-    const streaming = page.locator(
-      '[data-slot-layer="present"] article[data-message-status="streaming"]'
-    )
+    const streaming = streamingMarkers(page)
     await streaming.getByRole("button", { name: "Edit", exact: true }).click()
     const editor = page.getByRole("textbox", { name: "Message text" })
     await expect(editor).toBeVisible()
@@ -483,5 +736,260 @@ HANDOFF_END`
     // Starting to scroll away from the end must not change the sticky inset
     // as the viewport fade appears.
     expect(await scrollWithoutTabShift(-60)).toBeLessThan(2)
+  })
+
+  test("version switching aligns before paint", async () => {
+    const { port, row } = await seedVersions(page)
+    const stepper = row.locator('[data-message-footer-html="stepper"]')
+    await stepper.evaluate((el) => el.scrollIntoView({ block: "center" }))
+    const offset = () =>
+      stepper.evaluate(
+        (el) =>
+          el.getBoundingClientRect().top -
+          el
+            .closest('[data-testid="chat-transcript-viewport"]')!
+            .getBoundingClientRect().top
+      )
+    await expect
+      .poll(() =>
+        port.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop)
+      )
+      .toBeGreaterThan(80)
+    const parked = await offset()
+
+    // Sample the first painted replacement and all subsequent frames.
+    await port.evaluate((el) => {
+      const state = window as typeof window & {
+        switchFrames: number[]
+        sampleSwitch: boolean
+      }
+      state.switchFrames = []
+      state.sampleSwitch = true
+      const sample = () => {
+        const article = el.querySelector('[data-index="5"] article')
+        const present = article?.querySelector('[data-slot-layer="present"]')
+        const anchor = article?.querySelector(
+          '[data-message-footer-html="stepper"]'
+        )
+        if (present?.textContent?.includes("VERSION_B") && anchor)
+          state.switchFrames.push(
+            anchor.getBoundingClientRect().top - el.getBoundingClientRect().top
+          )
+        if (state.sampleSwitch) requestAnimationFrame(sample)
+      }
+      requestAnimationFrame(sample)
+    })
+    await row.getByRole("button", { name: "Next branch" }).click()
+    await expect(row.getByText("VERSION_B", { exact: true })).toBeVisible()
+    await expect.poll(offset).toBeCloseTo(parked, 0)
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as typeof window & { switchFrames: number[] }).switchFrames
+              .length
+        )
+      )
+      .toBeGreaterThan(2)
+    const frames = await page.evaluate(() => {
+      const state = window as typeof window & {
+        switchFrames: number[]
+        sampleSwitch: boolean
+      }
+      state.sampleSwitch = false
+      return state.switchFrames
+    })
+    expect(Math.max(...frames.map((y) => Math.abs(y - parked)))).toBeLessThan(2)
+  })
+
+  test("sending near the live edge while reading preserves position through reply growth", async () => {
+    await seedVersions(page)
+    const port = page.getByTestId("chat-transcript-viewport")
+    await wheelTranscript(page, port, -12)
+    const gap = await port.evaluate(
+      (el) => el.scrollHeight - el.clientHeight - el.scrollTop
+    )
+    expect(gap).toBeGreaterThan(4)
+    expect(gap).toBeLessThan(TRANSCRIPT_LIVE_EDGE_PX)
+    const before = await port.evaluate((el) => el.scrollTop)
+    llm.enqueue({
+      text: "SENT_WHILE_READING\n\n" + "A growing reply.\n\n".repeat(40),
+      hold: true,
+    })
+    await sendMessage(page, "send without leaving my reading position")
+    await expect(streamingMarkers(page)).toHaveCount(1)
+    expect(await port.evaluate((el) => el.scrollTop)).toBeCloseTo(before, 0)
+    llm.release()
+    await expectAssistantText(page, "SENT_WHILE_READING")
+    await expect
+      .poll(() =>
+        port.evaluate(
+          (el, expected) => Math.abs(el.scrollTop - expected),
+          before
+        )
+      )
+      .toBeLessThan(2)
+  })
+
+  test("sending from a populated draft keeps its reader through chat creation", async () => {
+    const { chat } = await seedVersions(page)
+    const template = await mutate<{ id: string }>(
+      page,
+      "saveChatTemplateFromChat",
+      {
+        chatId: chat.id,
+        name: "Reading position template",
+      }
+    )
+    await page.goto(`/chat/new?template=${template.id}`)
+    const port = page.getByTestId("chat-transcript-viewport")
+    await expect(port.getByText("VERSION_A", { exact: true })).toBeAttached()
+    await wheelTranscript(page, port, -12)
+    const gap = await port.evaluate(
+      (el) => el.scrollHeight - el.clientHeight - el.scrollTop
+    )
+    expect(gap).toBeGreaterThan(4)
+    expect(gap).toBeLessThan(TRANSCRIPT_LIVE_EDGE_PX)
+    const before = await port.evaluate((el) => el.scrollTop)
+    llm.enqueue({ text: "DRAFT_READER_PRESERVED", hold: true })
+    await sendMessage(page, "save this draft without moving my reader")
+    await expect(streamingMarkers(page)).toHaveCount(1)
+    await expect
+      .poll(() =>
+        port.evaluate(
+          (el, expected) => Math.abs(el.scrollTop - expected),
+          before
+        )
+      )
+      .toBeLessThan(2)
+    llm.release()
+    await expectAssistantText(page, "DRAFT_READER_PRESERVED")
+    await expect
+      .poll(() =>
+        port.evaluate(
+          (el, expected) => Math.abs(el.scrollTop - expected),
+          before
+        )
+      )
+      .toBeLessThan(2)
+  })
+
+  test("find reveals an editor match through local and transcript scrollports", async () => {
+    const { row, port } = await seedVersions(page)
+    await row.getByRole("button", { name: "Edit", exact: true }).click()
+    const editor = row.getByRole("textbox", { name: "Message text" })
+    await editor.fill(
+      "EDITOR_FIRST\n\n" +
+        "Inside the editable document.\n\n".repeat(60) +
+        "EDITOR_LAST"
+    )
+    await page.keyboard.press("ControlOrMeta+F")
+    const find = page.getByTestId("conversation-find")
+    await find.getByLabel("Find in conversation").fill("EDITOR_FIRST")
+    await find.getByLabel("Find in conversation").press("Enter")
+    const current = row.locator(".cm-find-current")
+    await expect(current).toHaveText("EDITOR_FIRST")
+    await expect
+      .poll(() =>
+        current.evaluate((el) => {
+          const rect = el.getBoundingClientRect()
+          const port = el
+            .closest('[data-testid="chat-transcript-viewport"]')!
+            .getBoundingClientRect()
+          const local = el
+            .closest("[data-composer-field]")!
+            .getBoundingClientRect()
+          return Math.max(
+            Math.max(port.top, local.top) - rect.top,
+            rect.bottom - Math.min(port.bottom, local.bottom),
+            0
+          )
+        })
+      )
+      .toBeLessThan(2)
+    await find.getByLabel("Find in conversation").fill("EDITOR_LAST")
+    await find.getByLabel("Find in conversation").press("Enter")
+    await expect(current).toHaveText("EDITOR_LAST")
+    await expect
+      .poll(() =>
+        current.evaluate((el) => {
+          const rect = el.getBoundingClientRect()
+          const port = el
+            .closest('[data-testid="chat-transcript-viewport"]')!
+            .getBoundingClientRect()
+          const local = el
+            .closest("[data-composer-field]")!
+            .getBoundingClientRect()
+          return Math.max(
+            Math.max(port.top, local.top) - rect.top,
+            rect.bottom - Math.min(port.bottom, local.bottom),
+            0
+          )
+        })
+      )
+      .toBeLessThan(2)
+    await expect(port).toBeVisible()
+  })
+
+  test("find and version switching resolve unmounted rows in a long transcript", async () => {
+    test.setTimeout(90_000)
+    const chat = await mutate<{ id: string }>(page, "createChat", {
+      title: "Long viewport fixture",
+    })
+    const ids: string[] = []
+    let parentId: string | null = null
+    for (let index = 0; index < 46; index++) {
+      const node: SeededMessage = await mutate(page, "createMessage", {
+        chatId: chat.id,
+        parentId,
+        role: index % 2 ? "assistant" : "user",
+        parts: [
+          {
+            type: "text",
+            text:
+              `LONG_ROW_${index}_TOKEN\n\n` +
+              "Measured row content.\n\n".repeat(5),
+          },
+        ],
+        attachSelection: true,
+      })
+      ids.push(node.id)
+      parentId = node.id
+    }
+    await mutate<SeededMessage>(page, "createMessage", {
+      chatId: chat.id,
+      parentId: ids[20],
+      role: "assistant",
+      parts: [
+        {
+          type: "text",
+          text: "LONG_ALTERNATE\n\n" + "Alternate content.\n\n".repeat(8),
+        },
+      ],
+      attachSelection: false,
+    })
+    await page.goto(`/chat/${chat.id}`)
+    const port = page.getByTestId("chat-transcript-viewport")
+    await expect(port.getByText("LONG_ROW_45_TOKEN")).toBeVisible()
+    await expect(port.locator('[data-index="0"]')).toHaveCount(0)
+    await page.keyboard.press("ControlOrMeta+F")
+    const find = page.getByTestId("conversation-find")
+    await find.getByLabel("Find in conversation").fill("LONG_ROW_21_TOKEN")
+    await find.getByLabel("Find in conversation").press("Enter")
+    const row = port.locator('[data-index="21"]')
+    await expect(
+      row.getByText("LONG_ROW_21_TOKEN", { exact: true })
+    ).toBeVisible()
+    await page.keyboard.press("Escape")
+    const stepper = row.locator('[data-message-footer-html="stepper"]')
+    await stepper.evaluate((el) => el.scrollIntoView({ block: "center" }))
+    await row.getByRole("button", { name: "Next branch" }).click()
+    await expect(row.getByText("LONG_ALTERNATE", { exact: true })).toBeVisible()
+    await row.getByRole("button", { name: "Previous branch" }).click()
+    await expect(
+      row.getByText("LONG_ROW_21_TOKEN", { exact: true })
+    ).toBeVisible()
+    await page.getByTestId("chat-scroll-to-end").click()
+    await expect(port.getByText("LONG_ROW_45_TOKEN")).toBeVisible()
   })
 })

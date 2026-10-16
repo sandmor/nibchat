@@ -1,7 +1,8 @@
+import { navigateTranscriptElement } from "./transcript-navigation"
+import { TRANSCRIPT_LIVE_EDGE_PX } from "./transcript-viewport-model"
+
 /** Extra height before a block is treated as long enough to jump. */
 export const LONG_BLOCK_OVERFLOW_SLACK_PX = 48
-/** Distance from the bottom that still counts as following a live stream. */
-export const SCROLLPORT_LIVE_EDGE_PX = 64
 
 export function nearestScrollport(el: Element | null): HTMLElement | null {
   let current = el?.parentElement ?? null
@@ -15,7 +16,7 @@ export function nearestScrollport(el: Element | null): HTMLElement | null {
 
 export function isScrollportAtLiveEdge(
   port: HTMLElement | null,
-  thresholdPx = SCROLLPORT_LIVE_EDGE_PX
+  thresholdPx = TRANSCRIPT_LIVE_EDGE_PX
 ): boolean {
   if (!port) return true
   return port.scrollHeight - port.scrollTop - port.clientHeight <= thresholdPx
@@ -56,6 +57,10 @@ export function alignBlockInScrollport(
   port = nearestScrollport(block)
 ): void {
   if (!port) return
+  const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ? "instant"
+    : "smooth"
+  if (navigateTranscriptElement(block, align, behavior)) return
   const delta = scrollDeltaToAlign(
     block.getBoundingClientRect(),
     port.getBoundingClientRect(),
@@ -64,9 +69,7 @@ export function alignBlockInScrollport(
   if (delta === 0) return
   port.scrollTo({
     top: port.scrollTop + delta,
-    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
-      ? "instant"
-      : "smooth",
+    behavior,
   })
 }
 

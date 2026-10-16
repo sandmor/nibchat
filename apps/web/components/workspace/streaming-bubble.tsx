@@ -18,7 +18,7 @@ export function StreamingBubble({
   presentation = "linear",
 }: {
   streamId: string
-  /** When true (after-tip rows), fade the bubble in. PathSlot owns its own crossfade. */
+  /** When true (after-tip rows that have no message yet), fade the bubble in. */
   animate?: boolean
   transition?: { duration: number; ease: [number, number, number, number] }
   presentation?: "linear" | "tree"

@@ -15,6 +15,7 @@ import {
   openNewChat,
   openNewChatSoft,
   generateFromUserMessage,
+  presentArticles,
   sendMessage,
   streamingMarkers,
 } from "./helpers/workspace"
@@ -142,8 +143,7 @@ test.describe("chat tree invariants", () => {
       .getByRole("menuitem", { name: "Generate multiple replies…" })
       .click()
     const dialog = page.getByRole("dialog", { name: "How many replies?" })
-    await dialog.getByRole("slider").focus()
-    await dialog.getByRole("slider").press("ArrowRight")
+    await dialog.getByLabel("Replies", { exact: true }).fill("3")
     await dialog.getByRole("button", { name: "Generate 3 replies" }).click()
     await expect(page.getByText("compare three replies")).toHaveCount(1)
     await expect(page.getByText("1/3", { exact: true })).toBeVisible({
@@ -167,14 +167,11 @@ test.describe("chat tree invariants", () => {
     await sendMessage(page, "reply to this user turn")
     await expectAssistantText(page, "USER_REPLY_ORIGINAL")
     await expect(page).toHaveURL(/\/chat\/[a-f0-9-]+/i)
-    const userMessage = page.locator(
-      '[data-slot-layer="present"] article[data-theme-target="message-user"]'
-    )
+    const userMessage = presentArticles(page, "message-user")
     await userMessage.last().getByRole("button", { name: "More" }).click()
-    await page
-      .getByRole("menuitem", { name: "Generate multiple replies…" })
-      .click()
+    await page.getByRole("menuitem", { name: "Generate replies…" }).click()
     const dialog = page.getByRole("dialog", { name: "How many replies?" })
+    await dialog.getByLabel("Replies", { exact: true }).fill("2")
     await dialog.getByRole("button", { name: "Generate 2 replies" }).click()
     await expect(page.getByText("2/3", { exact: true })).toBeVisible({
       timeout: 15_000,
@@ -197,14 +194,11 @@ test.describe("chat tree invariants", () => {
     await sendMessage(page, "continue twice")
     await expectAssistantText(page, "MULTI_CONTINUE_ORIGINAL")
     await expect(page).toHaveURL(/\/chat\/[a-f0-9-]+/i)
-    const assistant = page.locator(
-      '[data-slot-layer="present"] article[data-theme-target="message-assistant"]'
-    )
+    const assistant = presentArticles(page, "message-assistant")
     await assistant.last().getByRole("button", { name: "More" }).click()
-    await page
-      .getByRole("menuitem", { name: "Generate multiple replies…" })
-      .click()
+    await page.getByRole("menuitem", { name: "Generate replies…" }).click()
     const dialog = page.getByRole("dialog", { name: "How many replies?" })
+    await dialog.getByLabel("Replies", { exact: true }).fill("2")
     await dialog.getByRole("button", { name: "Generate 2 replies" }).click()
     await expect(page.getByText("1/2", { exact: true })).toBeVisible({
       timeout: 15_000,
@@ -328,7 +322,6 @@ test.describe("chat tree invariants", () => {
 
     llm.release()
     llm.release()
-
     await expectAssistantText(page, "BETA_HELD_REPLY", { timeout: 30_000 })
     await expectStreamingCount(page, 0)
     await expectNoAssistantText(page, "ALPHA_HELD_REPLY")

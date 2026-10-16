@@ -4,18 +4,15 @@
  * One depth slot on the active path.
  *
  * The enclosing virtual row is keyed by path depth. Sibling branch switches
- * rebind content under that stable shell; {@link SlotCrossfade} owns enter/exit
- * motion so Message stays a single present body.
+ * rebind the message in place; the body crossfade owns enter/exit motion so
+ * the article shell and footer stay mounted.
  */
 import { useCallback } from "react"
 import type { NodeRow } from "@/lib/types"
 import type { ProviderSummary } from "./types"
 import { Message, type MessageEditorBindings } from "./message"
-import { SlotCrossfade } from "./slot-crossfade"
-import {
-  transcriptRowContentKey,
-  type PathTranscriptRow,
-} from "./chat-transcript-helpers"
+import type { SlotMotion } from "./slot-crossfade"
+import type { PathTranscriptRow } from "./chat-transcript-helpers"
 
 export function PathSlot({
   row,
@@ -25,6 +22,8 @@ export function PathSlot({
   animate,
   transition,
   messageActionCaptions,
+  slotKey,
+  registerStepper,
   onSelect,
   onChanged,
   onGenerateReplies,
@@ -36,9 +35,15 @@ export function PathSlot({
   siblingNodes?: readonly NodeRow[]
   providers: ProviderSummary[]
   animate: boolean
-  transition: { duration: number; ease: [number, number, number, number] }
+  transition: SlotMotion
   messageActionCaptions: boolean
-  onSelect: (parentId: string, childId: string) => void
+  slotKey: string
+  registerStepper: (key: string, element: HTMLElement | null) => void
+  onSelect: (
+    slotKey: string,
+    parentId: string,
+    childId: string
+  ) => Promise<void>
   onChanged: () => void | Promise<void>
   onGenerateReplies: (nodeId: string | null, count?: number) => void
   onAnswerTools?: (
@@ -47,6 +52,16 @@ export function PathSlot({
   ) => void | Promise<void>
   editor?: MessageEditorBindings
 }) {
+  const stepperRef = useCallback(
+    (element: HTMLSpanElement | null) => registerStepper(slotKey, element),
+    [registerStepper, slotKey]
+  )
+  const selectVersion = useCallback(
+    (parentId: string, childId: string) => {
+      void onSelect(slotKey, parentId, childId)
+    },
+    [onSelect, slotKey]
+  )
   const nodeId = row.node.id
   const parentId = row.node.parent_id
   const handleGenerateReplies = useCallback(
@@ -59,25 +74,22 @@ export function PathSlot({
   )
 
   return (
-    <SlotCrossfade
-      contentKey={transcriptRowContentKey(row)}
+    <Message
+      node={row.node}
+      nodes={nodes}
+      siblingNodes={siblingNodes}
+      providers={providers}
+      messageActionCaptions={messageActionCaptions}
       animate={animate}
       transition={transition}
-    >
-      <Message
-        node={row.node}
-        nodes={nodes}
-        siblingNodes={siblingNodes}
-        providers={providers}
-        messageActionCaptions={messageActionCaptions}
-        onSelect={onSelect}
-        onChanged={onChanged}
-        onGenerateReplies={handleGenerateReplies}
-        onRegenerate={handleRegenerate}
-        onAnswerTools={onAnswerTools}
-        editor={editor}
-        streamId={row.liveStreamId}
-      />
-    </SlotCrossfade>
+      onSelect={selectVersion}
+      stepperRef={stepperRef}
+      onChanged={onChanged}
+      onGenerateReplies={handleGenerateReplies}
+      onRegenerate={handleRegenerate}
+      onAnswerTools={onAnswerTools}
+      editor={editor}
+      streamId={row.liveStreamId}
+    />
   )
 }

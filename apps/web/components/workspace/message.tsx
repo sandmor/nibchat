@@ -10,6 +10,7 @@ import {
   useState,
   type CSSProperties,
   type MouseEvent,
+  type RefCallback,
 } from "react"
 import { toast } from "sonner"
 import { useQuery } from "@tanstack/react-query"
@@ -60,6 +61,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { MessageShell } from "./message-shell"
 import { MessageStop } from "./message-stop"
+import { SlotCrossfade, type SlotMotion } from "./slot-crossfade"
 import { cn } from "@/lib/utils"
 import { copyText } from "@/lib/clipboard"
 import { partsToMarkdown, pathToMarkdown } from "@/lib/message-markdown"
@@ -301,6 +303,7 @@ type MessageProps = {
   providers: ProviderSummary[]
   messageActionCaptions: boolean
   onSelect?: (parentId: string, childId: string) => void
+  stepperRef?: RefCallback<HTMLSpanElement>
   onChanged?: () => void | Promise<void>
   onGenerateReplies?: (count?: number) => void
   /** New sibling of this assistant, parented where this message already sits. */
@@ -313,9 +316,27 @@ type MessageProps = {
   presentation?: "linear" | "tree"
   /** Tree edits create real branches without changing Linear's selected path. */
   attachSelectionOnEdit?: boolean
+  /** Linear body crossfade. Tree cards leave the body unanimated. */
+  animate?: boolean
+  transition?: SlotMotion
   editor?: MessageEditorBindings
   /** Live generation overlay; token text is read from the stream buffer. */
   streamId?: string | null
+}
+
+function messageMotionEqual(prev: MessageProps, next: MessageProps) {
+  if (prev.animate !== next.animate) return false
+  const left = prev.transition
+  const right = next.transition
+  if (left === right) return true
+  if (!left || !right) return false
+  return (
+    left.duration === right.duration &&
+    left.ease[0] === right.ease[0] &&
+    left.ease[1] === right.ease[1] &&
+    left.ease[2] === right.ease[2] &&
+    left.ease[3] === right.ease[3]
+  )
 }
 
 /** Skip handler identity, parents rebuild those on unrelated ChatView updates. */
@@ -327,10 +348,12 @@ function messagePropsAreEqual(prev: MessageProps, next: MessageProps) {
     prev.providers === next.providers &&
     prev.messageActionCaptions === next.messageActionCaptions &&
     prev.presentation === next.presentation &&
+    prev.stepperRef === next.stepperRef &&
     prev.attachSelectionOnEdit === next.attachSelectionOnEdit &&
     (prev.streamId ?? null) === (next.streamId ?? null) &&
     prev.editor?.mcpAvailable === next.editor?.mcpAvailable &&
-    prev.editor?.animate === next.editor?.animate
+    prev.editor?.animate === next.editor?.animate &&
+    messageMotionEqual(prev, next)
   )
 }
 
@@ -341,12 +364,15 @@ export const Message = memo(function Message({
   providers,
   messageActionCaptions,
   onSelect,
+  stepperRef,
   onChanged,
   onGenerateReplies,
   onRegenerate,
   onAnswerTools,
   presentation = "linear",
   attachSelectionOnEdit = true,
+  animate = false,
+  transition,
   editor,
   streamId = null,
 }: MessageProps) {
@@ -888,6 +914,43 @@ export const Message = memo(function Message({
     )
   }
 
+  const liveBody = (
+    <MessageLiveBody
+      persistedParts={literalParts ?? parts}
+      streamId={streamId}
+      streaming={node.status === "streaming" || Boolean(streamId)}
+      interactiveTools={interactiveTools}
+      toolResults={toolResults}
+      macroContext={liveMacroContext}
+      onAnswerTool={
+        onAnswerTools
+          ? async (toolCallId, _toolName, output) => {
+              if (resumeInFlightRef.current || answersHeld) return
+              const next = {
+                ...toolResults,
+                [toolCallId]: output,
+              }
+              setLocalToolResults(next)
+              if (!allPendingResultsReady(pendingIds, next)) return
+              resumeInFlightRef.current = true
+              try {
+                await onAnswerTools(
+                  node.id,
+                  pendingIds.map((id) => ({
+                    toolCallId: id,
+                    output: next[id],
+                  }))
+                )
+              } catch {
+                resumeInFlightRef.current = false
+                setLocalToolResults({})
+              }
+            }
+          : undefined
+      }
+    />
+  )
+
   const article = (
     <MessageShell
       ref={setShellRef}
@@ -921,40 +984,17 @@ export const Message = memo(function Message({
             {statusLabel}
           </p>
         ) : null}
-        <MessageLiveBody
-          persistedParts={literalParts ?? parts}
-          streamId={streamId}
-          streaming={node.status === "streaming" || Boolean(streamId)}
-          interactiveTools={interactiveTools}
-          toolResults={toolResults}
-          macroContext={liveMacroContext}
-          onAnswerTool={
-            onAnswerTools
-              ? async (toolCallId, _toolName, output) => {
-                  if (resumeInFlightRef.current || answersHeld) return
-                  const next = {
-                    ...toolResults,
-                    [toolCallId]: output,
-                  }
-                  setLocalToolResults(next)
-                  if (!allPendingResultsReady(pendingIds, next)) return
-                  resumeInFlightRef.current = true
-                  try {
-                    await onAnswerTools(
-                      node.id,
-                      pendingIds.map((id) => ({
-                        toolCallId: id,
-                        output: next[id],
-                      }))
-                    )
-                  } catch {
-                    resumeInFlightRef.current = false
-                    setLocalToolResults({})
-                  }
-                }
-              : undefined
-          }
-        />
+        {presentation === "linear" && transition ? (
+          <SlotCrossfade
+            contentKey={`node:${node.id}`}
+            animate={animate}
+            transition={transition}
+          >
+            {liveBody}
+          </SlotCrossfade>
+        ) : (
+          liveBody
+        )}
         {tree && node.status === "error" ? (
           <p className="mt-2 text-xs break-words text-destructive">
             {typeof metadata.error === "string" && metadata.error
@@ -985,7 +1025,8 @@ export const Message = memo(function Message({
         <span className="flex flex-wrap items-center gap-0.5">
           {footerHtml.stepper.__html ? (
             <span
-              className="contents"
+              ref={stepperRef}
+              className="inline-flex items-center"
               data-message-footer-html="stepper"
               dangerouslySetInnerHTML={footerHtml.stepper}
             />

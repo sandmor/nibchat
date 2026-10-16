@@ -1,8 +1,6 @@
+import { TRANSCRIPT_LIVE_EDGE_PX } from "./transcript-viewport-model"
 import { describe, expect, it } from "vitest"
-import {
-  isScrollportAtLiveEdge,
-  SCROLLPORT_LIVE_EDGE_PX,
-} from "./long-block-scroll"
+import { isScrollportAtLiveEdge } from "./long-block-scroll"
 
 function port(values: {
   scrollHeight: number
@@ -27,7 +25,7 @@ describe("live-edge detection", () => {
       isScrollportAtLiveEdge(
         port({
           scrollHeight: 400,
-          scrollTop: 300 - SCROLLPORT_LIVE_EDGE_PX - 1,
+          scrollTop: 300 - TRANSCRIPT_LIVE_EDGE_PX - 1,
           clientHeight: 100,
         })
       )

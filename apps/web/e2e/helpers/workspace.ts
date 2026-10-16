@@ -167,9 +167,25 @@ export async function openChatReasoning(page: Page, name: string) {
 }
 
 export async function sendMessage(page: Page, content: string) {
+  const creatingChat = new URL(page.url()).pathname === "/chat/new"
   const composer = page.getByPlaceholder("Message Nibchat…")
   await composer.fill(content)
   await page.getByRole("button", { name: "Send", exact: true }).click()
+  // The first send hands the draft route to the new chat. Later interactions
+  // belong to that route, whose mount resets transient UI such as find.
+  if (creatingChat)
+    await expect(page).not.toHaveURL(/\/chat\/new(?:[?#]|$)/, {
+      timeout: 30_000,
+    })
+}
+
+export function presentArticles(
+  page: Page,
+  target: "message-user" | "message-assistant"
+) {
+  return page.locator(
+    `article[data-theme-target="${target}"]:has([data-slot-layer="present"])`
+  )
 }
 
 export async function expectAssistantText(
@@ -195,25 +211,21 @@ export async function expectNoAssistantText(page: Page, text: string | RegExp) {
 
 export async function expectUserMessage(page: Page, text: string) {
   await expect(
-    page
-      .locator(
-        '[data-slot-layer="present"] article[data-theme-target="message-user"]'
-      )
-      .filter({ hasText: text })
+    presentArticles(page, "message-user").filter({ hasText: text })
   ).toBeVisible()
 }
 
 export async function openBranchNext(page: Page) {
-  const button = page
-    .locator('[data-slot-layer="present"]')
+  const button = presentArticles(page, "message-user")
+    .or(presentArticles(page, "message-assistant"))
     .getByRole("button", { name: "Next branch", disabled: false })
   await expect(button).toBeEnabled()
   await button.click()
 }
 
 export async function openBranchPrev(page: Page) {
-  const button = page
-    .locator('[data-slot-layer="present"]')
+  const button = presentArticles(page, "message-user")
+    .or(presentArticles(page, "message-assistant"))
     .getByRole("button", { name: "Previous branch", disabled: false })
   await expect(button).toBeEnabled()
   await button.click()
@@ -221,11 +233,7 @@ export async function openBranchPrev(page: Page) {
 
 export async function editUserAsBranch(page: Page, nextText: string) {
   // User bubble is the right-aligned article; open edit from the active path tip user.
-  const article = page
-    .locator(
-      '[data-slot-layer="present"] article[data-theme-target="message-user"]'
-    )
-    .last()
+  const article = presentArticles(page, "message-user").last()
   await article.getByRole("button", { name: "Edit", exact: true }).click()
   const composer = page.getByRole("textbox", { name: "Message text" })
   await expect(composer).toBeVisible()
@@ -234,16 +242,12 @@ export async function editUserAsBranch(page: Page, nextText: string) {
 }
 
 export async function generateFromUserMessage(page: Page) {
-  const user = page.locator(
-    '[data-slot-layer="present"] article[data-theme-target="message-user"]'
-  )
+  const user = presentArticles(page, "message-user")
   await user.last().getByRole("button", { name: "Another answer" }).click()
 }
 
 export async function deleteActiveUserSubtree(page: Page) {
-  const user = page.locator(
-    '[data-slot-layer="present"] article[data-theme-target="message-user"]'
-  )
+  const user = presentArticles(page, "message-user")
   await user.last().getByRole("button", { name: "Delete" }).click()
   const dialog = page.getByRole("alertdialog")
   await expect(dialog.getByText("Delete message node")).toBeVisible()
@@ -251,9 +255,7 @@ export async function deleteActiveUserSubtree(page: Page) {
 }
 
 export async function deleteActiveAssistantSubtree(page: Page) {
-  const assistant = page.locator(
-    '[data-slot-layer="present"] article[data-theme-target="message-assistant"]'
-  )
+  const assistant = presentArticles(page, "message-assistant")
   await assistant.last().getByRole("button", { name: "Delete" }).click()
   const dialog = page.getByRole("alertdialog")
   await expect(dialog.getByText("Delete message node")).toBeVisible()
@@ -262,7 +264,7 @@ export async function deleteActiveAssistantSubtree(page: Page) {
 
 export function streamingMarkers(page: Page) {
   return page.locator(
-    '[data-slot-layer="present"] [data-message-status="streaming"]'
+    'article[data-message-status="streaming"]:has([data-slot-layer="present"])'
   )
 }
 

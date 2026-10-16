@@ -6,6 +6,12 @@ import {
   type DecorationSet,
 } from "@codemirror/view"
 import { findOccurrences } from "@/lib/conversation-search"
+import {
+  transcriptScrollport,
+  navigateTranscriptElement,
+} from "./transcript-navigation"
+
+const transcriptReveals = new WeakSet<EditorView>()
 
 const setMatches = StateEffect.define<{
   starts: number[]
@@ -34,6 +40,42 @@ const matches = StateField.define<DecorationSet>({
 
 export const findEditorExtensions = [
   matches,
+  EditorView.scrollHandler.of((view, range) => {
+    if (!transcriptReveals.delete(view)) return false
+    // CodeMirror's default reveal scrolls every ancestor. For a linear find,
+    // scroll the editor locally and delegate the outer movement to its owner.
+    view.requestMeasure({
+      key: transcriptReveals,
+      read: () => {
+        const line = view.lineBlockAt(range.head)
+        return (
+          view.coordsAtPos(range.head) ?? {
+            top: view.documentTop + line.top,
+            bottom: view.documentTop + line.bottom,
+          }
+        )
+      },
+      write: (measured) => {
+        let bounds = measured
+        const outer = transcriptScrollport(view.dom)!
+        for (
+          let port = view.scrollDOM;
+          port !== outer;
+          port = port.parentElement!
+        ) {
+          if (!/auto|scroll/.test(getComputedStyle(port).overflowY)) continue
+          const before = port.scrollTop
+          port.scrollTop +=
+            (bounds.top + bounds.bottom) / 2 -
+            (port.getBoundingClientRect().top + port.clientHeight / 2)
+          const moved = port.scrollTop - before
+          bounds = { top: bounds.top - moved, bottom: bounds.bottom - moved }
+        }
+        navigateTranscriptElement(view.dom, "nearest", "auto", bounds)
+      },
+    })
+    return true
+  }),
   ViewPlugin.fromClass(
     class {
       private unregister: () => void
@@ -99,7 +141,12 @@ type ScrollAnchor = { element: HTMLElement; top: number; left: number }
 
 function scrollAnchors(start: HTMLElement) {
   const anchors: ScrollAnchor[] = []
-  for (let node: HTMLElement | null = start; node; node = node.parentElement)
+  const outer = transcriptScrollport(start)
+  for (
+    let node: HTMLElement | null = start;
+    node && node !== outer;
+    node = node.parentElement
+  )
     anchors.push({
       element: node,
       top: node.scrollTop,
@@ -191,6 +238,7 @@ export function clearEditorFind() {
 }
 export type EditorFindTarget = { view: EditorView; start: number; end: number }
 export function revealEditorFind({ view, start, end }: EditorFindTarget) {
+  if (transcriptScrollport(view.dom)) transcriptReveals.add(view)
   view.dispatch({
     effects: EditorView.scrollIntoView(EditorSelection.range(start, end), {
       y: "center",

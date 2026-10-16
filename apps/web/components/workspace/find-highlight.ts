@@ -1,3 +1,5 @@
+import { navigateTranscriptElement } from "./transcript-navigation"
+
 import {
   mountedFindEditors,
   editorFindStarts,
@@ -181,14 +183,16 @@ export function revealFindRange(range: Range, root: HTMLElement) {
   const node = range.startContainer
   const element = node instanceof Element ? node : node.parentElement
   if (element instanceof HTMLElement) {
-    element.scrollIntoView?.({ block: "nearest", inline: "nearest" })
+    if (!navigateTranscriptElement(element, "nearest"))
+      element.scrollIntoView?.({ block: "nearest", inline: "nearest" })
     return true
   }
   return false
 }
 
 export function revealFindFlash(root: HTMLElement) {
-  root.scrollIntoView?.({ block: "nearest", inline: "nearest" })
+  if (!navigateTranscriptElement(root, "nearest"))
+    root.scrollIntoView?.({ block: "nearest", inline: "nearest" })
 }
 
 export type PaintedFind = {

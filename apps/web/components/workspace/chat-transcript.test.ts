@@ -59,16 +59,24 @@ describe("pathSlotKey", () => {
 })
 
 describe("transcript row mapping", () => {
-  it("groups siblings by parent and role, sorted by sort_key", () => {
+  it("groups mixed-role siblings by parent, sorted by sort_key", () => {
     const root = node("root")
     const late = node("late", "assistant", "root", { sort_key: 20 })
     const early = node("early", "assistant", "root", { sort_key: 10 })
     const user = node("user", "user", "root", { sort_key: 5 })
     const groups = transcriptSiblingsByNodeId([root, late, user, early])
 
-    expect(groups.get("late")?.map(({ id }) => id)).toEqual(["early", "late"])
-    expect(groups.get("early")?.map(({ id }) => id)).toEqual(["early", "late"])
-    expect(groups.get("user")?.map(({ id }) => id)).toEqual(["user"])
+    expect(groups.get("late")?.map(({ id }) => id)).toEqual([
+      "user",
+      "early",
+      "late",
+    ])
+    expect(groups.get("early")?.map(({ id }) => id)).toEqual([
+      "user",
+      "early",
+      "late",
+    ])
+    expect(groups.get("user")).toBe(groups.get("late"))
   })
 
   it("uses density-based previous-item peek as scroll padding", () => {

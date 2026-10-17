@@ -53,7 +53,8 @@ export function isViewingChat(
 
 /**
  * Soft-follow only when still viewing this chat and the view tip still
- * matches the generation start anchor (user has not navigated away).
+ * matches the originating tip (user has not navigated away). Composer sends
+ * can use an unfinished tip's parent as context while retaining that tip here.
  *
  * This is tree-selection soft-follow: keep the generating node on the
  * active path. It deliberately does not control viewport scroll — the
@@ -64,12 +65,16 @@ export function shouldSoftFollow(
   body: GenerationStartInput,
   path: NodeRow[],
   selectedChatId: string | null,
-  pathname?: string | null
+  pathname?: string | null,
+  sourceTipId?: string | null
 ): boolean {
   if (!isViewingChat(body.chatId, selectedChatId, pathname)) return false
   const tipId = path.at(-1)?.id ?? null
   if (body.intent === "submit" || body.intent === "generate") {
-    return tipId === (body.parentNodeId ?? null)
+    return (
+      tipId ===
+      (sourceTipId !== undefined ? sourceTipId : (body.parentNodeId ?? null))
+    )
   }
   return path.some((node) => node.id === body.assistantNodeId)
 }

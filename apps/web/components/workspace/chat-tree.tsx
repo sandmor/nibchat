@@ -1,5 +1,7 @@
 "use client"
 
+import { isUnfinishedMessage } from "@/lib/conversation-branches"
+
 import {
   memo,
   useCallback,
@@ -1198,8 +1200,7 @@ export function ChatTree({
             const anchor = addAnchor(id)
             if (handoffByAnchor.has(anchor)) return null
             const node = anchor ? nodesById.get(anchor) : undefined
-            const disabled =
-              node?.status === "streaming" || node?.status === "awaiting_input"
+            const disabled = node ? isUnfinishedMessage(node) : false
             const open = draftAnchors.has(anchor)
             const layoutId = composeLayoutId(anchor)
             const submitting = submittingLayouts.has(layoutId)

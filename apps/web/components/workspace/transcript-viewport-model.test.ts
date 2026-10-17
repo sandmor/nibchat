@@ -405,6 +405,55 @@ describe("viewport UX contract", () => {
     expect(scrolls(subject.layout(growth))).toEqual([])
   })
 
+  it("aligns a shorter cross-role version once, then preserves reading during growth", () => {
+    const subject = following()
+    subject.send({
+      type: "request",
+      request: {
+        kind: "version",
+        slotKey: "slot:1",
+        messageId: "user-version",
+        viewportY: 200,
+      },
+    })
+    const replacement = {
+      ...layoutFixture(),
+      totalSize: 1100,
+      rows: layoutFixture().rows.map((row, index) =>
+        index === 1
+          ? { ...row, messageId: "user-version", size: 200, stepperOffset: 150 }
+          : index === 2
+            ? { ...row, start: 600 }
+            : row
+      ),
+    }
+    const commands = subject.layout(replacement, 800)
+    expect(scrolls(commands).map((command) => command.offset)).toEqual([350])
+    subject.acknowledge(commands)
+    expect(subject.state.operation).toBeNull()
+    expect(subject.state.mode.kind).toBe("reading")
+    expect(subject.layout(replacement)).toEqual([])
+    // Sending has no transition, and its subsequent layout cannot resume following.
+    const growth = {
+      ...replacement,
+      totalSize: 1600,
+      rows: [
+        ...replacement.rows,
+        {
+          key: "slot:3",
+          messageId: "reply",
+          start: 1100,
+          size: 500,
+          measured: true,
+          stepperOffset: null,
+        },
+      ],
+    }
+    expect(subject.layout(growth)).toEqual([])
+    expect(subject.state.offset).toBe(350)
+    expect(subject.state.mode.kind).toBe("reading")
+  })
+
   it.each([0, 1200])(
     "clamps a one-time alignment to %s without padding",
     (target) => {

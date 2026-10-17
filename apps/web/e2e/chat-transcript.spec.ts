@@ -64,7 +64,12 @@ async function wheelTranscript(page: Page, port: Locator, delta: number) {
   return settledTranscriptOffset(port)
 }
 
-async function seedVersions(page: Page, prefixCount = 4, descendants = 4) {
+async function seedVersions(
+  page: Page,
+  prefixCount = 4,
+  descendants = 4,
+  secondRole: "user" | "assistant" = "assistant"
+) {
   const chat = await mutate<{ id: string }>(page, "createChat", {
     title: "Viewport fixture",
   })
@@ -107,7 +112,7 @@ async function seedVersions(page: Page, prefixCount = 4, descendants = 4) {
     ).id
   const second = await add(
     parent.id,
-    "assistant",
+    secondRole,
     "VERSION_B\n\n" + "Second version content.\n\n".repeat(18)
   )
   tip = second.id
@@ -738,69 +743,76 @@ HANDOFF_END`
     expect(await scrollWithoutTabShift(-60)).toBeLessThan(2)
   })
 
-  test("version switching aligns before paint", async () => {
-    const { port, row } = await seedVersions(page)
-    const stepper = row.locator('[data-message-footer-html="stepper"]')
-    await stepper.evaluate((el) => el.scrollIntoView({ block: "center" }))
-    const offset = () =>
-      stepper.evaluate(
-        (el) =>
-          el.getBoundingClientRect().top -
-          el
-            .closest('[data-testid="chat-transcript-viewport"]')!
-            .getBoundingClientRect().top
-      )
-    await expect
-      .poll(() =>
-        port.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop)
-      )
-      .toBeGreaterThan(80)
-    const parked = await offset()
-
-    // Sample the first painted replacement and all subsequent frames.
-    await port.evaluate((el) => {
-      const state = window as typeof window & {
-        switchFrames: number[]
-        sampleSwitch: boolean
-      }
-      state.switchFrames = []
-      state.sampleSwitch = true
-      const sample = () => {
-        const article = el.querySelector('[data-index="5"] article')
-        const present = article?.querySelector('[data-slot-layer="present"]')
-        const anchor = article?.querySelector(
-          '[data-message-footer-html="stepper"]'
+  for (const secondRole of ["assistant", "user"] as const) {
+    test(`version switching to ${secondRole} aligns before paint`, async () => {
+      const { port, row } = await seedVersions(page, 4, 4, secondRole)
+      const stepper = row.locator('[data-message-footer-html="stepper"]')
+      await stepper.evaluate((el) => el.scrollIntoView({ block: "center" }))
+      const offset = () =>
+        stepper.evaluate(
+          (el) =>
+            el.getBoundingClientRect().top -
+            el
+              .closest('[data-testid="chat-transcript-viewport"]')!
+              .getBoundingClientRect().top
         )
-        if (present?.textContent?.includes("VERSION_B") && anchor)
-          state.switchFrames.push(
-            anchor.getBoundingClientRect().top - el.getBoundingClientRect().top
+      await expect
+        .poll(() =>
+          port.evaluate(
+            (el) => el.scrollHeight - el.clientHeight - el.scrollTop
           )
-        if (state.sampleSwitch) requestAnimationFrame(sample)
-      }
-      requestAnimationFrame(sample)
-    })
-    await row.getByRole("button", { name: "Next branch" }).click()
-    await expect(row.getByText("VERSION_B", { exact: true })).toBeVisible()
-    await expect.poll(offset).toBeCloseTo(parked, 0)
-    await expect
-      .poll(() =>
-        page.evaluate(
-          () =>
-            (window as typeof window & { switchFrames: number[] }).switchFrames
-              .length
         )
+        .toBeGreaterThan(80)
+      const parked = await offset()
+
+      // Sample the first painted replacement and all subsequent frames.
+      await port.evaluate((el) => {
+        const state = window as typeof window & {
+          switchFrames: number[]
+          sampleSwitch: boolean
+        }
+        state.switchFrames = []
+        state.sampleSwitch = true
+        const sample = () => {
+          const article = el.querySelector('[data-index="5"] article')
+          const present = article?.querySelector('[data-slot-layer="present"]')
+          const anchor = article?.querySelector(
+            '[data-message-footer-html="stepper"]'
+          )
+          if (present?.textContent?.includes("VERSION_B") && anchor)
+            state.switchFrames.push(
+              anchor.getBoundingClientRect().top -
+                el.getBoundingClientRect().top
+            )
+          if (state.sampleSwitch) requestAnimationFrame(sample)
+        }
+        requestAnimationFrame(sample)
+      })
+      await row.getByRole("button", { name: "Next branch" }).click()
+      await expect(row.getByText("VERSION_B", { exact: true })).toBeVisible()
+      await expect.poll(offset).toBeCloseTo(parked, 0)
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              (window as typeof window & { switchFrames: number[] })
+                .switchFrames.length
+          )
+        )
+        .toBeGreaterThan(2)
+      const frames = await page.evaluate(() => {
+        const state = window as typeof window & {
+          switchFrames: number[]
+          sampleSwitch: boolean
+        }
+        state.sampleSwitch = false
+        return state.switchFrames
+      })
+      expect(Math.max(...frames.map((y) => Math.abs(y - parked)))).toBeLessThan(
+        2
       )
-      .toBeGreaterThan(2)
-    const frames = await page.evaluate(() => {
-      const state = window as typeof window & {
-        switchFrames: number[]
-        sampleSwitch: boolean
-      }
-      state.sampleSwitch = false
-      return state.switchFrames
     })
-    expect(Math.max(...frames.map((y) => Math.abs(y - parked)))).toBeLessThan(2)
-  })
+  }
 
   test("sending near the live edge while reading preserves position through reply growth", async () => {
     await seedVersions(page)

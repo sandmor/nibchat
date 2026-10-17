@@ -8,6 +8,7 @@
  *
  * A version/reveal is one replaceable operation, not a third mode. It waits for
  * its committed, mounted target, positions once, then adopts the resulting point.
+ * Sibling versions may change message role and height; alignment is role-independent.
  * User movement wins over operations; operation IDs make late completions inert.
  * Sending has no transition. A draft handoff carries the same reader snapshot.
  *

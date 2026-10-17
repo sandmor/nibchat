@@ -1,5 +1,7 @@
 "use client"
 
+import { composerContextParent } from "@/lib/conversation-branches"
+
 import {
   useCallback,
   useEffect,
@@ -295,17 +297,6 @@ function draftRowsFromTemplate(document: ChatTemplateDocument): NodeRow[] {
     created_at: timestamp,
     updated_at: timestamp,
   }))
-}
-
-/** Parent a composer send attaches to. A paused tool turn stays a sibling. */
-function composerAttachParent(
-  path: ReadonlyArray<Pick<NodeRow, "id" | "parent_id" | "role" | "status">>
-): string | null {
-  const tip = path.at(-1)
-  if (!tip) return null
-  if (tip.role === "assistant" && tip.status === "awaiting_input")
-    return tip.parent_id
-  return tip.id
 }
 
 function draftTemplateEditSlots() {
@@ -1581,6 +1572,8 @@ export function ChatView({
         assistantNodeId: string
       }) => void | Promise<void>
       suppressSelectionFollow?: boolean
+      /** Selected tip at submission, which can differ from the context parent. */
+      sourceTipId?: string | null
     }
   ) {
     const modelConfig = options?.modelConfig ?? activeModelConfig
@@ -1615,7 +1608,13 @@ export function ChatView({
             body.chatId
           )
         const trySoftFollow = (path: NodeRow[]) =>
-          shouldSoftFollow(body, path, selectedChatIdRef.current)
+          shouldSoftFollow(
+            body,
+            path,
+            selectedChatIdRef.current,
+            undefined,
+            options?.sourceTipId
+          )
         let didSoftFollow = options?.suppressSelectionFollow
           ? false
           : trySoftFollow(pathFromCache())
@@ -1661,7 +1660,13 @@ export function ChatView({
           )
           const follow =
             !options?.suppressSelectionFollow &&
-            shouldSoftFollow(body, path, selectedChatIdRef.current)
+            shouldSoftFollow(
+              body,
+              path,
+              selectedChatIdRef.current,
+              undefined,
+              options?.sourceTipId
+            )
           queryClient.setQueryData<WorkspaceData>(
             trpc.workspace.get.queryKey({ chatId: body.chatId }),
             (current) =>
@@ -1934,14 +1939,8 @@ export function ChatView({
     }
   }
 
-  /**
-   * Composer attach target for the Linear dock.
-   * When the path tip is awaiting tool input (e.g. questionnaire), send as a
-   * sibling under the tip's parent so an unfinished Q&A is not buried under
-   * a new user message child.
-   */
   const composerParentId = useMemo(
-    () => composerAttachParent(activePath),
+    () => composerContextParent(activePath),
     [activePath]
   )
 
@@ -1953,6 +1952,7 @@ export function ChatView({
     if (!ensureModelReady(activeModelConfig)) return
 
     const contextLeafId = composerParentId
+    const sourceTipId = activePath.at(-1)?.id ?? null
     const modelConfig = activeModelConfig
     const pendingAttachments = [...attachments]
 
@@ -1963,6 +1963,7 @@ export function ChatView({
       ensuredId = ensured.chatId
       created = ensured.created
       // Start the stream before URL replace so remount sees Zustand state.
+      // Selection commits on startup only while the originating tip is selected.
       await runGenerationBatch(
         generateOnly
           ? {
@@ -1973,7 +1974,7 @@ export function ChatView({
                   ? (draftNodeIdMap.current[contextLeafId] ?? null)
                   : null
                 : contextLeafId,
-              attachSelection: true,
+              attachSelection: false,
             }
           : {
               chatId: ensuredId,
@@ -1984,7 +1985,7 @@ export function ChatView({
                   : null
                 : contextLeafId,
               content,
-              attachSelection: true,
+              attachSelection: false,
               ...(pendingAttachments.length
                 ? {
                     attachments: pendingAttachments.map(
@@ -1996,6 +1997,10 @@ export function ChatView({
         count,
         {
           modelConfig,
+          sourceTipId:
+            created && sourceTipId
+              ? (draftNodeIdMap.current[sourceTipId] ?? null)
+              : sourceTipId,
           onStreamStarted: () => {
             if (!generateOnly)
               updateSessionDraft(

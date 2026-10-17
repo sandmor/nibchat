@@ -94,7 +94,10 @@ import {
 import { SessionMessageEditor } from "./message-editor"
 import { useStreamBuffer, useStreamStore } from "@/lib/stream-store"
 import { overlayStreamParts } from "./stream-helpers"
-import { siblingSort } from "@/lib/sort-key"
+import {
+  groupSiblingBranches,
+  isUnfinishedMessage,
+} from "@/lib/conversation-branches"
 import { MultipleGenerationsDialog } from "./generation-count"
 import {
   effectiveMessageStatus,
@@ -443,16 +446,8 @@ export const Message = memo(function Message({
       ? pendingToolInvocations(parts).map((part) => part.toolCallId)
       : NO_PENDING_TOOL_IDS
   const siblings = useMemo(
-    () =>
-      siblingNodes ??
-      nodes
-        .filter(
-          (candidate) =>
-            candidate.parent_id === node.parent_id &&
-            candidate.role === node.role
-        )
-        .sort(siblingSort),
-    [node.parent_id, node.role, nodes, siblingNodes]
+    () => siblingNodes ?? groupSiblingBranches(nodes).get(node.parent_id) ?? [],
+    [node.parent_id, nodes, siblingNodes]
   )
   const generatingChildren = nodes.filter(
     (candidate) =>
@@ -482,6 +477,7 @@ export const Message = memo(function Message({
   const withHelperCount = (label: string, count: number | undefined) =>
     count ? `${label} (${count} helper${count === 1 ? "" : "s"})` : label
   const [teleportOpen, setTeleportOpen] = useState(false)
+  const [teleportMode, setTeleportMode] = useState<"reply" | "before">("reply")
   const teleportTargets = useMemo(() => {
     if (!teleportOpen) return []
     const blocked = subtreeNodeIds(nodes, node.id)
@@ -489,7 +485,6 @@ export const Message = memo(function Message({
   }, [teleportOpen, nodes, node.id])
   const [teleportDestination, setTeleportDestination] = useState("root")
   const [teleportSubtree, setTeleportSubtree] = useState(true)
-  const [teleportMode, setTeleportMode] = useState<"reply" | "before">("reply")
   const [replaceOpen, setReplaceOpen] = useState(false)
   const [mountedDialogs, setMountedDialogs] = useState<MountedMessageDialogs>(
     NO_MOUNTED_MESSAGE_DIALOGS
@@ -739,8 +734,7 @@ export const Message = memo(function Message({
         })()
       : null
 
-  const generationIdle =
-    node.status !== "streaming" && node.status !== "awaiting_input" && !streamId
+  const generationIdle = !isUnfinishedMessage(node) && !streamId
   const canGenerateReplies = Boolean(onGenerateReplies) && generationIdle
   const canRegenerate = node.role === "assistant" && Boolean(onRegenerate)
 
@@ -1300,7 +1294,14 @@ export const Message = memo(function Message({
                 <SelectContent>
                   <SelectItem value="root">Conversation root</SelectItem>
                   {teleportTargets.map((candidate) => (
-                    <SelectItem key={candidate.id} value={candidate.id}>
+                    <SelectItem
+                      key={candidate.id}
+                      value={candidate.id}
+                      disabled={
+                        teleportMode === "reply" &&
+                        isUnfinishedMessage(candidate)
+                      }
+                    >
                       {candidate.role}:{" "}
                       {textFromParts(
                         parseJson<Parts>(candidate.parts_json, [])
@@ -1327,7 +1328,15 @@ export const Message = memo(function Message({
                 Cancel
               </Button>
               <Button
-                disabled={pendingMutation === "move"}
+                disabled={
+                  pendingMutation === "move" ||
+                  (teleportMode === "reply" &&
+                    teleportTargets.some(
+                      (candidate) =>
+                        candidate.id === teleportDestination &&
+                        isUnfinishedMessage(candidate)
+                    ))
+                }
                 onClick={() =>
                   void runMessageMutation(
                     {
@@ -1371,7 +1380,7 @@ export const Message = memo(function Message({
                     ? "Keep replies removes only this message and promotes its replies."
                     : "",
                   showDeleteSiblings
-                    ? "Delete all versions removes this message, the other versions beside it, and everything under them."
+                    ? "Delete all versions removes every sibling branch, including user and assistant messages, and all replies under them."
                     : "",
                 ]
                   .filter(Boolean)

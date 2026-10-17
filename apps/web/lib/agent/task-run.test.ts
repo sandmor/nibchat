@@ -8,7 +8,6 @@ import {
   deleteNode,
   helperDeletionImpact,
   replaceMessage,
-  updateNode,
 } from "@/lib/chat-service"
 import {
   deleteHelperProfile,
@@ -209,17 +208,25 @@ describe("helper runs", () => {
       toolCallId: firstCall,
       task: { prompt: "First task" },
     })
-    await updateNode(parent.assistant.id, [
-      { type: "text", text: "Delegating" },
-      {
-        type: "tool-invocation",
-        toolCallId: firstCall,
-        toolName: "task",
-        state: "output-available",
-        input: { prompt: "First task" },
-        output: { task_id: first.run.id, status: "completed", answer: "Done" },
-      },
-    ])
+    await replaceMessage({
+      userId,
+      nodeId: parent.assistant.id,
+      parts: [
+        { type: "text", text: "Delegating" },
+        {
+          type: "tool-invocation",
+          toolCallId: firstCall,
+          toolName: "task",
+          state: "output-available",
+          input: { prompt: "First task" },
+          output: {
+            task_id: first.run.id,
+            status: "completed",
+            answer: "Done",
+          },
+        },
+      ],
+    })
     expect(
       (await helperDeletionImpact(userId, parent.assistant.id)).subtree
     ).toBe(1)
@@ -292,11 +299,19 @@ describe("helper runs", () => {
         answer: "Original answer",
       },
     }
-    await updateNode(parent.assistant.id, [
-      { type: "text", text: "Delegating" },
-      originalPart,
-      { ...originalPart, toolCallId: followupCall, toolName: "continue_task" },
-    ])
+    await replaceMessage({
+      userId,
+      nodeId: parent.assistant.id,
+      parts: [
+        { type: "text", text: "Delegating" },
+        originalPart,
+        {
+          ...originalPart,
+          toolCallId: followupCall,
+          toolName: "continue_task",
+        },
+      ],
+    })
     await replaceMessage({
       userId,
       nodeId: parent.assistant.id,

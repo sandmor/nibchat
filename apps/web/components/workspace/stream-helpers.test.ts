@@ -80,6 +80,46 @@ describe("shouldSoftFollow", () => {
     expect(shouldSoftFollow(body, [], "c1", "/chat/c1")).toBe(true)
   })
 
+  it("follows a branching send only while its originating tip is still selected", () => {
+    const body: GenerationStartBody = {
+      actionId,
+      chatId: "c1",
+      timeZone: "UTC",
+      intent: "generate",
+      parentNodeId: "u1",
+    }
+    const source = {
+      ...node("a1"),
+      parent_id: "u1",
+      role: "assistant" as const,
+    }
+    // Completion during startup must not change where this action was submitted.
+    expect(
+      shouldSoftFollow(body, [node("u1"), source], "c1", "/chat/c1", "a1")
+    ).toBe(true)
+    expect(
+      shouldSoftFollow(
+        body,
+        [node("u1"), node("other")],
+        "c1",
+        "/chat/c1",
+        "a1"
+      )
+    ).toBe(false)
+    expect(
+      shouldSoftFollow(body, [node("u1"), source], "c1", "/chat/other", "a1")
+    ).toBe(false)
+    expect(
+      shouldSoftFollow(
+        { ...body, parentNodeId: null },
+        [source],
+        "c1",
+        "/chat/c1",
+        "a1"
+      )
+    ).toBe(true)
+  })
+
   it("does not soft-follow after navigating to another chat", () => {
     const body: GenerationStartBody = {
       actionId,

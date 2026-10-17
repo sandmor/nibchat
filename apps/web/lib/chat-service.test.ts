@@ -27,6 +27,7 @@ import {
   restoreBackup,
   setNodeContextExcluded,
   startGeneration,
+  startGenerationBatch,
   submitUserTurnBatch,
   setChatViewState,
   setChatPromptStack,
@@ -100,6 +101,117 @@ beforeAll(async () => {
 })
 
 describe("SQLite chat repository", () => {
+  it.each(["streaming", "awaiting_input"] as const)(
+    "rejects new edges beneath %s messages atomically",
+    async (status) => {
+      const chat = await createChat(userId, "Unfinished context")
+      const parent = await insertNode({
+        chatId: chat.id,
+        parentId: null,
+        role: "assistant",
+        status,
+        parts: [],
+      })
+      const movable = await createMessage({
+        userId,
+        chatId: chat.id,
+        parentId: null,
+        role: "user",
+        parts: [{ type: "text", text: "move me" }],
+      })
+      const before = await db
+        .selectFrom("message_nodes")
+        .selectAll()
+        .where("chat_id", "=", chat.id)
+        .execute()
+      const selection = await db
+        .selectFrom("chats")
+        .select("selected_root_node_id")
+        .where("id", "=", chat.id)
+        .executeTakeFirstOrThrow()
+      const generationId = crypto.randomUUID()
+      const actionId = crypto.randomUUID()
+      await expect(
+        createMessage({
+          userId,
+          chatId: chat.id,
+          parentId: parent.id,
+          role: "assistant",
+          parts: [{ type: "text", text: "invalid" }],
+          attachSelection: true,
+        })
+      ).rejects.toThrow("unfinished generation")
+      await expect(
+        startGenerationBatch({
+          userId,
+          chatId: chat.id,
+          parentId: parent.id,
+          generationIds: [generationId],
+          attachSelection: true,
+          action: { id: actionId, requestHash: "invalid", intent: "generate" },
+        })
+      ).rejects.toThrow("unfinished generation")
+      await expect(
+        submitUserTurnBatch({
+          userId,
+          chatId: chat.id,
+          parentId: parent.id,
+          parts: [{ type: "text", text: "invalid" }],
+          generationIds: [generationId],
+          attachSelection: true,
+          action: { id: actionId, requestHash: "invalid", intent: "submit" },
+        })
+      ).rejects.toThrow("unfinished generation")
+      for (const subtree of [false, true])
+        await expect(
+          moveNode({
+            userId,
+            nodeId: movable.id,
+            destinationParentId: parent.id,
+            subtree,
+          })
+        ).rejects.toThrow("unfinished generation")
+      expect(
+        await db
+          .selectFrom("message_nodes")
+          .selectAll()
+          .where("chat_id", "=", chat.id)
+          .execute()
+      ).toEqual(before)
+      expect(
+        await db
+          .selectFrom("chats")
+          .select("selected_root_node_id")
+          .where("id", "=", chat.id)
+          .executeTakeFirstOrThrow()
+      ).toEqual(selection)
+      expect(await getGenerationRun(generationId)).toBeUndefined()
+      expect(await getGenerationAction(actionId, userId)).toBeNull()
+    }
+  )
+
+  it.each(["complete", "stopped", "error"] as const)(
+    "accepts %s context",
+    async (status) => {
+      const chat = await createChat(userId, "Terminal context")
+      const parent = await insertNode({
+        chatId: chat.id,
+        parentId: null,
+        role: "assistant",
+        status,
+        parts: [{ type: "text", text: "context" }],
+      })
+      const result = await startGeneration({
+        userId,
+        chatId: chat.id,
+        parentId: parent.id,
+        generationId: crypto.randomUUID(),
+      })
+      expect(result.assistant.parent_id).toBe(parent.id)
+      expect(result.contextLeafId).toBe(parent.id)
+    }
+  )
+
   it("saves a direct message with an uploaded image", async () => {
     const chat = await createChat(userId, "Direct image")
     const attachmentId = crypto.randomUUID()
@@ -1480,7 +1592,7 @@ describe("SQLite chat repository", () => {
     ).toBe(first.id)
   })
 
-  it("deleteNode siblings removes same-role branches and keeps other roles", async () => {
+  it("deleteNode siblings removes every mixed-role branch", async () => {
     const chat = await createChat(userId, "Delete sibling group")
     const root = await insertNode({
       chatId: chat.id,
@@ -1521,13 +1633,14 @@ describe("SQLite chat repository", () => {
     await deleteNode(userId, first.id, "siblings")
     const workspace = await getWorkspace(userId, { chatId: chat.id })
     expect(workspace.nodes.map((node) => node.id).sort()).toEqual(
-      [root.id, otherRole.id].sort()
+      [root.id].sort()
     )
     expect(workspace.nodes.some((node) => node.id === reply.id)).toBe(false)
     expect(workspace.nodes.some((node) => node.id === second.id)).toBe(false)
+    expect(workspace.nodes.some((node) => node.id === otherRole.id)).toBe(false)
     expect(
       workspace.nodes.find((node) => node.id === root.id)?.selected_child_id
-    ).toBe(otherRole.id)
+    ).toBeNull()
   })
 
   it("persists conversation view without bumping updated_at", async () => {

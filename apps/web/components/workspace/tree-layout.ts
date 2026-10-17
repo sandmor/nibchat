@@ -1,4 +1,4 @@
-import { siblingSort } from "@/lib/sort-key"
+import { groupSiblingBranches } from "@/lib/conversation-branches"
 import type { NodeRow } from "@/lib/types"
 
 export type TreeRect = { x: number; y: number; width: number; height: number }
@@ -76,20 +76,6 @@ type LayoutOptions = {
   schedules?: readonly { id: string; parentId: string }[]
 }
 
-/** Same sibling grouping layoutChatTree uses: durable order, then stable ties. */
-function groupedTreeChildren(
-  nodes: readonly NodeRow[]
-): Map<string | null, NodeRow[]> {
-  const children = new Map<string | null, NodeRow[]>()
-  for (const node of nodes) {
-    const list = children.get(node.parent_id) ?? []
-    list.push(node)
-    children.set(node.parent_id, list)
-  }
-  for (const list of children.values()) list.sort(siblingSort)
-  return children
-}
-
 /**
  * Message node ids in preorder: parent, then children left-to-right by
  * sort_key. Uses the same sibling/root grouping as layoutChatTree.
@@ -97,7 +83,7 @@ function groupedTreeChildren(
  * off-path nodes.
  */
 export function layoutNodeIds(nodes: readonly NodeRow[]): string[] {
-  const children = groupedTreeChildren(nodes)
+  const children = groupSiblingBranches(nodes)
   const ids: string[] = []
   const visit = (node: NodeRow) => {
     ids.push(node.id)
@@ -116,7 +102,7 @@ export function layoutChatTree(
   nodes: NodeRow[],
   options: LayoutOptions = {}
 ): TreeLayout {
-  const children = groupedTreeChildren(nodes)
+  const children = groupSiblingBranches(nodes)
   const schedulesByParent = new Map<string, { id: string }[]>()
   for (const schedule of options.schedules ?? []) {
     const list = schedulesByParent.get(schedule.parentId) ?? []

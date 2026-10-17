@@ -1,6 +1,6 @@
 import { defaultRangeExtractor, type Range } from "@tanstack/react-virtual"
 import { parseJson } from "@/lib/domain"
-import { siblingSort } from "@/lib/sort-key"
+import { groupSiblingBranches } from "@/lib/conversation-branches"
 import type { NodeRow, Parts } from "@/lib/types"
 import { scheduledGenerationVerb } from "./scheduled-generation"
 
@@ -55,17 +55,10 @@ export function transcriptItemKey(
 export function transcriptSiblingsByNodeId(
   nodes: readonly NodeRow[]
 ): ReadonlyMap<string, readonly NodeRow[]> {
-  const groups = new Map<string, NodeRow[]>()
-  for (const node of nodes) {
-    const key = `${node.parent_id ?? ""}\u0000${node.role}`
-    const group = groups.get(key)
-    if (group) group.push(node)
-    else groups.set(key, [node])
-  }
+  const groups = groupSiblingBranches(nodes)
 
   const byNodeId = new Map<string, readonly NodeRow[]>()
   for (const group of groups.values()) {
-    group.sort(siblingSort)
     for (const node of group) byNodeId.set(node.id, group)
   }
   return byNodeId
